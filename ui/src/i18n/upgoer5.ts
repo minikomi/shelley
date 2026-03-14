@@ -142,6 +142,12 @@ export const upgoer5: TranslationKeys = {
   noModelsConfigured: "No brains set up",
   noModelsHint:
     "Set the right words where the computer looks for them, or use a way in, or add one down here.",
+  exportModels: "Put all of the models on a file",
+  importModels: "Get in",
+  importDescription:
+    "Get models from a file you saved. You will need to type the secret word for the models you get.",
+  importButton: "Get",
+  importingButton: "Getting...",
 
   // Notifications Modal
   notifications: "Things to Tell You",

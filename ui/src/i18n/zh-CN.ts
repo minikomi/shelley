@@ -142,6 +142,12 @@ export const zhCN: TranslationKeys = {
   noModelsConfigured: "未配置模型",
   noModelsHint:
     "设置环境变量（如 ANTHROPIC_API_KEY），或使用 -gateway 参数，或在下方添加自定义模型。",
+  exportModels: "导出所有",
+  importModels: "导入",
+  importDescription:
+    "从导出文件导入模型。您需要为所有导入的模型提供 API 密钥。",
+  importButton: "导入",
+  importingButton: "导入中...",
 
   // Notifications Modal
   notifications: "通知",

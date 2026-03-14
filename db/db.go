@@ -975,6 +975,21 @@ func (db *DB) GetModels(ctx context.Context) ([]generated.Model, error) {
 	return models, err
 }
 
+// GetModelByName retrieves a model by its display name
+func (db *DB) GetModelByName(ctx context.Context, displayName string) (*generated.Model, error) {
+	var model generated.Model
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		q := generated.New(rx.Conn())
+		var err error
+		model, err = q.GetModelByName(ctx, displayName)
+		return err
+	})
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("model not found: %s", displayName)
+	}
+	return &model, err
+}
+
 // GetModel returns a model by ID
 func (db *DB) GetModel(ctx context.Context, modelID string) (*generated.Model, error) {
 	var model generated.Model

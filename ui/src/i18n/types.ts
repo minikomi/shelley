@@ -140,6 +140,11 @@ export interface TranslationKeys {
   apiKeyRequired: string;
   noModelsConfigured: string;
   noModelsHint: string;
+  exportModels: string;
+  importModels: string;
+  importDescription: string;
+  importButton: string;
+  importingButton: string;
 
   // Notifications Modal
   notifications: string;

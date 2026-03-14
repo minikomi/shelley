@@ -142,6 +142,12 @@ export const ru: TranslationKeys = {
   noModelsConfigured: "Модели не настроены",
   noModelsHint:
     "Установите переменные окружения, например ANTHROPIC_API_KEY, используйте флаг -gateway или добавьте пользовательскую модель ниже.",
+  exportModels: "Экспорт всех",
+  importModels: "Импорт",
+  importDescription:
+    "Импорт моделей из экспортированного файла. Вам потребуется ввести ключ API для всех импортируемых моделей.",
+  importButton: "Импортировать",
+  importingButton: "Импорт...",
 
   // Notifications Modal
   notifications: "Уведомления",

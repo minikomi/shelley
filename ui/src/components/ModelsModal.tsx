@@ -93,6 +93,13 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
   // Tooltip state
   const [showTagsTooltip, setShowTagsTooltip] = useState(false);
 
+  // Import state
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showApiKeyPrompt, setShowApiKeyPrompt] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [apiKey, setApiKey] = useState("");
+
   const loadModels = useCallback(async () => {
     try {
       setLoading(true);
@@ -265,10 +272,84 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
     setTestResult(null);
   };
 
+  const handleExport = async () => {
+    try {
+      await customModelsApi.exportModels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to export models");
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
+      setShowApiKeyPrompt(true);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!selectedFile || !apiKey) {
+      setError("Please select a file and enter an API key");
+      return;
+    }
+
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const result = await customModelsApi.importModels(selectedFile, apiKey);
+      if (result.errors.length > 0) {
+        setImportResult({
+          success: false,
+          message: `${result.imported} model(s) imported with ${result.errors.length} error(s). Errors: ${result.errors.join("; ")}`,
+        });
+      } else {
+        setImportResult({
+          success: true,
+          message: `Successfully imported ${result.imported} model(s)`,
+        });
+      }
+      await loadModels();
+      onModelsChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import models");
+      setImportResult({ success: false, message: err instanceof Error ? err.message : "Import failed" });
+    } finally {
+      setImporting(false);
+      setShowApiKeyPrompt(false);
+      setSelectedFile(null);
+      setApiKey("");
+    }
+  };
+
+  const cancelImport = () => {
+    setShowApiKeyPrompt(false);
+    setSelectedFile(null);
+    setApiKey("");
+    setImportResult(null);
+  };
+
   const headerRight = !showForm ? (
-    <button className="btn-primary btn-sm" onClick={handleAddNew}>
-      + {t("addModel")}
-    </button>
+    <div className="models-header-actions">
+      <button className="btn-secondary btn-sm" onClick={handleExport}>
+        {t("exportModels")}
+      </button>
+      <button
+        className="btn-secondary btn-sm"
+        onClick={() => document.getElementById("import-file-input")?.click()}
+      >
+        {t("importModels")}
+      </button>
+      <button className="btn-primary btn-sm" onClick={handleAddNew}>
+        + {t("addModel")}
+      </button>
+      <input
+        id="import-file-input"
+        type="file"
+        accept=".json"
+        onChange={handleFileSelect}
+        className="models-modal-hidden-input"
+      />
+    </div>
   ) : null;
 
   return (
@@ -601,6 +682,48 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
                 </div>
               )}
             </div>
+
+            {/* Import API Key Prompt Modal */}
+            {showApiKeyPrompt && (
+              <div className="import-modal">
+                <h3>{t("importModels")}</h3>
+                <p>{t("importDescription")}</p>
+                <div className="form-group">
+                  <label>{t("apiKey")}</label>
+                  <input
+                    type="text"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={t("enterApiKey")}
+                    className="form-input"
+                    autoComplete="off"
+                  />
+                </div>
+                {importResult && (
+                  <div className={`import-result ${importResult.success ? "success" : "error"}`}>
+                    {importResult.message}
+                  </div>
+                )}
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={cancelImport}
+                    disabled={importing}
+                  >
+                    {t("cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={handleImport}
+                    disabled={importing || !apiKey}
+                  >
+                    {importing ? t("importingButton") : t("importButton")}
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

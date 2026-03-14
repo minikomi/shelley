@@ -84,6 +84,28 @@ func (q *Queries) GetModel(ctx context.Context, modelID string) (Model, error) {
 	return i, err
 }
 
+const getModelByName = `-- name: GetModelByName :one
+SELECT model_id, display_name, provider_type, endpoint, api_key, model_name, max_tokens, tags, created_at, updated_at FROM models WHERE display_name = ?
+`
+
+func (q *Queries) GetModelByName(ctx context.Context, displayName string) (Model, error) {
+	row := q.db.QueryRowContext(ctx, getModelByName, displayName)
+	var i Model
+	err := row.Scan(
+		&i.ModelID,
+		&i.DisplayName,
+		&i.ProviderType,
+		&i.Endpoint,
+		&i.ApiKey,
+		&i.ModelName,
+		&i.MaxTokens,
+		&i.Tags,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getModels = `-- name: GetModels :many
 SELECT model_id, display_name, provider_type, endpoint, api_key, model_name, max_tokens, tags, created_at, updated_at FROM models ORDER BY created_at ASC
 `

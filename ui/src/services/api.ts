@@ -505,6 +505,35 @@ class CustomModelsApi {
     }
     return response.json();
   }
+
+  async exportModels(): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/custom-models/export`);
+    if (!response.ok) {
+      throw new Error(`Failed to export models: ${response.statusText}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "shelley-models-export.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async importModels(file: File, apiKey: string): Promise<{ imported: number; errors: string[] }> {
+    const fileContent = await file.text();
+    const response = await fetch(`${this.baseUrl}/custom-models/import`, {
+           method: "POST",
+      headers: this.postHeaders,
+      body: JSON.stringify({ data: fileContent, api_key: apiKey }),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to import models: ${response.statusText}`);
+    }
+    return response.json();
+  }
 }
 
 export const customModelsApi = new CustomModelsApi();

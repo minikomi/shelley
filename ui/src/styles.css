@@ -4934,6 +4934,57 @@ svg {
   color: var(--text-tertiary);
 }
 
+.models-header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.models-modal-hidden-input {
+  display: none;
+}
+
+.import-modal {
+  padding: 1.5rem;
+}
+
+.import-modal h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.125rem;
+  color: var(--text-primary);
+}
+
+.import-modal p {
+  margin: 0.5rem 0 1.5rem 0;
+  color: var(--text-secondary);
+}
+
+.import-result {
+  padding: 0.75rem 1rem;
+  border-radius: 0.375rem;
+  margin: 1rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.import-result.success {
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  color: var(--success-text);
+}
+
+.import-result.error {
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  color: var(--error-text);
+}
+
+.models-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .model-badge {
   font-size: 0.75rem;
   text-transform: uppercase;

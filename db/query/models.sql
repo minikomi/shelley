@@ -24,3 +24,6 @@ RETURNING *;
 
 -- name: DeleteModel :exec
 DELETE FROM models WHERE model_id = ?;
+
+-- name: GetModelByName :one
+SELECT * FROM models WHERE display_name = ?;

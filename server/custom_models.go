@@ -28,6 +28,34 @@ type ModelAPI struct {
 	Tags         string `json:"tags"` // Comma-separated tags (e.g., "slug" for slug generation)
 }
 
+// ExportModel is the model representation for export (without sensitive data)
+type ExportModel struct {
+	DisplayName  string `json:"display_name"`
+	ProviderType string `json:"provider_type"`
+	Endpoint     string `json:"endpoint"`
+	ModelName    string `json:"model_name"`
+	MaxTokens    int64  `json:"max_tokens"`
+	Tags         string `json:"tags"`
+}
+
+// ExportData is the data structure for export files
+type ExportData struct {
+	ExportedAt time.Time   `json:"exported_at"`
+	Models     []ExportModel `json:"models"`
+}
+
+// ImportRequest is the request body for importing models
+type ImportRequest struct {
+	Data     []byte `json:"data"`     // JSON export file content
+	APIKey   string `json:"api_key"`  // API key to use for all imported models
+}
+
+// ImportResult is the response for import operations
+type ImportResult struct {
+	Imported int      `json:"imported"`
+	Errors   []string `json:"errors"`
+}
+
 // CreateModelRequest is the request body for creating a model
 type CreateModelRequest struct {
 	DisplayName  string `json:"display_name"`
@@ -77,7 +105,12 @@ func (s *Server) handleCustomModels(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.handleListModels(w, r)
 	case http.MethodPost:
-		s.handleCreateModel(w, r)
+		// Check if this is an import request
+		if r.URL.Path == "/api/custom-models/import" {
+			s.handleImportModels(w, r)
+		} else {
+			s.handleCreateModel(w, r)
+		}
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -431,4 +464,146 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": fmt.Sprintf("Test successful! Response: %s", responseText),
 	})
+}
+
+func (s *Server) handleExportModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get all custom models
+	models, err := s.db.GetModels(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get models: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to export format (without API keys)
+	exportModels := make([]ExportModel, len(models))
+	for i, m := range models {
+		exportModels[i] = ExportModel{
+			DisplayName:  m.DisplayName,
+			ProviderType: m.ProviderType,
+			Endpoint:     m.Endpoint,
+			ModelName:    m.ModelName,
+			MaxTokens:    m.MaxTokens,
+			Tags:         m.Tags,
+		}
+	}
+
+	// Create export data
+	exportData := ExportData{
+		ExportedAt: time.Now(),
+		Models:     exportModels,
+	}
+
+	// Set headers for file download
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=shelley-models-export.json")
+
+	// Write JSON
+	json.NewEncoder(w).Encode(exportData)
+}
+
+func (s *Server) handleImportModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if req.APIKey == "" {
+		http.Error(w, "api_key is required for import", http.StatusBadRequest)
+		return
+	}
+
+	// Parse export data
+	var exportData ExportData
+	if err := json.Unmarshal(req.Data, &exportData); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid export data: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	imported := 0
+	errors := []string{}
+
+	// Import each model
+	for _, m := range exportData.Models {
+		// Validate required fields
+		if m.DisplayName == "" || m.ProviderType == "" || m.Endpoint == "" || m.ModelName == "" {
+			errors = append(errors, fmt.Sprintf("Skipping invalid model: display_name=%s, provider=%s", m.DisplayName, m.ProviderType))
+			continue
+		}
+
+		// Validate provider type
+		if m.ProviderType != "anthropic" && m.ProviderType != "openai" && m.ProviderType != "openai-responses" && m.ProviderType != "gemini" {
+			errors = append(errors, fmt.Sprintf("Skipping model with invalid provider: %s", m.ProviderType))
+			continue
+		}
+
+		// Generate model ID
+		modelID := "custom-" + uuid.New().String()[:8]
+
+		// Default max tokens
+		maxTokens := m.MaxTokens
+		if maxTokens <= 0 {
+			maxTokens = 200000
+		}
+
+		// Handle potential display name conflicts by appending a suffix
+		displayName := m.DisplayName
+		for i := 1; ; i++ {
+			_, err := s.db.GetModelByName(r.Context(), displayName)
+			if err != nil {
+				// Name doesn't exist, we can use it
+				break
+			}
+			if i > 100 {
+				errors = append(errors, fmt.Sprintf("Failed to find unique name for: %s", m.DisplayName))
+				continue
+			}
+			displayName = fmt.Sprintf("%s (imported %d)", m.DisplayName, i)
+		}
+
+		// Create model with the provided API key
+		_, err := s.db.CreateModel(r.Context(), generated.CreateModelParams{
+			ModelID:      modelID,
+			DisplayName:  displayName,
+			ProviderType: m.ProviderType,
+			Endpoint:     m.Endpoint,
+			ApiKey:       req.APIKey,
+			ModelName:    m.ModelName,
+			MaxTokens:    maxTokens,
+			Tags:         m.Tags,
+		})
+
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("Failed to import model %s: %v", displayName, err))
+			continue
+		}
+
+		imported++
+	}
+
+	// Refresh the model manager's cache
+	if imported > 0 {
+		if err := s.llmManager.RefreshCustomModels(); err != nil {
+			s.logger.Warn("Failed to refresh custom models cache", "error", err)
+		}
+	}
+
+	// Return result
+	result := ImportResult{
+		Imported: imported,
+		Errors:   errors,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
