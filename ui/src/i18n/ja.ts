@@ -146,6 +146,8 @@ export const ja: TranslationKeys = {
   exportModel: "エクスポート",
   importDescription:
     "エクスポートファイルからモデルをインポートします。このモデルのAPIキーを入力する必要があります。",
+  selectedFile: "選択されたファイル",
+  selectFile: "ファイルを選択",
   importButton: "インポート",
   importingButton: "インポート中...",
 

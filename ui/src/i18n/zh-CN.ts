@@ -146,6 +146,8 @@ export const zhCN: TranslationKeys = {
   exportModel: "导出",
   importDescription:
     "从导出文件导入模型。您需要为此模型提供 API 密钥。",
+  selectedFile: "已选择的文件",
+  selectFile: "选择文件",
   importButton: "导入",
   importingButton: "导入中...",
 

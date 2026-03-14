@@ -146,6 +146,8 @@ export const es: TranslationKeys = {
   exportModel: "Exportar",
   importDescription:
     "Importar un modelo desde un archivo exportado. Necesitarás proporcionar la clave de API para este modelo.",
+  selectedFile: "Archivo Seleccionado",
+  selectFile: "Seleccionar Archivo",
   importButton: "Importar",
   importingButton: "Importando...",
 

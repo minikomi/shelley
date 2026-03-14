@@ -143,6 +143,8 @@ export interface TranslationKeys {
   importModels: string;
   exportModel: string;
   importDescription: string;
+  selectedFile: string;
+  selectFile: string;
   importButton: string;
   importingButton: string;
 

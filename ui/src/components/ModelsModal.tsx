@@ -99,9 +99,9 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
   // Import state
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [showApiKeyPrompt, setShowApiKeyPrompt] = useState(false);
+  const [showImportPanel, setShowImportPanel] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [apiKey, setApiKey] = useState("");
+  const [importApiKey, setImportApiKey] = useState("");
 
   const loadModels = useCallback(async () => {
     try {
@@ -289,20 +289,25 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
-      setShowApiKeyPrompt(true);
+      setShowImportPanel(true);
     }
   };
 
   const handleImport = async () => {
-    if (!selectedFile || !apiKey) {
-      setError("Please select a file and enter an API key");
+    if (!importApiKey) {
+      setError("Please enter an API key");
+      return;
+    }
+
+    if (!selectedFile) {
+      setError("Please select a file first");
       return;
     }
 
     setImporting(true);
     setImportResult(null);
     try {
-      const result = await customModelsApi.importModel(selectedFile, apiKey);
+      const result = await customModelsApi.importModel(selectedFile, importApiKey);
       if (result.success) {
         setImportResult({
           success: true,
@@ -321,16 +326,13 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
       setImportResult({ success: false, message: err instanceof Error ? err.message : "Import failed" });
     } finally {
       setImporting(false);
-      setShowApiKeyPrompt(false);
-      setSelectedFile(null);
-      setApiKey("");
     }
   };
 
   const cancelImport = () => {
-    setShowApiKeyPrompt(false);
+    setShowImportPanel(false);
     setSelectedFile(null);
-    setApiKey("");
+    setImportApiKey("");
     setImportResult(null);
   };
 
@@ -707,27 +709,50 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
               )}
             </div>
 
-            {/* Import API Key Prompt Modal */}
-            {showApiKeyPrompt && (
+            {/* Import Panel */}
+            {showImportPanel && (
               <div className="import-modal">
                 <h3>{t("importModels")}</h3>
                 <p>{t("importDescription")}</p>
+                
+                {/* Selected file display */}
+                <div className="form-group">
+                  <label>{t("selectedFile")}</label>
+                  {selectedFile ? (
+                    <div className="selected-file">
+                      <span className="file-name">{selectedFile.name}</span>
+                      <span className="file-size">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => document.getElementById("import-file-input")?.click()}
+                    >
+                      {t("selectFile")}
+                    </button>
+                  )}
+                </div>
+                
+                {/* API Key input */}
                 <div className="form-group">
                   <label>{t("apiKey")}</label>
                   <input
                     type="text"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
+                    value={importApiKey}
+                    onChange={(e) => setImportApiKey(e.target.value)}
                     placeholder={t("enterApiKey")}
                     className="form-input"
                     autoComplete="off"
                   />
                 </div>
+                
                 {importResult && (
                   <div className={`import-result ${importResult.success ? "success" : "error"}`}>
                     {importResult.message}
                   </div>
                 )}
+                
                 <div className="form-actions">
                   <button
                     type="button"
@@ -741,7 +766,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
                     type="button"
                     className="btn-primary"
                     onClick={handleImport}
-                    disabled={importing || !apiKey}
+                    disabled={importing || !importApiKey || !selectedFile}
                   >
                     {importing ? t("importingButton") : t("importButton")}
                   </button>

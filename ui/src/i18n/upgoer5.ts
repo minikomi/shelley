@@ -146,6 +146,8 @@ export const upgoer5: TranslationKeys = {
   exportModel: "Put model on a file",
   importDescription:
     "Get a model from a file you saved. You will need to type the secret word for the model you get.",
+  selectedFile: "File you chose",
+  selectFile: "Pick a file",
   importButton: "Get",
   importingButton: "Getting...",
 

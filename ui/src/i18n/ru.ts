@@ -146,6 +146,8 @@ export const ru: TranslationKeys = {
   exportModel: "Экспорт",
   importDescription:
     "Импорт модели из экспортированного файла. Вам потребуется ввести ключ API для этой модели.",
+  selectedFile: "Выбранный файл",
+  selectFile: "Выбрать файл",
   importButton: "Импортировать",
   importingButton: "Импорт...",
 
