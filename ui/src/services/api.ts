@@ -506,31 +506,35 @@ class CustomModelsApi {
     return response.json();
   }
 
-  async exportModels(): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/custom-models/export`);
+  async exportModel(modelId: string, displayName: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/custom-models/${modelId}/export`);
     if (!response.ok) {
-      throw new Error(`Failed to export models: ${response.statusText}`);
+      throw new Error(`Failed to export model: ${response.statusText}`);
     }
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "shelley-models-export.json";
+    a.download = `shelley-model-${displayName.replace(/[^a-zA-Z0-9-]/g, "-")}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
 
-  async importModels(file: File, apiKey: string): Promise<{ imported: number; errors: string[] }> {
+  async importModel(
+    file: File,
+    apiKey: string,
+  ): Promise<{ success: boolean; model_id?: string; error?: string }> {
     const fileContent = await file.text();
+    const modelData = JSON.parse(fileContent);
     const response = await fetch(`${this.baseUrl}/custom-models/import`, {
-           method: "POST",
+      method: "POST",
       headers: this.postHeaders,
-      body: JSON.stringify({ data: fileContent, api_key: apiKey }),
+      body: JSON.stringify({ ...modelData, api_key: apiKey }),
     });
     if (!response.ok) {
-      throw new Error(`Failed to import models: ${response.statusText}`);
+      throw new Error(`Failed to import model: ${response.statusText}`);
     }
     return response.json();
   }

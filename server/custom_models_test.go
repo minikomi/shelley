@@ -141,7 +141,7 @@ func TestCustomModelTestEndpoint(t *testing.T) {
 	}
 }
 
-func TestExportModels(t *testing.T) {
+func TestExportModel(t *testing.T) {
 	h := NewTestHarness(t)
 	defer h.db.Close()
 
@@ -152,7 +152,7 @@ func TestExportModels(t *testing.T) {
 		DisplayName:  "Test Export Model",
 		ProviderType: "anthropic",
 		Endpoint:     "https://api.anthropic.com/v1/messages",
-		ApiKey:       "sk-test-key",
+		ApiKey:       "sk-test-secret-key",
 		ModelName:    "claude-sonnet-4-5",
 		MaxTokens:    200000,
 		Tags:         "",
@@ -161,8 +161,8 @@ func TestExportModels(t *testing.T) {
 		t.Fatalf("Failed to create model: %v", err)
 	}
 
-	// Test export
-	req, _ := http.NewRequest("GET", "/api/custom-models/export", nil)
+	// Test export for specific model
+	req, _ := http.NewRequest("GET", "/api/custom-models/"+modelID+"/export", nil)
 	w := httptest.NewRecorder()
 	h.server.handleExportModels(w, req)
 
@@ -183,61 +183,39 @@ func TestExportModels(t *testing.T) {
 	if !strings.Contains(disposition, "attachment") {
 		t.Errorf("Expected Content-Disposition to contain 'attachment', got %s", disposition)
 	}
+	if !strings.Contains(disposition, "Test Export Model") {
+		t.Errorf("Expected filename to contain 'Test Export Model', got %s", disposition)
+	}
 
-	// Parse the exported data
-	var exportData ExportData
-	if err := json.Unmarshal(w.Body.Bytes(), &exportData); err != nil {
-		t.Fatalf("Failed to parse export data: %v", err)
+	// Parse the exported model
+	var exportModel ExportModel
+	if err := json.Unmarshal(w.Body.Bytes(), &exportModel); err != nil {
+		t.Fatalf("Failed to parse export model: %v", err)
 	}
 
 	// Verify export data
-	if exportData.ExportedAt.IsZero() {
-		t.Error("ExportedAt time is zero")
+	if exportModel.DisplayName != "Test Export Model" {
+		t.Errorf("Expected display name 'Test Export Model', got %s", exportModel.DisplayName)
 	}
-	if len(exportData.Models) != 1 {
-		t.Errorf("Expected 1 model, got %d", len(exportData.Models))
+	if exportModel.ProviderType != "anthropic" {
+		t.Errorf("Expected provider 'anthropic', got %s", exportModel.ProviderType)
 	}
 
-	// Verify API key is NOT exported (ExportModel type doesn't have APIKey field)
-	// This is a structural check - the ExportModel struct excludes APIKey
 }
 
-func TestImportModels(t *testing.T) {
+func TestImportModel(t *testing.T) {
 	h := NewTestHarness(t)
 	defer h.db.Close()
 
-	// Create export data
-	exportData := ExportData{
-		ExportedAt: time.Now(),
-		Models: []ExportModel{
-			{
-				DisplayName:  "Imported Model 1",
-				ProviderType: "anthropic",
-			Endpoint:     "https://api.anthropic.com/v1/messages",
-			ModelName:    "claude-sonnet-4-5",
-			MaxTokens:    200000,
-			Tags:         "",
-			},
-			{
-				DisplayName:  "Imported Model 2",
-				ProviderType: "openai",
-			Endpoint:     "https://api.openai.com/v1",
-			ModelName:    "gpt-5",
-			MaxTokens:    128000,
-			Tags:         "",
-			},
-		},
-	}
-
-	jsonData, err := json.Marshal(exportData)
-	if err != nil {
-		t.Fatalf("Failed to marshal export data: %v", err)
-	}
-
-	// Create import request
+	// Create import request for a single model
 	importReq := ImportRequest{
-		Data:   jsonData,
-		APIKey: "test-api-key-123",
+		DisplayName:  "Imported Model",
+		ProviderType: "anthropic",
+		Endpoint:     "https://api.anthropic.com/v1/messages",
+		ModelName:    "claude-sonnet-4-5",
+		MaxTokens:    200000,
+		Tags:         "",
+		APIKey:       "test-api-key-123",
 	}
 
 	reqBody, _ := json.Marshal(importReq)
@@ -256,32 +234,28 @@ func TestImportModels(t *testing.T) {
 		t.Fatalf("Failed to parse import result: %v", err)
 	}
 
-	if result.Imported != 2 {
-		t.Errorf("Expected 2 imported models, got %d", result.Imported)
+	if !result.Success {
+		t.Errorf("Expected success, got error: %s", result.Errors)
 	}
-	if len(result.Errors) > 0 {
-		t.Errorf("Expected no errors, got: %v", result.Errors)
+	if result.ModelID == "" {
+		t.Error("Expected model_id in result")
 	}
 
-	// Verify models were actually imported with the provided API key
-	models, err := h.db.GetModels(context.Background())
+	// Verify model was imported with provided API key
+	model, err := h.db.GetModel(context.Background(), result.ModelID)
 	if err != nil {
-		t.Fatalf("Failed to get models: %v", err)
+		t.Fatalf("Failed to get imported model: %v", err)
 	}
 
-	if len(models) != 2 {
-		t.Errorf("Expected 2 models in database, got %d", len(models))
+	if model.DisplayName != "Imported Model" {
+		t.Errorf("Expected display name 'Imported Model', got %s", model.DisplayName)
 	}
-
-	// Verify all imported models have the provided API key
-	for _, m := range models {
-		if m.ApiKey != "test-api-key-123" {
-			t.Errorf("Expected API key 'test-api-key-123', got '%s'", m.ApiKey)
-	}
+	if model.ApiKey != "test-api-key-123" {
+		t.Errorf("Expected API key 'test-api-key-123', got '%s'", model.ApiKey)
 	}
 }
 
-func TestImportModelsWithDuplicateNames(t *testing.T) {
+func TestImportModelWithDuplicateName(t *testing.T) {
 	h := NewTestHarness(t)
 	defer h.db.Close()
 
@@ -300,25 +274,15 @@ func TestImportModelsWithDuplicateNames(t *testing.T) {
 		t.Fatalf("Failed to create existing model: %v", err)
 	}
 
-	// Try to import a model with the same name
-	exportData := ExportData{
-		ExportedAt: time.Now(),
-		Models: []ExportModel{
-			{
-				DisplayName:  "Conflicting Model",
-				ProviderType: "anthropic",
-				Endpoint:     "https://api.anthropic.com/v1/messages",
-				ModelName:    "claude",
-				MaxTokens:    200000,
-				Tags:         "",
-			},
-		},
-	}
-
-	jsonData, _ := json.Marshal(exportData)
+	// Try to import a model with same name
 	importReq := ImportRequest{
-		Data:   jsonData,
-		APIKey: "new-key",
+		DisplayName:  "Conflicting Model",
+		ProviderType: "anthropic",
+		Endpoint:     "https://api.anthropic.com/v1/messages",
+		ModelName:    "claude",
+		MaxTokens:    200000,
+		Tags:         "",
+		APIKey:       "new-key",
 	}
 	reqBody, _ := json.Marshal(importReq)
 	req, _ := http.NewRequest("POST", "/api/custom-models/import", bytes.NewReader(reqBody))
@@ -333,19 +297,19 @@ func TestImportModelsWithDuplicateNames(t *testing.T) {
 	// Should succeed with a renamed duplicate
 	var result ImportResult
 	json.Unmarshal(w.Body.Bytes(), &result)
-	if result.Imported != 1 {
-		t.Errorf("Expected 1 imported model, got %d", result.Imported)
+	if !result.Success {
+		t.Fatalf("Import failed: %s", result.Errors)
 	}
 
-	// Verify the imported model was renamed
-	models, _ := h.db.GetModels(context.Background())
-	var importedCount int
-	for _, m := range models {
-		if m.DisplayName == "Conflicting Model (imported 1)" && m.ApiKey == "new-key" {
-			importedCount++
-		}
+	// Verify that imported model was renamed
+	model, err := h.db.GetModel(context.Background(), result.ModelID)
+	if err != nil {
+		t.Fatalf("Failed to get imported model: %v", err)
 	}
-	if importedCount != 1 {
-		t.Error("Imported model was not properly renamed to handle conflict")
+	if model.DisplayName != "Conflicting Model (imported 1)" {
+		t.Errorf("Expected display name 'Conflicting Model (imported 1)', got %s", model.DisplayName)
+	}
+	if model.ApiKey != "new-key" {
+		t.Errorf("Expected API key 'new-key', got '%s'", model.ApiKey)
 	}
 }

@@ -142,10 +142,10 @@ export const ja: TranslationKeys = {
   noModelsConfigured: "モデルが設定されていません",
   noModelsHint:
     "ANTHROPIC_API_KEY等の環境変数を設定するか、-gatewayフラグを使用するか、以下でカスタムモデルを追加してください。",
-  exportModels: "すべてエクスポート",
-  importModels: "インポート",
+  importModels: "モデルをインポート",
+  exportModel: "エクスポート",
   importDescription:
-    "エクスポートファイルからモデルをインポートします。インポートするすべてのモデルのAPIキーを入力する必要があります。",
+    "エクスポートファイルからモデルをインポートします。このモデルのAPIキーを入力する必要があります。",
   importButton: "インポート",
   importingButton: "インポート中...",
 

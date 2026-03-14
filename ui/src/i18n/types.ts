@@ -140,8 +140,8 @@ export interface TranslationKeys {
   apiKeyRequired: string;
   noModelsConfigured: string;
   noModelsHint: string;
-  exportModels: string;
   importModels: string;
+  exportModel: string;
   importDescription: string;
   importButton: string;
   importingButton: string;

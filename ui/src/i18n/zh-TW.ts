@@ -142,10 +142,10 @@ export const zhTW: TranslationKeys = {
   noModelsConfigured: "未設定模型",
   noModelsHint:
     "設定環境變數（如 ANTHROPIC_API_KEY），或使用 -gateway 參數，或在下方新增自訂模型。",
-  exportModels: "導出所有",
-  importModels: "導入",
+  importModels: "導入模型",
+  exportModel: "導出",
   importDescription:
-    "從導出文件導入模型。您需要為所有導入的模型提供 API 密鑰。",
+    "從導出文件導入模型。您需要為此模型提供 API 密鑰。",
   importButton: "導入",
   importingButton: "導入中...",
 

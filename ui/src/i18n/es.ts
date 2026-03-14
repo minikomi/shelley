@@ -142,10 +142,10 @@ export const es: TranslationKeys = {
   noModelsConfigured: "No hay modelos configurados",
   noModelsHint:
     "Configure variables de entorno como ANTHROPIC_API_KEY, use el flag -gateway, o agregue un modelo personalizado abajo.",
-  exportModels: "Exportar Todo",
-  importModels: "Importar",
+  importModels: "Importar Modelo",
+  exportModel: "Exportar",
   importDescription:
-    "Importar modelos desde un archivo exportado. Necesitarás proporcionar la clave de API para todos los modelos importados.",
+    "Importar un modelo desde un archivo exportado. Necesitarás proporcionar la clave de API para este modelo.",
   importButton: "Importar",
   importingButton: "Importando...",
 

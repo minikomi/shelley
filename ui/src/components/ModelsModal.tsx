@@ -93,6 +93,9 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
   // Tooltip state
   const [showTagsTooltip, setShowTagsTooltip] = useState(false);
 
+  // Export state
+  const [exporting, setExporting] = useState(false);
+
   // Import state
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -272,11 +275,14 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
     setTestResult(null);
   };
 
-  const handleExport = async () => {
+  const handleExport = async (model: CustomModel) => {
+    setExporting(true);
     try {
-      await customModelsApi.exportModels();
+      await customModelsApi.exportModel(model.model_id, model.display_name);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to export models");
+      setError(err instanceof Error ? err.message : "Failed to export model");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -296,22 +302,22 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
     setImporting(true);
     setImportResult(null);
     try {
-      const result = await customModelsApi.importModels(selectedFile, apiKey);
-      if (result.errors.length > 0) {
-        setImportResult({
-          success: false,
-          message: `${result.imported} model(s) imported with ${result.errors.length} error(s). Errors: ${result.errors.join("; ")}`,
-        });
-      } else {
+      const result = await customModelsApi.importModel(selectedFile, apiKey);
+      if (result.success) {
         setImportResult({
           success: true,
-          message: `Successfully imported ${result.imported} model(s)`,
+          message: `Successfully imported model`,
+        });
+        await loadModels();
+        onModelsChanged?.();
+      } else {
+        setImportResult({
+          success: false,
+          message: result.error || "Import failed",
         });
       }
-      await loadModels();
-      onModelsChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to import models");
+      setError(err instanceof Error ? err.message : "Failed to import model");
       setImportResult({ success: false, message: err instanceof Error ? err.message : "Import failed" });
     } finally {
       setImporting(false);
@@ -330,9 +336,6 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
 
   const headerRight = !showForm ? (
     <div className="models-header-actions">
-      <button className="btn-secondary btn-sm" onClick={handleExport}>
-        {t("exportModels")}
-      </button>
       <button
         className="btn-secondary btn-sm"
         onClick={() => document.getElementById("import-file-input")?.click()}
@@ -642,6 +645,27 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
                             strokeLinejoin="round"
                             strokeWidth={2}
                             d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        className="btn-icon"
+                        onClick={() => handleExport(model)}
+                        title={t("exportModel")}
+                        disabled={exporting}
+                      >
+                        <svg
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          width="16"
+                          height="16"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
                           />
                         </svg>
                       </button>
