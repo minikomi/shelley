@@ -38,3 +38,30 @@ func TestParseRetryAfter(t *testing.T) {
 		t.Errorf("ParseRetryAfter(past date) = %v, want 0", got)
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"", 5, ""},
+		{"hello", 5, "hello"},
+		{"hello world", 5, "hello\u2026"},
+		{"  hello   world  ", 11, "hello world"},
+		{"foo\nbar\tbaz", 32, "foo bar baz"},
+		// Multi-byte runes: é is 2 bytes; ensure n counts runes and we never split mid-rune.
+		{"caf\u00e9 society", 4, "caf\u00e9\u2026"},
+		{"caf\u00e9 society", 3, "caf\u2026"},
+		// 4-byte rune (emoji).
+		{"abc\U0001F600def", 4, "abc\U0001F600\u2026"},
+		{"abc\U0001F600def", 3, "abc\u2026"},
+		// All multi-byte, no truncation needed.
+		{"\u00e9\u00e9\u00e9", 3, "\u00e9\u00e9\u00e9"},
+	}
+	for _, tc := range tests {
+		if got := Truncate(tc.in, tc.n); got != tc.want {
+			t.Errorf("Truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+		}
+	}
+}

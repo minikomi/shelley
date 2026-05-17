@@ -506,7 +506,9 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 	}
 
 	// retry loop
-	var errs error            // accumulated errors across all attempts
+	retryStart := time.Now()
+	var errs error               // accumulated errors across all attempts
+	var lastErrSummary string    // short description of the most recent attempt failure
 	var retryAfter time.Duration // hint from upstream Retry-After header, reset each attempt
 	for attempts := 0; ; attempts++ {
 		if attempts > 15 {
@@ -521,7 +523,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 				sleep = retryAfter
 			}
 			retryAfter = 0
-			slog.WarnContext(ctx, "responses request sleep before retry", "sleep", sleep, "attempts", attempts)
+			slog.WarnContext(ctx, "responses request sleep before retry", "sleep", sleep, "attempts", attempts, "elapsed", time.Since(retryStart).Round(time.Second), "last_error", lastErrSummary)
 			select {
 			case <-time.After(sleep):
 			case <-ctx.Done():
@@ -544,6 +546,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 		// Send request
 		httpResp, err := httpc.Do(httpReq)
 		if err != nil {
+			lastErrSummary = "transport: " + llm.Truncate(err.Error(), 160)
 			errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: %w", attempts+1, time.Now().Format(time.DateTime), err))
 			continue
 		}
@@ -554,6 +557,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 		if err != nil {
 			if shouldRetryResponsesReadError(err) {
 				now := time.Now().Format(time.DateTime)
+				lastErrSummary = "read: " + llm.Truncate(err.Error(), 160)
 				slog.WarnContext(ctx, "responses_request_read_failed", "error", err, "url", fullURL, "model", model.ModelName)
 				errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: read response body (url=%s, model=%s): %w", attempts+1, now, fullURL, model.ModelName, err))
 				continue
@@ -573,6 +577,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 				case httpResp.StatusCode >= 500:
 					// Server error, retry
 					retryAfter = llm.ParseRetryAfter(httpResp.Header.Get("Retry-After"))
+					lastErrSummary = fmt.Sprintf("status %d: %s", httpResp.StatusCode, llm.Truncate(apiErr.Message, 160))
 					slog.WarnContext(ctx, "responses_request_failed", "error", apiErr.Message, "status_code", httpResp.StatusCode, "url", fullURL, "model", model.ModelName, "retry_after", retryAfter)
 					errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %d (url=%s, model=%s): %s", attempts+1, now, httpResp.StatusCode, fullURL, model.ModelName, apiErr.Message))
 					continue
@@ -580,6 +585,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 				case httpResp.StatusCode == 429:
 					// Rate limited, retry
 					retryAfter = llm.ParseRetryAfter(httpResp.Header.Get("Retry-After"))
+					lastErrSummary = fmt.Sprintf("status 429 rate limited: %s", llm.Truncate(apiErr.Message, 160))
 					slog.WarnContext(ctx, "responses_request_rate_limited", "error", apiErr.Message, "url", fullURL, "model", model.ModelName, "retry_after", retryAfter)
 					errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %d (rate limited, url=%s, model=%s): %s", attempts+1, now, httpResp.StatusCode, fullURL, model.ModelName, apiErr.Message))
 					continue

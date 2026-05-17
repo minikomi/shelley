@@ -639,6 +639,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 
 	// Send the request to Gemini with retry logic
 	startTime := time.Now()
+	retryStart := startTime
 	endTime := startTime // Initialize endTime
 	var gemRes *gemini.Response
 
@@ -689,7 +690,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		if retryAfter := llm.ParseRetryAfter(apiErr.Header.Get("Retry-After")); retryAfter > sleep {
 			sleep = retryAfter
 		}
-		slog.WarnContext(ctx, "gemini_request_retry", "error", gemApiErr.Error(), "status_code", apiErr.StatusCode, "attempt", attempts+1, "sleep", sleep)
+		slog.WarnContext(ctx, "gemini_request_retry", "error", gemApiErr.Error(), "status_code", apiErr.StatusCode, "attempt", attempts+1, "sleep", sleep, "elapsed", time.Since(retryStart).Round(time.Second))
 		select {
 		case <-time.After(sleep):
 		case <-ctx.Done():

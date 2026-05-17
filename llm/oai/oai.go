@@ -920,7 +920,9 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 	}
 
 	// retry loop
-	var errs error // accumulated errors across all attempts
+	retryStart := time.Now()
+	var errs error            // accumulated errors across all attempts
+	var lastErrSummary string // short description of the most recent attempt failure
 	for attempts := 0; ; attempts++ {
 		if attempts > 15 {
 			return nil, fmt.Errorf("openai request failed after %d attempts (url=%s, model=%s): %w", attempts, fullURL, model.ModelName, errs)
@@ -932,7 +934,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			base := backoff[min(attempts, len(backoff)-1)]
 			jitter := time.Duration(rand.Int64N(max(min(int64(base), int64(time.Second)), 1)))
 			sleep := base + jitter
-			slog.WarnContext(ctx, "openai request sleep before retry", "sleep", sleep, "attempts", attempts)
+			slog.WarnContext(ctx, "openai request sleep before retry", "sleep", sleep, "attempts", attempts, "elapsed", time.Since(retryStart).Round(time.Second), "last_error", lastErrSummary)
 			select {
 			case <-time.After(sleep):
 			case <-ctx.Done():
@@ -982,12 +984,14 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		switch {
 		case statusCode >= 500:
 			// Server error, try again with backoff
+			lastErrSummary = fmt.Sprintf("status %d: %s", statusCode, llm.Truncate(errMsg, 160))
 			slog.WarnContext(ctx, "openai_request_failed", "error", errMsg, "status_code", statusCode, "url", fullURL, "model", model.ModelName)
 			errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %d (url=%s, model=%s): %s", attempts+1, now, statusCode, fullURL, model.ModelName, errMsg))
 			continue
 
 		case statusCode == 429:
 			// Rate limited, accumulate error and retry
+			lastErrSummary = fmt.Sprintf("status 429 rate limited: %s", llm.Truncate(errMsg, 160))
 			slog.WarnContext(ctx, "openai_request_rate_limited", "error", errMsg, "url", fullURL, "model", model.ModelName)
 			errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %d (rate limited, url=%s, model=%s): %s", attempts+1, now, statusCode, fullURL, model.ModelName, errMsg))
 			continue
@@ -999,6 +1003,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 
 		default:
 			// Other error, accumulate and retry
+			lastErrSummary = fmt.Sprintf("status %d: %s", statusCode, llm.Truncate(errMsg, 160))
 			slog.WarnContext(ctx, "openai_request_failed", "error", errMsg, "status_code", statusCode, "url", fullURL, "model", model.ModelName)
 			errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %d (url=%s, model=%s): %s", attempts+1, now, statusCode, fullURL, model.ModelName, errMsg))
 			continue

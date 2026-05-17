@@ -941,7 +941,9 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 	httpc := cmp.Or(s.HTTPC, http.DefaultClient)
 
 	// retry loop
-	var errs error // accumulated errors across all attempts
+	retryStart := time.Now()
+	var errs error               // accumulated errors across all attempts
+	var lastErrSummary string    // short description of the most recent attempt failure
 	var retryAfter time.Duration // hint from upstream Retry-After header, reset each attempt
 	for attempts := 0; ; attempts++ {
 		if attempts > 15 {
@@ -960,7 +962,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 				sleep = retryAfter
 			}
 			retryAfter = 0
-			slog.WarnContext(ctx, "anthropic request sleep before retry", "sleep", sleep, "attempts", attempts)
+			slog.WarnContext(ctx, "anthropic request sleep before retry", "sleep", sleep, "attempts", attempts, "elapsed", time.Since(retryStart).Round(time.Second), "last_error", lastErrSummary)
 			select {
 			case <-time.After(sleep):
 			case <-ctx.Done():
@@ -982,6 +984,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			if strings.Contains(err.Error(), "cached HTTP response not found") {
 				return nil, err
 			}
+			lastErrSummary = "transport: " + llm.Truncate(err.Error(), 160)
 			errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: %w", attempts+1, time.Now().Format(time.DateTime), err))
 			continue
 		}
@@ -992,6 +995,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			resp.Body.Close()
 			if err != nil {
 				// Stream parse errors might be transient (connection reset, etc.)
+				lastErrSummary = "stream: " + llm.Truncate(err.Error(), 160)
 				errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: %w", attempts+1, time.Now().Format(time.DateTime), err))
 				continue
 			}
@@ -1012,12 +1016,14 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			case resp.StatusCode >= 500 && resp.StatusCode < 600:
 				// server error, retry
 				retryAfter = llm.ParseRetryAfter(retryAfterHdr)
+				lastErrSummary = fmt.Sprintf("status %d: %s", resp.StatusCode, llm.Truncate(string(buf), 160))
 				slog.WarnContext(ctx, "anthropic_request_failed", "response", string(buf), "status_code", resp.StatusCode, "url", url, "model", s.Model, "retry_after", retryAfter)
 				errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %v (url=%s, model=%s): %s", attempts+1, time.Now().Format(time.DateTime), resp.Status, url, cmp.Or(s.Model, DefaultModel), buf))
 				continue
 			case resp.StatusCode == 429:
 				// rate limited, retry
 				retryAfter = llm.ParseRetryAfter(retryAfterHdr)
+				lastErrSummary = fmt.Sprintf("status 429 rate limited: %s", llm.Truncate(string(buf), 160))
 				slog.WarnContext(ctx, "anthropic_request_rate_limited", "response", string(buf), "url", url, "model", s.Model, "retry_after", retryAfter)
 				errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %v (url=%s, model=%s): %s", attempts+1, time.Now().Format(time.DateTime), resp.Status, url, cmp.Or(s.Model, DefaultModel), buf))
 				continue
