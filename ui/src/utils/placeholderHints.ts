@@ -34,6 +34,18 @@ export const PLACEHOLDER_HINTS: PlaceholderHint[] = [
     platform: "desktop",
     weight: 1,
   },
+  {
+    id: "slash-diff",
+    text: "/diff opens the diff viewer",
+    platform: "any",
+    weight: 1,
+  },
+  {
+    id: "slash-new",
+    text: "/new <prompt> starts a new conversation",
+    platform: "any",
+    weight: 1,
+  },
 ];
 
 export function hintsForPlatform(

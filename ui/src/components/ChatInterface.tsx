@@ -1790,11 +1790,72 @@ function ChatInterface({
     }
   }, [conversationId]);
 
+  // Send the first message of a brand-new conversation. Validates the cwd,
+  // resolves orchestrator/tool-override settings, and delegates to the
+  // onFirstMessage prop (which creates the conversation on the server).
+  const sendFirstMessage = async (prompt: string) => {
+    if (!onFirstMessage) return;
+    if (selectedCwd) {
+      const validation = await api.validateCwd(selectedCwd);
+      if (!validation.valid) {
+        throw new Error(`Invalid working directory: ${validation.error}`);
+      }
+    }
+    const orchestratorOn = toolOverrides["orchestrator"] === "on";
+    // Filter to only real tool overrides (exclude the "orchestrator" pseudo-tool).
+    const realOverrides: Record<string, "on" | "off"> = {};
+    for (const [k, v] of Object.entries(toolOverrides)) {
+      if (k === "orchestrator") continue;
+      realOverrides[k] = v;
+    }
+    await onFirstMessage(
+      prompt,
+      selectedModel,
+      selectedCwd || undefined,
+      orchestratorOn ? "orchestrator" : undefined,
+      orchestratorOn ? subagentBackend : undefined,
+      Object.keys(realOverrides).length > 0 ? realOverrides : undefined,
+    );
+  };
+
   const sendMessage = async (message: string) => {
     if (!message.trim() || sending) return;
 
-    // Check if this is a shell command (starts with "!")
     const trimmedMessage = message.trim();
+
+    // Slash commands.
+    // "/diff" opens the diff viewer (mirroring the command palette action).
+    // "/new <prompt>" starts a new conversation and sends <prompt> as the
+    // first message; "/new" with no prompt just clears the conversation.
+    if (trimmedMessage === "/diff") {
+      setShowDiffViewer(true);
+      return;
+    }
+    if (trimmedMessage === "/new" || trimmedMessage.startsWith("/new ")) {
+      const prompt = trimmedMessage.slice("/new".length).trim();
+      // Clear current conversation (carries cwd over via localStorage).
+      onNewConversation();
+      if (!prompt || !onFirstMessage) return;
+      try {
+        setSending(true);
+        setError(null);
+        setAgentWorking(true);
+        setStreamingText("");
+        await sendFirstMessage(prompt);
+      } catch (err) {
+        console.error("Failed to send /new message:", err);
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        setError(msg);
+        setAgentWorking(false);
+        // Don't rethrow: the conversation has already been reset, so there's
+        // nothing useful for MessageInput to restore the text into.
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
+    // Check if this is a shell command (starts with "!")
     if (trimmedMessage.startsWith("!")) {
       const shellCommand = trimmedMessage.slice(1).trim();
       if (shellCommand) {
@@ -1826,30 +1887,9 @@ function ChatInterface({
       setAgentWorking(true);
       setStreamingText("");
 
-      // If no conversation ID, this is the first message - validate cwd first
+      // If no conversation ID, this is the first message.
       if (!conversationId && onFirstMessage) {
-        // Validate cwd if provided
-        if (selectedCwd) {
-          const validation = await api.validateCwd(selectedCwd);
-          if (!validation.valid) {
-            throw new Error(`Invalid working directory: ${validation.error}`);
-          }
-        }
-        const orchestratorOn = toolOverrides["orchestrator"] === "on";
-        // Filter to only real tool overrides (exclude the "orchestrator" pseudo-tool).
-        const realOverrides: Record<string, "on" | "off"> = {};
-        for (const [k, v] of Object.entries(toolOverrides)) {
-          if (k === "orchestrator") continue;
-          realOverrides[k] = v;
-        }
-        await onFirstMessage(
-          message.trim(),
-          selectedModel,
-          selectedCwd || undefined,
-          orchestratorOn ? "orchestrator" : undefined,
-          orchestratorOn ? subagentBackend : undefined,
-          Object.keys(realOverrides).length > 0 ? realOverrides : undefined,
-        );
+        await sendFirstMessage(message.trim());
       } else if (conversationId) {
         await api.sendMessage(conversationId, {
           message: message.trim(),
