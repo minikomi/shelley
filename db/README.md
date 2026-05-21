@@ -7,7 +7,13 @@ This package provides database operations for the Shelley AI coding agent using 
 The database contains two main entities:
 
 - **Conversations**: Represent individual chat sessions with the AI agent
-- **Messages**: Individual messages within conversations (user, agent, or tool messages)
+- **Messages**: Individual messages within conversations
+
+## Schema Guidelines
+
+Use SQLite `CHECK` constraints sparingly. They are painful to change: relaxing
+or expanding one usually means rebuilding the table in a migration. Prefer
+application-level validation for enums and other values that are likely to grow.
 
 ## Testing
 

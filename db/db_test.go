@@ -651,3 +651,218 @@ func TestLLMRequestOpenAIStyle(t *testing.T) {
 		req2FullLen-req2StoredLen,
 		100.0*float64(req2FullLen-req2StoredLen)/float64(req2FullLen))
 }
+
+func TestMessagesTypeHasNoCheckConstraint(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	assertMessagesTableHasNoCheck(t, db, ctx)
+}
+
+func TestDropMessageTypeCheckMigrationPreservesSearch(t *testing.T) {
+	database := setupDBMigratedThrough(t, 21)
+	defer database.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conv, err := database.CreateConversation(ctx, stringPtr("migration-fts"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	userMsg, err := database.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: conv.ConversationID,
+		Type:           MessageTypeUser,
+		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "pelican before migration"}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage user: %v", err)
+	}
+	if _, err := database.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: conv.ConversationID,
+		Type:           MessageTypeTool,
+		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "tool noise should not be indexed"}}},
+	}); err != nil {
+		t.Fatalf("CreateMessage tool: %v", err)
+	}
+
+	if err := database.runMigration(ctx, "022-drop-message-type-check-constraint.sql", 22); err != nil {
+		t.Fatalf("run migration 022: %v", err)
+	}
+
+	assertMessagesTableHasNoCheck(t, database, ctx)
+	assertMessagesIndexesExist(t, database, ctx,
+		"idx_messages_conversation_id",
+		"idx_messages_conversation_sequence",
+		"idx_messages_type",
+		"idx_messages_conversation_generation_context_sequence",
+	)
+	assertTriggersExist(t, database, ctx, "messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+	assertSearchHits(t, database, ctx, "pelican", conv.ConversationID)
+	assertSearchMisses(t, database, ctx, "noise")
+
+	updated := `{"Content":[{"Type":2,"Text":"albatross after update"}]}`
+	if err := database.QueriesTx(ctx, func(q *generated.Queries) error {
+		return q.UpdateMessageUserData(ctx, generated.UpdateMessageUserDataParams{
+			MessageID: userMsg.MessageID,
+			UserData:  &updated,
+		})
+	}); err != nil {
+		t.Fatalf("UpdateMessageUserData: %v", err)
+	}
+	assertSearchMisses(t, database, ctx, "pelican")
+	assertSearchHits(t, database, ctx, "albatross", conv.ConversationID)
+
+	agentMsg, err := database.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: conv.ConversationID,
+		Type:           MessageTypeAgent,
+		LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "cormorant after insert"}}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage agent after migration: %v", err)
+	}
+	assertSearchHits(t, database, ctx, "cormorant", conv.ConversationID)
+
+	if err := database.QueriesTx(ctx, func(q *generated.Queries) error {
+		return q.DeleteMessage(ctx, agentMsg.MessageID)
+	}); err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
+	}
+	assertSearchMisses(t, database, ctx, "cormorant")
+}
+
+func setupDBMigratedThrough(t *testing.T, lastMigration int) *DB {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	database, err := New(Config{DSN: tmpDir + "/test.db"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	entries, err := schemaFS.ReadDir("schema")
+	if err != nil {
+		database.Close()
+		t.Fatalf("read schema: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || len(entry.Name()) < 3 {
+			continue
+		}
+		var migrationNumber int
+		if _, err := fmt.Sscanf(entry.Name()[:3], "%d", &migrationNumber); err != nil || migrationNumber > lastMigration {
+			continue
+		}
+		if err := database.runMigration(ctx, entry.Name(), migrationNumber); err != nil {
+			database.Close()
+			t.Fatalf("run migration %s: %v", entry.Name(), err)
+		}
+	}
+	return database
+}
+
+func assertMessagesTableHasNoCheck(t *testing.T, db *DB, ctx context.Context) {
+	t.Helper()
+
+	var createSQL string
+	err := db.Pool().Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		return rx.QueryRow("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'messages'").Scan(&createSQL)
+	})
+	if err != nil {
+		t.Fatalf("query messages schema: %v", err)
+	}
+	if strings.Contains(strings.ToUpper(createSQL), "CHECK") {
+		t.Fatalf("messages table has a CHECK constraint; do not constrain messages.type in SQLite:\n%s", createSQL)
+	}
+}
+
+func assertMessagesIndexesExist(t *testing.T, db *DB, ctx context.Context, names ...string) {
+	t.Helper()
+
+	found := map[string]bool{}
+	err := db.Pool().Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		rows, err := rx.Query("SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'messages'")
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			found[name] = true
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		t.Fatalf("query messages indexes: %v", err)
+	}
+	for _, name := range names {
+		if !found[name] {
+			t.Fatalf("missing messages index %s; found %#v", name, found)
+		}
+	}
+}
+
+func assertTriggersExist(t *testing.T, db *DB, ctx context.Context, names ...string) {
+	t.Helper()
+
+	found := map[string]bool{}
+	err := db.Pool().Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		rows, err := rx.Query("SELECT name FROM sqlite_schema WHERE type = 'trigger'")
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return err
+			}
+			found[name] = true
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		t.Fatalf("query triggers: %v", err)
+	}
+	for _, name := range names {
+		if !found[name] {
+			t.Fatalf("missing trigger %s; found %#v", name, found)
+		}
+	}
+}
+
+func assertSearchHits(t *testing.T, db *DB, ctx context.Context, query, conversationID string) {
+	t.Helper()
+
+	results, err := db.SearchConversationsFTS(ctx, query, 50, 0)
+	if err != nil {
+		t.Fatalf("SearchConversationsFTS(%q): %v", query, err)
+	}
+	for _, result := range results {
+		if result.Conversation.ConversationID == conversationID {
+			return
+		}
+	}
+	t.Fatalf("SearchConversationsFTS(%q) did not include %s: %#v", query, conversationID, results)
+}
+
+func assertSearchMisses(t *testing.T, db *DB, ctx context.Context, query string) {
+	t.Helper()
+
+	results, err := db.SearchConversationsFTS(ctx, query, 50, 0)
+	if err != nil {
+		t.Fatalf("SearchConversationsFTS(%q): %v", query, err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("SearchConversationsFTS(%q) got %d results, want 0: %#v", query, len(results), results)
+	}
+}
