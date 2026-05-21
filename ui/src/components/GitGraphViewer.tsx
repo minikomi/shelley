@@ -523,6 +523,26 @@ function loadScope(): Scope {
   return "all";
 }
 
+// Persisted desktop width (in px) of the commit-detail pane. The user can
+// drag a divider between the commit list and the detail pane to make the
+// commit message / diffstat easier to read. Mobile uses a bottom sheet,
+// so this preference is ignored there.
+const DETAIL_WIDTH_KEY = "shelley_git_graph_detail_width";
+const DETAIL_MIN_PX = 220;
+const DETAIL_DEFAULT_PX = 352; // 22rem at default 16px root
+function loadDetailWidth(): number {
+  try {
+    const v = localStorage.getItem(DETAIL_WIDTH_KEY);
+    if (v) {
+      const n = parseInt(v, 10);
+      if (Number.isFinite(n) && n >= DETAIL_MIN_PX) return n;
+    }
+  } catch {
+    // ignore
+  }
+  return DETAIL_DEFAULT_PX;
+}
+
 export default function GitGraphViewer({
   cwd: cwdProp,
   isOpen,
@@ -557,6 +577,75 @@ export default function GitGraphViewer({
   // after the user taps a row. On desktop the same flag is ignored
   // because the sidebar is always visible.
   const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Desktop-only: width of the commit-detail pane, controlled by the
+  // draggable divider. Persisted in localStorage so it survives reloads.
+  const [detailWidth, setDetailWidth] = useState<number>(loadDetailWidth);
+  // Track desktop vs mobile so we only apply the persisted width on desktop.
+  // On mobile the detail pane is a bottom sheet whose width fills the screen.
+  const [isDesktop, setIsDesktop] = useState<boolean>(() =>
+    typeof window === "undefined" ? true : !window.matchMedia("(max-width: 768px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const onChange = () => setIsDesktop(!mq.matches);
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener(onChange);
+    };
+  }, []);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
+  const onDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only respond to primary button; ignore on touch/mobile bottom-sheet.
+    if (e.button !== 0) return;
+    if (window.matchMedia("(max-width: 768px)").matches) return;
+    e.preventDefault();
+    isDraggingRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      const body = bodyRef.current;
+      if (!body) return;
+      const rect = body.getBoundingClientRect();
+      // Dragging right shrinks detail; dragging left grows it.
+      const next = Math.max(
+        DETAIL_MIN_PX,
+        Math.min(rect.width - DETAIL_MIN_PX, rect.right - ev.clientX),
+      );
+      setDetailWidth(next);
+    };
+    const onUp = () => {
+      if (!isDraggingRef.current) return;
+      isDraggingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      try {
+        // Read latest via the closure-free state setter trick: persist on next tick.
+      } catch {
+        // ignore
+      }
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+  // Persist whenever width changes (post-drag, or programmatically).
+  useEffect(() => {
+    try {
+      localStorage.setItem(DETAIL_WIDTH_KEY, String(Math.round(detailWidth)));
+    } catch {
+      // ignore
+    }
+  }, [detailWidth]);
+  // Double-click resets to default — easy escape hatch if a user drags too far.
+  const onDividerDoubleClick = useCallback(() => {
+    setDetailWidth(DETAIL_DEFAULT_PX);
+  }, []);
 
   useEffect(() => {
     if (!isOpen || !cwd) return;
@@ -780,7 +869,7 @@ export default function GitGraphViewer({
           onSelect={(p) => setCwdOverride(p)}
         />
 
-        <div className="git-graph-body">
+        <div className="git-graph-body" ref={bodyRef}>
           <div className="git-graph-list">
             {loading && !data && <div className="git-graph-status">Loading…</div>}
             {error && <div className="git-graph-status git-graph-error">{error}</div>}
@@ -881,10 +970,24 @@ export default function GitGraphViewer({
                   aria-hidden="true"
                 />
               )}
+              {/* Draggable divider — desktop only; hidden on mobile via CSS
+                  because the detail pane becomes a bottom sheet there. */}
+              <div
+                className="git-graph-divider"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize commit details (double-click to reset)"
+                title="Drag to resize — double-click to reset"
+                onMouseDown={onDividerMouseDown}
+                onDoubleClick={onDividerDoubleClick}
+              >
+                <div className="git-graph-divider-grip" aria-hidden="true" />
+              </div>
               <div
                 className={`git-graph-detail${sheetOpen ? " git-graph-detail-sheet-open" : ""}`}
                 role="dialog"
                 aria-label="Commit details"
+                style={isDesktop ? { width: `${detailWidth}px` } : undefined}
               >
                 <div className="git-graph-sheet-topbar">
                   <span className="git-graph-sheet-grip" aria-hidden="true" />

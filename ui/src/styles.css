@@ -8988,7 +8988,7 @@ kbd {
 
 .git-graph-detail {
   width: 22rem;
-  max-width: 40%;
+  flex: 0 0 auto;
   padding: 0.75rem 1rem;
   border-left: 1px solid var(--border-color);
   background: var(--bg-secondary);
@@ -8996,6 +8996,38 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+/* Draggable divider between the commit list and the detail pane.
+   Hidden on mobile (where the detail pane is a bottom sheet). */
+.git-graph-divider {
+  flex: 0 0 6px;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  user-select: none;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.git-graph-divider:hover,
+.git-graph-divider:active {
+  background: var(--bg-tertiary, rgba(127, 127, 127, 0.18));
+}
+
+.git-graph-divider-grip {
+  width: 2px;
+  height: 32px;
+  background: var(--text-tertiary, var(--text-secondary));
+  border-radius: 1px;
+  opacity: 0.5;
+}
+
+.git-graph-divider:hover .git-graph-divider-grip {
+  opacity: 0.9;
 }
 
 .git-graph-detail-top {
@@ -9254,6 +9286,12 @@ kbd {
   /* Hide SHAs on mobile to save horizontal space; the detail sheet
      surfaces the full hash when a row is tapped. */
   .git-graph-hash {
+    display: none;
+  }
+
+  /* Hide the desktop divider on mobile — the detail pane becomes a
+     bottom sheet there, so there's nothing to drag. */
+  .git-graph-divider {
     display: none;
   }
 
