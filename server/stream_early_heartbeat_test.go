@@ -69,7 +69,7 @@ func TestConversationStreamFlushesEarlyHeartbeat(t *testing.T) {
 	if !first.Heartbeat {
 		t.Fatalf("first chunk should be a heartbeat, got %+v", first)
 	}
-	if len(first.Messages) != 0 || first.Conversation.ConversationID != "" || first.ConversationListPatch != nil {
+	if len(first.Messages) != 0 || first.Conversation != nil || first.ConversationListPatch != nil {
 		t.Fatalf("early heartbeat should be bare, got %+v", first)
 	}
 

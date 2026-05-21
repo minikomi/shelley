@@ -991,7 +991,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request, c
 	apiMessages := toAPIMessages(messages)
 	json.NewEncoder(w).Encode(StreamResponse{
 		Messages:     apiMessages,
-		Conversation: conversation,
+		Conversation: &conversation,
 		// ConversationState is sent via the streaming endpoint, not on initial load
 		ContextWindowSize: calculateContextWindowSize(apiMessages),
 	})
@@ -1660,7 +1660,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 		}
 		streamData := StreamResponse{
 			Messages:     apiMessages,
-			Conversation: conversation,
+			Conversation: &conversation,
 			ConversationState: &ConversationState{
 				ConversationID: conversationID,
 				Working:        manager.IsAgentWorking(),
@@ -1674,7 +1674,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 	} else {
 		// Either resuming or no messages yet - send current state as heartbeat
 		streamData := StreamResponse{
-			Conversation: conversation,
+			Conversation: &conversation,
 			ConversationState: &ConversationState{
 				ConversationID: conversationID,
 				Working:        manager.IsAgentWorking(),
@@ -1717,7 +1717,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 				}
 
 				heartbeat := StreamResponse{
-					Conversation: conv,
+					Conversation: &conv,
 					ConversationState: &ConversationState{
 						ConversationID: conversationID,
 						Working:        manager.IsAgentWorking(),
@@ -2558,7 +2558,7 @@ func (s *Server) startNewGeneration(ctx context.Context, conversationID string) 
 		}
 	}
 
-	manager.subpub.Broadcast(StreamResponse{Conversation: conversation})
+	manager.subpub.Broadcast(StreamResponse{Conversation: &conversation})
 	s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: &conversation})
 
 	return conversation, nil

@@ -57,8 +57,8 @@ export interface NotificationEventForTS {
 }
 
 export interface StreamResponseForTS {
-  messages: ApiMessageForTS[] | null;
-  conversation: Conversation;
+  messages?: ApiMessageForTS[] | null;
+  conversation?: Conversation | null;
   conversation_state?: ConversationStateForTS | null;
   heartbeat?: boolean;
   notification_event?: NotificationEventForTS | null;

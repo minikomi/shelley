@@ -52,6 +52,10 @@ export class ConversationCache {
    * Evicts the LRU entry if the cache is full.
    */
   set(conversationId: string, response: StreamResponse, lastSequenceId: number): void {
+    if (!response.conversation) {
+      // Initial-load responses always carry the conversation row.
+      throw new Error("conversationCache.set: missing conversation in response");
+    }
     // Remove first so re-insert puts it at the end
     this.cache.delete(conversationId);
     this.evictIfNeeded();

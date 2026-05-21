@@ -122,8 +122,8 @@ type conversationWithStateForTS struct {
 }
 
 type streamResponseForTS struct {
-	Messages          []apiMessageForTS       `json:"messages"`
-	Conversation      generated.Conversation  `json:"conversation"`
+	Messages          []apiMessageForTS       `json:"messages,omitempty"`
+	Conversation      *generated.Conversation `json:"conversation,omitempty"`
 	ConversationState *conversationStateForTS `json:"conversation_state,omitempty"`
 	Heartbeat         bool                    `json:"heartbeat,omitempty"`
 	NotificationEvent *notificationEventForTS `json:"notification_event,omitempty"`

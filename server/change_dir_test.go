@@ -282,7 +282,7 @@ func TestChangeDirBroadcastsCwdUpdate(t *testing.T) {
 		select {
 		case event := <-events:
 			// Check if this event has the updated cwd
-			if event.Conversation.Cwd != nil && *event.Conversation.Cwd == subDir {
+			if event.Conversation != nil && event.Conversation.Cwd != nil && *event.Conversation.Cwd == subDir {
 				// Success! The UI would receive this update
 				return
 			}

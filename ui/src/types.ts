@@ -94,7 +94,7 @@ export interface StreamDelta {
 
 // StreamResponse represents the streaming response format
 export interface StreamResponse extends Omit<StreamResponseForTS, "messages"> {
-  messages: Message[];
+  messages?: Message[];
   context_window_size?: number;
   conversation_list_patch?: ConversationListPatchEvent;
   heartbeat?: boolean;

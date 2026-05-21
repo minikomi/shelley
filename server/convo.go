@@ -925,7 +925,7 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 			return
 		}
 		cm.subpub.Broadcast(StreamResponse{
-			Conversation: conv,
+			Conversation: &conv,
 		})
 		// The list patch stream refreshes from the Pool commit hook.
 	}
@@ -1278,7 +1278,7 @@ func (cm *ConversationManager) notifyGitStateChange(ctx context.Context, msg *ge
 	apiMessages := toAPIMessages([]generated.Message{*msg})
 	streamData := StreamResponse{
 		Messages:     apiMessages,
-		Conversation: conversation,
+		Conversation: &conversation,
 	}
 	cm.subpub.Publish(msg.SequenceID, streamData)
 }

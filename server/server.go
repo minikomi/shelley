@@ -77,10 +77,10 @@ type ConversationWithState struct {
 
 // StreamResponse represents the response format for conversation streaming
 type StreamResponse struct {
-	Messages          []APIMessage           `json:"messages"`
-	Conversation      generated.Conversation `json:"conversation"`
-	ConversationState *ConversationState     `json:"conversation_state,omitempty"`
-	ContextWindowSize uint64                 `json:"context_window_size,omitempty"`
+	Messages          []APIMessage            `json:"messages,omitempty"`
+	Conversation      *generated.Conversation `json:"conversation,omitempty"`
+	ConversationState *ConversationState      `json:"conversation_state,omitempty"`
+	ContextWindowSize uint64                  `json:"context_window_size,omitempty"`
 	// ConversationListUpdate is set when another conversation in the list changed
 	ConversationListUpdate *ConversationListUpdate `json:"conversation_list_update,omitempty"`
 	// ConversationListPatch is set when requested conversation-list JSON Patch diffs are available.
@@ -1016,7 +1016,7 @@ func (s *Server) notifySubscribers(ctx context.Context, conversationID string) {
 	// doesn't race with notifySubscribersNewMessage which uses Publish with sequence IDs.
 	streamData := StreamResponse{
 		Messages:     nil, // No new messages, just conversation update
-		Conversation: conversation,
+		Conversation: &conversation,
 	}
 	manager.subpub.Broadcast(streamData)
 
@@ -1063,7 +1063,7 @@ func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID
 	// Publish only the new message
 	streamData := StreamResponse{
 		Messages:     apiMessages,
-		Conversation: conversation,
+		Conversation: &conversation,
 		// ContextWindowSize: 0 for messages without usage data (user/tool messages).
 		// With omitempty, 0 is omitted from JSON, so the UI keeps its cached value.
 		// Only agent messages have usage data, so context window updates when they arrive.
@@ -1105,7 +1105,7 @@ func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID stri
 	apiMessages := toAPIMessages([]generated.Message{*updatedMsg})
 	streamData := StreamResponse{
 		Messages:     apiMessages,
-		Conversation: conversation,
+		Conversation: &conversation,
 	}
 	manager.subpub.Broadcast(streamData)
 
