@@ -175,6 +175,23 @@ func All() []Model {
 			},
 		},
 		{
+			ID:              "gpt-5.5",
+			Provider:        ProviderOpenAI,
+			Description:     "GPT-5.5",
+			RequiredEnvVars: []string{"OPENAI_API_KEY"},
+			GatewayEnabled:  true,
+			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				if config.OpenAIAPIKey == "" {
+					return nil, fmt.Errorf("gpt-5.5 requires OPENAI_API_KEY")
+				}
+				svc := &oai.ResponsesService{Model: oai.GPT55, APIKey: config.OpenAIAPIKey, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
+				if url := config.getOpenAIURL(); url != "" {
+					svc.ModelURL = url
+				}
+				return svc, nil
+			},
+		},
+		{
 			ID:              "claude-opus-4.6",
 			Provider:        ProviderAnthropic,
 			Description:     "Claude Opus 4.6",
@@ -187,6 +204,73 @@ func All() []Model {
 				svc := &ant.Service{APIKey: config.AnthropicAPIKey, Model: ant.Claude46Opus, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
 				if url := config.getAnthropicURL(); url != "" {
 					svc.URL = url
+				}
+				return svc, nil
+			},
+		},
+		{
+			ID:              "glm-5.1-fireworks",
+			Provider:        ProviderFireworks,
+			Description:     "GLM-5.1 on Fireworks",
+			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
+			GatewayEnabled:  true,
+			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				if config.FireworksAPIKey == "" {
+					return nil, fmt.Errorf("glm-5.1-fireworks requires FIREWORKS_API_KEY")
+				}
+				svc := &oai.Service{Model: oai.GLM51Fireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
+				if url := config.getFireworksURL(); url != "" {
+					svc.ModelURL = url
+				}
+				return svc, nil
+			},
+		},
+		{
+			ID:              "gemini-3-pro",
+			Provider:        ProviderGemini,
+			Description:     "Gemini 3 Pro",
+			RequiredEnvVars: []string{"GEMINI_API_KEY"},
+			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				if config.GeminiAPIKey == "" {
+					return nil, fmt.Errorf("gemini-3-pro requires GEMINI_API_KEY")
+				}
+				svc := &gem.Service{APIKey: config.GeminiAPIKey, Model: "gemini-3-pro-preview", HTTPC: httpc}
+				if url := config.getGeminiURL(); url != "" {
+					svc.URL = url
+				}
+				return svc, nil
+			},
+		},
+		{
+			ID:              "kimi-k2.6-fireworks",
+			Provider:        ProviderFireworks,
+			Description:     "Kimi K2.6 on Fireworks",
+			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
+			GatewayEnabled:  true,
+			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				if config.FireworksAPIKey == "" {
+					return nil, fmt.Errorf("kimi-k2.6-fireworks requires FIREWORKS_API_KEY")
+				}
+				svc := &oai.Service{Model: oai.KimiK26Fireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
+				if url := config.getFireworksURL(); url != "" {
+					svc.ModelURL = url
+				}
+				return svc, nil
+			},
+		},
+		{
+			ID:              "deepseek-v4-pro-fireworks",
+			Provider:        ProviderFireworks,
+			Description:     "DeepSeek V4 Pro on Fireworks",
+			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
+			GatewayEnabled:  true,
+			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				if config.FireworksAPIKey == "" {
+					return nil, fmt.Errorf("deepseek-v4-pro-fireworks requires FIREWORKS_API_KEY")
+				}
+				svc := &oai.Service{Model: oai.DeepseekV4ProFireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
+				if url := config.getFireworksURL(); url != "" {
+					svc.ModelURL = url
 				}
 				return svc, nil
 			},
@@ -261,74 +345,6 @@ func All() []Model {
 			},
 		},
 		{
-			ID:              "deepseek-v4-pro-fireworks",
-			Provider:        ProviderFireworks,
-			Description:     "DeepSeek V4 Pro on Fireworks",
-			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.FireworksAPIKey == "" {
-					return nil, fmt.Errorf("deepseek-v4-pro-fireworks requires FIREWORKS_API_KEY")
-				}
-				svc := &oai.Service{Model: oai.DeepseekV4ProFireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
-				if url := config.getFireworksURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "glm-5.1-fireworks",
-			Provider:        ProviderFireworks,
-			Description:     "GLM-5.1 on Fireworks",
-			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.FireworksAPIKey == "" {
-					return nil, fmt.Errorf("glm-5.1-fireworks requires FIREWORKS_API_KEY")
-				}
-				svc := &oai.Service{Model: oai.GLM51Fireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
-				if url := config.getFireworksURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "kimi-k2.6-fireworks",
-			Provider:        ProviderFireworks,
-			Description:     "Kimi K2.6 on Fireworks",
-			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.FireworksAPIKey == "" {
-					return nil, fmt.Errorf("kimi-k2.6-fireworks requires FIREWORKS_API_KEY")
-				}
-				svc := &oai.Service{Model: oai.KimiK26Fireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
-				if url := config.getFireworksURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gpt-5.5",
-			Provider:        ProviderOpenAI,
-			Description:     "GPT-5.5",
-			RequiredEnvVars: []string{"OPENAI_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.OpenAIAPIKey == "" {
-					return nil, fmt.Errorf("gpt-5.5 requires OPENAI_API_KEY")
-				}
-				svc := &oai.ResponsesService{Model: oai.GPT55, APIKey: config.OpenAIAPIKey, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getOpenAIURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
 			ID:              "gpt-5.4",
 			Provider:        ProviderOpenAI,
 			Description:     "GPT-5.4",
@@ -380,6 +396,22 @@ func All() []Model {
 			},
 		},
 		{
+			ID:              "gemini-3-flash",
+			Provider:        ProviderGemini,
+			Description:     "Gemini 3 Flash",
+			RequiredEnvVars: []string{"GEMINI_API_KEY"},
+			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				if config.GeminiAPIKey == "" {
+					return nil, fmt.Errorf("gemini-3-flash requires GEMINI_API_KEY")
+				}
+				svc := &gem.Service{APIKey: config.GeminiAPIKey, Model: "gemini-3-flash-preview", HTTPC: httpc}
+				if url := config.getGeminiURL(); url != "" {
+					svc.URL = url
+				}
+				return svc, nil
+			},
+		},
+		{
 			ID:              "gpt-oss-20b-fireworks",
 			Provider:        ProviderFireworks,
 			Description:     "GPT-OSS 20B on Fireworks",
@@ -393,38 +425,6 @@ func All() []Model {
 				svc := &oai.Service{Model: oai.GPTOSS20B, APIKey: config.FireworksAPIKey, HTTPC: httpc}
 				if url := config.getFireworksURL(); url != "" {
 					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gemini-3-pro",
-			Provider:        ProviderGemini,
-			Description:     "Gemini 3 Pro",
-			RequiredEnvVars: []string{"GEMINI_API_KEY"},
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.GeminiAPIKey == "" {
-					return nil, fmt.Errorf("gemini-3-pro requires GEMINI_API_KEY")
-				}
-				svc := &gem.Service{APIKey: config.GeminiAPIKey, Model: "gemini-3-pro-preview", HTTPC: httpc}
-				if url := config.getGeminiURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gemini-3-flash",
-			Provider:        ProviderGemini,
-			Description:     "Gemini 3 Flash",
-			RequiredEnvVars: []string{"GEMINI_API_KEY"},
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.GeminiAPIKey == "" {
-					return nil, fmt.Errorf("gemini-3-flash requires GEMINI_API_KEY")
-				}
-				svc := &gem.Service{APIKey: config.GeminiAPIKey, Model: "gemini-3-flash-preview", HTTPC: httpc}
-				if url := config.getGeminiURL(); url != "" {
-					svc.URL = url
 				}
 				return svc, nil
 			},
