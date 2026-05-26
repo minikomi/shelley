@@ -110,6 +110,10 @@ type ConversationManager struct {
 	// would interleave each other's batches into the loop and history).
 	draining bool
 
+	// retryMu serializes RetryLastLLMRequest so concurrent retry POSTs don't
+	// produce duplicate LLM calls or double-broadcast user_data updates.
+	retryMu sync.Mutex
+
 	// onStateChange is called when the conversation state changes.
 	// This allows the server to broadcast state changes to all subscribers.
 	onStateChange func(state ConversationState)
@@ -456,6 +460,87 @@ func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service ll
 	loopInstance.QueueUserMessage(message)
 
 	return isFirst, nil
+}
+
+// errRetryNotApplicable is returned by RetryLastLLMRequest when the latest
+// message isn't a fresh retryable error — covers idempotency for duplicate
+// clicks after the first one already flagged the error as retried.
+var errRetryNotApplicable = fmt.Errorf("latest message is not a retryable error; nothing to retry")
+
+// RetryLastLLMRequest flags the most recent error message as retried (so the
+// UI hides its Retry button) and asks the loop to re-attempt the previous
+// LLM request. The error message itself remains in the conversation log —
+// messages are an append-only log; partitionMessages already strips error
+// messages before sending history to the LLM, so the retried request body
+// is byte-identical to the failed one.
+//
+// Multiple rapid clicks on the Retry button must not produce multiple extra
+// LLM calls; retryMu serializes invocations and the retried-flag check
+// makes the operation idempotent.
+func (cm *ConversationManager) RetryLastLLMRequest(ctx context.Context) error {
+	// Take retryMu first to serialize across concurrent retries without
+	// holding cm.mu (which would block unrelated message recording and
+	// state changes for the duration of the DB update + broadcast).
+	cm.retryMu.Lock()
+	defer cm.retryMu.Unlock()
+	cm.mu.Lock()
+	loopInstance := cm.loop
+	logger := cm.logger
+	conversationID := cm.conversationID
+	database := cm.db
+	cm.mu.Unlock()
+
+	if loopInstance == nil {
+		return fmt.Errorf("no active loop to retry")
+	}
+
+	latest, err := database.GetLatestMessage(ctx, conversationID)
+	if err != nil {
+		return fmt.Errorf("failed to load latest message: %w", err)
+	}
+	if latest.Type != string(db.MessageTypeError) {
+		return errRetryNotApplicable
+	}
+
+	// Parse existing user_data and merge in retried=true. If the message has
+	// already been retried (e.g. duplicate click), bail out without firing a
+	// second loop attempt.
+	ud := map[string]any{}
+	if latest.UserData != nil && *latest.UserData != "" {
+		if err := json.Unmarshal([]byte(*latest.UserData), &ud); err != nil {
+			return fmt.Errorf("failed to parse error message user_data: %w", err)
+		}
+	}
+	if retried, _ := ud["retried"].(bool); retried {
+		return errRetryNotApplicable
+	}
+	if retryable, _ := ud["retryable"].(bool); !retryable {
+		return errRetryNotApplicable
+	}
+	ud["retried"] = true
+	udBytes, err := json.Marshal(ud)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated user_data: %w", err)
+	}
+	udStr := string(udBytes)
+	if err := database.UpdateMessageUserData(ctx, latest.MessageID, &udStr); err != nil {
+		return fmt.Errorf("failed to mark error message retried: %w", err)
+	}
+	logger.Info("retrying after marking error message retried", "message_id", latest.MessageID)
+
+	// Re-load the updated row and broadcast it as a normal message upsert so
+	// subscribed UIs refresh the error's user_data and drop the Retry button.
+	updated, err := database.GetMessageByID(ctx, latest.MessageID)
+	if err != nil {
+		return fmt.Errorf("failed to reload updated error message: %w", err)
+	}
+	cm.broadcastStream(StreamResponse{
+		Messages: toAPIMessages([]generated.Message{*updated}),
+	})
+
+	cm.SetAgentWorking(true)
+	loopInstance.Retry()
+	return nil
 }
 
 // QueueMessage records a user message to the database as "queued" and holds it

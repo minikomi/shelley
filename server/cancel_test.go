@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -394,4 +396,164 @@ func (m *testLLMManager) GetModelInfo(modelID string) *models.ModelInfo {
 
 func (m *testLLMManager) RefreshCustomModels() error {
 	return nil
+}
+
+// switchableTestLLM wraps a llm.Service and can be toggled to return errors.
+type switchableTestLLM struct {
+	inner llm.Service
+	mu    sync.Mutex
+	err   error
+}
+
+func (s *switchableTestLLM) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	s.mu.Lock()
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return s.inner.Do(ctx, req)
+}
+func (s *switchableTestLLM) Provider() string        { return s.inner.Provider() }
+func (s *switchableTestLLM) TokenContextWindow() int { return s.inner.TokenContextWindow() }
+func (s *switchableTestLLM) MaxImageDimension() int  { return s.inner.MaxImageDimension() }
+func (s *switchableTestLLM) MaxImageBytes() int      { return s.inner.MaxImageBytes() }
+func (s *switchableTestLLM) setErr(err error) {
+	s.mu.Lock()
+	s.err = err
+	s.mu.Unlock()
+}
+
+// TestRetryAfterLLMFailure: after a retryable LLM failure recorded as an error
+// message, POST /retry should delete the error message and re-run the request,
+// producing a fresh assistant message. The new LLM call must NOT see the
+// error in the conversation.
+func TestRetryAfterLLMFailure(t *testing.T) {
+	t.Parallel()
+	database, cleanup := setupTestDB(t)
+	t.Cleanup(cleanup)
+	ps := loop.NewPredictableService()
+	switchable := &switchableTestLLM{inner: ps, err: fmt.Errorf("connection error: EOF")}
+
+	svr := NewServer(database, &testLLMManager{service: switchable},
+		claudetool.ToolSetConfig{EnableBrowser: false},
+		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		true, "predictable", "")
+	if svr.terminals != nil {
+		svr.terminals.SetSpawner(InProcessSpawner)
+	}
+
+	conversation, err := database.CreateConversation(context.Background(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	conversationID := conversation.ConversationID
+
+	chatBody, _ := json.Marshal(ChatRequest{Message: "hello", Model: "predictable"})
+	req := httptest.NewRequest("POST", "/api/conversation/"+conversationID+"/chat", strings.NewReader(string(chatBody)))
+	req.Header.Set("Content-Type", "application/json")
+	svr.handleChatConversation(httptest.NewRecorder(), req, conversationID)
+
+	// Wait for an error message to be recorded.
+	waitFor(t, 10*time.Second, func() bool {
+		var msgs []generated.Message
+		database.Queries(context.Background(), func(q *generated.Queries) error {
+			var e error
+			msgs, e = q.ListMessages(context.Background(), conversationID)
+			return e
+		})
+		for _, m := range msgs {
+			if m.Type == string(db.MessageTypeError) {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Wait for agent to stop working before retrying.
+	waitFor(t, 5*time.Second, func() bool {
+		return !svr.IsAgentWorking(conversationID)
+	})
+
+	// Recover the upstream, then retry.
+	switchable.setErr(nil)
+	ps.ClearRequests()
+
+	retryReq := httptest.NewRequest("POST", "/api/conversation/"+conversationID+"/retry", nil)
+	retryW := httptest.NewRecorder()
+	svr.handleRetryConversation(retryW, retryReq, conversationID)
+	if retryW.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", retryW.Code, retryW.Body.String())
+	}
+
+	// Wait for a successful agent message. The error message must remain in
+	// the conversation log (append-only) but get flagged with retried=true.
+	waitFor(t, 10*time.Second, func() bool {
+		var msgs []generated.Message
+		database.Queries(context.Background(), func(q *generated.Queries) error {
+			var e error
+			msgs, e = q.ListMessages(context.Background(), conversationID)
+			return e
+		})
+		hasAgent := false
+		for _, m := range msgs {
+			if m.Type == string(db.MessageTypeAgent) {
+				hasAgent = true
+			}
+		}
+		return hasAgent
+	})
+
+	// Verify the error message is still present and now marked retried=true.
+	var finalMsgs []generated.Message
+	database.Queries(context.Background(), func(q *generated.Queries) error {
+		var e error
+		finalMsgs, e = q.ListMessages(context.Background(), conversationID)
+		return e
+	})
+	foundErr := false
+	for _, m := range finalMsgs {
+		if m.Type != string(db.MessageTypeError) {
+			continue
+		}
+		foundErr = true
+		if m.UserData == nil {
+			t.Fatalf("error message has nil user_data; want retried=true")
+		}
+		var ud map[string]any
+		if err := json.Unmarshal([]byte(*m.UserData), &ud); err != nil {
+			t.Fatalf("unmarshal error user_data: %v", err)
+		}
+		if retried, _ := ud["retried"].(bool); !retried {
+			t.Errorf("expected error message user_data.retried=true, got %v", ud)
+		}
+	}
+	if !foundErr {
+		t.Fatalf("expected error message to remain in conversation log after retry")
+	}
+
+	// Inspect the request that the LLM saw on retry: it must not contain any
+	// error message text, and must contain the original user message.
+	reqs := ps.GetRecentRequests()
+	if len(reqs) == 0 {
+		t.Fatalf("expected at least one LLM call after retry")
+	}
+	last := reqs[len(reqs)-1]
+	sawUser := false
+	for _, m := range last.Messages {
+		if m.ErrorType != llm.ErrorTypeNone {
+			t.Errorf("retry request leaked error message into LLM context")
+		}
+		for _, c := range m.Content {
+			if strings.Contains(c.Text, "LLM request failed") {
+				t.Errorf("retry request contained error text in LLM context: %q", c.Text)
+			}
+			if m.Role == llm.MessageRoleUser && strings.TrimSpace(c.Text) == "hello" {
+				sawUser = true
+			}
+		}
+	}
+	if !sawUser {
+		t.Errorf("retry request did not include the original user message")
+	}
 }

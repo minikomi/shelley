@@ -954,6 +954,14 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 	if len(userData) > 0 {
 		ud = userData[0]
 	}
+	// Stamp retryable flag into user_data for error messages so the UI can
+	// expose a Retry button without parsing llm_data.
+	if message.ErrorType == llm.ErrorTypeLLMRequest && ud == nil {
+		ud = map[string]any{
+			"error_type": string(message.ErrorType),
+			"retryable":  message.ErrorRetryable,
+		}
+	}
 	createdMsg, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
 		ConversationID:      conversationID,
 		Type:                messageType,

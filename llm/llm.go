@@ -141,6 +141,11 @@ type Message struct {
 	// ErrorType indicates this is a system-generated error message (not LLM content).
 	// Empty string means not an error. Values: "truncation", "llm_request".
 	ErrorType ErrorType `json:"ErrorType,omitempty"`
+
+	// ErrorRetryable is set on error messages (ErrorType != "") to indicate
+	// that re-running the LLM request with the same history is likely to
+	// succeed. The UI exposes a Retry button when this is true.
+	ErrorRetryable bool `json:"ErrorRetryable,omitempty"`
 }
 
 // ToolUse represents a tool use in the message content.

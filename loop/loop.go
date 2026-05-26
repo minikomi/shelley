@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -68,7 +69,8 @@ type Loop struct {
 	onToolProgress   llm.ToolProgressFunc
 	onStreamDelta    func(llm.StreamDelta)
 	onStreamDone     func()
-	notify           chan struct{} // signaled when a message is queued
+	notify           chan struct{} // signaled when a message is queued or retry requested
+	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -102,6 +104,23 @@ func NewLoop(config Config) *Loop {
 		onStreamDelta:    config.OnStreamDelta,
 		onStreamDone:     config.OnStreamDone,
 		notify:           make(chan struct{}, 1),
+	}
+}
+
+// Retry signals the loop to re-attempt the next LLM request without queueing
+// a new user message. The loop's in-memory history is unchanged (failed
+// requests don't append anything to history, and error messages are persisted
+// to the DB but excluded from context on reload), so the request body sent
+// will match the one that originally failed. Safe to call concurrently;
+// Go() consumes the retryPending flag exactly once per outer iteration.
+func (l *Loop) Retry() {
+	l.mu.Lock()
+	l.retryPending = true
+	l.logger.Debug("retry requested", "history_len", len(l.history))
+	l.mu.Unlock()
+	select {
+	case l.notify <- struct{}{}:
+	default:
 	}
 }
 
@@ -181,9 +200,11 @@ func (l *Loop) Go(ctx context.Context) error {
 			}
 			l.messageQueue = l.messageQueue[:0] // Clear queue
 		}
+		retryPending := l.retryPending
+		l.retryPending = false
 		l.mu.Unlock()
 
-		if hasQueuedMessages {
+		if hasQueuedMessages || retryPending {
 			// Send request to LLM
 			l.logger.Debug("processing queued messages", "count", 1)
 			if err := l.processLLMRequest(ctx); err != nil {
@@ -334,8 +355,9 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 						Text: fmt.Sprintf("LLM request failed: %v", err),
 					},
 				},
-				EndOfTurn: true,
-				ErrorType: llm.ErrorTypeLLMRequest,
+				EndOfTurn:      true,
+				ErrorType:      llm.ErrorTypeLLMRequest,
+				ErrorRetryable: IsRetryableLLMError(err),
 			}
 			if recordErr := l.recordMessage(ctx, errorMessage, llm.Usage{}); recordErr != nil {
 				l.logger.Error("failed to record error message", "error", recordErr)
@@ -745,30 +767,124 @@ func (l *Loop) insertMissingToolResults(req *llm.Request) {
 	}
 }
 
-// isRetryableError checks if an error is transient and should be retried.
-// This includes EOF errors (connection closed unexpectedly) and similar network issues.
+// isRetryableError checks if an LLM request error should be retried by the
+// loop's tight inner-retry loop (max 2 attempts, ~1s sleep). Keep this set
+// narrow: this is for transport-level hiccups that have a good chance of
+// succeeding immediately. Provider-level 5xx, rate limits, and scale-up
+// hints are handled by the user-facing Retry button (IsRetryableLLMError),
+// which has no short retry budget and won't hammer providers.
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for io.EOF and io.ErrUnexpectedEOF
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
 		return true
 	}
-	// Check error message for common retryable patterns
-	errStr := err.Error()
-	retryablePatterns := []string{
-		"EOF",
+	lower := strings.ToLower(err.Error())
+	for _, p := range []string{
+		"eof",
 		"connection reset",
 		"connection refused",
 		"no such host",
 		"network is unreachable",
 		"i/o timeout",
-	}
-	for _, pattern := range retryablePatterns {
-		if strings.Contains(errStr, pattern) {
+		"reset by peer",
+		"broken pipe",
+	} {
+		if strings.Contains(lower, p) {
 			return true
 		}
 	}
 	return false
 }
+
+// IsRetryableLLMError reports whether an LLM request failure is transient and
+// safe to retry by re-sending the same conversation state.
+//
+// Retryable: transport hiccups (EOF, resets, timeouts), upstream 5xx, gateway
+// errors, Fireworks scale-up hints, rate limits. NOT retryable: auth,
+// quota/credits, 400 validation errors, missing models.
+//
+// Note: a generic "context canceled" string CAN come from a user-initiated
+// cancel as well as a server-side timeout. We classify it retryable here
+// because the cancel path records its own "[Operation cancelled]" tool
+// result (not an llm_request error message), so the only thing reaching this
+// classifier is a non-user-initiated timeout/disconnect.
+func IsRetryableLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+
+	// Hard non-retryable signals override anything else.
+	nonRetryable := []string{
+		"credits exhausted",
+		"insufficient_quota",
+		"invalid api key",
+		"invalid_api_key",
+		"unauthorized",
+		"permission denied",
+		"forbidden",
+		"invalid_request_error", // 400 from providers
+		"model_not_found",
+		"does not exist or you do not have access",
+	}
+	for _, p := range nonRetryable {
+		if strings.Contains(lower, p) {
+			return false
+		}
+	}
+
+	retryableSubstrings := []string{
+		// Transport-layer
+		"eof",
+		"connection reset",
+		"connection refused",
+		"no such host",
+		"network is unreachable",
+		"i/o timeout",
+		"context deadline exceeded",
+		"context canceled",
+		"context cancelled",
+		"deadline exceeded",
+		"broken pipe",
+		"reset by peer",
+		"tls handshake",
+		// Provider/gateway 5xx (as words, not bare numerics)
+		"internal server error",
+		"bad gateway",
+		"service unavailable",
+		"gateway timeout",
+		"gateway proxy error",
+		"upstream connect error",
+		"overloaded",
+		"rate limit",
+		"too many requests",
+		"server had an error processing your request",
+		// Fireworks scale-up hint
+		"deployment_scaling_up",
+		"scaling up",
+		// Generic provider "please retry" hint
+		"please retry",
+	}
+	for _, pattern := range retryableSubstrings {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	// HTTP status codes — match them in contexts where they look like a
+	// status code rather than a random number in the body.
+	if httpStatus5xxRE.MatchString(lower) {
+		return true
+	}
+	return false
+}
+
+// httpStatus5xxRE matches 5xx HTTP status codes when they appear in
+// status-like contexts (after "status", "http", "code", "returned", "error
+// code", or as a bare number in a typical "error code: 503" line). Avoids
+// matching numbers like 500 in token counts or other unrelated payloads.
+var httpStatus5xxRE = regexp.MustCompile(`(?:status|http|code|returned|response)[ :=]+5(?:00|02|03|04)\b`)

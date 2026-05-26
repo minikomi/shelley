@@ -954,6 +954,9 @@ func (s *Server) conversationMux() *http.ServeMux {
 	mux.HandleFunc("POST /{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 		s.handleCancelConversation(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("POST /{id}/retry", func(w http.ResponseWriter, r *http.Request) {
+		s.handleRetryConversation(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("POST /{id}/archive", func(w http.ResponseWriter, r *http.Request) {
 		s.handleArchiveConversation(w, r, r.PathValue("id"))
 	})
@@ -1390,6 +1393,105 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 	s.logger.Info("Conversation cancelled", "conversationID", conversationID)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+}
+
+// handleRetryConversation handles POST /api/conversation/<id>/retry.
+// It flags the most recent error message with retried=true in user_data
+// (the messages list is an append-only log; we never delete) and re-runs
+// the LLM request that previously failed, using the conversation's current
+// state. The error message is excluded from LLM history by
+// partitionMessages, so no synthetic retry-user-message is sent to the
+// model. Requires a latest message of type "error" that is classified
+// retryable and not yet retried.
+func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Validate that there's actually a retryable error to act on BEFORE
+	// spinning up a fresh loop with tools and a 12-hour context. This keeps
+	// the cold-storage path lightweight when the request is bogus.
+	latest, err := s.db.GetLatestMessage(ctx, conversationID)
+	if err != nil {
+		s.logger.Warn("Retry: failed to load latest message", "conversationID", conversationID, "error", err)
+		http.Error(w, "conversation not found or empty", http.StatusNotFound)
+		return
+	}
+	if latest.Type != string(db.MessageTypeError) {
+		// Idempotent no-op: a previous retry click already flagged the error.
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"status": "already_retried"})
+		return
+	}
+	// Inspect user_data to enforce retryable=true and short-circuit if already
+	// retried, before spinning up a loop with tools and a 12-hour context.
+	if latest.UserData != nil && *latest.UserData != "" {
+		var ud map[string]any
+		if err := json.Unmarshal([]byte(*latest.UserData), &ud); err == nil {
+			if retried, _ := ud["retried"].(bool); retried {
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]string{"status": "already_retried"})
+				return
+			}
+			if retryable, _ := ud["retryable"].(bool); !retryable {
+				http.Error(w, "error is not retryable", http.StatusConflict)
+				return
+			}
+		}
+	}
+
+	s.mu.Lock()
+	manager, exists := s.activeConversations[conversationID]
+	s.mu.Unlock()
+
+	if !exists {
+		// No in-memory manager: hydrate one so we can retry from cold storage.
+		userEmail := r.Header.Get("X-ExeDev-Email")
+		manager, err = s.getOrCreateConversationManager(ctx, conversationID, userEmail)
+		if err != nil {
+			s.logger.Error("Failed to get conversation manager for retry", "conversationID", conversationID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		modelID := manager.GetModel()
+		if modelID == "" {
+			modelID = s.effectiveDefaultModel(s.getModelList())
+		}
+		llmService, err := s.llmManager.GetService(modelID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)
+			return
+		}
+		if err := manager.Hydrate(ctx); err != nil {
+			s.logger.Error("Failed to hydrate for retry", "conversationID", conversationID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		if err := manager.ensureLoop(llmService, modelID); err != nil {
+			s.logger.Error("Failed to ensure loop for retry", "conversationID", conversationID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := manager.RetryLastLLMRequest(ctx); err != nil {
+		if errors.Is(err, errRetryNotApplicable) {
+			// Lost a race with a concurrent retry; treat as success.
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "already_retried"})
+			return
+		}
+		s.logger.Warn("Retry rejected", "conversationID", conversationID, "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("Retry triggered", "conversationID", conversationID)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "retrying"})
 }
 
 // handleStreamConversation handles GET /conversation/<id>/stream.

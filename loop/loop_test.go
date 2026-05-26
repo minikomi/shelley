@@ -1661,6 +1661,10 @@ func TestLLMRequestRetryExhausted(t *testing.T) {
 }
 
 func TestIsRetryableError(t *testing.T) {
+	// isRetryableError is the loop's TIGHT inner-retry classifier: only
+	// transport-layer hiccups that have a good chance of succeeding on a
+	// quick re-do. Provider 5xx, rate limits, etc. are handled by the
+	// user-facing Retry button, not here.
 	tests := []struct {
 		name      string
 		err       error
@@ -1674,7 +1678,8 @@ func TestIsRetryableError(t *testing.T) {
 		{"connection reset", fmt.Errorf("connection reset by peer"), true},
 		{"connection refused", fmt.Errorf("connection refused"), true},
 		{"timeout", fmt.Errorf("i/o timeout"), true},
-		{"api error", fmt.Errorf("rate limit exceeded"), false},
+		{"rate limit not in tight set", fmt.Errorf("rate limit exceeded"), false},
+		{"503 not in tight set", fmt.Errorf("upstream returned 503"), false},
 		{"generic error", fmt.Errorf("something went wrong"), false},
 	}
 
@@ -1682,6 +1687,39 @@ func TestIsRetryableError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isRetryableError(tt.err); got != tt.retryable {
 				t.Errorf("isRetryableError(%v) = %v, want %v", tt.err, got, tt.retryable)
+			}
+		})
+	}
+}
+
+// TestIsRetryableLLMError covers the broader user-facing classifier used
+// by the Retry button.
+func TestIsRetryableLLMError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{"nil error", nil, false},
+		{"EOF", io.EOF, true},
+		{"rate limit retryable", fmt.Errorf("rate limit exceeded"), true},
+		{"503 retryable", fmt.Errorf("upstream returned 503"), true},
+		{"max_tokens 500 number not retryable", fmt.Errorf("max_tokens=500 is too small"), false},
+		{"gateway proxy error retryable", fmt.Errorf("gateway proxy error: dial tcp ..."), true},
+		{"upstream connect error retryable", fmt.Errorf("upstream connect error or disconnect/reset before headers"), true},
+		{"deadline exceeded retryable", fmt.Errorf("context deadline exceeded"), true},
+		{"deployment scaling retryable", fmt.Errorf("DEPLOYMENT_SCALING_UP scale-up in progress"), true},
+		{"credits exhausted not retryable", fmt.Errorf("LLM credits exhausted; credits refresh over time"), false},
+		{"invalid api key not retryable", fmt.Errorf("invalid api key"), false},
+		{"invalid_request_error not retryable", fmt.Errorf("invalid_request_error: messages.0.content.0.thinking.signature: Field required"), false},
+		{"model_not_found not retryable", fmt.Errorf("model_not_found: The model gpt-foo does not exist"), false},
+		{"generic error not retryable", fmt.Errorf("something weird happened"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRetryableLLMError(tt.err); got != tt.retryable {
+				t.Errorf("IsRetryableLLMError(%v) = %v, want %v", tt.err, got, tt.retryable)
 			}
 		})
 	}
@@ -2127,4 +2165,129 @@ func TestPredictableServiceFailEmitsRetryWarning(t *testing.T) {
 	if warnings[0].Provider != "predictable" || warnings[0].Model != "predictable-v1" || warnings[0].Err != "nope" {
 		t.Fatalf("unexpected warning: %#v", warnings[0])
 	}
+}
+
+// switchableLLM returns the configured error until switched to succeed.
+type switchableLLM struct {
+	mu       sync.Mutex
+	calls    int
+	failWith error
+}
+
+func (s *switchableLLM) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	s.mu.Lock()
+	s.calls++
+	err := s.failWith
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &llm.Response{
+		Content:    []llm.Content{{Type: llm.ContentTypeText, Text: "ok"}},
+		StopReason: llm.StopReasonEndTurn,
+	}, nil
+}
+func (s *switchableLLM) Provider() string        { return "" }
+func (s *switchableLLM) TokenContextWindow() int { return 200000 }
+func (s *switchableLLM) MaxImageDimension() int  { return 2000 }
+func (s *switchableLLM) MaxImageBytes() int      { return 5 * 1024 * 1024 }
+func (s *switchableLLM) succeed() {
+	s.mu.Lock()
+	s.failWith = nil
+	s.mu.Unlock()
+}
+
+func (s *switchableLLM) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestLoopRetryAfterPersistentFailure exercises Loop.Retry(): the loop's first
+// attempt exhausts all internal retries and records an error message; calling
+// Retry() after the upstream recovers should drive a new processLLMRequest
+// without queueing any new user message.
+func TestLoopRetryAfterPersistentFailure(t *testing.T) {
+	svc := &switchableLLM{failWith: fmt.Errorf("connection error: EOF")}
+
+	var (
+		mu       sync.Mutex
+		recorded []llm.Message
+	)
+	record := func(ctx context.Context, m llm.Message, _ llm.Usage) error {
+		mu.Lock()
+		recorded = append(recorded, m)
+		mu.Unlock()
+		return nil
+	}
+
+	loop := NewLoop(Config{
+		LLM:           svc,
+		History:       []llm.Message{},
+		Tools:         []*llm.Tool{},
+		RecordMessage: record,
+		RecordWarning: func(ctx context.Context, _ string) error { return nil },
+	})
+
+	loop.QueueUserMessage(llm.Message{
+		Role:    llm.MessageRoleUser,
+		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// First turn: exhausts retries and records an error message.
+	if err := loop.ProcessOneTurn(ctx); err == nil {
+		t.Fatalf("expected error from first turn, got nil")
+	}
+
+	mu.Lock()
+	initialCount := len(recorded)
+	var errMsg llm.Message
+	if initialCount > 0 {
+		errMsg = recorded[initialCount-1]
+	}
+	mu.Unlock()
+	if initialCount == 0 || errMsg.ErrorType != llm.ErrorTypeLLMRequest {
+		t.Fatalf("expected error message recorded, got %d messages", initialCount)
+	}
+	if !errMsg.ErrorRetryable {
+		t.Errorf("expected error message to be ErrorRetryable=true")
+	}
+
+	// Recover upstream and trigger Retry.
+	svc.succeed()
+	callsBefore := svc.callCount()
+	loop.Retry()
+
+	// Use the loop's Go() so the retry signal is consumed.
+	goCtx, goCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer goCancel()
+	done := make(chan error, 1)
+	go func() { done <- loop.Go(goCtx) }()
+
+	// Wait until we observe a successful assistant message recorded after Retry.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(recorded)
+		var last llm.Message
+		if n > 0 {
+			last = recorded[n-1]
+		}
+		mu.Unlock()
+		if n > initialCount && last.ErrorType == llm.ErrorTypeNone && len(last.Content) > 0 && last.Content[0].Text == "ok" {
+			goCancel()
+			<-done
+			if svc.callCount() != callsBefore+1 {
+				t.Errorf("expected exactly one new LLM call from Retry, got %d (was %d)", svc.callCount(), callsBefore)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	goCancel()
+	<-done
+	t.Fatalf("Retry() did not produce a successful assistant message; calls=%d, recorded=%d", svc.callCount(), len(recorded))
 }

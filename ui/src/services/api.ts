@@ -226,6 +226,21 @@ class ApiService {
     return new EventSource(`${this.baseUrl}/stream2${query ? `?${query}` : ""}`);
   }
 
+  async retryConversation(conversationId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/retry`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = (await response.text()).trim();
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || `Failed to retry conversation: ${response.statusText}`);
+    }
+  }
+
   async cancelConversation(conversationId: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/cancel`, {
       method: "POST",

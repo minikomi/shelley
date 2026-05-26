@@ -36,6 +36,44 @@ import UsageDetailModal from "./UsageDetailModal";
 import MessageActionBar from "./MessageActionBar";
 import EditableFileModal from "./EditableFileModal";
 import { type MarkdownMode } from "../services/settings";
+import { api } from "../services/api";
+
+function ErrorRetryButton({ conversationId }: { conversationId: string }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const onClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await api.retryConversation(conversationId);
+      // On success the server flags the error message with retried=true and
+      // re-broadcasts it; the upserted user_data hides this button on the
+      // next render. Clear pending after a fallback delay so the button
+      // recovers even if the broadcast was dropped (e.g. transient SSE
+      // disconnect).
+      window.setTimeout(() => setPending(false), 10000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPending(false);
+    }
+  };
+  return (
+    <div className="error-retry-row">
+      <button
+        type="button"
+        className="error-retry-button"
+        onClick={onClick}
+        disabled={pending}
+        data-testid="error-retry-button"
+      >
+        {pending ? "Retrying\u2026" : "Retry"}
+      </button>
+      {error && <span className="error-retry-error">{error}</span>}
+    </div>
+  );
+}
 
 /** Should we render markdown for this content block? */
 function shouldRenderMarkdown(
@@ -1181,6 +1219,18 @@ const Message = React.memo(function Message({
         errorText = textContent.Text;
       }
     }
+    let retryable = false;
+    let retried = false;
+    if (message.user_data) {
+      try {
+        const ud =
+          typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data;
+        retryable = !!ud?.retryable;
+        retried = !!ud?.retried;
+      } catch {
+        // ignore parse errors
+      }
+    }
     return (
       <>
         <div
@@ -1201,6 +1251,7 @@ const Message = React.memo(function Message({
           )}
           <div className="message-content" data-testid="message-content">
             <div className="whitespace-pre-wrap break-words">{errorText}</div>
+            {retryable && !retried && <ErrorRetryButton conversationId={message.conversation_id} />}
           </div>
         </div>
         {showUsageModal && usage && (
