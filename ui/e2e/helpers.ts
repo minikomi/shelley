@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext } from "@playwright/test";
+import { expect, type APIRequestContext, type Page, type Locator } from "@playwright/test";
 
 export interface CreatedConversation {
   conversationId: string;
@@ -125,4 +125,52 @@ export async function createConversationViaAPI(
 ): Promise<string> {
   const { slug } = await createConversationViaAPIWithDetails(request, message, opts);
   return slug;
+}
+
+/**
+ * Tool calls (except diffs, screenshots, image reads and output_iframe)
+ * now render as compact "pills" in the conversation stream. The full
+ * tool card is one tap away inside a modal. These helpers open that
+ * modal and return the modal scope for tests that need to assert
+ * against the expanded view.
+ */
+/** Click the pill for the first tool call whose visible text matches
+ *  `hasText` and wait for the resulting detail modal to open.
+ *  Returns the modal locator (scope for further assertions). */
+export async function openToolPill(
+  page: Page,
+  hasText: string | RegExp,
+): Promise<Locator> {
+  const pill = page.locator(".tool-pill").filter({ hasText }).first();
+  await pill.click();
+  const modal = page.locator(".tool-pill-detail-modal");
+  await expect(modal).toBeVisible({ timeout: 5000 });
+  return modal;
+}
+
+/** Close the currently-open tool detail modal (Esc). */
+export async function closeToolModal(page: Page) {
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".tool-pill-detail-modal")).toBeHidden({ timeout: 5000 });
+}
+
+/** Override a boolean feature flag for THIS page only (via localStorage).
+ *  Call before the first `page.goto(...)` so the override is in place when
+ *  the React app first reads the flag. Per-page scope means parallel
+ *  workers can disagree on the same flag without racing on the global DB. */
+export async function setPageFeatureFlag(
+  page: Page,
+  name: string,
+  value: boolean,
+): Promise<void> {
+  await page.addInitScript(
+    ([n, v]) => {
+      try {
+        window.localStorage.setItem(`ff:${n}`, String(v));
+      } catch {
+        /* localStorage unavailable; flag will fall back to server default */
+      }
+    },
+    [name, value] as const,
+  );
 }

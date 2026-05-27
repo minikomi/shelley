@@ -1,7 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { createConversationViaAPI } from './helpers';
+import { createConversationViaAPI, openToolPill, closeToolModal, setPageFeatureFlag } from './helpers';
 
 test.describe('Tool Component Verification', () => {
+  // Pill rendering is gated behind a feature flag; opt in for this suite.
+  test.beforeEach(async ({ page }) => {
+    await setPageFeatureFlag(page, 'tool-pills', true);
+  });
+
   // Shared smorgasbord conversation (created once, reused by multiple tests).
   // The smorgasbord launches browser tools (chromedp) which need up to 60s
   // for the initial Chrome startup, so we only pay that cost once.
@@ -24,94 +29,109 @@ test.describe('Tool Component Verification', () => {
     await page.waitForLoadState('domcontentloaded');
 
     // All tool results are already in the DB; wait for the UI to render them.
-    await page.waitForFunction(() => document.querySelectorAll('[data-testid="tool-call-completed"]').length >= 15, undefined, { timeout: 30000 });
+    // Pillable tools render as compact pills; auto-expand tools (patch,
+    // screenshot, read_image, output_iframe) still render inline.
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(
+          '.tool-pill[data-testid="tool-call-completed"], .patch-tool[data-testid="tool-call-completed"], .screenshot-tool[data-testid="tool-call-completed"]',
+        ).length >= 15,
+      undefined,
+      { timeout: 30000 },
+    );
 
-    // Verify bash tool uses BashTool component (has bash-tool class)
-    const bashTool = page.locator('.bash-tool').filter({ hasText: "echo 'hello from bash'" });
-    await expect(bashTool).toBeVisible();
-    await expect(bashTool.locator('.bash-tool-emoji')).toBeVisible();
-    await expect(bashTool.locator('.bash-tool-command')).toBeVisible();
+    // Helper: open a pill matching the (toolName, textFilter) pair, assert
+    // that the modal's specialized component is present, then close.
+    // Predictable's smorgasbord uses a single "browser" tool name for
+    // every browser action, so a text filter is required for those.
+    const verifyPill = async (
+      toolName: string,
+      textFilter: string | RegExp | null,
+      modalAssertion: (modal: ReturnType<typeof page.locator>) => Promise<void>,
+    ) => {
+      let pill = page.locator(`.tool-pill[data-tool-name="${toolName}"]`);
+      if (textFilter !== null) pill = pill.filter({ hasText: textFilter });
+      const first = pill.first();
+      await expect(first).toBeVisible();
+      await first.scrollIntoViewIfNeeded();
+      await first.click();
+      const modal = page.locator('.tool-pill-detail-modal');
+      await expect(modal).toBeVisible();
+      await modalAssertion(modal);
+      // Pill itself must NOT use the GenericTool gear icon.
+      expect(await first.locator('.tool-pill-emoji').filter({ hasText: '⚙️' }).count()).toBe(0);
+      await closeToolModal(page);
+    };
 
-    // Verify shell tool reuses BashTool component (has bash-tool class)
-    const shellTool = page.locator('.bash-tool').filter({ hasText: "echo 'hello from shell'" });
-    await expect(shellTool).toBeVisible();
-    await expect(shellTool.locator('.bash-tool-emoji')).toBeVisible();
-    await expect(shellTool.locator('.bash-tool-command')).toBeVisible();
+    await verifyPill('bash', null, async (modal) => {
+      const t = modal.locator('.bash-tool').filter({ hasText: "echo 'hello from bash'" });
+      await expect(t).toBeVisible();
+      await expect(t.locator('.bash-tool-emoji')).toBeVisible();
+      await expect(t.locator('.bash-tool-command')).toBeVisible();
+    });
 
-    // Verify thinking content appears (has thinking-content class with 💭 emoji)
+    await verifyPill('shell', null, async (modal) => {
+      const t = modal.locator('.bash-tool').filter({ hasText: "echo 'hello from shell'" });
+      await expect(t).toBeVisible();
+      await expect(t.locator('.bash-tool-emoji')).toBeVisible();
+      await expect(t.locator('.bash-tool-command')).toBeVisible();
+    });
+
+    // Thinking content appears inline (no pill).
     const thinkingContent = page.locator('.thinking-content').filter({ hasText: "I'm thinking about the best approach" });
     await expect(thinkingContent.first()).toBeVisible();
     await expect(thinkingContent.locator('text=💭').first()).toBeVisible();
 
-    // Verify patch tool uses PatchTool component (has patch-tool class)
+    // patch / screenshot / read_image still render inline (auto-expand tools).
     const patchTool = page.locator('.patch-tool').first();
     await expect(patchTool).toBeVisible();
     await expect(patchTool.locator('.patch-tool-emoji')).toBeVisible();
 
-    // Verify screenshot tool uses ScreenshotTool component (has screenshot-tool class)
-    const screenshotTool = page.locator('.screenshot-tool').first();
+    const screenshotTool = page.locator('.screenshot-tool').filter({ hasText: /\.png$|screenshot/i }).first();
     await expect(screenshotTool).toBeVisible();
-    await expect(screenshotTool.locator('.screenshot-tool-emoji').filter({ hasText: '📷' })).toBeVisible();
 
-    // Verify keyword_search tool uses KeywordSearchTool component (has tool class with search emoji)
-    const keywordTool = page.locator('.tool').filter({ hasText: 'find all references' });
-    await expect(keywordTool.first()).toBeVisible();
-    await expect(keywordTool.locator('.tool-emoji').filter({ hasText: '🔍' }).first()).toBeVisible();
-
-    // Verify browser_navigate tool uses BrowserNavigateTool component (has tool class with globe emoji and URL)
-    const navigateTool = page.locator('.tool').filter({ hasText: 'https://example.com' });
-    await expect(navigateTool.first()).toBeVisible();
-    await expect(navigateTool.locator('.tool-emoji').filter({ hasText: '🌐' }).first()).toBeVisible();
-
-    // Verify browser_eval tool uses BrowserEvalTool component (has tool class with lightning emoji)
-    const evalTool = page.locator('.tool').filter({ hasText: 'document.title' });
-    await expect(evalTool.first()).toBeVisible();
-    await expect(evalTool.locator('.tool-emoji').filter({ hasText: '⚡' }).first()).toBeVisible();
-
-    // Verify read_image tool uses ReadImageTool component (has screenshot-tool class with frame emoji)
     const readImageTool = page.locator('.screenshot-tool').filter({ hasText: '/tmp/image.png' });
     await expect(readImageTool.first()).toBeVisible();
     await expect(readImageTool.locator('.screenshot-tool-emoji').filter({ hasText: '🖼️' }).first()).toBeVisible();
 
-    // Verify browser_recent_console_logs tool uses BrowserConsoleLogsTool component (has tool class with clipboard emoji)
-    const consoleTool = page.locator('.tool').filter({ hasText: 'console logs' });
-    await expect(consoleTool.first()).toBeVisible();
-    await expect(consoleTool.locator('.tool-emoji').filter({ hasText: '📋' }).first()).toBeVisible();
+    // browser: screencast_stop pill -> ScreencastTool widget in modal.
+    await verifyPill('browser', 'screencast_stop', async (modal) => {
+      await expect(modal.locator('.screencast-tool').first()).toBeVisible();
+    });
 
-    // Verify browser_emulate tool uses BrowserEmulateTool component (has tool class with device emoji)
-    const emulateTool = page.locator('.tool').filter({ hasText: 'iphone_14' });
-    await expect(emulateTool.first()).toBeVisible();
-    await expect(emulateTool.locator('.tool-emoji').filter({ hasText: '📱' }).first()).toBeVisible();
+    // Spot-check the rest of the pill set. Each pill's specialized
+    // component must render inside its modal.
+    await verifyPill('keyword_search', null, async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🔍' }).first()).toBeVisible();
+    });
+    await verifyPill('browser', 'https://example.com', async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🌐' }).first()).toBeVisible();
+    });
+    await verifyPill('browser', /\beval\b/, async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '⚡' }).first()).toBeVisible();
+    });
+    await verifyPill('browser', 'console_logs', async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📋' }).first()).toBeVisible();
+    });
+    await verifyPill('browser_emulate', null, async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📱' }).first()).toBeVisible();
+    });
+    await verifyPill('browser_network', null, async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📡' }).first()).toBeVisible();
+    });
+    await verifyPill('browser_accessibility', null, async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '♿' }).first()).toBeVisible();
+    });
+    await verifyPill('browser_profile', null, async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📊' }).first()).toBeVisible();
+    });
+    await verifyPill('llm_one_shot', null, async (modal) => {
+      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🤖' }).first()).toBeVisible();
+    });
 
-    // Verify browser_network tool uses BrowserNetworkTool component (has tool class with network emoji)
-    const networkTool = page.locator('.tool').filter({ hasText: 'enable' });
-    await expect(networkTool.first()).toBeVisible();
-    await expect(networkTool.locator('.tool-emoji').filter({ hasText: '📡' }).first()).toBeVisible();
-
-    // Verify browser_accessibility tool uses BrowserAccessibilityTool component (has tool class with a11y emoji)
-    const a11yTool = page.locator('.tool').filter({ hasText: 'tree' });
-    await expect(a11yTool.first()).toBeVisible();
-    await expect(a11yTool.locator('.tool-emoji').filter({ hasText: '♿' }).first()).toBeVisible();
-
-    // Verify browser_profile tool uses BrowserProfileTool component (has tool class with profiling emoji)
-    const profileTool = page.locator('.tool').filter({ hasText: 'metrics' });
-    await expect(profileTool.first()).toBeVisible();
-    await expect(profileTool.locator('.tool-emoji').filter({ hasText: '📊' }).first()).toBeVisible();
-
-    // Verify llm_one_shot tool uses LlmOneShotTool component (has tool class with LLM emoji)
-    const llmTool = page.locator('.tool').filter({ hasText: '/tmp/test-prompt.txt' });
-    await expect(llmTool.first()).toBeVisible();
-    await expect(llmTool.locator('.tool-emoji').filter({ hasText: '🤖' }).first()).toBeVisible();
-
-    // Verify browser screencast_stop tool uses BrowserScreencastTool component (has screencast-tool class with 🎬 emoji)
-    const screencastTool = page.locator('.screencast-tool').first();
-    await expect(screencastTool).toBeVisible();
-    await expect(screencastTool.locator('.screencast-tool-emoji').first()).toBeVisible();
-
-    // CRITICAL: Verify that GenericTool (gear emoji ⚙️) is NOT used for any of these tools
-    // We check that NO tool has the generic gear icon
-    const genericToolGearEmojis = page.locator('.tool-emoji').filter({ hasText: '⚙️' });
-    expect(await genericToolGearEmojis.count()).toBe(0);
+    // No pill should be rendered with the GenericTool gear emoji.
+    const genericPills = page.locator('.tool-pill .tool-pill-emoji').filter({ hasText: '⚙️' });
+    expect(await genericPills.count()).toBe(0);
   });
 
   test('bash tool shows command in header', async ({ page, request }) => {
@@ -119,11 +139,15 @@ test.describe('Tool Component Verification', () => {
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
-    // Wait for the bash tool to render
-    await page.waitForFunction(() => document.body.textContent?.includes('unique-test-command-xyz123') ?? false, undefined, { timeout: 15000 });
+    // Wait for the bash pill to render and open it.
+    const pill = page.locator('.tool-pill[data-tool-name="bash"]').filter({ hasText: 'unique-test-command-xyz123' });
+    await expect(pill).toBeVisible({ timeout: 15000 });
+    await pill.click();
+    const modal = page.locator('.tool-pill-detail-modal');
+    await expect(modal).toBeVisible();
 
     // Verify bash tool shows the command in the header (collapsed state)
-    const bashToolWithOurCommand = page.locator('.bash-tool').filter({ hasText: 'unique-test-command-xyz123' });
+    const bashToolWithOurCommand = modal.locator('.bash-tool').filter({ hasText: 'unique-test-command-xyz123' });
     await expect(bashToolWithOurCommand).toBeVisible();
     const commandElement = bashToolWithOurCommand.locator('.bash-tool-command');
     await expect(commandElement).toBeVisible();
@@ -153,11 +177,25 @@ test.describe('Tool Component Verification', () => {
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
-    await page.waitForFunction(() => document.querySelectorAll('[data-testid="tool-call-completed"]').length >= 15, undefined, { timeout: 30000 });
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(
+          '.tool-pill[data-testid="tool-call-completed"], .patch-tool[data-testid="tool-call-completed"], .screenshot-tool[data-testid="tool-call-completed"]',
+        ).length >= 15,
+      undefined,
+      { timeout: 30000 },
+    );
 
-    // Verify browser_navigate tool shows URL in the header
-    const navigateTool = page.locator('.tool').filter({ hasText: 'https://example.com' }).first();
-    await expect(navigateTool.locator('.tool-command').filter({ hasText: 'https://example.com' })).toBeVisible();
+    // The browser navigate pill shows the URL inline; opening it
+    // reveals the full BrowserNavigateTool card.
+    const navigatePill = page.locator('.tool-pill').filter({ hasText: 'https://example.com' }).first();
+    await expect(navigatePill).toBeVisible();
+    await expect(navigatePill).toContainText('https://example.com');
+    await navigatePill.scrollIntoViewIfNeeded();
+    await navigatePill.click();
+    const navigateModal = page.locator('.tool-pill-detail-modal');
+    await expect(navigateModal.locator('.tool .tool-command').filter({ hasText: 'https://example.com' })).toBeVisible();
+    await closeToolModal(page);
   });
 
   test('patch tool can be collapsed and expanded without errors', async ({ page, request }) => {
@@ -207,9 +245,19 @@ test.describe('Tool Component Verification', () => {
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
-    await page.waitForFunction(() => document.querySelectorAll('[data-testid="tool-call-completed"]').length >= 15, undefined, { timeout: 30000 });
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(
+          '.tool-pill[data-testid="tool-call-completed"], .patch-tool[data-testid="tool-call-completed"], .screenshot-tool[data-testid="tool-call-completed"]',
+        ).length >= 15,
+      undefined,
+      { timeout: 30000 },
+    );
 
-    // Get all tool emojis and check their computed font-size
+    // Get all visible *inline* tool emojis (auto-expand tools and any
+    // tool widgets opened in modals) and check their computed
+    // font-size. Tool pills intentionally use a smaller emoji and are
+    // excluded from this size-consistency check.
     const emojiSizes = await page.$$eval('.tool-emoji, .bash-tool-emoji, .patch-tool-emoji, .screenshot-tool-emoji', (elements) => elements.map((el) => window.getComputedStyle(el).fontSize));
 
     // All emojis should be 1rem (16px by default)

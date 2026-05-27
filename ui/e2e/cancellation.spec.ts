@@ -1,9 +1,14 @@
 import { test, expect } from '@playwright/test';
-import { createConversationViaAPI } from './helpers';
+import { createConversationViaAPI, openToolPill, closeToolModal, setPageFeatureFlag } from './helpers';
 
 // Cancellation tests reload the page and inspect global state (sidebar),
 // so they must not run in parallel with other tests.
 test.describe.configure({ mode: 'serial' });
+
+// Pill rendering is gated behind a feature flag; opt in for this suite.
+test.beforeEach(async ({ page }) => {
+  await setPageFeatureFlag(page, 'tool-pills', true);
+});
 
 async function openConversation(page: import('@playwright/test').Page, request: import('@playwright/test').APIRequestContext) {
   const slug = await createConversationViaAPI(request, 'echo: cancellation seed');
@@ -15,10 +20,13 @@ async function openConversation(page: import('@playwright/test').Page, request: 
   return input;
 }
 
-async function waitForRunningBashTool(page: import('@playwright/test').Page, commandText: string) {
-  const runningTool = page.locator('.bash-tool[data-testid="tool-call-running"]').filter({ hasText: commandText });
-  await expect(runningTool).toBeVisible({ timeout: 10000 });
-  return runningTool;
+// The running bash tool now surfaces as a compact pill with a
+// spinner. The full BashTool card lives inside a modal that opens
+// when the pill is clicked.
+async function waitForRunningBashPill(page: import('@playwright/test').Page) {
+  const runningPill = page.locator('.tool-pill[data-testid="tool-call-running"][data-tool-name="bash"]');
+  await expect(runningPill.first()).toBeVisible({ timeout: 10000 });
+  return runningPill.first();
 }
 
 test.describe('Conversation Cancellation', () => {
@@ -34,7 +42,7 @@ test.describe('Conversation Cancellation', () => {
 
     const thinkingIndicator = page.getByTestId('agent-thinking');
     await expect(thinkingIndicator).toBeVisible({ timeout: 10000 });
-    await waitForRunningBashTool(page, 'sleep 100');
+    await waitForRunningBashPill(page);
 
     // Verify the cancel button appears when agent is working
     const cancelButton = page.locator('.status-stop-button');
@@ -49,9 +57,13 @@ test.describe('Conversation Cancellation', () => {
     // Verify the thinking indicator is gone
     await expect(thinkingIndicator).toBeHidden({ timeout: 5000 });
 
-    // Verify we see the cancelled tool result
-    const cancelledTool = page.locator('.bash-tool[data-testid="tool-call-completed"]').filter({ hasText: 'sleep 100' });
-    await expect(cancelledTool.locator('.bash-tool-cancelled')).toBeVisible({ timeout: 5000 });
+    // Verify we see the cancelled tool result (open the pill to
+    // reveal the BashTool card inside the modal).
+    {
+      const modal = await openToolPill(page, 'sleep');
+      await expect(modal.locator('.bash-tool .bash-tool-cancelled')).toBeVisible({ timeout: 5000 });
+      await closeToolModal(page);
+    }
 
     // Verify we see the [Operation cancelled] message in the chat messages
     // (scoped to .messages-container so the conversation drawer preview row,
@@ -71,8 +83,12 @@ test.describe('Conversation Cancellation', () => {
     // Cancel button should not be visible
     await expect(page.locator('.status-stop-button')).toBeHidden();
 
-    // The cancelled messages should still be visible
-    await expect(page.locator('.bash-tool[data-testid="tool-call-completed"]').filter({ hasText: 'sleep 100' }).locator('.bash-tool-cancelled')).toBeVisible();
+    // The cancelled messages should still be visible (open the pill).
+    {
+      const modal = await openToolPill(page, 'sleep');
+      await expect(modal.locator('.bash-tool .bash-tool-cancelled')).toBeVisible();
+      await closeToolModal(page);
+    }
     await expect(page.locator('.messages-container').locator('text=/\\[Operation cancelled\\]/i')).toBeVisible();
 
     // Verify we can continue the conversation after cancellation
@@ -127,7 +143,7 @@ test.describe('Conversation Cancellation', () => {
     // Wait for agent to start working
     const thinkingIndicator = page.getByTestId('agent-thinking');
     await expect(thinkingIndicator).toBeVisible({ timeout: 10000 });
-    await waitForRunningBashTool(page, 'sleep 50');
+    await waitForRunningBashPill(page);
 
     // Cancel
     const cancelButton = page.locator('.status-stop-button');

@@ -1,7 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { createConversationViaAPI } from './helpers';
+import { createConversationViaAPI, openToolPill, setPageFeatureFlag } from './helpers';
 
 test.describe('ANSI escape sequence rendering', () => {
+  // Pill rendering is gated behind a feature flag; opt in for this suite.
+  test.beforeEach(async ({ page }) => {
+    await setPageFeatureFlag(page, 'tool-pills', true);
+  });
+
   test('bash output with ANSI colors renders styled text, not raw escapes', async ({ page, request }) => {
     // Run a command that produces ANSI-colored output
     const slug = await createConversationViaAPI(request, `bash: printf '\\033[32mGreen\\033[0m \\033[31mRed\\033[0m \\033[1mBold\\033[0m \\033[33mYellow\\033[0m plain'`);
@@ -9,11 +14,11 @@ test.describe('ANSI escape sequence rendering', () => {
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
-    // Wait for the bash tool to complete
-    const bashTool = page.locator('.bash-tool[data-testid="tool-call-completed"]');
+    // Bash tool calls render as compact pills; opening the pill
+    // surfaces the full BashTool view in a modal.
+    const modal = await openToolPill(page, 'printf');
+    const bashTool = modal.locator('.bash-tool');
     await expect(bashTool).toBeVisible({ timeout: 15000 });
-
-    // Expand the tool to see the output
     await bashTool.locator('.bash-tool-header').click();
     const details = bashTool.locator('.bash-tool-details');
     await expect(details).toBeVisible();
@@ -75,10 +80,9 @@ test.describe('ANSI escape sequence rendering', () => {
     // Scope to the specific bash tool for this test's echo command to avoid
     // strict-mode violations if the shared test server ends up showing more
     // than one bash invocation.
-    const bashTool = page.locator('.bash-tool[data-testid="tool-call-completed"]').filter({ hasText: 'just plain text with no escapes' }).first();
+    const modal = await openToolPill(page, 'echo');
+    const bashTool = modal.locator('.bash-tool').filter({ hasText: 'just plain text with no escapes' }).first();
     await expect(bashTool).toBeVisible({ timeout: 15000 });
-
-    // Expand
     await bashTool.locator('.bash-tool-header').click();
     const details = bashTool.locator('.bash-tool-details');
     await expect(details).toBeVisible();

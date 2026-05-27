@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Modal from "./Modal";
 import { featureFlagsApi, type FeatureFlag } from "../services/api";
+import { refreshFeatureFlags } from "../services/featureFlagsStore";
 
 interface FeatureFlagsModalProps {
   isOpen: boolean;
@@ -156,6 +157,7 @@ function FeatureFlagsModal({ isOpen, onClose }: FeatureFlagsModalProps) {
     async (name: string, value: unknown) => {
       await featureFlagsApi.set(name, value);
       await load();
+      await refreshFeatureFlags();
     },
     [load],
   );
@@ -164,6 +166,7 @@ function FeatureFlagsModal({ isOpen, onClose }: FeatureFlagsModalProps) {
     async (name: string) => {
       await featureFlagsApi.clear(name);
       await load();
+      await refreshFeatureFlags();
     },
     [load],
   );

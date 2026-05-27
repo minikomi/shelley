@@ -57,6 +57,9 @@ import TerminalPanel, { EphemeralTerminal } from "./TerminalPanel";
 import ModelPicker from "./ModelPicker";
 import ModelBar from "./ModelBar";
 import SystemPromptView from "./SystemPromptView";
+import Modal from "./Modal";
+import { toolEmoji, toolHeadline, isAutoExpandTool } from "../utils/toolMeta";
+import { useFeatureFlag } from "../services/featureFlagsStore";
 
 interface ContextUsageBarProps {
   contextWindowSize: number;
@@ -480,6 +483,93 @@ const CoalescedToolCall = React.memo(function CoalescedToolCall({
   );
 });
 
+// A single tool call rendered as a compact, color-coded "pill":
+// emoji + short headline + (optional) running spinner. Tapping a
+// pill opens a modal showing the full CoalescedToolCall card for
+// that one call — the same view we used to inline.
+//
+// Mirrors iOS/exe.dev/ToolPillsRow.swift so the desktop and iOS
+// clients have the same visual grammar for tool activity.
+interface ToolPillsRowProps {
+  items: CoalescedItem[]; // all of type "tool"
+  onCommentTextChange?: (text: string) => void;
+  toolProgress: Record<string, ToolProgress>;
+}
+
+const ToolPillsRow = React.memo(function ToolPillsRow({
+  items,
+  onCommentTextChange,
+  toolProgress,
+}: ToolPillsRowProps) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const active = openId != null ? (items.find((i) => i.toolUseId === openId) ?? null) : null;
+  return (
+    <div className="message message-tool tool-pills-row-wrap">
+      <div className="message-content">
+        <ul className="tool-pills-row">
+          {items.map((item, idx) => {
+            const name = item.toolName || "tool";
+            const headline = toolHeadline(name, item.toolInput);
+            const running = !item.hasResult;
+            const errored = !!item.toolError && item.hasResult;
+            const stateSuffix = running ? ", running" : errored ? ", failed" : "";
+            // toolHeadline already includes the tool name when relevant
+            // (e.g. "browser: screenshot"), so we don't add another prefix.
+            const label = headline || name;
+            const key = item.toolUseId || `tool-pill-${idx}-${name}`;
+            return (
+              <li key={key} className="tool-pill-item">
+                <button
+                  type="button"
+                  className={`tool-pill${errored ? " tool-pill--error" : ""}`}
+                  onClick={() => item.toolUseId && setOpenId(item.toolUseId)}
+                  disabled={!item.toolUseId}
+                  aria-label={`${label}${stateSuffix}`}
+                  title={label}
+                  data-testid={running ? "tool-call-running" : "tool-call-completed"}
+                  data-tool-name={name}
+                >
+                  <span className="tool-pill-emoji" aria-hidden="true">
+                    {toolEmoji(name, item.toolInput)}
+                  </span>
+                  <span className="tool-pill-text">{headline}</span>
+                  {running && <span className="tool-pill-spinner" aria-hidden="true" />}
+                  {errored && (
+                    <span className="tool-pill-err" aria-hidden="true">
+                      ✗
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      {active && (
+        <Modal
+          isOpen={true}
+          onClose={() => setOpenId(null)}
+          title={active.toolName || "tool"}
+          className="tool-pill-detail-modal"
+        >
+          <CoalescedToolCall
+            toolName={active.toolName || "Unknown Tool"}
+            toolInput={active.toolInput}
+            toolResult={active.toolResult}
+            toolError={active.toolError}
+            toolStartTime={active.toolStartTime}
+            toolEndTime={active.toolEndTime}
+            hasResult={active.hasResult}
+            display={active.display}
+            onCommentTextChange={onCommentTextChange}
+            streamingOutput={active.toolUseId ? toolProgress[active.toolUseId]?.output : undefined}
+          />
+        </Modal>
+      )}
+    </div>
+  );
+});
+
 // Animated "Agent working..." with letter-by-letter bold animation.
 // On narrow viewports drop the "Agent " prefix so it fits on one line.
 function AnimatedWorkingStatus() {
@@ -697,6 +787,7 @@ function ChatInterface({
   navigateUserMessageTrigger,
   onConversationUnarchived,
 }: ChatInterfaceProps) {
+  const toolPillsEnabled = useFeatureFlag("tool-pills");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [showLoadingProgressUI, setShowLoadingProgressUI] = useState(false);
@@ -2057,13 +2148,43 @@ function ChatInterface({
         );
       });
 
-      items.forEach((item, index) => {
-        const tsNode = maybeTimestamp(
-          itemTime(item),
-          item.message?.message_id || item.toolUseId || `g${generation}-i${index}`,
+      // Buffer consecutive "pillable" tool items so a burst of tool
+      // calls renders as a single wrapped row of tightly-packed pills
+      // (iOS-style) instead of N stacked full-width cards. Diffs,
+      // screenshots, image reads and output_iframe results still
+      // render inline as before — their value is the rendering.
+      let pillBuf: CoalescedItem[] = [];
+      const flushPills = (keySuffix: string | number) => {
+        if (pillBuf.length === 0) return;
+        const buf = pillBuf;
+        pillBuf = [];
+        sectionItems.push(
+          <ToolPillsRow
+            key={`tool-pills-${generation}-${buf[0].toolUseId || keySuffix}`}
+            items={buf}
+            onCommentTextChange={setDiffCommentText}
+            toolProgress={toolProgress}
+          />,
         );
-        if (tsNode) sectionItems.push(tsNode);
+      };
+      items.forEach((item, index) => {
+        const isPillable =
+          toolPillsEnabled && item.type === "tool" && !isAutoExpandTool(item.toolName);
+        // Timestamp for non-pill items (or the first pill in a run)
+        // emits a divider; once we're inside a pill burst we suppress
+        // intermediate timestamps so the row stays visually compact.
+        if (!isPillable || pillBuf.length === 0) {
+          const tsNode = maybeTimestamp(
+            itemTime(item),
+            item.message?.message_id || item.toolUseId || `g${generation}-i${index}`,
+          );
+          if (tsNode) {
+            flushPills(index);
+            sectionItems.push(tsNode);
+          }
+        }
         if (item.type === "message" && item.message) {
+          flushPills(index);
           sectionItems.push(
             <MessageComponent
               key={item.message.message_id}
@@ -2075,23 +2196,29 @@ function ChatInterface({
             />,
           );
         } else if (item.type === "tool") {
-          sectionItems.push(
-            <CoalescedToolCall
-              key={item.toolUseId || `tool-${generation}-${item.toolName || "unknown"}-${index}`}
-              toolName={item.toolName || "Unknown Tool"}
-              toolInput={item.toolInput}
-              toolResult={item.toolResult}
-              toolError={item.toolError}
-              toolStartTime={item.toolStartTime}
-              toolEndTime={item.toolEndTime}
-              hasResult={item.hasResult}
-              display={item.display}
-              onCommentTextChange={setDiffCommentText}
-              streamingOutput={item.toolUseId ? toolProgress[item.toolUseId]?.output : undefined}
-            />,
-          );
+          if (isPillable) {
+            pillBuf.push(item);
+          } else {
+            flushPills(index);
+            sectionItems.push(
+              <CoalescedToolCall
+                key={item.toolUseId || `tool-${generation}-${item.toolName || "unknown"}-${index}`}
+                toolName={item.toolName || "Unknown Tool"}
+                toolInput={item.toolInput}
+                toolResult={item.toolResult}
+                toolError={item.toolError}
+                toolStartTime={item.toolStartTime}
+                toolEndTime={item.toolEndTime}
+                hasResult={item.hasResult}
+                display={item.display}
+                onCommentTextChange={setDiffCommentText}
+                streamingOutput={item.toolUseId ? toolProgress[item.toolUseId]?.output : undefined}
+              />,
+            );
+          }
         }
       });
+      flushPills("end");
 
       const nodes: React.ReactNode[] = [];
       if (generationIndex > 0) {
