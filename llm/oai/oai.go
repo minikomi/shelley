@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -499,10 +500,29 @@ func fromLLMContent(c llm.Content) (string, []openai.ToolCall) {
 			resultText = strings.Join(texts, "\n")
 		}
 		return resultText, nil
+	case llm.ContentTypeThinking, llm.ContentTypeRedactedThinking:
+		// Thinking blocks are not text content; they're hoisted onto the
+		// outgoing message's reasoning_content field by fromLLMMessage. Skip.
+		return "", nil
 	default:
-		// For thinking or other types, convert to text
 		return c.Text, nil
 	}
+}
+
+// isDeepSeekBaseURL reports whether the given base URL points at DeepSeek's
+// chat completions API. DeepSeek extends the OpenAI chat completions schema
+// with a reasoning_content field that must round-trip on assistant messages
+// with tool_calls when thinking mode is on (the default for deepseek-v4-pro).
+func isDeepSeekBaseURL(baseURL string) bool {
+	if baseURL == "" {
+		return false
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "deepseek.com" || strings.HasSuffix(host, ".deepseek.com")
 }
 
 // fromLLMMessage converts llm.Message to OpenAI ChatCompletionMessage format
@@ -578,12 +598,17 @@ func fromLLMMessage(msg llm.Message) []openai.ChatCompletionMessage {
 		var toolCalls []openai.ToolCall
 		var textContent string
 		var multiContent []openai.ChatMessagePart
+		var thinking []string
 		hasImage := false
 
 		for _, c := range regularContent {
 			if isImageContent(c) {
 				multiContent = append(multiContent, openAIImagePart(c))
 				hasImage = true
+				continue
+			}
+			if c.Type == llm.ContentTypeThinking && c.Thinking != "" {
+				thinking = append(thinking, c.Thinking)
 				continue
 			}
 			content, tools := fromLLMContent(c)
@@ -604,6 +629,9 @@ func fromLLMMessage(msg llm.Message) []openai.ChatCompletionMessage {
 			m.Content = textContent
 		}
 		m.ToolCalls = toolCalls
+		if len(thinking) > 0 {
+			m.ReasoningContent = strings.Join(thinking, "\n")
+		}
 
 		messages = append(messages, m)
 	}
@@ -714,6 +742,20 @@ func toLLMContents(msg openai.ChatCompletionMessage) []llm.Content {
 	// If this is a tool response, handle it separately
 	if msg.Role == "tool" && msg.ToolCallID != "" {
 		return []llm.Content{toToolResultLLMContent(msg)}
+	}
+
+	// If the provider returned reasoning_content (DeepSeek thinking mode),
+	// preserve it as a Thinking content block. We need to round-trip this
+	// on subsequent turns when tool calls are involved — DeepSeek requires
+	// reasoning_content to be present in assistant messages that have
+	// tool_calls, and using the real content (rather than a placeholder)
+	// lets the model continue its prior chain of thought across tool calls.
+	// See https://api-docs.deepseek.com/guides/thinking_mode#tool-calls
+	if msg.ReasoningContent != "" {
+		contents = append(contents, llm.Content{
+			Type:     llm.ContentTypeThinking,
+			Thinking: msg.ReasoningContent,
+		})
 	}
 
 	// If there's text content, add it
@@ -885,6 +927,30 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 	for _, msg := range ir.Messages {
 		msgs := fromLLMMessage(msg)
 		allMessages = append(allMessages, msgs...)
+	}
+
+	// reasoning_content is a DeepSeek-specific extension to the OpenAI chat
+	// completions API. Other providers (OpenAI, Fireworks, Together, etc.) do
+	// not recognize it and may reject or silently mishandle the field. So we
+	// only forward it when talking to DeepSeek. For DeepSeek with thinking
+	// mode (the default for deepseek-v4-pro), assistant messages that include
+	// tool_calls must carry a reasoning_content field on subsequent turns or
+	// the API returns HTTP 400. If we have a real thinking block we use it
+	// (so the model can continue its prior CoT). Otherwise — e.g. for
+	// assistant turns replayed from history persisted before this fix — we
+	// inject a single-space placeholder so the request remains well-formed.
+	// See https://api-docs.deepseek.com/guides/thinking_mode#tool-calls
+	if isDeepSeekBaseURL(baseURL) {
+		for i := range allMessages {
+			m := &allMessages[i]
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.ReasoningContent == "" {
+				m.ReasoningContent = " "
+			}
+		}
+	} else {
+		for i := range allMessages {
+			allMessages[i].ReasoningContent = ""
+		}
 	}
 
 	// Convert tools, skipping provider-specific server-side tools

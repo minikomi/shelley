@@ -3,8 +3,10 @@ package oai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -352,14 +354,16 @@ func TestFromLLMContent(t *testing.T) {
 		t.Errorf("fromLLMContent(toolResult) toolCalls length = %d, expected 0", len(toolCalls))
 	}
 
-	// Test default case (thinking content)
+	// Thinking content is hoisted onto the outgoing message's reasoning_content
+	// field by fromLLMMessage, so fromLLMContent itself returns no text and no
+	// tool calls for thinking blocks.
 	thinkingContent := llm.Content{
-		Type: llm.ContentTypeThinking,
-		Text: "Thinking about the answer...",
+		Type:     llm.ContentTypeThinking,
+		Thinking: "Thinking about the answer...",
 	}
 	text, toolCalls = fromLLMContent(thinkingContent)
-	if text != "Thinking about the answer..." {
-		t.Errorf("fromLLMContent(thinking) text = %q, expected %q", text, "Thinking about the answer...")
+	if text != "" {
+		t.Errorf("fromLLMContent(thinking) text = %q, expected empty", text)
 	}
 	if len(toolCalls) != 0 {
 		t.Errorf("fromLLMContent(thinking) toolCalls length = %d, expected 0", len(toolCalls))
@@ -1628,5 +1632,237 @@ func TestServiceDoProxyPlainText4xxError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "integration not found") {
 		t.Errorf("expected error to contain proxy message, got: %v", err)
+	}
+}
+
+func TestIsDeepSeekBaseURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://api.deepseek.com", true},
+		{"https://api.deepseek.com/v1", true},
+		{"https://api.deepseek.com:443/v1", true},
+		{"https://API.DeepSeek.com/v1", true},
+		{"https://beta.deepseek.com", true},
+		{"https://deepseek.com", true},
+		{"https://api.openai.com/v1", false},
+		{"https://api.fireworks.ai/inference/v1", false},
+		{"https://gateway.example.com/_/gateway/openai/v1", false},
+		{"", false},
+		{"://bad", false},
+	}
+	for _, tt := range tests {
+		if got := isDeepSeekBaseURL(tt.url); got != tt.want {
+			t.Errorf("isDeepSeekBaseURL(%q) = %v, want %v", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestToLLMContentsExtractsReasoningContent(t *testing.T) {
+	msg := openai.ChatCompletionMessage{
+		Role:             "assistant",
+		Content:          "The answer is 4.",
+		ReasoningContent: "2+2 = 4 is basic arithmetic.",
+	}
+	contents := toLLMContents(msg)
+	if len(contents) != 2 {
+		t.Fatalf("got %d contents, want 2; contents=%+v", len(contents), contents)
+	}
+	if contents[0].Type != llm.ContentTypeThinking {
+		t.Errorf("contents[0].Type = %v, want Thinking", contents[0].Type)
+	}
+	if contents[0].Thinking != "2+2 = 4 is basic arithmetic." {
+		t.Errorf("contents[0].Thinking = %q", contents[0].Thinking)
+	}
+	if contents[1].Type != llm.ContentTypeText || contents[1].Text != "The answer is 4." {
+		t.Errorf("contents[1] = %+v, want text 'The answer is 4.'", contents[1])
+	}
+}
+
+func TestToLLMContentsReasoningWithToolCalls(t *testing.T) {
+	msg := openai.ChatCompletionMessage{
+		Role:             "assistant",
+		ReasoningContent: "I need to call the weather tool.",
+		ToolCalls: []openai.ToolCall{{
+			ID: "call_1", Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "get_weather", Arguments: `{"city":"Paris"}`},
+		}},
+	}
+	contents := toLLMContents(msg)
+	if len(contents) != 2 {
+		t.Fatalf("got %d contents, want 2; contents=%+v", len(contents), contents)
+	}
+	if contents[0].Type != llm.ContentTypeThinking {
+		t.Errorf("contents[0].Type = %v, want Thinking", contents[0].Type)
+	}
+	if contents[1].Type != llm.ContentTypeToolUse || contents[1].ToolName != "get_weather" {
+		t.Errorf("contents[1] = %+v", contents[1])
+	}
+}
+
+func TestFromLLMMessageHoistsThinkingToReasoningContent(t *testing.T) {
+	msg := llm.Message{
+		Role: llm.MessageRoleAssistant,
+		Content: []llm.Content{
+			{Type: llm.ContentTypeThinking, Thinking: "Step 1: figure out the date."},
+			{Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "get_date", ToolInput: []byte(`{}`)},
+		},
+	}
+	msgs := fromLLMMessage(msg)
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	m := msgs[0]
+	if m.ReasoningContent != "Step 1: figure out the date." {
+		t.Errorf("m.ReasoningContent = %q", m.ReasoningContent)
+	}
+	if len(m.ToolCalls) != 1 || m.ToolCalls[0].Function.Name != "get_date" {
+		t.Errorf("tool calls: %+v", m.ToolCalls)
+	}
+	// Thinking should NOT have leaked into Content.
+	if m.Content != "" {
+		t.Errorf("m.Content = %q, want empty", m.Content)
+	}
+}
+
+// rewriteHostTransport forwards requests to a fixed addr while preserving the
+// original Host on the request, so URL-based provider detection still triggers.
+type rewriteHostTransport struct{ addr string }
+
+func (r rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.URL.Scheme = "http"
+	req.URL.Host = r.addr
+	req.Host = r.addr
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestServiceDoDeepSeekRoundTripsReasoningContent(t *testing.T) {
+	// Round-trip scenario: user -> assistant(thinking + tool_call) -> tool_result.
+	// The outgoing request to DeepSeek must echo the prior assistant's
+	// reasoning_content (not a placeholder) so the model can continue its
+	// chain of thought.
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		resp := openai.ChatCompletionResponse{
+			ID: "x", Model: "deepseek-v4-pro",
+			Choices: []openai.ChatCompletionChoice{{
+				Message:      openai.ChatCompletionMessage{Role: "assistant", Content: "ok"},
+				FinishReason: "stop",
+			}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	httpc := &http.Client{Transport: rewriteHostTransport{addr: u.Host}}
+	svc := &Service{
+		APIKey:   "k",
+		Model:    Model{ModelName: "deepseek-v4-pro"},
+		ModelURL: "https://api.deepseek.com",
+		HTTPC:    httpc,
+	}
+
+	req := &llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "weather?"}}},
+			{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+				{Type: llm.ContentTypeThinking, Thinking: "I should call the weather tool."},
+				{Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "get_weather", ToolInput: []byte(`{"city":"Paris"}`)},
+			}},
+			{Role: llm.MessageRoleUser, Content: []llm.Content{{
+				Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
+				ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "sunny"}},
+			}}},
+		},
+	}
+	if _, err := svc.Do(context.Background(), req); err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if !strings.Contains(string(gotBody), `"reasoning_content":"I should call the weather tool."`) {
+		t.Errorf("expected real reasoning_content in request body, got: %s", gotBody)
+	}
+}
+
+func TestServiceDoDeepSeekPlaceholderWhenNoThinking(t *testing.T) {
+	// Legacy/replayed assistant messages without a thinking block still need
+	// a reasoning_content field on tool_calls or DeepSeek returns 400.
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		resp := openai.ChatCompletionResponse{ID: "x", Choices: []openai.ChatCompletionChoice{{
+			Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
+		}}}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	httpc := &http.Client{Transport: rewriteHostTransport{addr: u.Host}}
+	svc := &Service{
+		APIKey:   "k",
+		Model:    Model{ModelName: "deepseek-v4-pro"},
+		ModelURL: "https://api.deepseek.com",
+		HTTPC:    httpc,
+	}
+
+	req := &llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+				Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "x", ToolInput: []byte(`{}`),
+			}}},
+			{Role: llm.MessageRoleUser, Content: []llm.Content{{
+				Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
+				ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "r"}},
+			}}},
+		},
+	}
+	if _, err := svc.Do(context.Background(), req); err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if !strings.Contains(string(gotBody), `"reasoning_content"`) {
+		t.Errorf("expected reasoning_content placeholder in body, got: %s", gotBody)
+	}
+}
+
+func TestServiceDoNonDeepSeekStripsReasoningContent(t *testing.T) {
+	// reasoning_content is a DeepSeek extension. Don't forward it to OpenAI
+	// (or anyone else) — they may reject it or silently misinterpret it.
+	// This also covers the case of a gateway URL like
+	// https://gateway.exe.dev/_/gateway/openai/v1 which is NOT DeepSeek.
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		resp := openai.ChatCompletionResponse{ID: "x", Choices: []openai.ChatCompletionChoice{{
+			Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
+		}}}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	svc := &Service{APIKey: "k", Model: GPT41, ModelURL: server.URL + "/v1"}
+	req := &llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+				{Type: llm.ContentTypeThinking, Thinking: "some leftover CoT from a deepseek session"},
+				{Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "x", ToolInput: []byte(`{}`)},
+			}},
+			{Role: llm.MessageRoleUser, Content: []llm.Content{{
+				Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
+				ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "r"}},
+			}}},
+		},
+	}
+	if _, err := svc.Do(context.Background(), req); err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if strings.Contains(string(gotBody), `"reasoning_content"`) {
+		t.Errorf("non-deepseek request should not include reasoning_content; body: %s", gotBody)
 	}
 }
