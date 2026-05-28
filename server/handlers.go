@@ -992,13 +992,30 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request, c
 	}
 
 	ctx := r.Context()
+	// Optional cursor: clients that already have a partial cache pass
+	// `?last_sequence_id=N` and we return only the tail (matches the
+	// SSE stream's resume semantics). Absent / unparsable / negative
+	// values fall back to a full list.
+	var lastSeqID int64 = -1
+	if s := r.URL.Query().Get("last_sequence_id"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n >= 0 {
+			lastSeqID = n
+		}
+	}
 	var (
 		messages     []generated.Message
 		conversation generated.Conversation
 	)
 	err := s.db.Queries(ctx, func(q *generated.Queries) error {
 		var err error
-		messages, err = q.ListMessages(ctx, conversationID)
+		if lastSeqID >= 0 {
+			messages, err = q.ListMessagesSince(ctx, generated.ListMessagesSinceParams{
+				ConversationID: conversationID,
+				SequenceID:     lastSeqID,
+			})
+		} else {
+			messages, err = q.ListMessages(ctx, conversationID)
+		}
 		if err != nil {
 			return err
 		}
