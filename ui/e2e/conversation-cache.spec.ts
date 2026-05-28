@@ -22,9 +22,9 @@ async function selectConversation(page: import('@playwright/test').Page, slug: s
   await expect(drawer).toBeVisible({ timeout: 5000 });
   // Click the conversation title with exact slug text
   const titleEl = drawer.locator('.conversation-title').getByText(slug, { exact: true });
-  await expect(titleEl).toBeVisible({ timeout: 5000 });
+  await expect(titleEl).toBeVisible({ timeout: 15000 });
   await titleEl.click();
-  await expect(drawer).toBeHidden({ timeout: 5000 });
+  await expect(drawer).toBeHidden({ timeout: 10000 });
 }
 
 test.describe('Conversation cache', () => {

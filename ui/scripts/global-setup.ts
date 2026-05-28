@@ -55,7 +55,7 @@ export default async function globalSetup() {
     stdio: 'inherit',
     env: {
       ...process.env,
-      PREDICTABLE_DELAY_MS: process.env.PREDICTABLE_DELAY_MS || '200',
+      PREDICTABLE_DELAY_MS: process.env.PREDICTABLE_DELAY_MS || '20',
     },
   });
 

@@ -32,7 +32,12 @@ test.describe("Conversation drawer ordering", () => {
     await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
 
     await page.locator('button[aria-label="Open conversations"]').click();
-    await expect(page.locator(".drawer.open")).toBeVisible();
+    const drawer = page.locator(".drawer.open");
+    await expect(drawer).toBeVisible();
+
+    // Wait for both conversations to appear in the drawer before reading order.
+    await expect(drawer.locator(".conversation-title").getByText(a.slug, { exact: true })).toBeVisible({ timeout: 15000 });
+    await expect(drawer.locator(".conversation-title").getByText(b.slug, { exact: true })).toBeVisible({ timeout: 15000 });
 
     const initialOrder = await page
       .locator(".drawer .conversation-item .conversation-title")

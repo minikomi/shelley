@@ -19,9 +19,9 @@ async function selectConversation(page: Page, slug: string) {
   const drawer = page.locator(".drawer.open");
   await expect(drawer).toBeVisible({ timeout: 5000 });
   const titleEl = drawer.locator(".conversation-title").getByText(slug, { exact: true });
-  await expect(titleEl).toBeVisible({ timeout: 5000 });
+  await expect(titleEl).toBeVisible({ timeout: 15000 });
   await titleEl.click();
-  await expect(drawer).toBeHidden({ timeout: 5000 });
+  await expect(drawer).toBeHidden({ timeout: 10000 });
 }
 
 function trackConversationLoads(page: Page, conversationId: string): string[] {

@@ -19,10 +19,11 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   /* Retry on CI only */
   retries: process.env.CI ? 1 : 0,
-  /* Use 3 workers in CI. All tests share a single predictable-mode server,
-   * so too much concurrency overwhelms it and SSE streams can lag. 3 keeps
-   * wall-clock low while leaving headroom for the shared LLM/SSE path. */
-  workers: process.env.CI ? 3 : 1,
+  /* Use 2 workers in CI. All tests share a single predictable-mode server
+   * backed by a single-writer SQLite DB; 3 workers caused systemic flake
+   * from SSE/agent-working contention on ubuntu-latest. 2 keeps wall-clock
+   * low while avoiding the overload that made every run drop ~1 test. */
+  workers: process.env.CI ? 2 : 1,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
   reporter: process.env.CI ? [['html', { open: 'never' }], ['list']] : 'list',
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
