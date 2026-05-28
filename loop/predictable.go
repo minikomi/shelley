@@ -101,9 +101,10 @@ func (s *PredictableService) Do(ctx context.Context, req *llm.Request) (*llm.Res
 		lastMessage := req.Messages[len(req.Messages)-1]
 		if lastMessage.Role == llm.MessageRoleUser {
 			for _, content := range lastMessage.Content {
-				if content.Type == llm.ContentTypeText {
+				switch content.Type {
+				case llm.ContentTypeText:
 					inputText = strings.TrimSpace(content.Text)
-				} else if content.Type == llm.ContentTypeToolResult {
+				case llm.ContentTypeToolResult:
 					hasToolResult = true
 				}
 			}
