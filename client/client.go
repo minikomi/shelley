@@ -34,8 +34,7 @@ func defaultClientURL() string {
 }
 
 func parseClientURL(rawURL string) (scheme, address string, err error) {
-	if strings.HasPrefix(rawURL, "unix://") {
-		sockPath := strings.TrimPrefix(rawURL, "unix://")
+	if sockPath, ok := strings.CutPrefix(rawURL, "unix://"); ok {
 		if sockPath == "" {
 			return "", "", fmt.Errorf("unix:// URL must include a socket path")
 		}
