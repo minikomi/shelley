@@ -99,9 +99,13 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func loginURLForRequest(r *http.Request) string {
-	path := r.URL.RequestURI()
+	// Send the user back to this page after login, but use only the path and
+	// drop the query. The query can carry exe.dev's reserved "redirect" param;
+	// folding that back into a new redirect param would let a crawler following
+	// the login link nest (and re-encode) the whole URL each hop, growing it
+	// without bound. A bare path can't loop.
 	v := url.Values{}
-	v.Set("redirect", path)
+	v.Set("redirect", r.URL.Path)
 	return "/__exe.dev/login?" + v.Encode()
 }
 

@@ -114,4 +114,41 @@ func TestUtilityFunctions(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("loginURLForRequest redirects to bare path", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			target   string
+			expected string
+		}{
+			{
+				name:     "plain path",
+				target:   "/dashboard",
+				expected: "/__exe.dev/login?redirect=%2Fdashboard",
+			},
+			{
+				// The query is dropped entirely, so the login link points at the
+				// bare path regardless of what params were present.
+				name:     "query is dropped",
+				target:   "/search?q=cats",
+				expected: "/__exe.dev/login?redirect=%2Fsearch",
+			},
+			{
+				// Dropping the query also drops any existing redirect param, so
+				// following the login link repeatedly can never nest/grow the URL.
+				name:     "existing redirect cannot nest",
+				target:   "/page?redirect=%2Flogin%3Fredirect%3D%252Flogin",
+				expected: "/__exe.dev/login?redirect=%2Fpage",
+			},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodGet, test.target, nil)
+				if got := loginURLForRequest(req); got != test.expected {
+					t.Errorf("loginURLForRequest(%q) = %q, want %q", test.target, got, test.expected)
+				}
+			})
+		}
+	})
 }
