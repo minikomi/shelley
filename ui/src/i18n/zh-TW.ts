@@ -177,6 +177,8 @@ export const zhTW: TranslationKeys = {
   notifications: "通知",
   browserNotifications: "瀏覽器通知",
   faviconBadge: "圖示徽章",
+  exeDevPushNotifications: "推播通知",
+  exeDevPushNotificationsDescription: "代理完成時透過 exe.dev 應用程式推播到您的裝置",
   editChannel: "編輯頻道",
   addChannel: "新增頻道",
   customChannels: "自訂頻道",

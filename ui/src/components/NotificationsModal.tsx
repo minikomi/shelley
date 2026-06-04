@@ -2,7 +2,12 @@ import React, { useState, useEffect, useCallback } from "react";
 import Modal from "./Modal";
 import { useI18n } from "../i18n";
 import ConfigFieldInput from "./ConfigFieldInput";
-import { notificationChannelsApi, NotificationChannelAPI, ChannelTypeInfo } from "../services/api";
+import {
+  api,
+  notificationChannelsApi,
+  NotificationChannelAPI,
+  ChannelTypeInfo,
+} from "../services/api";
 import {
   getBrowserNotificationState,
   requestBrowserNotificationPermission,
@@ -42,6 +47,11 @@ function NotificationsModal({ isOpen, onClose }: NotificationsModalProps) {
   const [faviconEnabled, setFaviconEnabled] = useState(() => isChannelEnabled("favicon"));
   const [browserPermission, setBrowserPermission] = useState(getBrowserNotificationState);
 
+  // exe.dev push notifications (auto-configured when the VM has a "notify"
+  // integration). Enabled by default; the user can turn it off here.
+  const exeNotifyAvailable = window.__SHELLEY_INIT__?.exe_notify_available ?? false;
+  const [exeNotifyEnabled, setExeNotifyEnabled] = useState(true);
+
   // Form state
   const [showForm, setShowForm] = useState(false);
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
@@ -72,8 +82,26 @@ function NotificationsModal({ isOpen, onClose }: NotificationsModalProps) {
       setBrowserPermission(getBrowserNotificationState());
       setBrowserEnabled(isChannelEnabled("browser"));
       setFaviconEnabled(isChannelEnabled("favicon"));
+      if (exeNotifyAvailable) {
+        api
+          .getSettings()
+          .then((settings) => setExeNotifyEnabled(settings.exe_notify !== "false"))
+          .catch(() => {});
+      }
     }
-  }, [isOpen, loadChannels]);
+  }, [isOpen, loadChannels, exeNotifyAvailable]);
+
+  const handleToggleExeNotify = async () => {
+    const newVal = !exeNotifyEnabled;
+    setExeNotifyEnabled(newVal);
+    try {
+      setError(null);
+      await api.setSetting("exe_notify", newVal ? "true" : "false");
+    } catch (err) {
+      setExeNotifyEnabled(!newVal);
+      setError(err instanceof Error ? err.message : "Failed to update setting");
+    }
+  };
 
   const handleEdit = (ch: NotificationChannelAPI) => {
     const configStrings: Record<string, string> = {};
@@ -337,6 +365,24 @@ function NotificationsModal({ isOpen, onClose }: NotificationsModalProps) {
                 <span className="notifications-denied-text">{t("denied")}</span>
               )}
             </div>
+          </div>
+        )}
+
+        {/* exe.dev push notifications (auto-configured) */}
+        {exeNotifyAvailable && (
+          <div className="model-card notifications-card">
+            <div>
+              <div className="notifications-card-title">{t("exeDevPushNotifications")}</div>
+              <div className="notifications-card-description">
+                {t("exeDevPushNotificationsDescription")}
+              </div>
+            </div>
+            <button
+              className={`btn btn-sm ${exeNotifyEnabled ? "btn-primary" : "btn-secondary"}`}
+              onClick={handleToggleExeNotify}
+            >
+              {exeNotifyEnabled ? t("on") : t("off")}
+            </button>
           </div>
         )}
 

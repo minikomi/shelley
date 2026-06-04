@@ -321,6 +321,10 @@ type Server struct {
 	notifDispatcher          *notifications.Dispatcher
 	conversationListStream   *conversationListStream
 	conversationListGitCache *conversationListGitCache
+	// exeNotifyOnce guards lazy detection of the exe.dev "notify" integration
+	// (push notifications). exeNotifyDetected caches the result.
+	exeNotifyOnce     sync.Once
+	exeNotifyDetected bool
 	// streamPub is the server-wide subpub that fans out per-conversation
 	// events to every /api/stream2 subscriber. Events are tagged with their
 	// ConversationID so clients can route them.
@@ -1333,6 +1337,13 @@ func (s *Server) publishConversationState(state ConversationState) {
 					s.logger.Warn("failed to load end-of-turn hooks", "conversationID", state.ConversationID, "error", err)
 				}
 			}
+			// Auto-configure exe.dev push: deliver end-of-turn notifications
+			// to the notify gateway when the VM has the integration and the
+			// user hasn't disabled it. This reuses the existing end-of-turn
+			// hook path, deduped by URL so it collapses with the hook the iOS
+			// app registers (one push, not two); when disabled it strips any
+			// gateway hook so the toggle reliably silences pushes.
+			hooks = withExeNotifyHook(hooks, s.exeNotifyEnabled(context.Background()))
 		}
 
 		var slug string
@@ -1824,6 +1835,29 @@ func getPortOwnerInfo(port string) string {
 	}
 
 	return "(could not parse lsof output)"
+}
+
+// withExeNotifyHook reconciles the exe.dev notify-gateway end-of-turn hook with
+// the enabled state. When enabled it ensures exactly one gateway hook is
+// present (deduping against the iOS app's own registration of the same URL).
+// When disabled it removes any gateway hook — including one the iOS app
+// registered — so the toggle reliably means "no exe.dev pushes".
+func withExeNotifyHook(hooks []db.ConversationHook, enabled bool) []db.ConversationHook {
+	out := hooks[:0:0] // never mutate the caller's backing array
+	hasGateway := false
+	for _, h := range hooks {
+		if h.URL == exeNotifyGatewayURL {
+			if !enabled || hasGateway {
+				continue // drop when disabled, or dedupe duplicates
+			}
+			hasGateway = true
+		}
+		out = append(out, h)
+	}
+	if enabled && !hasGateway {
+		out = append(out, db.ConversationHook{URL: exeNotifyGatewayURL})
+	}
+	return out
 }
 
 func (s *Server) sendEndOfTurnHook(ctx context.Context, hook db.ConversationHook, event notifications.Event) {

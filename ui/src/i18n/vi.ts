@@ -177,6 +177,9 @@ export const vi: TranslationKeys = {
   notifications: "Thông báo",
   browserNotifications: "Thông báo trình duyệt",
   faviconBadge: "Status trên favicon",
+  exeDevPushNotifications: "Thông báo đẩy",
+  exeDevPushNotificationsDescription:
+    "Gửi đến thiết bị của bạn qua ứng dụng exe.dev khi agent hoàn tất",
   editChannel: "Chỉnh kênh",
   addChannel: "Thêm kênh",
   customChannels: "Kênh tùy chỉnh",

@@ -177,6 +177,9 @@ export const ru: TranslationKeys = {
   notifications: "Уведомления",
   browserNotifications: "Уведомления браузера",
   faviconBadge: "Значок на иконке",
+  exeDevPushNotifications: "Push-уведомления",
+  exeDevPushNotificationsDescription:
+    "Уведомления на ваши устройства через приложение exe.dev по завершении агента",
   editChannel: "Редактировать канал",
   addChannel: "Добавить канал",
   customChannels: "Пользовательские каналы",

@@ -177,6 +177,8 @@ export const ja: TranslationKeys = {
   notifications: "通知",
   browserNotifications: "ブラウザ通知",
   faviconBadge: "ファビコンバッジ",
+  exeDevPushNotifications: "プッシュ通知",
+  exeDevPushNotificationsDescription: "エージェント完了時に exe.dev アプリでデバイスに通知",
   editChannel: "チャンネルを編集",
   addChannel: "チャンネルを追加",
   customChannels: "カスタムチャンネル",

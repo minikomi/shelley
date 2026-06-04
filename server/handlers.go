@@ -725,6 +725,9 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 
 	// Inject notification channel type metadata for the settings modal
 	initData["notification_channel_types"] = s.getNotificationChannelTypes()
+	// Whether this VM has an exe.dev "notify" integration, so the UI can show
+	// the auto-configured push-notification toggle.
+	initData["exe_notify_available"] = s.exeNotifyAvailable()
 	initData["cli_agents"] = detectCLIAgents()
 	if s.Banner != "" {
 		initData["banner"] = s.Banner
@@ -2779,7 +2782,8 @@ func (s *Server) handleSetSetting(w http.ResponseWriter, r *http.Request) {
 
 	// Only allow known setting keys
 	allowedKeys := map[string]bool{
-		"auto_upgrade": true,
+		"auto_upgrade":      true,
+		exeNotifySettingKey: true,
 	}
 	if !allowedKeys[req.Key] {
 		http.Error(w, fmt.Sprintf("Invalid setting key: %s", req.Key), http.StatusBadRequest)
@@ -2791,6 +2795,9 @@ func (s *Server) handleSetSetting(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to set setting: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	// The exe_notify setting is read on each end-of-turn (see
+	// withExeNotifyHook), so no dispatcher reload is needed here.
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

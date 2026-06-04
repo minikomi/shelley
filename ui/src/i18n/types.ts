@@ -173,6 +173,8 @@ export interface TranslationKeys {
   notifications: string;
   browserNotifications: string;
   faviconBadge: string;
+  exeDevPushNotifications: string;
+  exeDevPushNotificationsDescription: string;
   editChannel: string;
   addChannel: string;
   customChannels: string;

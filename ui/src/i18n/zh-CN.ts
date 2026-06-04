@@ -177,6 +177,8 @@ export const zhCN: TranslationKeys = {
   notifications: "通知",
   browserNotifications: "浏览器通知",
   faviconBadge: "图标徽章",
+  exeDevPushNotifications: "推送通知",
+  exeDevPushNotificationsDescription: "代理完成时通过 exe.dev 应用推送到您的设备",
   editChannel: "编辑频道",
   addChannel: "添加频道",
   customChannels: "自定义频道",

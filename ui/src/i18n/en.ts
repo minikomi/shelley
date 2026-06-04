@@ -177,6 +177,9 @@ export const en: TranslationKeys = {
   notifications: "Notifications",
   browserNotifications: "Browser Notifications",
   faviconBadge: "Favicon Badge",
+  exeDevPushNotifications: "Push notifications",
+  exeDevPushNotificationsDescription:
+    "Push to your devices via the exe.dev app when an agent finishes",
   editChannel: "Edit Channel",
   addChannel: "Add Channel",
   customChannels: "Custom Channels",
