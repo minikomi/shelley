@@ -1,4 +1,4 @@
-module github.com/boldsoftware/shelley/lazy-stagehand
+module github.com/boldsoftware/shelley/lazycue
 
 go 1.26.4
 

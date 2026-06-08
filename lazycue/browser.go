@@ -1,4 +1,4 @@
-package stagehand
+package lazycue
 
 import (
 	"context"

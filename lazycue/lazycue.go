@@ -1,10 +1,10 @@
-// Package stagehand implements self-healing browser tests written as plain English.
+// Package lazycue implements self-healing browser tests written as plain English.
 //
 // A test is a description string. The system hashes the description to check
 // git refs for a cached DSL test script. If cached, it executes the DSL.
 // If the test passes, it's done. If it fails (or isn't cached), an LLM agent
 // generates or fixes the DSL, and the new version is saved.
-package stagehand
+package lazycue
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// Options configures a lazy-stagehand test run.
+// Options configures a lazycue test run.
 type Options struct {
 	BaseURL          string // Base URL of the application under test (required)
 	Remote           string // Git remote for cache (default: "origin")
@@ -113,25 +113,25 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	}
 
 	// Step 1: Check cache — local first, then remote.
-	logf("[stagehand] checking local cache")
+	logf("[lazycue] checking local cache")
 	cachedTest, cacheHit, err := GetCachedTest(opts.RepoRoot, opts.Remote, description, commit)
 	if err != nil {
-		logf("[stagehand] warning: get cached test: %v", err)
+		logf("[lazycue] warning: get cached test: %v", err)
 	}
 
 	if cachedTest == nil && !opts.NoFetch {
 		remoteURL := RemoteURL(opts.RepoRoot, opts.Remote)
-		logf("[stagehand] no local cache hit, fetching from %s (%s)", opts.Remote, remoteURL)
+		logf("[lazycue] no local cache hit, fetching from %s (%s)", opts.Remote, remoteURL)
 		if err := FetchCachedRefs(opts.RepoRoot, opts.Remote); err != nil {
-			logf("[stagehand] warning: fetch cache refs from %s: %v", remoteURL, err)
+			logf("[lazycue] warning: fetch cache refs from %s: %v", remoteURL, err)
 		}
 
 		cachedTest, cacheHit, err = GetCachedTest(opts.RepoRoot, opts.Remote, description, commit)
 		if err != nil {
-			logf("[stagehand] warning: get cached test: %v", err)
+			logf("[lazycue] warning: get cached test: %v", err)
 		}
 	} else if cachedTest != nil {
-		logf("[stagehand] local cache hit: v%d from %s", cacheHit.Version, cacheHit.Ref)
+		logf("[lazycue] local cache hit: v%d from %s", cacheHit.Version, cacheHit.Ref)
 	}
 
 	var version int
@@ -140,7 +140,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	}
 
 	// Step 2: Launch browser
-	logf("[stagehand] launching browser for %s", opts.BaseURL)
+	logf("[lazycue] launching browser for %s", opts.BaseURL)
 	browser, err := NewBrowser(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("launch browser: %w", err)
@@ -153,7 +153,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	if cachedTest != nil {
 		steps, parseErr := ParseSteps(cachedTest.Steps)
 		if parseErr == nil {
-			logf("[stagehand] found cached v%d (%d steps) from %s", version, len(steps), cacheHit.Ref)
+			logf("[lazycue] found cached v%d (%d steps) from %s", version, len(steps), cacheHit.Ref)
 			results, execErr := browser.ExecuteSteps(ctx, opts.BaseURL, steps)
 			allPassed := execErr == nil
 			for _, r := range results {
@@ -163,7 +163,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 				}
 			}
 			if allPassed {
-				logf("[stagehand] cached test passed")
+				logf("[lazycue] cached test passed")
 				return &TestResult{
 					Pass:          true,
 					Steps:         results,
@@ -175,7 +175,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 			}
 
 			// Cached test failed — need to fix it
-			logf("[stagehand] cached test failed, spawning agent to fix")
+			logf("[lazycue] cached test failed, spawning agent to fix")
 			failureDesc := summarizeFailure(results)
 
 			// Reset browser for agent
@@ -209,7 +209,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 			if agentResult.Success {
 				meta := buildCacheMetadata(opts, agentResult, "healed")
 				if saveErr := SaveCachedTest(opts.RepoRoot, opts.Remote, description, agentResult.StepsJSON, newVersion, meta, commit, push); saveErr != nil {
-					logf("[stagehand] warning: save cached test: %v", saveErr)
+					logf("[lazycue] warning: save cached test: %v", saveErr)
 				}
 			}
 
@@ -229,11 +229,11 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 			}, nil
 		}
 		// Parse error — treat as uncached
-		logf("[stagehand] cached test parse error: %v, regenerating", parseErr)
+		logf("[lazycue] cached test parse error: %v, regenerating", parseErr)
 	}
 
 	// Step 4: No cache — generate from scratch
-	logf("[stagehand] no cached test, spawning agent to generate")
+	logf("[lazycue] no cached test, spawning agent to generate")
 	agentStart := time.Now()
 	agentResult, agentErr := RunAgent(ctx, &AgentConfig{
 		Mode:             AgentModeGenerate,
@@ -255,7 +255,7 @@ func Run(ctx context.Context, opts Options, description string) (*TestResult, er
 	if agentResult.Success {
 		meta := buildCacheMetadata(opts, agentResult, "generated")
 		if saveErr := SaveCachedTest(opts.RepoRoot, opts.Remote, description, agentResult.StepsJSON, 1, meta, commit, push); saveErr != nil {
-			logf("[stagehand] warning: save cached test: %v", saveErr)
+			logf("[lazycue] warning: save cached test: %v", saveErr)
 		}
 	}
 
@@ -293,10 +293,10 @@ func DetectRepoRoot() (string, error) {
 	return out, nil
 }
 
-// Harness holds options for running lazy-stagehand tests. Create one as a
+// Harness holds options for running lazycue tests. Create one as a
 // package-level var and call Test from each test function:
 //
-//	var browser = stagehand.New(stagehand.Options{BaseURL: "http://localhost:3000"})
+//	var browser = lazycue.New(lazycue.Options{BaseURL: "http://localhost:3000"})
 //
 //	func TestLogin(t *testing.T) {
 //	    browser.Test(t, "Navigate to /login and verify the login form is visible")
@@ -316,7 +316,7 @@ func (h *Harness) Test(t testing.TB, description string) {
 	t.Helper()
 	result, err := Run(t.Context(), h.opts, description)
 	if err != nil {
-		t.Fatalf("stagehand: %v", err)
+		t.Fatalf("lazycue: %v", err)
 	}
 
 	// Log step results.
@@ -336,10 +336,10 @@ func (h *Harness) Test(t testing.TB, description string) {
 		cost := float64(result.InputTokens)*3.0/1_000_000 + float64(result.OutputTokens)*15.0/1_000_000
 		fmt.Fprintf(&sb, "  ⚡ %d in / %d out tokens  ~$%.3f\n", result.InputTokens, result.OutputTokens, cost)
 	}
-	t.Logf("stagehand [%s]: %s\n%s", result.Mode, description, sb.String())
+	t.Logf("lazycue [%s]: %s\n%s", result.Mode, description, sb.String())
 
 	if !result.Pass {
-		t.Fatalf("stagehand: test failed: %s", result.Error)
+		t.Fatalf("lazycue: test failed: %s", result.Error)
 	}
 }
 

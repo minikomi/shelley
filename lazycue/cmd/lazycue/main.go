@@ -1,9 +1,9 @@
-// Command lazy-stagehand runs self-healing browser tests described in plain English.
+// Command lazycue runs self-healing browser tests described in plain English.
 //
 // Usage:
 //
-//	lazy-stagehand [options] "test description" ["test description" ...]
-//	lazy-stagehand promote [options]
+//	lazycue [options] "test description" ["test description" ...]
+//	lazycue promote [options]
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	stagehand "github.com/boldsoftware/shelley/lazy-stagehand"
+	lazycue "github.com/boldsoftware/shelley/lazycue"
 )
 
 func main() {
@@ -45,12 +45,12 @@ func runTests() {
 
 	descriptions := flag.Args()
 	if len(descriptions) == 0 {
-		fmt.Fprintln(os.Stderr, `usage: lazy-stagehand [options] "test description" ["test description" ...]`)
-		fmt.Fprintln(os.Stderr, "       lazy-stagehand promote [options]")
+		fmt.Fprintln(os.Stderr, `usage: lazycue [options] "test description" ["test description" ...]`)
+		fmt.Fprintln(os.Stderr, "       lazycue promote [options]")
 		os.Exit(2)
 	}
 
-	opts := stagehand.Options{
+	opts := lazycue.Options{
 		BaseURL:          *baseURL,
 		Remote:           *remote,
 		Model:            *model,
@@ -70,7 +70,7 @@ func runTests() {
 		if i > 0 {
 			fmt.Println()
 		}
-		result, err := stagehand.Run(ctx, opts, desc)
+		result, err := lazycue.Run(ctx, opts, desc)
 		if err != nil {
 			printError(i+1, len(descriptions), desc, err)
 			anyFailed = true
@@ -106,13 +106,13 @@ func runPromote(args []string) {
 	commit := fs.String("commit", "", "Re-tag refs under this commit SHA before pushing (default: keep existing)")
 	fs.Parse(args)
 
-	root, err := stagehand.DetectRepoRoot()
+	root, err := lazycue.DetectRepoRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: not in a git repository: %v\n", err)
 		os.Exit(2)
 	}
 
-	pushed, err := stagehand.PromoteRefs(root, *remote, *commit)
+	pushed, err := lazycue.PromoteRefs(root, *remote, *commit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\033[31merror: %v\033[0m\n", err)
 		os.Exit(1)
@@ -125,7 +125,7 @@ func runPromote(args []string) {
 	}
 }
 
-func printResult(idx, total int, r *stagehand.TestResult) {
+func printResult(idx, total int, r *lazycue.TestResult) {
 	// Status emoji + colour.
 	var status, colour, reset string
 	if r.Pass {
@@ -140,11 +140,11 @@ func printResult(idx, total int, r *stagehand.TestResult) {
 	// Mode badge.
 	var badge string
 	switch r.Mode {
-	case stagehand.RunModeCached:
+	case lazycue.RunModeCached:
 		badge = fmt.Sprintf("cached v%d", r.CacheVersion)
-	case stagehand.RunModeGenerated:
+	case lazycue.RunModeGenerated:
 		badge = fmt.Sprintf("generated → v%d", r.CacheVersion)
-	case stagehand.RunModeHealed:
+	case lazycue.RunModeHealed:
 		badge = fmt.Sprintf("healed → v%d", r.CacheVersion)
 	}
 

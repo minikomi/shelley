@@ -1,4 +1,4 @@
-package stagehand
+package lazycue
 
 import (
 	"crypto/rand"
@@ -74,7 +74,7 @@ func DescriptionHash(description string) string {
 }
 
 func refPrefix(description string) string {
-	return "refs/lazy-stagehand/" + DescriptionHash(description)
+	return "refs/lazycue/" + DescriptionHash(description)
 }
 
 // gitExec runs a git command in the given directory and returns trimmed stdout.
@@ -115,9 +115,9 @@ func RemoteURL(repoRoot, remote string) string {
 	return url
 }
 
-// FetchCachedRefs fetches all lazy-stagehand refs from the remote.
+// FetchCachedRefs fetches all lazycue refs from the remote.
 func FetchCachedRefs(repoRoot, remote string) error {
-	_, err := gitExec(repoRoot, "fetch", remote, "+refs/lazy-stagehand/*:refs/lazy-stagehand/*")
+	_, err := gitExec(repoRoot, "fetch", remote, "+refs/lazycue/*:refs/lazycue/*")
 	return err
 }
 
@@ -142,7 +142,7 @@ var versionRefRe = regexp.MustCompile(`/v(\d+)(?:-[0-9a-f]+)?$`)
 
 // commitRefRe extracts commit SHA and version from the new format:
 //
-//	refs/lazy-stagehand/<desc_hash>/<commit>/v<N>-<hex>
+//	refs/lazycue/<desc_hash>/<commit>/v<N>-<hex>
 var commitRefRe = regexp.MustCompile(`/([0-9a-f]{40})/v(\d+)(?:-[0-9a-f]+)?$`)
 
 // parseRefs extracts version info from a newline-separated list of refs.
@@ -182,7 +182,7 @@ func parseRefs(refsOutput string) []parsedRef {
 
 // CacheHit describes which ref a cache hit came from.
 type CacheHit struct {
-	Ref     string // full ref name, e.g. refs/lazy-stagehand/abc123/def.../v2-f3a9b2
+	Ref     string // full ref name, e.g. refs/lazycue/abc123/def.../v2-f3a9b2
 	Version int
 	Commit  string // commit SHA from the ref, or "" for legacy refs
 }
@@ -298,16 +298,16 @@ func SaveCachedTest(repoRoot, remote, description string, code []byte, version i
 	if push {
 		if _, err := gitExec(repoRoot, "push", remote, ref+":"+ref); err != nil {
 			// Non-fatal: log but don't fail.
-			fmt.Printf("[stagehand] warning: push %s to %s failed: %v\n", ref, remote, err)
+			fmt.Printf("[lazycue] warning: push %s to %s failed: %v\n", ref, remote, err)
 		}
 	}
 
 	return nil
 }
 
-// ListLocalRefs returns all local lazy-stagehand refs.
+// ListLocalRefs returns all local lazycue refs.
 func ListLocalRefs(repoRoot string) ([]string, error) {
-	out, err := gitExec(repoRoot, "for-each-ref", "--format=%(refname)", "refs/lazy-stagehand/")
+	out, err := gitExec(repoRoot, "for-each-ref", "--format=%(refname)", "refs/lazycue/")
 	if err != nil || out == "" {
 		return nil, err
 	}
@@ -321,7 +321,7 @@ func ListLocalRefs(repoRoot string) ([]string, error) {
 	return refs, nil
 }
 
-// PromoteRefs pushes local lazy-stagehand refs to the remote.
+// PromoteRefs pushes local lazycue refs to the remote.
 // If commit is non-empty and a ref has no commit component (legacy) or has a
 // different commit, it is re-written under the new commit before pushing.
 func PromoteRefs(repoRoot, remote, commit string) (pushed int, err error) {
@@ -344,7 +344,7 @@ func PromoteRefs(repoRoot, remote, commit string) (pushed int, err error) {
 					continue
 				}
 				suffix := randomHex(6)
-				targetRef = fmt.Sprintf("refs/lazy-stagehand/%s/%s/v%d-%s", descHash, commit, pr.version, suffix)
+				targetRef = fmt.Sprintf("refs/lazycue/%s/%s/v%d-%s", descHash, commit, pr.version, suffix)
 
 				// Copy blob to new ref.
 				blobHash, bErr := gitExec(repoRoot, "rev-parse", ref)
@@ -383,9 +383,9 @@ func parseOneRef(ref string) *parsedRef {
 }
 
 // extractDescHash extracts the description hash from a ref path.
-// e.g. "refs/lazy-stagehand/abc123def456/..." -> "abc123def456"
+// e.g. "refs/lazycue/abc123def456/..." -> "abc123def456"
 func extractDescHash(ref string) string {
-	const prefix = "refs/lazy-stagehand/"
+	const prefix = "refs/lazycue/"
 	if !strings.HasPrefix(ref, prefix) {
 		return ""
 	}

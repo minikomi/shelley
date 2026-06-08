@@ -1,10 +1,10 @@
-# Lazy Stagehand
+# LazyCue
 
 We may want Playwright/Selenium/Cypress/etc. tests, but we don't want
 to maintain them. If we're being honest, we don't want to write them
 either.
 
-Lazy Stagehand is an experiment in "self-healing" browser automation tests. The
+LazyCue is an experiment in "self-healing" browser automation tests. The
 tests themselves are free form instructions, and an agent, at run time,
 interprets those instructions. Then, the instructions are cached, and the
 cached instructions are re-used over and over again. When that eventually
@@ -12,13 +12,13 @@ fails, an agent is invoked again to fix them up.
 
 Since we, as an industry, are not entirely comfortable with CI tooling that
 modifies the commit under test, the cache is externalized, but not too far:
-we use the git repo that Lazy Stagehand is being invoked from, and hide the
+we use the git repo that LazyCue is being invoked from, and hide the
 cache in some git refs.
 
 ## Quick Start
 
 ```bash
-go run github.com/boldsoftware/shelley/lazy-stagehand/cmd/lazy-stagehand@latest \
+go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest \
   --base-url http://localhost:3000 \
   'Navigate to / and verify the page title is "My App". The login button should be visible.'
 ```
@@ -26,7 +26,7 @@ go run github.com/boldsoftware/shelley/lazy-stagehand/cmd/lazy-stagehand@latest 
 Or from Go tests:
 
 ```go
-var app = stagehand.New(stagehand.Options{BaseURL: "http://localhost:3000"})
+var app = lazycue.New(lazycue.Options{BaseURL: "http://localhost:3000"})
 
 func TestHomepage(t *testing.T) {
     app.Test(t, `Navigate to / and verify the page title is "My App". The login button should be visible.`)
@@ -35,7 +35,7 @@ func TestHomepage(t *testing.T) {
 
 ## Workflow of a Run
 
-1. Hash description → check `refs/lazy-stagehand/<hash>/<commit>/v<N>` in git
+1. Hash description → check `refs/lazycue/<hash>/<commit>/v<N>` in git
 2. If cached: execute DSL steps. If passes → done (fast path, ~1-2s)
 3. If cached but fails mechanically: spawn LLM agent to fix → save new version
 4. If cached but app is genuinely broken: **fail the test with explanation**
@@ -70,11 +70,11 @@ and the app shows "Y", that's a genuine failure.
 
 ```bash
 # Single test
-go run github.com/boldsoftware/shelley/lazy-stagehand/cmd/lazy-stagehand@latest \
+go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest \
   --base-url http://localhost:3000 "Navigate to / and verify the title is My App"
 
 # Multiple tests
-go run github.com/boldsoftware/shelley/lazy-stagehand/cmd/lazy-stagehand@latest \
+go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest \
   --base-url http://localhost:3000 "test one" "test two" "test three"
 ```
 
@@ -84,7 +84,7 @@ In CI, use `--no-push` to save cache locally during the build, then `promote`
 to push refs to the remote only after the build succeeds:
 
 ```bash
-LAZY=github.com/boldsoftware/shelley/lazy-stagehand/cmd/lazy-stagehand@latest
+LAZY=github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest
 
 # Run tests without pushing cache to remote
 go run $LAZY --no-push --base-url http://localhost:3000 "test one" "test two"
@@ -103,10 +103,10 @@ package myapp_test
 import (
     "testing"
 
-    stagehand "github.com/boldsoftware/shelley/lazy-stagehand"
+    lazycue "github.com/boldsoftware/shelley/lazycue"
 )
 
-var app = stagehand.New(stagehand.Options{BaseURL: "http://localhost:3000"})
+var app = lazycue.New(lazycue.Options{BaseURL: "http://localhost:3000"})
 
 func TestLogin(t *testing.T) {
     app.Test(t, "Navigate to /login, fill email with user@test.com and password with secret, click Submit, verify the dashboard heading appears")
@@ -139,8 +139,8 @@ The agent discovers app structure automatically via screenshots and `git grep`.
 **`promote`** — push locally saved cache refs to the remote:
 
 ```bash
-go run github.com/boldsoftware/shelley/lazy-stagehand/cmd/lazy-stagehand@latest promote
-go run github.com/boldsoftware/shelley/lazy-stagehand/cmd/lazy-stagehand@latest promote --commit abc123...
+go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest promote
+go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest promote --commit abc123...
 ```
 
 Used after `--no-push` in CI to publish cache only when the build is green.
@@ -162,7 +162,7 @@ When the agent generates or heals a test, it:
 The ref path encodes everything needed for lookup:
 
 ```
-refs/lazy-stagehand/<desc_hash>/<commit_sha>/v<version>-<random>
+refs/lazycue/<desc_hash>/<commit_sha>/v<version>-<random>
 │                    │            │            │         │
 │                    │            │            │         └─ collision avoidance
 │                    │            │            └─ version (increments on heal)
@@ -176,7 +176,7 @@ refs/lazy-stagehand/<desc_hash>/<commit_sha>/v<version>-<random>
 On each run, the tool:
 
 1. Checks **local** refs first (no network)
-2. If no local hit, fetches refs from the remote (`git fetch origin refs/lazy-stagehand/*`)
+2. If no local hit, fetches refs from the remote (`git fetch origin refs/lazycue/*`)
 3. Finds all refs matching the description hash
 4. Filters by **git ancestry**: only refs whose commit is an ancestor of HEAD (or `--commit`)
 5. Picks the highest version number
@@ -209,8 +209,8 @@ branch caches (the feature branch commit isn't an ancestor of main).
 
 ```bash
 # List all cached test refs
-git for-each-ref --format='%(refname)' 'refs/lazy-stagehand/'
+git for-each-ref --format='%(refname)' 'refs/lazycue/'
 
 # View a cached test
-git cat-file blob $(git rev-parse refs/lazy-stagehand/<hash>/<commit>/v1-abc123) | jq .
+git cat-file blob $(git rev-parse refs/lazycue/<hash>/<commit>/v1-abc123) | jq .
 ```

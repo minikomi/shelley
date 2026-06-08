@@ -1,4 +1,4 @@
-package stagehand
+package lazycue
 
 import (
 	"fmt"
@@ -89,26 +89,26 @@ func TestParseRefs(t *testing.T) {
 	}{
 		{
 			name:  "legacy format",
-			input: "refs/lazy-stagehand/abc123/v1-f3a9b2\nrefs/lazy-stagehand/abc123/v2-deadbe",
+			input: "refs/lazycue/abc123/v1-f3a9b2\nrefs/lazycue/abc123/v2-deadbe",
 			want: []parsedRef{
-				{ref: "refs/lazy-stagehand/abc123/v2-deadbe", commit: "", version: 2},
-				{ref: "refs/lazy-stagehand/abc123/v1-f3a9b2", commit: "", version: 1},
+				{ref: "refs/lazycue/abc123/v2-deadbe", commit: "", version: 2},
+				{ref: "refs/lazycue/abc123/v1-f3a9b2", commit: "", version: 1},
 			},
 		},
 		{
 			name:  "new format with commit",
-			input: "refs/lazy-stagehand/abc123/" + strings.Repeat("a", 40) + "/v1-f3a9b2",
+			input: "refs/lazycue/abc123/" + strings.Repeat("a", 40) + "/v1-f3a9b2",
 			want: []parsedRef{
-				{ref: "refs/lazy-stagehand/abc123/" + strings.Repeat("a", 40) + "/v1-f3a9b2", commit: strings.Repeat("a", 40), version: 1},
+				{ref: "refs/lazycue/abc123/" + strings.Repeat("a", 40) + "/v1-f3a9b2", commit: strings.Repeat("a", 40), version: 1},
 			},
 		},
 		{
 			name: "mixed legacy and new",
-			input: "refs/lazy-stagehand/abc123/v1-f3a9b2\n" +
-				"refs/lazy-stagehand/abc123/" + strings.Repeat("b", 40) + "/v2-cafe01",
+			input: "refs/lazycue/abc123/v1-f3a9b2\n" +
+				"refs/lazycue/abc123/" + strings.Repeat("b", 40) + "/v2-cafe01",
 			want: []parsedRef{
-				{ref: "refs/lazy-stagehand/abc123/" + strings.Repeat("b", 40) + "/v2-cafe01", commit: strings.Repeat("b", 40), version: 2},
-				{ref: "refs/lazy-stagehand/abc123/v1-f3a9b2", commit: "", version: 1},
+				{ref: "refs/lazycue/abc123/" + strings.Repeat("b", 40) + "/v2-cafe01", commit: strings.Repeat("b", 40), version: 2},
+				{ref: "refs/lazycue/abc123/v1-f3a9b2", commit: "", version: 1},
 			},
 		},
 		{
@@ -140,10 +140,10 @@ func TestExtractDescHash(t *testing.T) {
 		ref  string
 		want string
 	}{
-		{"refs/lazy-stagehand/abc123def456/v1-f3a9b2", "abc123def456"},
-		{"refs/lazy-stagehand/abc123def456/" + strings.Repeat("a", 40) + "/v1-f3a9b2", "abc123def456"},
+		{"refs/lazycue/abc123def456/v1-f3a9b2", "abc123def456"},
+		{"refs/lazycue/abc123def456/" + strings.Repeat("a", 40) + "/v1-f3a9b2", "abc123def456"},
 		{"refs/other/abc", ""},
-		{"refs/lazy-stagehand/", ""},
+		{"refs/lazycue/", ""},
 	}
 	for _, tt := range tests {
 		got := extractDescHash(tt.ref)
@@ -179,7 +179,7 @@ func TestSaveCachedTestNoPush(t *testing.T) {
 	}
 
 	// Should NOT be on origin (check the bare repo has no refs).
-	refs, _ := gitExec(clone, "ls-remote", "origin", "refs/lazy-stagehand/*")
+	refs, _ := gitExec(clone, "ls-remote", "origin", "refs/lazycue/*")
 	if refs != "" {
 		t.Fatalf("expected no remote refs, got: %s", refs)
 	}
@@ -198,7 +198,7 @@ func TestSaveCachedTestWithPush(t *testing.T) {
 	}
 
 	// Should be on origin.
-	refs, _ := gitExec(clone, "ls-remote", "origin", "refs/lazy-stagehand/*")
+	refs, _ := gitExec(clone, "ls-remote", "origin", "refs/lazycue/*")
 	if refs == "" {
 		t.Fatal("expected remote refs after push")
 	}
@@ -354,7 +354,7 @@ func TestPromoteRefs(t *testing.T) {
 	}
 
 	// Verify not on remote.
-	refs, _ := gitExec(clone, "ls-remote", "origin", "refs/lazy-stagehand/*")
+	refs, _ := gitExec(clone, "ls-remote", "origin", "refs/lazycue/*")
 	if refs != "" {
 		t.Fatal("expected no remote refs before promote")
 	}
@@ -369,7 +369,7 @@ func TestPromoteRefs(t *testing.T) {
 	}
 
 	// Verify on remote.
-	refs, _ = gitExec(clone, "ls-remote", "origin", "refs/lazy-stagehand/*")
+	refs, _ = gitExec(clone, "ls-remote", "origin", "refs/lazycue/*")
 	if refs == "" {
 		t.Fatal("expected remote refs after promote")
 	}
@@ -424,10 +424,10 @@ func TestParseOneRef(t *testing.T) {
 		commit  string
 		nil_    bool
 	}{
-		{"refs/lazy-stagehand/abc123/v1-f3a9b2", 1, "", false},
-		{"refs/lazy-stagehand/abc123/v3-deadbe", 3, "", false},
-		{"refs/lazy-stagehand/abc123/" + commit40 + "/v2-cafe01", 2, commit40, false},
-		{"refs/lazy-stagehand/abc123/not-a-version", 0, "", true},
+		{"refs/lazycue/abc123/v1-f3a9b2", 1, "", false},
+		{"refs/lazycue/abc123/v3-deadbe", 3, "", false},
+		{"refs/lazycue/abc123/" + commit40 + "/v2-cafe01", 2, commit40, false},
+		{"refs/lazycue/abc123/not-a-version", 0, "", true},
 	}
 	for _, tt := range tests {
 		got := parseOneRef(tt.ref)
