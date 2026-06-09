@@ -8759,9 +8759,15 @@ kbd {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: var(--primary);
+  /* Subtle, non-animated "agent is working" mark: a hollow ring in the
+     row's current text color. Tracks the foreground so it stays
+     legible on both the default and selected (var(--primary)) row
+     backgrounds without re-using the same hue as the row fill. */
+  border: 1.5px solid currentColor;
+  background-color: transparent;
+  box-sizing: border-box;
+  opacity: 0.75;
   flex-shrink: 0;
-  animation: pulse 2s ease-in-out infinite;
 }
 
 .drawer-subagent-count-badge-text {
@@ -8879,12 +8885,14 @@ kbd {
 }
 
 .drawer-subagent-working-indicator {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background-color: var(--primary);
+  border: 1.5px solid currentColor;
+  background-color: transparent;
+  box-sizing: border-box;
+  opacity: 0.75;
   flex-shrink: 0;
-  animation: pulse 2s ease-in-out infinite;
 }
 
 .drawer-subagent-date {
