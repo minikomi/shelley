@@ -4,24 +4,63 @@ We may want Playwright/Selenium/Cypress/etc. tests, but we don't want
 to maintain them. If we're being honest, we don't want to write them
 either.
 
-LazyCue is an experiment in "self-healing" browser automation tests. The
-tests themselves are free form instructions, and an agent, at run time,
-interprets those instructions. Then, the instructions are cached, and the
+LazyCue is an experiment in "self-healing" browser automation tests. The tests
+themselves are free form instructions, and an agent, at run time, interprets
+those instructions. Then, the interpreted instructions are cached, and these
 cached instructions are re-used over and over again. When that eventually
 fails, an agent is invoked again to fix them up.
 
-Since we, as an industry, are not entirely comfortable with CI tooling that
-mutates git refs behind the scenes, the cache is kept as ordinary tracked
-files in your repo: one JSON file per test description, living in a
-`.lazycue/` directory next to your tests. They get committed like any other
-source file.
+Using this requires that we, as an industry, get more comfortable with CI
+editing our commits for us. For example, if you have a merge queue, and you
+submit a change that passes tests but has some trailing whitespace, the Right
+Answer is for CI to fix the formatting in a new (or amended) commit, and submit
+that change, even though it isn't quite the same thing as you pushed. LazyCue
+takes this to the next level: let's not pretend we'd be doing anything but
+mechanically curing the failing test. Materializing the cache in-repo vs. a
+separate system (a database, a cache server, elsewhere in Git) is the choice
+we've made here.
+
+## Whence the name?
+
+Some of the products in this space (Playwright, Puppetteer, Stagehand) have theatrical
+names. So, here we are, with the LLM cueing the browser on what to do. The space is
+surprisingly dense with names!
+
+The lazy is self-congratulatory.
+
+## Prerequisites
+
+LazyCue uses the chromedp package to talk to a Chromium-based browser.
+On Linux, [Headless Shell](https://hub.docker.com/r/chromedp/headless-shell/) is good, and you
+can extract it like so.
+
+```
+sudo mkdir -p /headless-shell && go run github.com/google/go-containerregistry/cmd/crane@latest export chromedp/headless-shell:latest - | sudo tar -x -C /headless-shell
+```
 
 ## Quick Start
 
-```bash
-go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest \
-  --base-url http://localhost:3000 \
-  'Navigate to / and verify the page title is "My App". The login button should be visible.'
+```
+$go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest   --base-url http://xkcd.com/   'Navigate to / and check there is a comic published'
+PASS  [generated → v1]  26.015s total, 24.793s agent
+  Navigate to / and check theres a comic published
+  ✓ navigate /                                           39ms
+  ✓ wait_visible #comic                                   2ms
+  ✓ assert_visible #comic img                              0s
+  ✓ assert_visible #middleContainer                       1ms
+  ✓ wait_text Permanent link to this comic:                0s
+  ✓ assert_visible a[href*='xkcd.com']                     0s
+  ⚡ 26,242 in / 1,032 out tokens  ~$0.094
+
+$go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest   --base-url http://xkcd.com/   'Navigate to / and check there is a comic published'
+PASS  [cached v1]  1.317s
+  Navigate to / and check theres a comic published
+  ✓ navigate /                                           72ms
+  ✓ wait_visible #comic                                   1ms
+  ✓ assert_visible #comic img                             1ms
+  ✓ assert_visible #middleContainer                        0s
+  ✓ wait_text Permanent link to this comic:               1ms
+  ✓ assert_visible a[href*='xkcd.com']                     0s
 ```
 
 Or from Go tests:
@@ -65,70 +104,6 @@ The agent distinguishes between:
 The test description is the source of truth. If the description says "title should be X"
 and the app shows "Y", that's a genuine failure.
 
-## Usage
-
-### CLI
-
-```bash
-# The CLI runs exactly one test, passed as a single description string.
-go run github.com/boldsoftware/shelley/lazycue/cmd/lazycue@latest \
-  --base-url http://localhost:3000 "Navigate to / and verify the title is My App"
-```
-
-To run a suite, drive `lazycue.Run` from a Go test (see below) or loop over the
-CLI in a script.
-
-### CI Workflow
-
-In CI, the cache files generated or healed during a green build are committed
-back to the repo (much like auto-formatting), so future runs hit the fast
-path:
-
-```bash
-# Run tests (e.g. from a Go test suite); new/updated cache files land in
-# .lazycue/. If CI passes, commit the cache files so future runs are fast:
-git add .lazycue && git commit -m "Update LazyCue cache"
-```
-
-The cache files are clearly marked as machine-managed; don't edit them by hand.
-
-### Go Tests
-
-```go
-package myapp_test
-
-import (
-    "testing"
-
-    lazycue "github.com/boldsoftware/shelley/lazycue"
-)
-
-var app = lazycue.New(lazycue.Options{BaseURL: "http://localhost:3000"})
-
-func TestLogin(t *testing.T) {
-    app.Test(t, "Navigate to /login, fill email with user@test.com and password with secret, click Submit, verify the dashboard heading appears")
-}
-
-func TestHomepage(t *testing.T) {
-    app.Test(t, "Navigate to / and verify the page title is My App")
-}
-```
-
-`Test` calls `t.Fatal` on failure and logs each step result via `t.Log`.
-The agent discovers app structure automatically via screenshots and `git grep`.
-
-The `Harness` accumulates every result, so a `TestMain` can emit an aggregate
-HTML report and JSON cache-stats summary after the suite finishes:
-
-```go
-func TestMain(m *testing.M) {
-    code := m.Run()
-    lazycue.WriteReport("/tmp/lazycue-artifacts", app.Results())
-    lazycue.WriteSummary("/tmp/lazycue-summary.json", app.Results())
-    os.Exit(code)
-}
-```
-
 ## Configuration
 
 | Flag / Option | Default | Description |
@@ -144,60 +119,8 @@ func TestMain(m *testing.M) {
 
 ## How the Cache Works
 
-Cached tests live in a `.lazycue/` directory next to your tests, as tracked
-JSON files — one file per description. They show up in `git status` and
-diffs, and you commit them like any other source file.
+Cached tests live in a `.lazycue/` directory next to your tests.
+Add them to your repo to take advantage of the caching.
 
-### Storage
-
-When the agent generates or heals a test, it:
-
-1. Serializes the DSL steps + metadata to JSON
-2. Writes `.lazycue/<desc_hash>.json`, where `<desc_hash>` is the first 16 hex
-   chars of the SHA-256 of the test description
-3. Healing overwrites the same file, bumping `version` and setting `mode` to
-   `"healed"`
-
-Each file carries a `_README` banner marking it as machine-managed, so nobody
-hand-edits it. To change behavior, edit the test description and re-run
-LazyCue.
-
-### Lookup
-
-On each run, the tool reads `.lazycue/<desc_hash>.json`. If it exists, the
-cached DSL is parsed and executed. If it's absent, the agent generates a fresh
-test. No git, no network, no ancestry — just a file read.
-
-### What's in a cache file
-
-```json
-{
-  "_README": "This file is managed by LazyCue ... Do NOT edit by hand ...",
-  "description": "Navigate to / and verify the page title is My App",
-  "version": 1,
-  "steps": [
-    {"action": "navigate", "url": "/"},
-    {"action": "assert_title", "text": "My App"}
-  ],
-  "metadata": {
-    "created_at": "2025-06-07T...",
-    "hostname": "ci-agent-1",
-    "model": "claude-sonnet-4-6",
-    "input_tokens": 12450,
-    "output_tokens": 890,
-    "estimated_cost_usd": 0.051,
-    "git_sha": "abc123...",
-    "mode": "generated"
-  }
-}
-```
-
-### Inspecting
-
-```bash
-# List all cached tests
-ls .lazycue/
-
-# View a cached test
-jq . .lazycue/<hash>.json
-```
+For CI, you'll want to create commits for them as part of your CI,
+and push those commits along.
