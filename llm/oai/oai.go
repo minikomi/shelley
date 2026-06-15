@@ -805,9 +805,22 @@ func fromLLMMessage(msg llm.Message) []openai.ChatCompletionMessage {
 		}
 
 		if hasImage {
-			m.MultiContent = multiContent
+			// When using multiContent, ensure we have content to avoid bare messages.
+			// If multiContent is somehow empty and we have no tool calls, fall back to Content.
+			if len(multiContent) == 0 && len(toolCalls) == 0 {
+				m.Content = " "
+			} else {
+				m.MultiContent = multiContent
+			}
 		} else {
-			m.Content = textContent
+			// Use empty space if empty to avoid omitempty issues (bare {"role": "assistant"} messages)
+			// but only when there are no tool calls (tool calls field will prevent bare message).
+			// See Issue #223: llama.cpp rejects bare assistant messages.
+			if len(toolCalls) == 0 {
+				m.Content = cmp.Or(textContent, " ")
+			} else {
+				m.Content = textContent
+			}
 		}
 		m.ToolCalls = toolCalls
 		if len(thinking) > 0 {
