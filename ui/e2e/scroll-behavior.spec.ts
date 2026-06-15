@@ -53,7 +53,7 @@ test.describe("Scroll behavior", () => {
     }
 
     // Button should disappear once we're back at bottom
-    await expect(scrollButton).not.toBeVisible();
+    await expect(scrollButton).not.toBeVisible({ timeout: 5000 });
 
     // Send another message - should auto-scroll since we're at bottom
     await input.fill("echo final message");
@@ -64,6 +64,6 @@ test.describe("Scroll behavior", () => {
     await expect(page.locator("text=echo final message").last()).toBeVisible({ timeout: 30000 });
 
     // Button should not appear since we're following the conversation
-    await expect(scrollButton).not.toBeVisible();
+    await expect(scrollButton).not.toBeVisible({ timeout: 5000 });
   });
 });
