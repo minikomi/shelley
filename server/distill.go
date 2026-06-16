@@ -60,7 +60,7 @@ Compression: recent activity (~last 20%) gets more detail; older activity compre
 // performDistillation does the LLM call and inserts the distilled message.
 // Returns the distilled text, or empty string on error (errors are logged and
 // a distill error is inserted into the conversation).
-func (s *Server) performDistillation(ctx context.Context, conversationID, sourceSlug, modelID string, messages []generated.Message) string {
+func (s *Server) performDistillation(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, messages []generated.Message) string {
 	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug)
 
 	// Build the transcript for the LLM
@@ -80,6 +80,10 @@ func (s *Server) performDistillation(ctx context.Context, conversationID, source
 
 	// TODO: consider disabling thinking for distillation requests to reduce
 	// cost and latency — it's a simple summarization task.
+	userText := transcript
+	if steer := strings.TrimSpace(instructions); steer != "" {
+		userText += steeringSection(steer)
+	}
 	resp, err := svc.Do(distillCtx, &llm.Request{
 		System: []llm.SystemContent{
 			{Text: distillSystemPrompt, Type: "text"},
@@ -88,7 +92,7 @@ func (s *Server) performDistillation(ctx context.Context, conversationID, source
 			{
 				Role: llm.MessageRoleUser,
 				Content: []llm.Content{
-					{Type: llm.ContentTypeText, Text: transcript},
+					{Type: llm.ContentTypeText, Text: userText},
 				},
 			},
 		},
@@ -200,14 +204,18 @@ func (s *Server) insertDistillError(ctx context.Context, conversationID, errMsg 
 	}
 }
 
-// updateDistillStatus updates the system status message in a conversation.
-func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status string) {
-	// Find the message with distill_status. Older distill flows used system
-	// messages; new-generation distill uses an agent-side status message.
+// distillStatusUpdate computes the user_data overwrite needed to set the
+// conversation's distill status message to status, without performing any
+// write. Older distill flows used system messages; new-generation distill uses
+// an agent-side status message — in both cases we scan from the end for the
+// most recent message carrying a distill_status key. Returns false if none is
+// found. Callers either apply it standalone (updateDistillStatus) or fold it
+// into another transaction (compaction's batch write).
+func (s *Server) distillStatusUpdate(ctx context.Context, conversationID, status string) (db.MessageUserDataUpdate, bool) {
 	messages, err := s.db.ListMessages(ctx, conversationID)
 	if err != nil {
 		s.logger.Error("Failed to list messages", "conversationID", conversationID, "error", err)
-		return
+		return db.MessageUserDataUpdate{}, false
 	}
 
 	for i := len(messages) - 1; i >= 0; i-- {
@@ -220,30 +228,40 @@ func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status
 			continue
 		}
 		if userData["distill_status"] != "" {
-			// Update user_data with new status
 			userData["distill_status"] = status
 			newData, err := json.Marshal(userData)
 			if err != nil {
 				s.logger.Error("Failed to marshal distill status", "error", err)
-				return
+				return db.MessageUserDataUpdate{}, false
 			}
 			newDataStr := string(newData)
-			if err := s.db.UpdateMessageUserData(ctx, msg.MessageID, &newDataStr); err != nil {
-				s.logger.Error("Failed to update distill status", "messageID", msg.MessageID, "error", err)
-			}
-			// Re-fetch the updated message and broadcast it to SSE subscribers
-			// so the client sees the status change (spinner → complete).
-			// We use broadcastMessageUpdate (Broadcast) instead of notifySubscribersNewMessage
-			// (Publish) because the message's sequence_id hasn't changed — it's an update
-			// to an existing message. Publish skips subscribers whose index >= the sequence_id,
-			// so subscribers that already received the "in_progress" message would never
-			// see the update.
-			updatedMsg, err := s.db.GetMessageByID(ctx, msg.MessageID)
-			if err == nil {
-				go s.broadcastMessageUpdate(ctx, conversationID, updatedMsg)
-			}
-			return
+			return db.MessageUserDataUpdate{MessageID: msg.MessageID, UserData: &newDataStr}, true
 		}
+	}
+	return db.MessageUserDataUpdate{}, false
+}
+
+// updateDistillStatus updates the distill status message in its own
+// transaction and broadcasts the change to SSE subscribers.
+func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status string) {
+	update, ok := s.distillStatusUpdate(ctx, conversationID, status)
+	if !ok {
+		return
+	}
+	if err := s.db.UpdateMessageUserData(ctx, update.MessageID, update.UserData); err != nil {
+		s.logger.Error("Failed to update distill status", "messageID", update.MessageID, "error", err)
+		return
+	}
+	// Re-fetch the updated message and broadcast it to SSE subscribers so the
+	// client sees the status change (spinner → complete). We use
+	// broadcastMessageUpdate (Broadcast) instead of notifySubscribersNewMessage
+	// (Publish) because the message's sequence_id hasn't changed — it's an update
+	// to an existing message. Publish skips subscribers whose index >= the
+	// sequence_id, so subscribers that already received the "in_progress"
+	// message would never see the update.
+	updatedMsg, err := s.db.GetMessageByID(ctx, update.MessageID)
+	if err == nil {
+		go s.broadcastMessageUpdate(ctx, conversationID, updatedMsg)
 	}
 }
 
@@ -323,7 +341,21 @@ func buildDistillTranscript(sourceSlug string, messages []generated.Message) str
 	return sb.String()
 }
 
-func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, sourceSlug, modelID string, messages []generated.Message) {
+// distillMethodDefault collapses the whole conversation into a single briefing
+// message. distillMethodCompact uses the compaction algorithm (modeled on the
+// pi coding agent): summarize older messages, keep recent ones verbatim.
+const (
+	distillMethodDefault = "default"
+	distillMethodCompact = "compact"
+)
+
+// steeringSection formats optional user-provided guidance that steers what the
+// distillation/summary should emphasize. Appended to the summarizer's input.
+func steeringSection(instructions string) string {
+	return "\n\n## User Guidance\n\nThe user provided the following guidance on what to preserve or emphasize in this distillation. Follow it closely:\n\n" + instructions
+}
+
+func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, sourceSlug, modelID, method, instructions string, sourceGeneration int64, messages []generated.Message) {
 	defer func() {
 		s.mu.Lock()
 		manager, ok := s.activeConversations[conversationID]
@@ -334,8 +366,75 @@ func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, so
 		}
 	}()
 
-	s.performDistillation(ctx, conversationID, sourceSlug, modelID, messages)
+	if method == distillMethodCompact {
+		s.performPiDistillation(ctx, conversationID, sourceSlug, modelID, instructions, sourceGeneration, messages)
+	} else {
+		s.performDistillation(ctx, conversationID, sourceSlug, modelID, instructions, messages)
+	}
+	// The new generation's messages carry no usage data yet, so the UI's
+	// context-usage bar would keep showing the pre-distillation size until the
+	// next agent turn. Broadcast an estimate of the new generation's context
+	// size so the bar resets immediately.
+	s.broadcastEstimatedContextSize(ctx, conversationID)
 	go s.notifySubscribers(ctx, conversationID)
+}
+
+// broadcastEstimatedContextSize estimates the latest generation's context
+// window usage (char/4 heuristic over context-eligible messages) and pushes it
+// to stream subscribers. Used right after distillation, when the new
+// generation has no real usage data yet, so the UI bar resets instead of
+// showing the stale pre-distillation value.
+func (s *Server) broadcastEstimatedContextSize(ctx context.Context, conversationID string) {
+	s.mu.Lock()
+	manager, ok := s.activeConversations[conversationID]
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	messages, err := s.db.ListMessages(ctx, conversationID)
+	if err != nil {
+		s.logger.Error("Failed to list messages for context estimate", "conversationID", conversationID, "error", err)
+		return
+	}
+
+	var latestGen int64
+	for i := range messages {
+		if messages[i].Generation > latestGen {
+			latestGen = messages[i].Generation
+		}
+	}
+
+	var estimate int64
+	for i := range messages {
+		m := messages[i]
+		if m.Generation != latestGen || m.ExcludedFromContext {
+			continue
+		}
+		llmMsg, cerr := convertToLLMMessage(m)
+		if cerr != nil {
+			continue
+		}
+		estimate += int64(estimatePiMessageTokens(llmMsg))
+	}
+	if estimate <= 0 {
+		return
+	}
+
+	var conversation generated.Conversation
+	if derr := s.db.Queries(ctx, func(q *generated.Queries) error {
+		var qerr error
+		conversation, qerr = q.GetConversation(ctx, conversationID)
+		return qerr
+	}); derr != nil {
+		s.logger.Error("Failed to get conversation for context estimate", "conversationID", conversationID, "error", derr)
+		return
+	}
+
+	manager.broadcastStream(StreamResponse{
+		Conversation:      &conversation,
+		ContextWindowSize: uint64(estimate),
+	})
 }
 
 // DistillNewGenerationRequest represents the request to distill into the same conversation's next generation.
@@ -343,6 +442,13 @@ type DistillNewGenerationRequest struct {
 	SourceConversationID string `json:"source_conversation_id"`
 	Model                string `json:"model,omitempty"`
 	Cwd                  string `json:"cwd,omitempty"`
+	// Method selects the distillation strategy: "default" (single briefing
+	// message) or "compact" (summarize-old + keep-recent-verbatim).
+	// Empty defaults to "default".
+	Method string `json:"method,omitempty"`
+	// Instructions is optional free-form user guidance that steers what the
+	// distillation should preserve or emphasize.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // handleDistillNewGeneration handles POST /api/conversations/distill-new-generation.
@@ -366,12 +472,24 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	method := req.Method
+	if method == "" {
+		method = distillMethodDefault
+	}
+	if method != distillMethodDefault && method != distillMethodCompact {
+		http.Error(w, fmt.Sprintf("unknown distill method %q", method), http.StatusBadRequest)
+		return
+	}
+
 	sourceConv, err := s.db.GetConversationByID(ctx, req.SourceConversationID)
 	if err != nil {
 		s.logger.Error("Failed to get source conversation", "conversationID", req.SourceConversationID, "error", err)
 		http.Error(w, "Source conversation not found", http.StatusNotFound)
 		return
 	}
+	// Capture the generation we are distilling FROM, before incrementing.
+	// The pi strategy needs it to select the right messages to copy/summarize.
+	sourceGeneration := sourceConv.CurrentGeneration
 	messages, err := s.db.ListMessages(ctx, req.SourceConversationID)
 	if err != nil {
 		s.logger.Error("Failed to get messages", "conversationID", req.SourceConversationID, "error", err)
@@ -441,6 +559,7 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 			"distill_status": "in_progress",
 			"source_slug":    sourceSlug,
 			"new_generation": "true",
+			"distill_method": method,
 		},
 		ExcludedFromContext: true,
 	})
@@ -473,7 +592,7 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 
 	ctxNoCancel := context.WithoutCancel(ctx)
 	go func() {
-		s.runDistillNewGeneration(ctxNoCancel, req.SourceConversationID, sourceSlug, modelID, messages)
+		s.runDistillNewGeneration(ctxNoCancel, req.SourceConversationID, sourceSlug, modelID, method, req.Instructions, sourceGeneration, messages)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

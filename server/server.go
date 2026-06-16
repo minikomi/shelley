@@ -340,6 +340,11 @@ type Server struct {
 	// that invoke hooks via the server.
 	hooksDir string
 
+	// piDistillKeepRecentTokens overrides the pi-distillation recent-token
+	// retention budget. Zero means use defaultPiDistillSettings. Tests set it
+	// to force summarization without a giant transcript.
+	piDistillKeepRecentTokens int
+
 	// IndexedDB cache encryption master secret — see cache_key.go.
 	// Lives on the Server (not a package-global) so tests with
 	// independent DBs don't share state.
@@ -972,7 +977,11 @@ func ExtractDisplayData(message llm.Message) interface{} {
 }
 
 // recordMessage records a new message to the database and also notifies subscribers
-func (s *Server) recordMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, userData ...interface{}) error {
+// buildCreateMessageParams converts an llm.Message into the DB insert params,
+// applying the same message-type detection, display-data extraction, error
+// user_data stamping, and end-of-turn agent-done folding that recordMessage
+// uses. Shared by recordMessage and recordMessages.
+func (s *Server) buildCreateMessageParams(conversationID string, message llm.Message, usage llm.Usage, userData ...interface{}) (db.CreateMessageParams, error) {
 	// Log message based on role
 	if message.Role == llm.MessageRoleUser {
 		s.logger.Info("User message", "conversation_id", conversationID, "content_items", len(message.Content))
@@ -980,16 +989,11 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 		s.logger.Info("Agent message", "conversation_id", conversationID, "content_items", len(message.Content), "end_of_turn", message.EndOfTurn)
 	}
 
-	// Convert LLM message to database format
 	messageType, err := s.getMessageType(message)
 	if err != nil {
-		return fmt.Errorf("failed to determine message type: %w", err)
+		return db.CreateMessageParams{}, fmt.Errorf("failed to determine message type: %w", err)
 	}
 
-	// Extract display data from content items
-	displayDataToStore := ExtractDisplayData(message)
-
-	// Create message
 	var ud interface{}
 	if len(userData) > 0 {
 		ud = userData[0]
@@ -1010,16 +1014,25 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 	// visible" flake. Mirror of AcceptUserMessage's SetAgentWorking(true)-
 	// before-recordMessage ordering on the Send side.
 	markAgentDone := (messageType == db.MessageTypeAgent || messageType == db.MessageTypeError) && message.EndOfTurn
-	createdMsg, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
+	return db.CreateMessageParams{
 		ConversationID:      conversationID,
 		Type:                messageType,
 		LLMData:             message,
 		UserData:            ud,
 		UsageData:           usage,
-		DisplayData:         displayDataToStore,
+		DisplayData:         ExtractDisplayData(message),
 		ExcludedFromContext: message.ExcludedFromContext,
 		MarkAgentDone:       markAgentDone,
-	})
+	}, nil
+}
+
+func (s *Server) recordMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, userData ...interface{}) error {
+	params, err := s.buildCreateMessageParams(conversationID, message, usage, userData...)
+	if err != nil {
+		return err
+	}
+	markAgentDone := params.MarkAgentDone
+	createdMsg, err := s.db.CreateMessage(ctx, params)
 	if err != nil {
 		return fmt.Errorf("failed to create message: %w", err)
 	}
@@ -1058,6 +1071,81 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, createdMsg)
 
 	return nil
+}
+
+// recordMessages records several messages for one conversation in a SINGLE DB
+// transaction (one commit hook → one conversation-list recompute) and emits a
+// single SSE notification carrying all of them. This is the bulk counterpart to
+// recordMessage; compaction uses it to copy a whole tail of messages forward
+// without paying a full-list recompute per message.
+func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs []recordMessageInput) error {
+	return s.recordMessagesWithUserDataUpdate(ctx, conversationID, msgs, nil)
+}
+
+// recordMessagesWithUserDataUpdate is recordMessages plus an optional in-place
+// user_data overwrite of one existing message, applied in the SAME transaction
+// as the inserts (so the whole thing is one commit hook → one conversation-list
+// recompute). Compaction uses the update slot to flip its "Compacting…" status
+// message to "complete" together with writing the summary and carried tail,
+// instead of paying a second commit for the status flip. The updated message is
+// broadcast via broadcastMessageUpdate (its sequence_id is unchanged) after the
+// new messages are published.
+//
+// NOTE: an empty msgs slice is a no-op, so a non-nil update is dropped along
+// with it. Callers that may have an empty batch but still need the update must
+// apply it separately (compaction does, via updateDistillStatus).
+func (s *Server) recordMessagesWithUserDataUpdate(ctx context.Context, conversationID string, msgs []recordMessageInput, update *db.MessageUserDataUpdate) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	paramsList := make([]db.CreateMessageParams, 0, len(msgs))
+	for _, m := range msgs {
+		params, err := s.buildCreateMessageParams(conversationID, m.message, m.usage, m.userData...)
+		if err != nil {
+			return err
+		}
+		paramsList = append(paramsList, params)
+	}
+	// Whether any message ends the turn — used to sync the manager's in-memory
+	// agentWorking flag below, mirroring recordMessage. CreateMessages already
+	// wrote agent_working=false in the same Tx for these (via MarkAgentDone).
+	markAgentDone := false
+	for i := range paramsList {
+		if paramsList[i].MarkAgentDone {
+			markAgentDone = true
+			break
+		}
+	}
+	created, updated, err := s.db.CreateMessagesWithUserDataUpdate(ctx, paramsList, update)
+	if err != nil {
+		return fmt.Errorf("failed to create messages: %w", err)
+	}
+
+	s.mu.Lock()
+	mgr, ok := s.activeConversations[conversationID]
+	s.mu.Unlock()
+	if ok {
+		// Sync the in-memory flag / fire onStateChange now that the DB committed,
+		// same as recordMessage. The DB value is already false from the batch Tx,
+		// so the recompute finds no change and emits no extra patch.
+		if markAgentDone {
+			mgr.SetAgentWorking(false)
+		}
+		mgr.Touch()
+	}
+
+	go s.notifySubscribersNewMessages(context.WithoutCancel(ctx), conversationID, created)
+	if updated != nil {
+		go s.broadcastMessageUpdate(context.WithoutCancel(ctx), conversationID, updated)
+	}
+	return nil
+}
+
+// recordMessageInput is one message to record via recordMessages.
+type recordMessageInput struct {
+	message  llm.Message
+	usage    llm.Usage
+	userData []interface{}
 }
 
 // getMessageType determines the message type from an LLM message
@@ -1184,6 +1272,68 @@ func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID
 	manager.publishStream(newMsg.SequenceID, streamData)
 
 	// Also notify conversation list subscribers about the update (updated_at changed)
+	s.publishConversationListUpdate(ConversationListUpdate{
+		Type:         "update",
+		Conversation: &conversation,
+	})
+}
+
+// notifySubscribersNewMessages publishes several new messages in a single SSE
+// frame. The bulk counterpart to notifySubscribersNewMessage; used by
+// recordMessages so a batch insert (e.g. compaction copying a tail forward)
+// produces one stream event instead of one per message.
+func (s *Server) notifySubscribersNewMessages(ctx context.Context, conversationID string, newMsgs []generated.Message) {
+	if len(newMsgs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	manager, exists := s.activeConversations[conversationID]
+	s.mu.Unlock()
+	if !exists {
+		return
+	}
+
+	var conversation generated.Conversation
+	err := s.db.Queries(ctx, func(q *generated.Queries) error {
+		var err error
+		conversation, err = q.GetConversation(ctx, conversationID)
+		return err
+	})
+	if err != nil {
+		s.logger.Error("Failed to get conversation data for notification", "conversationID", conversationID, "error", err)
+		return
+	}
+
+	apiMessages := toAPIMessages(newMsgs)
+
+	// If any message ends the turn, drain queued messages once.
+	for i := range newMsgs {
+		if isAgentEndOfTurn(&newMsgs[i]) {
+			go manager.drainPendingMessages(s)
+			break
+		}
+	}
+
+	// Context window from the last message that carries usage (others are 0,
+	// omitted via omitempty so the client keeps its cached value otherwise).
+	var ctxSize uint64
+	for i := len(newMsgs) - 1; i >= 0; i-- {
+		if sz := calculateContextWindowSizeFromMsg(&newMsgs[i]); sz > 0 {
+			ctxSize = sz
+			break
+		}
+	}
+
+	streamData := StreamResponse{
+		Messages:          apiMessages,
+		Conversation:      &conversation,
+		ContextWindowSize: ctxSize,
+	}
+	// Publish at the highest sequence id in the batch so resuming subscribers
+	// advance past all of them.
+	maxSeq := newMsgs[len(newMsgs)-1].SequenceID
+	manager.publishStream(maxSeq, streamData)
+
 	s.publishConversationListUpdate(ConversationListUpdate{
 		Type:         "update",
 		Conversation: &conversation,

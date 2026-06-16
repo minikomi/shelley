@@ -289,6 +289,21 @@ export function isDistillStatusMessage(message: Message): boolean {
   }
 }
 
+// Helper to check if a message was copied verbatim into the current generation
+// by a compaction (distill_method=compact). The UI collapses these behind a
+// single "messages carried forward" band so the re-played tail isn't
+// re-rendered one message at a time.
+export function isCompactionCarried(message: Message): boolean {
+  if (!message.user_data) return false;
+  try {
+    const userData =
+      typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data;
+    return userData.compaction_carried === "true";
+  } catch {
+    return false;
+  }
+}
+
 // Helper to check if a user message is queued (waiting for agent to finish)
 export function isQueuedMessage(message: Message): boolean {
   if (message.type !== "user" || !message.user_data) return false;

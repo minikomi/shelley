@@ -766,9 +766,11 @@ function App() {
     sourceConversationId: string,
     model: string,
     cwd?: string,
+    method?: "default" | "compact",
+    instructions?: string,
   ) => {
     try {
-      await api.distillNewGeneration(sourceConversationId, model, cwd);
+      await api.distillNewGeneration(sourceConversationId, model, cwd, method, instructions);
       // Don't bypass the patch stream here. Setting `conversations` directly
       // without updating `conversationListHashRef` would desync future patch
       // events; the stream will deliver the new generation as a regular patch

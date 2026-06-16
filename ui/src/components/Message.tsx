@@ -283,6 +283,7 @@ function WarningMessage({ message }: { message: MessageType }) {
 function DistillStatusMessage({ message }: { message: MessageType }) {
   let status = "in_progress";
   let sourceSlug = "";
+  let method = "default";
 
   if (message.user_data) {
     try {
@@ -290,6 +291,7 @@ function DistillStatusMessage({ message }: { message: MessageType }) {
         typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data;
       status = userData.distill_status || "in_progress";
       sourceSlug = userData.source_slug || "";
+      method = userData.distill_method || "default";
     } catch {
       // ignore parse errors
     }
@@ -297,6 +299,11 @@ function DistillStatusMessage({ message }: { message: MessageType }) {
 
   const isInProgress = status === "in_progress";
   const isError = status === "error";
+  const isCompact = method === "compact";
+  // Verb/noun vary by strategy: "compact" vs "distill".
+  const gerund = isCompact ? "Compacting" : "Distilling";
+  const pastParticiple = isCompact ? "Compacted" : "Distilled";
+  const noun = isCompact ? "Compaction" : "Distillation";
 
   return (
     <div
@@ -309,17 +316,17 @@ function DistillStatusMessage({ message }: { message: MessageType }) {
       {isInProgress && (
         <span data-testid="distill-in-progress">
           <span className="spinner spinner-small msg-spinner-inline" />
-          Distilling conversation{sourceSlug ? ` "${sourceSlug}"` : ""}…
+          {gerund} conversation{sourceSlug ? ` "${sourceSlug}"` : ""}…
         </span>
       )}
       {status === "complete" && (
         <span data-testid="distill-complete">
-          Distilled from{sourceSlug ? ` "${sourceSlug}"` : " prior conversation"}
+          {pastParticiple} from{sourceSlug ? ` "${sourceSlug}"` : " prior conversation"}
         </span>
       )}
       {isError && (
         <span data-testid="distill-error">
-          Distillation failed{sourceSlug ? ` for "${sourceSlug}"` : ""}
+          {noun} failed{sourceSlug ? ` for "${sourceSlug}"` : ""}
         </span>
       )}
     </div>
@@ -546,6 +553,7 @@ const Message = React.memo(function Message({
 
   let distillationFile = "";
   let distillationContent = "";
+  let distillationEditable = false;
 
   // Check if this is a distilled user message (LLM-generated, treat as agent for markdown)
   const isDistilledUser =
@@ -558,6 +566,10 @@ const Message = React.memo(function Message({
         if (ud?.distilled === "true") {
           distillationFile = ud.distillation_file || "";
           distillationContent = ud.distillation_content || "";
+          // "compact" summaries are generated checkpoints paired with a
+          // verbatim recent tail; they are not editable. Only the default
+          // distillation (which writes an editable temp file) is.
+          distillationEditable = ud.distillation_editable === "true" && !!distillationFile;
           return true;
         }
         return false;
@@ -1311,22 +1323,28 @@ const Message = React.memo(function Message({
   };
 
   const renderDistillationBox = () =>
-    isDistilledUser && distillationFile ? (
+    isDistilledUser ? (
       <div className="distillation-file-box" data-testid="distillation-file-box">
         <div className="distillation-file-box-header">
-          <div className="distillation-file-box-title">Editable distillation</div>
-          <button
-            type="button"
-            className="distillation-edit-button"
-            onClick={openDistillationEditor}
-            title="Edit distillation in modal"
-          >
-            Edit
-          </button>
+          <div className="distillation-file-box-title">
+            {distillationEditable ? "Editable distillation" : "Compacted summary"}
+          </div>
+          {distillationEditable && (
+            <button
+              type="button"
+              className="distillation-edit-button"
+              onClick={openDistillationEditor}
+              title="Edit distillation in modal"
+            >
+              Edit
+            </button>
+          )}
         </div>
-        <div className="distillation-file-box-meta">
-          Shown from editable file <code>{distillationFile}</code>.
-        </div>
+        {distillationEditable && (
+          <div className="distillation-file-box-meta">
+            Shown from editable file <code>{distillationFile}</code>.
+          </div>
+        )}
         <div className="distillation-file-box-content">
           {displayedDistillationContent ? (
             <MarkdownContent text={displayedDistillationContent} />

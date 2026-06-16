@@ -887,88 +887,163 @@ type CreateMessageParams struct {
 	MarkAgentDone bool
 }
 
-// CreateMessage creates a new message
-func (db *DB) CreateMessage(ctx context.Context, params CreateMessageParams) (*generated.Message, error) {
-	messageID := uuid.New().String()
-
-	// Marshal JSON fields
-	var llmDataJSON, userDataJSON, usageDataJSON, displayDataJSON *string
-
+// marshalMessageJSON marshals the four JSON columns of a message into the
+// nullable strings the generated query expects.
+func marshalMessageJSON(params CreateMessageParams) (llmDataJSON, userDataJSON, usageDataJSON, displayDataJSON *string, err error) {
 	if params.LLMData != nil {
-		data, err := json.Marshal(params.LLMData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal LLM data: %w", err)
+		data, merr := json.Marshal(params.LLMData)
+		if merr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("failed to marshal LLM data: %w", merr)
 		}
 		str := string(data)
 		llmDataJSON = &str
 	}
-
 	if params.UserData != nil {
-		data, err := json.Marshal(params.UserData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal user data: %w", err)
+		data, merr := json.Marshal(params.UserData)
+		if merr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("failed to marshal user data: %w", merr)
 		}
 		str := string(data)
 		userDataJSON = &str
 	}
-
 	if params.UsageData != nil {
-		data, err := json.Marshal(params.UsageData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal usage data: %w", err)
+		data, merr := json.Marshal(params.UsageData)
+		if merr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("failed to marshal usage data: %w", merr)
 		}
 		str := string(data)
 		usageDataJSON = &str
 	}
-
 	if params.DisplayData != nil {
-		data, err := json.Marshal(params.DisplayData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal display data: %w", err)
+		data, merr := json.Marshal(params.DisplayData)
+		if merr != nil {
+			return nil, nil, nil, nil, fmt.Errorf("failed to marshal display data: %w", merr)
 		}
 		str := string(data)
 		displayDataJSON = &str
 	}
+	return llmDataJSON, userDataJSON, usageDataJSON, displayDataJSON, nil
+}
 
+// insertMessageTx inserts one message within an open Tx, allocating its
+// sequence_id and stamping the conversation's current generation. Shared by
+// CreateMessage and CreateMessages so single and bulk inserts are identical.
+func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMessageParams) (generated.Message, error) {
+	llmDataJSON, userDataJSON, usageDataJSON, displayDataJSON, err := marshalMessageJSON(params)
+	if err != nil {
+		return generated.Message{}, err
+	}
+	sequenceID, err := q.GetNextSequenceID(ctx, params.ConversationID)
+	if err != nil {
+		return generated.Message{}, fmt.Errorf("failed to get next sequence ID: %w", err)
+	}
+	conversation, err := q.GetConversation(ctx, params.ConversationID)
+	if err != nil {
+		return generated.Message{}, fmt.Errorf("failed to get conversation generation: %w", err)
+	}
+	message, err := q.CreateMessage(ctx, generated.CreateMessageParams{
+		MessageID:           uuid.New().String(),
+		ConversationID:      params.ConversationID,
+		SequenceID:          sequenceID,
+		Generation:          conversation.CurrentGeneration,
+		Type:                string(params.Type),
+		LlmData:             llmDataJSON,
+		UserData:            userDataJSON,
+		UsageData:           usageDataJSON,
+		DisplayData:         displayDataJSON,
+		ExcludedFromContext: params.ExcludedFromContext,
+	})
+	if err != nil {
+		return generated.Message{}, err
+	}
+	if params.MarkAgentDone {
+		if err := q.SetConversationAgentWorking(ctx, generated.SetConversationAgentWorkingParams{
+			AgentWorking:   false,
+			ConversationID: params.ConversationID,
+		}); err != nil {
+			return generated.Message{}, err
+		}
+	}
+	return message, nil
+}
+
+// CreateMessage creates a new message
+func (db *DB) CreateMessage(ctx context.Context, params CreateMessageParams) (*generated.Message, error) {
 	var message generated.Message
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		var err error
+		message, err = insertMessageTx(ctx, generated.New(tx.Conn()), params)
+		return err
+	})
+	return &message, err
+}
+
+// CreateMessages inserts several messages and bumps the conversation timestamp
+// in a SINGLE transaction, so exactly one commit hook fires (one
+// conversation-list recompute, one SSE notification) regardless of how many
+// messages are written. Compaction copies a whole tail of messages forward;
+// doing each in its own Tx triggered a full-list recompute per message, which
+// is visibly slow on a large conversation list. Returns the created rows in
+// input order. All messages must target the same conversation.
+func (db *DB) CreateMessages(ctx context.Context, paramsList []CreateMessageParams) ([]generated.Message, error) {
+	created, _, err := db.CreateMessagesWithUserDataUpdate(ctx, paramsList, nil)
+	return created, err
+}
+
+// MessageUserDataUpdate replaces an existing message's user_data column.
+type MessageUserDataUpdate struct {
+	MessageID string
+	UserData  *string
+}
+
+// CreateMessagesWithUserDataUpdate inserts the batch, bumps the conversation
+// timestamp, and (optionally) overwrites one existing message's user_data — all
+// in a SINGLE transaction, so exactly one commit hook fires. Compaction uses
+// the update slot to flip its "Compacting…" status message to "complete" in the
+// same Tx that writes the summary + carried tail, instead of paying a second
+// commit (and a second full conversation-list recompute) for the status flip.
+// Returns the created rows (input order) and the re-fetched updated row, if any.
+func (db *DB) CreateMessagesWithUserDataUpdate(ctx context.Context, paramsList []CreateMessageParams, update *MessageUserDataUpdate) ([]generated.Message, *generated.Message, error) {
+	if len(paramsList) == 0 {
+		return nil, nil, nil
+	}
+	conversationID := paramsList[0].ConversationID
+	out := make([]generated.Message, 0, len(paramsList))
+	var updated *generated.Message
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
-
-		// Get next sequence_id for this conversation
-		sequenceID, err := q.GetNextSequenceID(ctx, params.ConversationID)
-		if err != nil {
-			return fmt.Errorf("failed to get next sequence ID: %w", err)
+		for _, params := range paramsList {
+			if params.ConversationID != conversationID {
+				return fmt.Errorf("CreateMessages: all messages must share a conversation (%q != %q)", params.ConversationID, conversationID)
+			}
+			msg, err := insertMessageTx(ctx, q, params)
+			if err != nil {
+				return err
+			}
+			out = append(out, msg)
 		}
-
-		conversation, err := q.GetConversation(ctx, params.ConversationID)
-		if err != nil {
-			return fmt.Errorf("failed to get conversation generation: %w", err)
-		}
-
-		message, err = q.CreateMessage(ctx, generated.CreateMessageParams{
-			MessageID:           messageID,
-			ConversationID:      params.ConversationID,
-			SequenceID:          sequenceID,
-			Generation:          conversation.CurrentGeneration,
-			Type:                string(params.Type),
-			LlmData:             llmDataJSON,
-			UserData:            userDataJSON,
-			UsageData:           usageDataJSON,
-			DisplayData:         displayDataJSON,
-			ExcludedFromContext: params.ExcludedFromContext,
-		})
-		if err != nil {
+		if err := q.UpdateConversationTimestamp(ctx, conversationID); err != nil {
 			return err
 		}
-		if params.MarkAgentDone {
-			return q.SetConversationAgentWorking(ctx, generated.SetConversationAgentWorkingParams{
-				AgentWorking:   false,
-				ConversationID: params.ConversationID,
-			})
+		if update != nil {
+			if err := q.UpdateMessageUserData(ctx, generated.UpdateMessageUserDataParams{
+				MessageID: update.MessageID,
+				UserData:  update.UserData,
+			}); err != nil {
+				return err
+			}
+			msg, err := q.GetMessage(ctx, update.MessageID)
+			if err != nil {
+				return err
+			}
+			updated = &msg
 		}
 		return nil
 	})
-	return &message, err
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, updated, nil
 }
 
 type CreateWarningMessageResult struct {

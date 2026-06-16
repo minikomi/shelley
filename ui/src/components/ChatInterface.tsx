@@ -5,6 +5,7 @@ import {
   LLMContent,
   ToolProgress,
   isDistillStatusMessage,
+  isCompactionCarried,
   isQueuedMessage,
 } from "../types";
 import { api } from "../services/api";
@@ -270,6 +271,10 @@ function ContextUsageBar({
 interface CoalescedItem {
   type: "message" | "tool";
   generation: number;
+  // carried marks an item copied verbatim from the previous generation by a
+  // compaction. The UI collapses these behind a single band instead of
+  // re-rendering each one (the originals stay visible in the prior generation).
+  carried?: boolean;
   message?: Message;
   toolUseId?: string;
   toolName?: string;
@@ -521,6 +526,34 @@ function useHeadlineBudget(): number {
 // emoji + short headline + (optional) running spinner. Clicking a
 // pill opens the full CoalescedToolCall detail in a modal dialog.
 //
+// CarriedBand collapses a run of messages/tools that a compaction copied
+// verbatim from the previous generation. They're hidden by default (the
+// originals stay visible in the prior generation above); the user can expand
+// the band to inspect them inline if needed. Rendering them collapsed avoids
+// re-painting the whole replayed tail, which was slow and made the view scroll
+// for a long time after compaction.
+function CarriedBand({ count, children }: { count: number; children: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="carried-band" data-testid="carried-band">
+      <button
+        type="button"
+        className="carried-band-toggle"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <span className="carried-band-chevron" aria-hidden="true">
+          {expanded ? "▾" : "▸"}
+        </span>
+        <span className="carried-band-label">
+          {count} message{count === 1 ? "" : "s"} carried forward from before compaction
+        </span>
+      </button>
+      {expanded && <div className="carried-band-body">{children}</div>}
+    </div>
+  );
+}
+
 // Mirrors iOS/exe.dev/ToolPillsRow.swift so the desktop and iOS
 // clients have the same visual grammar for tool activity.
 interface ToolPillsRowProps {
@@ -739,6 +772,8 @@ interface ChatInterfaceProps {
     sourceConversationId: string,
     model: string,
     cwd?: string,
+    method?: "default" | "compact",
+    instructions?: string,
   ) => Promise<void>;
   mostRecentCwd?: string | null;
   isDrawerCollapsed?: boolean;
@@ -1794,6 +1829,16 @@ function ChatInterface({
       setShowDiffViewer(true);
       return;
     }
+
+    // "/compact [instructions]" compacts the conversation into a new
+    // generation (summarize older messages, keep recent ones verbatim).
+    // Any text after "/compact" is free-form guidance steering what the
+    // summary should preserve or emphasize.
+    if (trimmedMessage === "/compact" || trimmedMessage.startsWith("/compact ")) {
+      const instructions = trimmedMessage.slice("/compact".length).trim();
+      await handleDistillCompactNewGeneration(instructions || undefined);
+      return;
+    }
     if (trimmedMessage === "/new" || trimmedMessage.startsWith("/new ")) {
       const prompt = trimmedMessage.slice("/new".length).trim();
       // Clear current conversation (carries cwd over via localStorage).
@@ -1995,12 +2040,25 @@ function ChatInterface({
     }
   };
 
-  const handleDistillNewGeneration = async () => {
+  const handleDistillNewGeneration = async (instructions?: string) => {
     if (!conversationId || !onDistillNewGeneration) return;
     await onDistillNewGeneration(
       conversationId,
       selectedModel,
       currentConversation?.cwd || selectedCwd || undefined,
+      "default",
+      instructions,
+    );
+  };
+
+  const handleDistillCompactNewGeneration = async (instructions?: string) => {
+    if (!conversationId || !onDistillNewGeneration) return;
+    await onDistillNewGeneration(
+      conversationId,
+      selectedModel,
+      currentConversation?.cwd || selectedCwd || undefined,
+      "compact",
+      instructions,
     );
   };
 
@@ -2095,17 +2153,21 @@ function ChatInterface({
 
     // Second pass: process messages and extract tool uses
     messages.forEach((message) => {
+      // Items copied forward by a compaction are tagged so the renderer can
+      // collapse them behind a single band (they remain visible in the prior
+      // generation above). Applies to every item derived from this message.
+      const carried = isCompactionCarried(message);
       // Allow system messages with distill_status through, skip others
       if (message.type === "system") {
         if (!isDistillStatusMessage(message)) {
           return;
         }
-        items.push({ type: "message", generation: message.generation, message });
+        items.push({ type: "message", generation: message.generation, carried, message });
         return;
       }
 
       if (message.type === "error" || message.type === "warning") {
-        items.push({ type: "message", generation: message.generation, message });
+        items.push({ type: "message", generation: message.generation, carried, message });
         return;
       }
 
@@ -2125,7 +2187,7 @@ function ChatInterface({
 
       // If it's a user message without tool results, show it
       if (message.type === "user" && !hasToolResult) {
-        items.push({ type: "message", generation: message.generation, message });
+        items.push({ type: "message", generation: message.generation, carried, message });
         return;
       }
 
@@ -2160,7 +2222,7 @@ function ChatInterface({
               .join("")
               .trim();
             if (textString) {
-              items.push({ type: "message", generation: message.generation, message });
+              items.push({ type: "message", generation: message.generation, carried, message });
             }
 
             // Check if this message was truncated (tool calls lost)
@@ -2179,6 +2241,7 @@ function ChatInterface({
               items.push({
                 type: "tool",
                 generation: message.generation,
+                carried,
                 toolUseId: toolUse.ID,
                 toolName: toolUse.ToolName,
                 toolInput: toolUse.ToolInput,
@@ -2195,10 +2258,10 @@ function ChatInterface({
           }
         } catch (err) {
           console.error("Failed to parse message LLM data:", err);
-          items.push({ type: "message", generation: message.generation, message });
+          items.push({ type: "message", generation: message.generation, carried, message });
         }
       } else {
-        items.push({ type: "message", generation: message.generation, message });
+        items.push({ type: "message", generation: message.generation, carried, message });
       }
     });
 
@@ -2319,6 +2382,58 @@ function ChatInterface({
       return item.message?.created_at || null;
     };
 
+    // Track the last 10k-token threshold we've shown so we emit an unobtrusive
+    // "NNk tokens" marker each time the conversation's context size crosses the
+    // next 10k boundary. Reset per generation (compaction starts a fresh
+    // context). Context size is read from agent messages' usage data.
+    const TOKEN_MARKER_STEP = 10_000;
+    const tokenState: { lastBucket: number } = { lastBucket: 0 };
+
+    const contextSizeOf = (item: CoalescedItem): number | null => {
+      if (item.type !== "message" || item.message?.type !== "agent") return null;
+      const raw = item.message?.usage_data;
+      if (!raw) return null;
+      try {
+        const usage = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const ctx =
+          (usage?.input_tokens ?? 0) +
+          (usage?.cache_creation_input_tokens ?? 0) +
+          (usage?.cache_read_input_tokens ?? 0) +
+          (usage?.output_tokens ?? 0);
+        return ctx > 0 ? ctx : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const maybeTokenMarker = (item: CoalescedItem, keyPrefix: string): React.ReactNode | null => {
+      const ctx = contextSizeOf(item);
+      if (ctx === null) return null;
+      const bucket = Math.floor(ctx / TOKEN_MARKER_STEP);
+      // lastBucket is a high-water mark: only emit when we cross to a strictly
+      // higher 10k bucket than any seen so far this generation. Don't lower it
+      // when context momentarily shrinks (cache/usage accounting fluctuates
+      // between turns), or a later small uptick would re-cross the same
+      // boundary and emit a duplicate marker.
+      if (bucket <= tokenState.lastBucket) {
+        return null;
+      }
+      tokenState.lastBucket = bucket;
+      // Show the actual context size rounded to the nearest thousand (e.g.
+      // 53,268 -> "53k tokens"), not just the 10k threshold that triggered it.
+      const label = `${Math.round(ctx / 1000)}k tokens`;
+      return (
+        <div
+          key={`tok-${keyPrefix}`}
+          className="context-token-marker"
+          data-testid="context-token-marker"
+          title={`Context size: ${ctx.toLocaleString()} tokens`}
+        >
+          <span>{label}</span>
+        </div>
+      );
+    };
+
     const maybeTimestamp = (iso: string | null, keyPrefix: string): React.ReactNode | null => {
       if (!iso) return null;
       const d = new Date(iso);
@@ -2343,6 +2458,9 @@ function ChatInterface({
 
     const rendered = generations.flatMap((generation, generationIndex) => {
       const items = itemsByGeneration.get(generation) || [];
+      // Each generation has its own context (compaction resets it), so restart
+      // the token-marker threshold at the generation boundary.
+      tokenState.lastBucket = 0;
       const sectionItems: React.ReactNode[] = [
         <ModelBar
           key={`model-bar-${generation}`}
@@ -2367,11 +2485,15 @@ function ChatInterface({
       // screenshots, image reads and output_iframe results still
       // render inline as before — their value is the rendering.
       let pillBuf: CoalescedItem[] = [];
+      // pillSink is where flushPills emits its coalesced row. It tracks the
+      // current rendering target so a pill burst inside a CarriedBand lands in
+      // the band, not the main section.
+      let pillSink: React.ReactNode[] = sectionItems;
       const flushPills = (keySuffix: string | number) => {
         if (pillBuf.length === 0) return;
         const buf = pillBuf;
         pillBuf = [];
-        sectionItems.push(
+        pillSink.push(
           <ToolPillsRow
             key={`tool-pills-${generation}-${buf[0].toolUseId || keySuffix}`}
             items={buf}
@@ -2380,7 +2502,10 @@ function ChatInterface({
           />,
         );
       };
-      items.forEach((item, index) => {
+      // Render one item into the given sink. Pill coalescing (pillBuf/flushPills)
+      // and timestamp/token-marker state are shared so a carried run and the
+      // live tail keep the same visual grammar.
+      const renderItemInto = (sink: React.ReactNode[], item: CoalescedItem, index: number) => {
         const isPillable =
           toolPillsEnabled && item.type === "tool" && !isAutoExpandTool(item.toolName);
         // Timestamp for non-pill items (or the first pill in a run)
@@ -2393,12 +2518,12 @@ function ChatInterface({
           );
           if (tsNode) {
             flushPills(index);
-            sectionItems.push(tsNode);
+            sink.push(tsNode);
           }
         }
         if (item.type === "message" && item.message) {
           flushPills(index);
-          sectionItems.push(
+          sink.push(
             <MessageComponent
               key={item.message.message_id}
               message={item.message}
@@ -2409,12 +2534,19 @@ function ChatInterface({
               onFork={conversationId ? forkConversation : undefined}
             />,
           );
+          // After an agent message, drop a subtle "NNk tokens" marker if its
+          // context size crossed the next 10k threshold.
+          const tokNode = maybeTokenMarker(
+            item,
+            item.message.message_id || `g${generation}-i${index}`,
+          );
+          if (tokNode) sink.push(tokNode);
         } else if (item.type === "tool") {
           if (isPillable) {
             pillBuf.push(item);
           } else {
             flushPills(index);
-            sectionItems.push(
+            sink.push(
               <CoalescedToolCall
                 key={item.toolUseId || `tool-${generation}-${item.toolName || "unknown"}-${index}`}
                 toolName={item.toolName || "Unknown Tool"}
@@ -2431,7 +2563,48 @@ function ChatInterface({
             );
           }
         }
-      });
+      };
+
+      // Walk items, grouping consecutive compaction-carried items into a single
+      // collapsible CarriedBand. The carried tail is rendered lazily inside the
+      // band, so the normal path doesn't re-paint every replayed message.
+      let i = 0;
+      while (i < items.length) {
+        if (items[i].carried) {
+          const start = i;
+          const band: React.ReactNode[] = [];
+          // Flush any buffered (non-carried) pills into the main section before
+          // redirecting the sink, so they don't leak into the band.
+          flushPills(`pre-carried-${start}`);
+          pillSink = band;
+          // The band's items are always built (even when collapsed/hidden), so
+          // snapshot the shared timestamp high-water mark and restore it after:
+          // hidden carried rows must not suppress the timestamp on the first
+          // visible item of the live tail below.
+          const tsSnapshot = { ...tsState };
+          // Count carried messages (not tool items) for the label. A carried
+          // run always begins with a message (the cut point never lands on a
+          // tool_result), so this is >= 1.
+          let count = 0;
+          while (i < items.length && items[i].carried) {
+            renderItemInto(band, items[i], i);
+            if (items[i].type === "message") count++;
+            i++;
+          }
+          flushPills(`carried-${start}`);
+          pillSink = sectionItems;
+          tsState.lastMin = tsSnapshot.lastMin;
+          tsState.lastDay = tsSnapshot.lastDay;
+          sectionItems.push(
+            <CarriedBand key={`carried-band-${generation}-${start}`} count={count}>
+              {band}
+            </CarriedBand>,
+          );
+          continue;
+        }
+        renderItemInto(sectionItems, items[i], i);
+        i++;
+      }
       flushPills("end");
 
       const nodes: React.ReactNode[] = [];

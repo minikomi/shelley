@@ -600,3 +600,105 @@ func TestCheckpoint(t *testing.T) {
 		t.Fatalf("Checkpoint did not shrink WAL: before=%d after=%d", beforeInfo.Size(), afterInfo.Size())
 	}
 }
+
+// TestCreateMessages verifies the bulk insert assigns monotonically increasing
+// sequence ids, preserves input order, and commits in a single transaction
+// (one commit hook) regardless of message count.
+func TestCreateMessages(t *testing.T) {
+	database := setupTestDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conv, err := database.CreateConversation(ctx, stringPtr("bulk"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+
+	// One pre-existing message so we can confirm bulk sequence ids continue
+	// past it rather than restarting.
+	first, err := database.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: conv.ConversationID,
+		Type:           MessageTypeUser,
+		UserData:       map[string]any{"n": 0},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+
+	var commits int
+	database.Pool().OnCommit(func() { commits++ })
+
+	params := []CreateMessageParams{
+		{ConversationID: conv.ConversationID, Type: MessageTypeUser, UserData: map[string]any{"n": 1}},
+		{ConversationID: conv.ConversationID, Type: MessageTypeAgent, UserData: map[string]any{"n": 2}},
+		{ConversationID: conv.ConversationID, Type: MessageTypeUser, UserData: map[string]any{"n": 3}},
+	}
+	created, err := database.CreateMessages(ctx, params)
+	if err != nil {
+		t.Fatalf("CreateMessages: %v", err)
+	}
+	if commits != 1 {
+		t.Fatalf("expected exactly 1 commit hook fire for the batch, got %d", commits)
+	}
+	if len(created) != 3 {
+		t.Fatalf("expected 3 created messages, got %d", len(created))
+	}
+	// Sequence ids strictly increasing and greater than the pre-existing one.
+	prev := first.SequenceID
+	for i, m := range created {
+		if m.SequenceID <= prev {
+			t.Fatalf("message %d sequence_id %d not greater than previous %d", i, m.SequenceID, prev)
+		}
+		prev = m.SequenceID
+	}
+
+	// Persisted order matches input order.
+	all, err := database.ListMessages(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("expected 4 messages total, got %d", len(all))
+	}
+
+	// Empty batch is a no-op.
+	got, err := database.CreateMessages(ctx, nil)
+	if err != nil || got != nil {
+		t.Fatalf("CreateMessages(nil) = %v, %v; want nil, nil", got, err)
+	}
+
+	// Mixed conversations are rejected.
+	other, err := database.CreateConversation(ctx, stringPtr("other"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatalf("CreateConversation other: %v", err)
+	}
+	_, err = database.CreateMessages(ctx, []CreateMessageParams{
+		{ConversationID: conv.ConversationID, Type: MessageTypeUser},
+		{ConversationID: other.ConversationID, Type: MessageTypeUser},
+	})
+	if err == nil {
+		t.Fatalf("expected error for mixed-conversation batch")
+	}
+
+	// The optional user_data update is applied in the same Tx (one commit hook)
+	// and the updated row is returned. Flip `first`'s user_data while inserting.
+	updatedData := `{"n":"updated"}`
+	commits = 0
+	ins, upd, err := database.CreateMessagesWithUserDataUpdate(
+		ctx,
+		[]CreateMessageParams{{ConversationID: conv.ConversationID, Type: MessageTypeUser, UserData: map[string]any{"n": 4}}},
+		&MessageUserDataUpdate{MessageID: first.MessageID, UserData: &updatedData},
+	)
+	if err != nil {
+		t.Fatalf("CreateMessagesWithUserDataUpdate: %v", err)
+	}
+	if commits != 1 {
+		t.Fatalf("expected exactly 1 commit hook for batch+update, got %d", commits)
+	}
+	if len(ins) != 1 {
+		t.Fatalf("expected 1 inserted message, got %d", len(ins))
+	}
+	if upd == nil || upd.MessageID != first.MessageID || upd.UserData == nil || *upd.UserData != updatedData {
+		t.Fatalf("expected updated row for %s with user_data %q, got %+v", first.MessageID, updatedData, upd)
+	}
+}
