@@ -26,6 +26,15 @@ import { messageStore } from "./messageStore";
 
 export type StreamStatus = "connected" | "reconnecting" | "disconnected";
 
+// Server sends a heartbeat every 30s. If we go this long without any frame
+// the connection is presumed dead and we force a reconnect.
+const HEARTBEAT_TIMEOUT_MS = 60000;
+// On a foreground/network resume, treat the connection as stale (and
+// reconnect) if we haven't seen a frame within this window — one missed
+// 30s heartbeat plus margin. Shorter than HEARTBEAT_TIMEOUT_MS because here
+// we have a positive signal (user returned) and want to recover fast.
+const STALE_MS = 35000;
+
 export interface GlobalStreamOptions {
   getHash: () => string | null;
   onListPatch: (event: ConversationListPatchEvent) => void;
@@ -77,6 +86,14 @@ export function connectGlobalStream({
   let heartbeatTimer: number | null = null;
   let attempts = 0;
   let lastStatus: StreamStatus | null = null;
+  // Wall-clock timestamp of the last frame (open or any message, incl.
+  // heartbeat) received on the current connection. This is the source of
+  // truth for connection liveness: unlike setTimeout-based watchdogs, it is
+  // immune to background-tab timer throttling/freezing, so when the tab
+  // returns to the foreground we can tell — by comparing against Date.now()
+  // — whether the socket has gone silent (a zombie connection the browser
+  // never surfaced as an error) and reconnect immediately.
+  let lastFrameAt = Date.now();
   // True once we have successfully connected at least once. Used to
   // distinguish a true reconnect from the initial connect: only the former
   // triggers markAllStale() + onReconnect().
@@ -109,10 +126,42 @@ export function connectGlobalStream({
     clearHeartbeat();
     heartbeatTimer = window.setTimeout(() => {
       console.warn("globalStream: no heartbeat in 60s, forcing reconnect");
-      eventSource?.close();
-      eventSource = null;
-      connect();
-    }, 60000);
+      reconnectNow();
+    }, HEARTBEAT_TIMEOUT_MS);
+  };
+
+  // reconnectNow tears down the current EventSource and reconnects right away,
+  // bypassing the error-backoff timer. Used by the user-resume paths
+  // (visibilitychange, pageshow, online) and the heartbeat watchdog. It flags
+  // a reconnect-in-progress so the next successful open triggers
+  // markAllStale() + onReconnect(), backfilling history that may have changed
+  // while we were silent.
+  const reconnectNow = () => {
+    if (closed) return;
+    if (hasEverConnected) isReconnecting = true;
+    attempts = 0;
+    eventSource?.close();
+    eventSource = null;
+    clearHeartbeat();
+    clearReconnect();
+    connect();
+  };
+
+  // reconnectIfStale reconnects only when the current connection looks dead:
+  // no EventSource, an explicitly-closed one, or one that hasn't delivered a
+  // frame within STALE_MS (one missed heartbeat plus margin). Called when the
+  // tab is brought back to the foreground or the network returns, where a
+  // zombie socket can report readyState OPEN while being silently dead.
+  const reconnectIfStale = () => {
+    if (closed) return;
+    // A CONNECTING socket (readyState 0) is mid-handshake and making
+    // progress; tearing it down would only restart it. Leave it be and let
+    // its onopen/onerror resolve. We only act on a missing socket, an
+    // explicitly-closed one, or an OPEN-but-silent (zombie) one.
+    if (eventSource && eventSource.readyState === 0) return;
+    const stale =
+      !eventSource || eventSource.readyState === 2 || Date.now() - lastFrameAt > STALE_MS;
+    if (stale) reconnectNow();
   };
 
   const handleEvent = (data: StreamResponse) => {
@@ -189,10 +238,16 @@ export function connectGlobalStream({
     if (closed) return;
     clearReconnect();
     eventSource?.close();
+    // Treat the start of a connection attempt as a liveness checkpoint so a
+    // resume signal (visibilitychange/pageshow/online) that races the new
+    // socket's onopen doesn't see the previous connection's stale
+    // lastFrameAt and tear down the freshly-opened one.
+    lastFrameAt = Date.now();
     eventSource = api.createStream({ conversationListHash: getHash() ?? undefined });
 
     const markConnected = () => {
       attempts = 0;
+      lastFrameAt = Date.now();
       setStatus("connected");
       if (isReconnecting) {
         // We just re-established after a disconnect. Any conversation could
@@ -238,40 +293,24 @@ export function connectGlobalStream({
   };
 
   // On iOS Safari and other mobile browsers, EventSource may stay nominally
-  // open while the underlying TCP connection has been killed by the OS
-  // during background. Force a reconnect when the tab returns to the
-  // foreground or the network comes back, so we resume quickly instead of
-  // waiting for the next heartbeat to time out.
-  const hiddenAtRef = { t: 0 };
+  // open while the underlying TCP connection has been killed by the OS during
+  // background. The 60s heartbeat watchdog can't catch this: setTimeout is
+  // throttled (and the page eventually frozen) in a hidden tab, so its
+  // countdown stalls precisely while we're away and doesn't fire promptly on
+  // return. Instead, when the tab is brought back to the foreground — or the
+  // page is restored from the bfcache, or the network returns — we compare
+  // the wall-clock time since the last received frame and reconnect if the
+  // connection has gone silent, regardless of readyState.
   const onVisibility = () => {
-    if (document.visibilityState === "hidden") {
-      hiddenAtRef.t = Date.now();
-      return;
-    }
-    const hiddenFor = hiddenAtRef.t ? Date.now() - hiddenAtRef.t : 0;
-    hiddenAtRef.t = 0;
-    if (closed) return;
-    if (!eventSource || eventSource.readyState === 2 || hiddenFor > 5000) {
-      if (hasEverConnected) isReconnecting = true;
-      eventSource?.close();
-      eventSource = null;
-      clearHeartbeat();
-      clearReconnect();
-      connect();
-    }
+    if (document.visibilityState === "visible") reconnectIfStale();
   };
-  const onOnline = () => {
-    if (closed) return;
-    if (!eventSource || eventSource.readyState === 2) {
-      if (hasEverConnected) isReconnecting = true;
-      eventSource?.close();
-      eventSource = null;
-      clearHeartbeat();
-      clearReconnect();
-      connect();
-    }
-  };
+  // pageshow fires on bfcache restores (event.persisted), which on mobile
+  // Safari often do NOT fire visibilitychange. A restored page resumes with a
+  // long-dead socket, so always check liveness here.
+  const onPageShow = () => reconnectIfStale();
+  const onOnline = () => reconnectIfStale();
   document.addEventListener("visibilitychange", onVisibility);
+  window.addEventListener("pageshow", onPageShow);
   window.addEventListener("online", onOnline);
 
   connect();
@@ -284,15 +323,11 @@ export function connectGlobalStream({
       eventSource?.close();
       eventSource = null;
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("online", onOnline);
     },
     forceReconnect() {
-      attempts = 0;
-      if (hasEverConnected) isReconnecting = true;
-      eventSource?.close();
-      eventSource = null;
-      clearHeartbeat();
-      connect();
+      reconnectNow();
     },
   };
 }
