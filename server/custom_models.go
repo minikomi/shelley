@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/ant"
@@ -141,8 +140,12 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate model ID
-	modelID := "custom-" + uuid.New().String()[:8]
+	// Generate a human-readable model ID derived from the endpoint and model name.
+	modelID, err := s.generateUniqueModelID(r.Context(), req.Endpoint, req.ModelName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to generate model ID: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	// Default max tokens
 	if req.MaxTokens <= 0 {
@@ -326,8 +329,13 @@ func (s *Server) handleDuplicateModel(w http.ResponseWriter, r *http.Request, mo
 		json.NewDecoder(r.Body).Decode(&req) // Ignore errors - all fields optional
 	}
 
-	// Generate new model ID
-	newModelID := "custom-" + uuid.New().String()[:8]
+	// Generate a new human-readable model ID. Since the duplicate shares the
+	// source's endpoint and model name, this naturally gets a numeric suffix.
+	newModelID, err := s.generateUniqueModelID(r.Context(), source.Endpoint, source.ModelName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to generate model ID: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	// Use provided display name or generate one
 	displayName := req.DisplayName
