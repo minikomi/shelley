@@ -2291,3 +2291,148 @@ func TestLoopRetryAfterPersistentFailure(t *testing.T) {
 	<-done
 	t.Fatalf("Retry() did not produce a successful assistant message; calls=%d, recorded=%d", svc.callCount(), len(recorded))
 }
+
+// pauseLLMService simulates Anthropic's server-side tool "pause_turn" flow:
+// the first response pauses mid-turn with a server_tool_use (no result yet),
+// and the continuation returns the matching web_search_tool_result followed by
+// the final text. It records the messages it was asked to send so tests can
+// assert the continuation request resumed from the running assistant turn.
+type pauseLLMService struct {
+	calls      int
+	lastSent   [][]llm.Message // Messages of each request, in order
+	firstStart time.Time       // StartTime reported by the first (paused) leg
+}
+
+func (p *pauseLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	p.calls++
+	p.lastSent = append(p.lastSent, req.Messages)
+	if p.calls == 1 {
+		// Paused: server_tool_use with no result yet.
+		start := p.firstStart
+		end := p.firstStart.Add(time.Second)
+		return &llm.Response{
+			Role: llm.MessageRoleAssistant,
+			Content: []llm.Content{
+				{Type: llm.ContentTypeText, Text: "Let me search."},
+				{Type: llm.ContentTypeServerToolUse, ID: "srv_1", ToolName: "web_search", ToolInput: json.RawMessage(`{"query":"x"}`)},
+			},
+			StopReason: llm.StopReasonPause,
+			Usage:      llm.Usage{InputTokens: 10, OutputTokens: 5},
+			StartTime:  &start,
+			EndTime:    &end,
+		}, nil
+	}
+	// Continuation: result + final text, end of turn.
+	start := p.firstStart.Add(2 * time.Second)
+	end := p.firstStart.Add(3 * time.Second)
+	return &llm.Response{
+		Role: llm.MessageRoleAssistant,
+		Content: []llm.Content{
+			{Type: llm.ContentTypeWebSearchToolResult, ToolUseID: "srv_1", ToolResult: []llm.Content{
+				{Type: llm.ContentTypeWebSearchResult, Title: "t", URL: "https://example.com", EncryptedContent: "enc"},
+			}},
+			{Type: llm.ContentTypeText, Text: "The answer is 42."},
+		},
+		StopReason: llm.StopReasonEndTurn,
+		Usage:      llm.Usage{InputTokens: 20, OutputTokens: 8},
+		StartTime:  &start,
+		EndTime:    &end,
+	}, nil
+}
+
+func (p *pauseLLMService) Provider() string        { return "anthropic" }
+func (p *pauseLLMService) TokenContextWindow() int { return 200000 }
+func (p *pauseLLMService) MaxImageDimension() int  { return 2000 }
+func (p *pauseLLMService) MaxImageBytes() int      { return 5 * 1024 * 1024 }
+
+// TestLoopResolvesPauseTurn verifies that a server-side tool pause_turn is
+// resolved by re-requesting and merging the continuation into a SINGLE assistant
+// message, keeping the server_tool_use and its web_search_tool_result together.
+// This prevents the split-history wedge that broke patch-tools-code-agents.
+func TestLoopResolvesPauseTurn(t *testing.T) {
+	var recorded []llm.Message
+	var recordedUsage []llm.Usage
+	recordFunc := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
+		recorded = append(recorded, message)
+		recordedUsage = append(recordedUsage, usage)
+		return nil
+	}
+
+	svc := &pauseLLMService{firstStart: time.Now()}
+	loop := NewLoop(Config{
+		LLM:           svc,
+		History:       []llm.Message{},
+		Tools:         []*llm.Tool{},
+		RecordMessage: recordFunc,
+	})
+
+	loop.QueueUserMessage(llm.UserStringMessage("search the web for the answer"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := loop.ProcessOneTurn(ctx); err != nil {
+		t.Fatalf("ProcessOneTurn: %v", err)
+	}
+
+	// The service should have been called exactly twice (initial + 1 continuation).
+	if svc.calls != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", svc.calls)
+	}
+
+	// The continuation request must include the running assistant turn as its
+	// last message, so the provider resumes from it.
+	if len(svc.lastSent) != 2 {
+		t.Fatalf("expected 2 recorded requests, got %d", len(svc.lastSent))
+	}
+	contMsgs := svc.lastSent[1]
+	last := contMsgs[len(contMsgs)-1]
+	if last.Role != llm.MessageRoleAssistant {
+		t.Fatalf("continuation request last message role = %v, want assistant", last.Role)
+	}
+
+	// Find the recorded assistant message and assert it merges server_tool_use
+	// with its web_search_tool_result in ONE message.
+	var asst *llm.Message
+	for i := range recorded {
+		if recorded[i].Role == llm.MessageRoleAssistant {
+			asst = &recorded[i]
+			break
+		}
+	}
+	if asst == nil {
+		t.Fatal("no assistant message recorded")
+	}
+	var hasServerUse, hasResult bool
+	for _, c := range asst.Content {
+		switch c.Type {
+		case llm.ContentTypeServerToolUse:
+			hasServerUse = true
+		case llm.ContentTypeWebSearchToolResult:
+			hasResult = true
+		}
+	}
+	if !hasServerUse || !hasResult {
+		t.Fatalf("merged assistant message missing pair: serverUse=%v result=%v, content=%+v", hasServerUse, hasResult, asst.Content)
+	}
+
+	// The merged message must end the turn (no client tools to run).
+	if !asst.EndOfTurn {
+		t.Errorf("merged assistant message should be EndOfTurn")
+	}
+
+	// Usage must be summed across the pause chain (10/5 + 20/8), and the merged
+	// turn's StartTime must come from the first (paused) leg so the recorded
+	// duration covers the whole chain rather than just the last continuation.
+	found := false
+	for _, u := range recordedUsage {
+		if u.InputTokens == 30 && u.OutputTokens == 13 {
+			found = true
+			if u.StartTime == nil || !u.StartTime.Equal(svc.firstStart) {
+				t.Errorf("merged StartTime = %v, want first leg start %v", u.StartTime, svc.firstStart)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected summed usage input=30 output=13 in %+v", recordedUsage)
+	}
+}

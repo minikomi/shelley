@@ -374,7 +374,7 @@ var (
 		"end_turn":      llm.StopReasonEndTurn,
 		"tool_use":      llm.StopReasonToolUse,
 		"refusal":       llm.StopReasonRefusal,
-		"pause_turn":    llm.StopReasonToolUse, // server-side tool execution, model will continue
+		"pause_turn":    llm.StopReasonPause, // server-side tool execution, model will continue
 	}
 )
 
@@ -501,6 +501,85 @@ func stripThinkingBlocks(msg llm.Message) llm.Message {
 	return msg
 }
 
+// sanitizeServerToolBlocks removes orphaned server-side tool blocks that would
+// cause Anthropic to reject the request with errors like:
+//
+//	`web_search` tool use with id `srvtoolu_...` was found without a
+//	corresponding `web_search_tool_result` block
+//
+// Anthropic requires a server_tool_use block and its web_search_tool_result to
+// live in the SAME message. This pairing can be broken when a response stops
+// with `pause_turn` while it also contains a client-side tool_use: the loop runs
+// the client tool and injects a user tool_result message, after which the model
+// emits the web_search_tool_result in a *later* assistant message — permanently
+// splitting the server_tool_use from its result. Such a history is accepted by
+// the prompt cache for a while, then rejected once the cache expires, wedging
+// the conversation forever.
+//
+// Rules (per Anthropic's wire validation, verified empirically):
+//   - A server_tool_use is valid only if a web_search_tool_result with the same
+//     tool_use_id appears in the same message.
+//   - Exception: an orphan server_tool_use in the final message is allowed — it
+//     is the pause_turn continuation point, where the server will produce the
+//     result on the next turn.
+//   - A web_search_tool_result with no matching server_tool_use in the same
+//     message is always dropped.
+//   - web_search_result blocks only appear nested inside a web_search_tool_result,
+//     so they are never touched at the top level here.
+//
+// It returns a copy of msgs with offending blocks removed; messages whose
+// content becomes empty are dropped by the caller (fromLLMRequest skips empty
+// messages).
+func sanitizeServerToolBlocks(msgs []llm.Message) []llm.Message {
+	out := make([]llm.Message, len(msgs))
+	for i, msg := range msgs {
+		isLast := i == len(msgs)-1
+
+		// Collect ids fulfilled by a web_search_tool_result in THIS message.
+		resultIDs := make(map[string]bool)
+		serverUseIDs := make(map[string]bool)
+		hasServerBlocks := false
+		for _, c := range msg.Content {
+			switch c.Type {
+			case llm.ContentTypeServerToolUse:
+				hasServerBlocks = true
+				serverUseIDs[c.ID] = true
+			case llm.ContentTypeWebSearchToolResult:
+				hasServerBlocks = true
+				resultIDs[c.ToolUseID] = true
+			}
+		}
+
+		// Fast path: no server-side blocks, nothing to sanitize.
+		if !hasServerBlocks {
+			out[i] = msg
+			continue
+		}
+
+		filtered := make([]llm.Content, 0, len(msg.Content))
+		for _, c := range msg.Content {
+			switch c.Type {
+			case llm.ContentTypeServerToolUse:
+				// Keep if paired in this message, or if it's an orphan in the
+				// final message (a valid pause_turn continuation point).
+				if resultIDs[c.ID] || isLast {
+					filtered = append(filtered, c)
+				}
+			case llm.ContentTypeWebSearchToolResult:
+				// Keep only if a matching server_tool_use exists in this message.
+				if serverUseIDs[c.ToolUseID] {
+					filtered = append(filtered, c)
+				}
+			default:
+				filtered = append(filtered, c)
+			}
+		}
+		msg.Content = filtered
+		out[i] = msg
+	}
+	return out
+}
+
 func fromLLMMessage(msg llm.Message) message {
 	var contents []content
 	for _, c := range msg.Content {
@@ -550,21 +629,26 @@ func (s *Service) fromLLMRequest(r *llm.Request) *request {
 	model := cmp.Or(s.Model, DefaultModel)
 	maxTokens := cmp.Or(s.MaxTokens, maxOutputTokens(model))
 
+	// Drop orphaned server-side tool blocks (e.g. a web_search server_tool_use
+	// whose web_search_tool_result ended up in a different message). Anthropic
+	// rejects such histories. See sanitizeServerToolBlocks.
+	srcMessages := sanitizeServerToolBlocks(r.Messages)
+
 	// Find the last assistant message index so we can strip thinking blocks
 	// from all earlier assistant messages. The Anthropic API validates thinking
 	// signatures, and they become invalid when the underlying model version
 	// rotates (e.g. "claude-opus-4-6" points to a new version). Only the
 	// most recent assistant turn's thinking blocks need to be preserved.
 	lastAssistantIdx := -1
-	for i := len(r.Messages) - 1; i >= 0; i-- {
-		if r.Messages[i].Role == llm.MessageRoleAssistant {
+	for i := len(srcMessages) - 1; i >= 0; i-- {
+		if srcMessages[i].Role == llm.MessageRoleAssistant {
 			lastAssistantIdx = i
 			break
 		}
 	}
 
 	var messages []message
-	for i, m := range r.Messages {
+	for i, m := range srcMessages {
 		// Strip thinking/redacted_thinking blocks from all assistant messages
 		// except the last one. This avoids "Invalid signature" errors when
 		// the model version has changed since the thinking was generated.
@@ -629,7 +713,7 @@ func (s *Service) fromLLMRequestStrippingAllThinking(r *llm.Request) *request {
 	maxTokens := cmp.Or(s.MaxTokens, maxOutputTokens(model))
 
 	var messages []message
-	for _, m := range r.Messages {
+	for _, m := range sanitizeServerToolBlocks(r.Messages) {
 		if m.Role == llm.MessageRoleAssistant {
 			m = stripThinkingBlocks(m)
 		}

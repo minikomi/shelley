@@ -313,37 +313,54 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		}
 		l.logger.Debug("sending LLM request", "message_count", len(messages), "tool_count", len(tools), "system_items", len(system), "system_length", systemLen)
 
-		// Add a timeout for the LLM request to prevent indefinite hangs
-		llmCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-
-		// Retry LLM requests that fail with retryable errors (EOF, connection reset).
-		// Provider-internal retries own user-visible retry warnings; this outer retry
-		// catches transport failures that escape the provider without adding noise.
-		const maxRetries = 2
-		var resp *llm.Response
-		var err error
-	retryLoop:
-		for attempt := 1; attempt <= maxRetries; attempt++ {
-			resp, err = llmService.Do(llmCtx, req)
-			if err == nil {
-				break
+		// sendWithRetry issues a single LLM request, retrying transient transport
+		// failures (EOF, connection reset). Provider-internal retries own
+		// user-visible retry warnings; this outer retry catches transport failures
+		// that escape the provider without adding noise. Each call gets its own
+		// timeout to prevent indefinite hangs.
+		sendWithRetry := func(req *llm.Request) (*llm.Response, error) {
+			llmCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			const maxRetries = 2
+			var resp *llm.Response
+			var err error
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				resp, err = llmService.Do(llmCtx, req)
+				if err == nil {
+					return resp, nil
+				}
+				if !isRetryableError(err) || attempt == maxRetries {
+					return nil, err
+				}
+				sleep := time.Second * time.Duration(attempt)
+				l.logger.Warn("LLM request failed with retryable error, retrying",
+					"error", err,
+					"attempt", attempt,
+					"max_retries", maxRetries)
+				select {
+				case <-time.After(sleep):
+				case <-llmCtx.Done():
+					return nil, llmCtx.Err()
+				}
 			}
-			if !isRetryableError(err) || attempt == maxRetries {
-				break
-			}
-			sleep := time.Second * time.Duration(attempt)
-			l.logger.Warn("LLM request failed with retryable error, retrying",
-				"error", err,
-				"attempt", attempt,
-				"max_retries", maxRetries)
-			select {
-			case <-time.After(sleep):
-			case <-llmCtx.Done():
-				err = llmCtx.Err()
-				break retryLoop
-			}
+			return resp, err
 		}
-		cancel()
+
+		resp, err := sendWithRetry(req)
+
+		// Resolve server-side tool "pause_turn" responses before any further
+		// handling. When Anthropic pauses mid-turn to run a server-side tool
+		// (e.g. web_search), it returns stop_reason=pause_turn with a
+		// server_tool_use block that has no result yet. The continuation arrives
+		// in a *separate* response that begins with the matching
+		// web_search_tool_result. Anthropic requires the server_tool_use and its
+		// result to live in the SAME message, so we re-request and merge the
+		// continuation into a single assistant message rather than letting the
+		// loop interleave client tool execution (which permanently splits the
+		// pair and wedges the conversation). See resolvePausedTurn.
+		if err == nil && resp != nil && resp.StopReason == llm.StopReasonPause {
+			resp, err = l.resolvePausedTurn(ctx, sendWithRetry, req, resp)
+		}
 
 		// Flush any buffered stream deltas before recording the message,
 		// so the UI sees the streaming text before the full message replaces it.
@@ -413,6 +430,73 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+// maxPauseContinuations bounds how many times we will re-request to resolve a
+// chain of server-side tool pauses, guarding against a pathological loop where
+// the provider keeps returning pause_turn forever.
+const maxPauseContinuations = 16
+
+// resolvePausedTurn handles a stop_reason=pause_turn response by re-requesting
+// the continuation(s) and merging all blocks into a single assistant message.
+//
+// Anthropic pauses a turn to run a server-side tool (e.g. web_search). The
+// paused response ends with a server_tool_use block whose result is not yet
+// available; the continuation arrives in a follow-up response that begins with
+// the matching web_search_tool_result. Because Anthropic requires the
+// server_tool_use and its web_search_tool_result to live in the SAME message,
+// we accumulate every block across the pause chain and return a single response
+// with the final (non-pause) stop reason. This keeps the stored history valid
+// on reload and prevents the client tool loop from interleaving a tool_result
+// message between the server_tool_use and its result.
+//
+// req is the request that produced the initial paused response; it is not
+// mutated — each continuation request is a shallow copy with a fresh Messages
+// slice that has the running assistant turn appended.
+func (l *Loop) resolvePausedTurn(
+	ctx context.Context,
+	send func(*llm.Request) (*llm.Response, error),
+	req *llm.Request,
+	resp *llm.Response,
+) (*llm.Response, error) {
+	// Copy the initial content so appends never alias the first response's
+	// backing array.
+	merged := append([]llm.Content(nil), resp.Content...)
+	// Accumulate usage across the whole pause chain, starting with the initial
+	// paused response's usage.
+	totalUsage := resp.Usage
+	// Preserve the start time of the first (paused) leg so the merged turn
+	// reflects the full wall-clock duration, not just the last continuation.
+	startTime := resp.StartTime
+	for i := 0; resp.StopReason == llm.StopReasonPause; i++ {
+		if i >= maxPauseContinuations {
+			l.logger.Warn("server-side tool pause did not resolve", "continuations", i)
+			break
+		}
+		l.logger.Debug("resolving paused turn (server-side tool)", "continuation", i+1)
+
+		// Append the running assistant turn so the provider resumes from it.
+		continueReq := *req
+		continueReq.Messages = append(append([]llm.Message(nil), req.Messages...),
+			llm.Message{Role: llm.MessageRoleAssistant, Content: merged})
+
+		next, err := send(&continueReq)
+		if err != nil {
+			return nil, err
+		}
+		totalUsage.Add(next.Usage)
+		merged = append(merged, next.Content...)
+		resp = next
+	}
+
+	// Return a single response carrying every block from the pause chain with
+	// the final (resolved) stop reason. Usage is the sum across the whole chain
+	// (initial paused response + every continuation) so billing is not lost.
+	resolved := *resp
+	resolved.Content = merged
+	resolved.Usage = totalUsage
+	resolved.StartTime = startTime // EndTime stays at the final continuation
+	return &resolved, nil
 }
 
 func (l *Loop) recordRetryWarning(ctx context.Context) func(llm.RetryEvent) {

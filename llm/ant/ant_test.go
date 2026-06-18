@@ -2558,13 +2558,17 @@ func TestParseSSEStreamServerToolUseWithInputDeltas(t *testing.T) {
 }
 
 func TestPauseTurnStopReason(t *testing.T) {
-	// Verify that "pause_turn" maps to StopReasonToolUse
+	// Verify that "pause_turn" maps to its own StopReasonPause. It must be
+	// distinct from StopReasonToolUse so the loop merges the server-side tool
+	// continuation into a single assistant message instead of interleaving a
+	// client tool_result (which would split the server_tool_use from its
+	// web_search_tool_result and wedge the conversation).
 	got, ok := toLLMStopReason["pause_turn"]
 	if !ok {
 		t.Fatal("pause_turn not found in toLLMStopReason")
 	}
-	if got != llm.StopReasonToolUse {
-		t.Errorf("toLLMStopReason[pause_turn] = %v, want %v", got, llm.StopReasonToolUse)
+	if got != llm.StopReasonPause {
+		t.Errorf("toLLMStopReason[pause_turn] = %v, want %v", got, llm.StopReasonPause)
 	}
 }
 
@@ -2774,4 +2778,300 @@ func TestFromLLMRequestThinkingLevels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Server-side tool block sanitization (web_search / pause_turn) -----------
+
+// blockSummary renders a message's content blocks as "type:id" tokens so tests
+// can assert on structure compactly. For server-side blocks the relevant id is
+// the server_tool_use ID or the web_search_tool_result's tool_use_id.
+func blockSummary(msg llm.Message) []string {
+	var out []string
+	for _, c := range msg.Content {
+		id := c.ID
+		if c.Type == llm.ContentTypeWebSearchToolResult || c.Type == llm.ContentTypeToolResult {
+			id = c.ToolUseID
+		}
+		out = append(out, fmt.Sprintf("%s:%s", c.Type, id))
+	}
+	return out
+}
+
+func serverToolUse(id string) llm.Content {
+	return llm.Content{Type: llm.ContentTypeServerToolUse, ID: id, ToolName: "web_search", ToolInput: json.RawMessage(`{"query":"x"}`)}
+}
+
+func webSearchResult(toolUseID string) llm.Content {
+	return llm.Content{
+		Type:      llm.ContentTypeWebSearchToolResult,
+		ToolUseID: toolUseID,
+		ToolResult: []llm.Content{{
+			Type: llm.ContentTypeWebSearchResult, Title: "t", URL: "https://example.com", EncryptedContent: "enc",
+		}},
+	}
+}
+
+func text(s string) llm.Content {
+	return llm.Content{Type: llm.ContentTypeText, Text: s}
+}
+
+func clientToolUse(id, name string) llm.Content {
+	return llm.Content{Type: llm.ContentTypeToolUse, ID: id, ToolName: name, ToolInput: json.RawMessage(`{}`)}
+}
+
+func TestSanitizeServerToolBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []llm.Message
+		// want is the expected per-message block summary after sanitizing.
+		want [][]string
+	}{
+		{
+			name: "no server blocks untouched",
+			in: []llm.Message{
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("hi")}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{text("hello"), clientToolUse("toolu_1", "bash")}},
+			},
+			want: [][]string{
+				{"ContentTypeText:"},
+				{"ContentTypeText:", "ContentTypeToolUse:toolu_1"},
+			},
+		},
+		{
+			name: "paired server_tool_use + result in same message kept",
+			in: []llm.Message{
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("search")}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{serverToolUse("srv_1"), webSearchResult("srv_1"), text("done")}},
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("thanks")}},
+			},
+			want: [][]string{
+				{"ContentTypeText:"},
+				{"ContentTypeServerToolUse:srv_1", "ContentTypeWebSearchToolResult:srv_1", "ContentTypeText:"},
+				{"ContentTypeText:"},
+			},
+		},
+		{
+			// The exact failure from the patch-tools-code-agents conversation:
+			// a non-final assistant message carries an orphan server_tool_use
+			// (its web_search_tool_result landed two messages later).
+			name: "orphan server_tool_use in non-final message dropped",
+			in: []llm.Message{
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("investigate")}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+					text("I'll search and grep"),
+					clientToolUse("toolu_kw", "keyword_search"),
+					serverToolUse("srv_1"),
+					serverToolUse("srv_2"),
+				}},
+				{Role: llm.MessageRoleUser, Content: []llm.Content{
+					{Type: llm.ContentTypeToolResult, ToolUseID: "toolu_kw", ToolResult: []llm.Content{text("results")}},
+				}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+					webSearchResult("srv_1"),
+					webSearchResult("srv_2"),
+					text("summary"),
+				}},
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("what's a hashline anchor?")}},
+			},
+			want: [][]string{
+				{"ContentTypeText:"},
+				// orphan server_tool_use srv_1/srv_2 stripped, client tool kept
+				{"ContentTypeText:", "ContentTypeToolUse:toolu_kw"},
+				{"ContentTypeToolResult:toolu_kw"},
+				// orphan web_search_tool_result (no matching server_tool_use here) stripped
+				{"ContentTypeText:"},
+				{"ContentTypeText:"},
+			},
+		},
+		{
+			name: "orphan server_tool_use in FINAL message kept (pause continuation point)",
+			in: []llm.Message{
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("search")}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{text("searching"), serverToolUse("srv_1")}},
+			},
+			want: [][]string{
+				{"ContentTypeText:"},
+				{"ContentTypeText:", "ContentTypeServerToolUse:srv_1"},
+			},
+		},
+		{
+			name: "orphan web_search_tool_result without server_tool_use dropped",
+			in: []llm.Message{
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("x")}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{webSearchResult("srv_unknown"), text("hmm")}},
+			},
+			want: [][]string{
+				{"ContentTypeText:"},
+				{"ContentTypeText:"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeServerToolBlocks(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("message count = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				gs := blockSummary(got[i])
+				if fmt.Sprint(gs) != fmt.Sprint(tt.want[i]) {
+					t.Errorf("message %d blocks = %v, want %v", i, gs, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestSanitizeServerToolBlocksDoesNotMutateInput ensures the sanitizer returns a
+// copy and never edits the caller's history slice in place.
+func TestSanitizeServerToolBlocksDoesNotMutateInput(t *testing.T) {
+	in := []llm.Message{
+		{Role: llm.MessageRoleUser, Content: []llm.Content{text("q")}},
+		{Role: llm.MessageRoleAssistant, Content: []llm.Content{serverToolUse("srv_1")}},
+		{Role: llm.MessageRoleUser, Content: []llm.Content{text("next")}},
+	}
+	before := len(in[1].Content)
+	_ = sanitizeServerToolBlocks(in)
+	if len(in[1].Content) != before {
+		t.Fatalf("input mutated: content len %d, want %d", len(in[1].Content), before)
+	}
+}
+
+// TestServerToolBlocksLiveAnthropic exercises the server-side tool (web_search)
+// sanitization against the REAL Anthropic API. It reproduces the exact wire
+// errors that wedged the patch-tools-code-agents conversation and verifies that
+// our request builder produces a history the API accepts.
+//
+// Requires ANTHROPIC_API_KEY; skipped otherwise.
+func TestServerToolBlocksLiveAnthropic(t *testing.T) {
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		t.Skip("ANTHROPIC_API_KEY not set")
+	}
+
+	webSearchTool := &llm.Tool{Name: "web_search", Type: "web_search_20250305"}
+	keywordTool := &llm.Tool{
+		Name:        "keyword_search",
+		Description: "search the local codebase",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`),
+	}
+
+	// First, confirm the RAW orphan history (what the old code sent) is in fact
+	// rejected by Anthropic. This guards against the API silently changing its
+	// validation, which would invalidate the whole fix.
+	t.Run("raw orphan rejected by API", func(t *testing.T) {
+		orphan := &request{
+			Model:     Claude45Haiku,
+			MaxTokens: 64,
+			Tools:     []*tool{{Name: "web_search", Type: "web_search_20250305"}},
+			Messages: []message{
+				{Role: "user", Content: []content{{Type: "text", Text: ptr("Search the web for the capital of France.")}}},
+				{Role: "assistant", Content: []content{
+					{Type: "text", Text: ptr("Let me search.")},
+					{Type: "server_tool_use", ID: "srvtoolu_orphan", ToolName: "web_search", ToolInput: json.RawMessage(`{"query":"capital of France"}`)},
+				}},
+				{Role: "user", Content: []content{{Type: "text", Text: ptr("Actually, what's 2+2?")}}},
+			},
+		}
+		err := postRawAnthropic(t, apiKey, orphan)
+		if err == nil {
+			t.Fatal("expected API to reject orphan server_tool_use, but it accepted")
+		}
+		if !strings.Contains(err.Error(), "web_search_tool_result") {
+			t.Fatalf("expected web_search_tool_result error, got: %v", err)
+		}
+		t.Logf("API correctly rejected orphan: %v", err)
+	})
+
+	// The sanitized version of that same history must be accepted.
+	t.Run("sanitized orphan accepted by API", func(t *testing.T) {
+		s := &Service{APIKey: apiKey, Model: Claude45Haiku}
+		ir := &llm.Request{
+			Tools: []*llm.Tool{webSearchTool},
+			Messages: []llm.Message{
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("Search the web for the capital of France.")}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+					text("Let me search."),
+					serverToolUse("srvtoolu_orphan"), // orphan in non-final message
+				}},
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("Actually, what's 2+2?")}},
+			},
+		}
+		resp, err := s.Do(context.Background(), ir)
+		if err != nil {
+			t.Fatalf("sanitized request rejected: %v", err)
+		}
+		if resp == nil || len(resp.Content) == 0 {
+			t.Fatal("expected a non-empty response")
+		}
+		t.Logf("accepted; stop_reason=%s", resp.StopReason)
+	})
+
+	// The exact patch-tools-code-agents shape: an assistant message that mixes a
+	// client tool_use with orphan server_tool_use blocks, followed by the client
+	// tool_result, then the web_search_tool_result blocks two messages later.
+	t.Run("split client+server history accepted by API", func(t *testing.T) {
+		s := &Service{APIKey: apiKey, Model: Claude45Haiku}
+		ir := &llm.Request{
+			Tools: []*llm.Tool{webSearchTool, keywordTool},
+			Messages: []llm.Message{
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("Investigate the web and the local code.")}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+					text("I'll search and grep."),
+					clientToolUse("toolu_kw", "keyword_search"),
+					serverToolUse("srvtoolu_1"),
+					serverToolUse("srvtoolu_2"),
+				}},
+				{Role: llm.MessageRoleUser, Content: []llm.Content{
+					{Type: llm.ContentTypeToolResult, ToolUseID: "toolu_kw", ToolResult: []llm.Content{text("found foo.go")}},
+				}},
+				{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+					webSearchResult("srvtoolu_1"), // orphaned results (no server_tool_use here)
+					webSearchResult("srvtoolu_2"),
+					text("Here's the summary."),
+				}},
+				{Role: llm.MessageRoleUser, Content: []llm.Content{text("what's a hashline anchor?")}},
+			},
+		}
+		resp, err := s.Do(context.Background(), ir)
+		if err != nil {
+			t.Fatalf("split history rejected after sanitize: %v", err)
+		}
+		if resp == nil || len(resp.Content) == 0 {
+			t.Fatal("expected a non-empty response")
+		}
+		t.Logf("accepted; stop_reason=%s", resp.StopReason)
+	})
+}
+
+// ptr is a tiny helper for taking the address of a string literal.
+func ptr(s string) *string { return &s }
+
+// postRawAnthropic posts a raw (non-streaming) request to the Anthropic API and
+// returns an error if the API responds with a non-2xx status. It is used to
+// assert that a deliberately malformed history is rejected.
+func postRawAnthropic(t *testing.T, apiKey string, req *request) error {
+	t.Helper()
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq, err := http.NewRequestWithContext(context.Background(), "POST", DefaultURL, strings.NewReader(string(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-API-Key", apiKey)
+	httpReq.Header.Set("Anthropic-Version", "2023-06-01")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 }

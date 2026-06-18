@@ -78,11 +78,12 @@ func _() {
 	_ = x[StopReasonEndTurn-16]
 	_ = x[StopReasonToolUse-17]
 	_ = x[StopReasonRefusal-18]
+	_ = x[StopReasonPause-19]
 }
 
-const _StopReason_name = "StopReasonStopSequenceStopReasonMaxTokensStopReasonEndTurnStopReasonToolUseStopReasonRefusal"
+const _StopReason_name = "StopReasonStopSequenceStopReasonMaxTokensStopReasonEndTurnStopReasonToolUseStopReasonRefusalStopReasonPause"
 
-var _StopReason_index = [...]uint8{0, 22, 41, 58, 75, 92}
+var _StopReason_index = [...]uint8{0, 22, 41, 58, 75, 92, 107}
 
 func (i StopReason) String() string {
 	idx := int(i) - 14

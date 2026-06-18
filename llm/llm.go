@@ -361,6 +361,7 @@ const (
 	StopReasonEndTurn
 	StopReasonToolUse
 	StopReasonRefusal
+	StopReasonPause // server-side tool use paused mid-turn (Anthropic pause_turn)
 )
 
 // IsServerSideContentType reports whether a content type represents server-side
@@ -494,9 +495,11 @@ type Response struct {
 
 func (m *Response) ToMessage() Message {
 	return Message{
-		Role:      m.Role,
-		Content:   m.Content,
-		EndOfTurn: m.StopReason != StopReasonToolUse, // End of turn unless there are tools to call
+		Role:    m.Role,
+		Content: m.Content,
+		// End of turn unless there are client tools to call (ToolUse) or the
+		// server paused mid-turn to run a server-side tool (Pause).
+		EndOfTurn: m.StopReason != StopReasonToolUse && m.StopReason != StopReasonPause,
 	}
 }
 
