@@ -50,6 +50,19 @@ type AgentResult struct {
 
 const maxAgentTurns = 25
 
+// agentBudget bounds the total wall-clock time a single heal/generate agent run
+// may consume. It is kept well under the `go test` package timeout (10m by
+// default) so that a slow or stuck heal fails its one test gracefully (via a
+// context-deadline error that surfaces as t.Fatal) instead of running until the
+// package deadline and panicking with "test timed out", which aborts every
+// other test in the package too.
+const agentBudget = 5 * time.Minute
+
+// anthropicCallTimeout bounds a single LLM HTTP request. http.DefaultClient has
+// no timeout, so without this a hung request could block a heal indefinitely
+// (until agentBudget, or formerly the package deadline).
+const anthropicCallTimeout = 90 * time.Second
+
 // --- Anthropic API types ---
 
 type apiRequest struct {
@@ -247,6 +260,11 @@ func RunAgent(ctx context.Context, cfg *AgentConfig) (*AgentResult, error) {
 			log.Printf("[agent] "+format, args...)
 		}
 	}
+
+	// Bound the whole agent run so a stuck heal can't run until the package
+	// test deadline and panic (taking the rest of the package down with it).
+	ctx, cancel := context.WithTimeout(ctx, agentBudget)
+	defer cancel()
 
 	systemPrompt := buildSystemPrompt()
 	var userPrompt string
@@ -650,6 +668,11 @@ func callAnthropic(ctx context.Context, cfg *AgentConfig, systemPrompt string, m
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+
+	// Bound each request so a hung connection can't stall the whole agent.
+	// Derived from ctx so the agent budget (and test cancellation) still win.
+	ctx, cancel := context.WithTimeout(ctx, anthropicCallTimeout)
+	defer cancel()
 
 	url := strings.TrimRight(cfg.AnthropicBaseURL, "/") + "/v1/messages"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))

@@ -49,6 +49,21 @@ func (o *Options) defaults() {
 	}
 }
 
+// perTestBudget bounds the whole resolution of a single lazycue test (cached
+// execution + one retry + an optional LLM heal). It is kept under the `go test`
+// package deadline (10m default) so that a single stuck test fails cleanly via
+// t.Fatal rather than letting the package time out and panic, which would abort
+// every other test in the package.
+//
+// It is set comfortably above agentBudget (the heal budget) rather than just
+// above it: the heal does not start at t=0 — the cache check, browser launch,
+// cached execution, and the one-shot retry all run under this same budget
+// first, and under the flaky-long-wait conditions that trigger heals that
+// pre-heal work (executed twice, with long wait timeouts) can consume a
+// minute or more. The margin here ensures a legitimate heal still gets close
+// to its full agentBudget while staying under the package deadline.
+const perTestBudget = 8 * time.Minute
+
 // RunMode describes how the test was resolved.
 type RunMode string
 
@@ -89,6 +104,12 @@ type StepResult struct {
 func Run(ctx context.Context, opts Options, description string) (*TestResult, error) {
 	totalStart := time.Now()
 	opts.defaults()
+
+	// Bound the whole test resolution so a stall anywhere (browser exec, retry,
+	// or heal) fails this one test cleanly instead of running until the package
+	// test deadline and panicking (which takes the rest of the package down).
+	ctx, cancel := context.WithTimeout(ctx, perTestBudget)
+	defer cancel()
 
 	if opts.BaseURL == "" {
 		return nil, fmt.Errorf("BaseURL is required")
