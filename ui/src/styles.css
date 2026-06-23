@@ -7800,6 +7800,11 @@ kbd {
 }
 
 .markdown-content code {
+  /* display:inline is asserted defensively: the @pierre/diffs stylesheet ships
+     a global reset (pre, code, [data-error-wrapper] { display: block }) in
+     @layer base. Inline code spans must stay inline, so beat that reset by
+     specificity rather than relying on the UA default. */
+  display: inline;
   font-family: var(--font-mono);
   font-size: 0.875rem;
   background: var(--code-bg);
@@ -7816,12 +7821,18 @@ kbd {
 }
 
 .markdown-content pre code {
+  /* Code inside a fenced block fills the <pre>; keep it block-level (the diffs
+     reset already makes it block, but assert it so it survives the rule above). */
+  display: block;
   background: none;
   padding: 0;
   font-size: 0.875rem;
 }
 
 .inline-code {
+  /* Same reasoning as .markdown-content code: stay inline despite the diffs
+     global pre/code reset to display:block. */
+  display: inline;
   font-family: var(--font-mono);
   font-size: 0.875em;
   background: var(--code-bg);
