@@ -174,6 +174,14 @@ func (s *PredictableService) Do(ctx context.Context, req *llm.Request) (*llm.Res
 	case "wide tables":
 		return s.makeResponse(wideTablesMarkdown, inputTokens), nil
 
+	case "web search", "citations":
+		// Reproduce the Anthropic server-side web-search shape: a server_tool_use
+		// block, a web_search_tool_result block, then MANY short text blocks
+		// (prose interleaved with cited quotes). Used to exercise the citation
+		// coalescing in the UI (adjacent text blocks merge into one paragraph and
+		// citations render as inline source markers).
+		return s.makeWebSearchCitationsResponse(inputTokens), nil
+
 	case "tool smorgasbord":
 		// Return a response with all tool types for testing
 		return s.makeToolSmorgasbordResponse(inputTokens), nil
@@ -680,6 +688,90 @@ func (s *PredictableService) makeSubagentToolResponse(slug, prompt string, input
 			InputTokens:  inputTokens,
 			OutputTokens: outputTokens,
 			CostUSD:      0.0,
+		},
+	}
+}
+
+// webCite builds an Anthropic-shaped citation array for a single source.
+func webCite(citedText, url, title string) json.RawMessage {
+	b, _ := json.Marshal([]map[string]string{{
+		"type":            "web_search_result_location",
+		"cited_text":      citedText,
+		"url":             url,
+		"title":           title,
+		"encrypted_index": "idx",
+	}})
+	return json.RawMessage(b)
+}
+
+// makeWebSearchCitationsResponse reproduces the multi-block message Anthropic
+// returns for a server-side web search: a server_tool_use block, the
+// web_search_tool_result with sources, then a long run of short text blocks
+// where cited quotes carry a Citations array. The UI should coalesce the
+// adjacent text blocks into flowing paragraphs and surface inline citation
+// markers + a Sources list.
+func (s *PredictableService) makeWebSearchCitationsResponse(inputTokens uint64) *llm.Response {
+	baseNano := time.Now().UnixNano()
+	searchID := fmt.Sprintf("srvtoolu_%d", baseNano%100000)
+
+	searchInput, _ := json.Marshal(map[string]string{"query": "pi coding agent switch models"})
+
+	const (
+		urlGit   = "https://github.com/earendil-works/pi"
+		urlDocs  = "https://pi.dev/docs/models"
+		urlBlog  = "https://pi.dev/blog/model-switching"
+		titleGit = "earendil-works/pi: a tiny coding agent"
+		titleDoc = "Pi Docs — Switching models mid-session"
+		titleBlg = "Model switching workflows with Pi"
+	)
+
+	content := []llm.Content{
+		{
+			ID:        searchID,
+			Type:      llm.ContentTypeServerToolUse,
+			ToolName:  "web_search",
+			ToolInput: json.RawMessage(searchInput),
+		},
+		{
+			Type:      llm.ContentTypeWebSearchToolResult,
+			ToolUseID: searchID,
+			ToolResult: []llm.Content{
+				{Type: llm.ContentTypeWebSearchResult, Title: titleGit, URL: urlGit, PageAge: "3 days ago"},
+				{Type: llm.ContentTypeWebSearchResult, Title: titleDoc, URL: urlDocs, PageAge: "1 week ago"},
+				{Type: llm.ContentTypeWebSearchResult, Title: titleBlg, URL: urlBlog, PageAge: "2 months ago"},
+			},
+		},
+		// Now the prose, split into many small text blocks the way Anthropic
+		// streams it: a sentence is interrupted by a cited quote in its own block.
+		{Type: llm.ContentTypeText, Text: "Pi makes mid-session model switching a core feature, so you can change models on an in-progress conversation without losing context.\n\n**Built-in ways to switch:**\n- "},
+		{Type: llm.ContentTypeText, Text: "Switch models mid-session with /model or Ctrl+L. Cycle through your favorites with Ctrl+P.", Citations: webCite("Switch models mid-session with /model or Ctrl+L", urlDocs, titleDoc)},
+		{Type: llm.ContentTypeText, Text: " The `/model` command is the discoverable way if you don't want to remember the shortcut.\n\n**Why this is seamless:** Pi sits on a unified multi-provider API layer, so "},
+		{Type: llm.ContentTypeText, Text: "mid-session model switching across 15+ providers lets you use Claude for exploration, GPT for a second opinion, Gemini for large context.", Citations: webCite("mid-session model switching across 15+ providers", urlGit, titleGit)},
+		{Type: llm.ContentTypeText, Text: "\n\n**Typical workflow people use:**\n"},
+		{Type: llm.ContentTypeText, Text: "Start with a small model for quick lookups and small edits, switch to a larger model for complex reasoning and multi-file changes, then switch back to the small one for running tests and fixing lint errors.", Citations: webCite("Start with a small model for quick lookups", urlBlog, titleBlg)},
+		{Type: llm.ContentTypeText, Text: "\n\nOne nice bonus tied to switching: Pi keeps "},
+		{Type: llm.ContentTypeText, Text: "tree-structured sessions — every branch preserved; rewind 10 messages, try something else, never lose work", Citations: webCite("tree-structured sessions — every branch preserved", urlGit, titleGit)},
+		{Type: llm.ContentTypeText, Text: ", so model switching pairs well with rewinding to retry a step with a different model."},
+	}
+
+	outputTokens := uint64(0)
+	for _, c := range content {
+		outputTokens += uint64(len(c.Text) / 4)
+	}
+	if outputTokens == 0 {
+		outputTokens = 1
+	}
+	return &llm.Response{
+		ID:         fmt.Sprintf("pred-websearch-%d", baseNano),
+		Type:       "message",
+		Role:       llm.MessageRoleAssistant,
+		Model:      "predictable-v1",
+		Content:    content,
+		StopReason: llm.StopReasonStopSequence,
+		Usage: llm.Usage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			CostUSD:      0.003,
 		},
 	}
 }

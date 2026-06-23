@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from "react";
 import { renderInlineText } from "../utils/inlineText";
 import { useMarkdown } from "../contexts/MarkdownContext";
 import MarkdownContent from "./MarkdownContent";
+import CitedText from "./CitedText";
+import { coalesceContent } from "../utils/coalesceContent";
 import {
   Message as MessageType,
   LLMMessage,
@@ -1436,6 +1438,13 @@ const Message = React.memo(function Message({
       ? meaningfulContent
       : llmMessage?.Content?.filter((c) => c.Type === 2 && c.Text?.includes("[Operation")) || [];
 
+  // Merge adjacent text blocks (and inject inline citation markers) so a single
+  // sentence interrupted by web-search citation quotes renders as one flowing
+  // paragraph instead of several stray lines. See utils/coalesceContent.ts.
+  // Not memoized: this component has earlier conditional returns, so a hook
+  // here would violate the rules of hooks; the merge is cheap.
+  const coalescedItems = coalesceContent(contentToRender);
+
   return (
     <>
       <div
@@ -1459,9 +1468,21 @@ const Message = React.memo(function Message({
         {/* Message content */}
         <div className="message-content" data-testid="message-content">
           {renderDistillationBox() ||
-            contentToRender.map((content, index) => (
-              <div key={index}>{renderContent(content)}</div>
-            ))}
+            coalescedItems.map((item, index) =>
+              item.kind === "text" ? (
+                <div key={index}>
+                  <CitedText
+                    text={item.text}
+                    markdownText={item.markdownText}
+                    citations={item.citations}
+                    renderMarkdown={shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)}
+                    messageId={message.message_id}
+                  />
+                </div>
+              ) : (
+                <div key={index}>{renderContent(item.content!)}</div>
+              ),
+            )}
           {isQueued && (
             <div className="queued-message-badge" data-testid="queued-badge">
               <span className="queued-message-badge-label">

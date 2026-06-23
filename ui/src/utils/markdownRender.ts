@@ -117,6 +117,7 @@ const SANITIZE_OPTS = {
     "del",
     "input",
     "span",
+    "sup",
     "div",
     "details",
     "summary",

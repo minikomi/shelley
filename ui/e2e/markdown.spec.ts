@@ -197,4 +197,34 @@ test.describe("Markdown rendering and sanitization", () => {
     expect(html).not.toContain("<button");
     expect(html).not.toContain("evil.com");
   });
+
+  test("coalesces web-search citation blocks into one paragraph with markers", async ({
+    page,
+    request,
+  }) => {
+    // The "web search" predictable pattern returns a server-side web-search
+    // message: a server_tool_use block, a web_search_tool_result, and many
+    // small text blocks where cited quotes carry a Citations array. The UI must
+    // merge adjacent text blocks (no stray line breaks) and surface inline
+    // citation markers + a numbered Sources list.
+    const slug = await createConversationViaAPI(request, "web search");
+    await page.goto(`/c/${slug}`);
+    await page.waitForLoadState("domcontentloaded");
+
+    const agent = page.locator(".message-agent").last();
+    const content = agent.locator('[data-testid="message-content"]');
+    await expect(content).toContainText("mid-session model switching", { timeout: 30000 });
+
+    // The sentence that used to be split across blocks now reads continuously
+    // (an inline citation marker may sit between the two halves).
+    await expect(content).toContainText(/never lose work.*so model switching pairs well/s);
+
+    // Inline citation markers render as superscript source links.
+    expect(await content.locator("sup.citation-refs a.citation-ref").count()).toBeGreaterThan(0);
+
+    // A numbered Sources list is appended for the cited run.
+    const sources = content.locator("ol.citation-sources li.citation-source");
+    expect(await sources.count()).toBeGreaterThan(0);
+    await expect(sources.first().locator("a")).toHaveAttribute("href", /^https?:\/\//);
+  });
 });

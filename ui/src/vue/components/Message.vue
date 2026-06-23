@@ -151,9 +151,18 @@
         </div>
 
         <template v-else>
-          <div v-for="(content, index) in contentToRender" :key="index">
+          <div v-for="(item, index) in coalescedContent" :key="index">
+            <CitedText
+              v-if="item.kind === 'text'"
+              :text="item.text"
+              :markdown-text="item.markdownText"
+              :citations="item.citations"
+              :render-markdown="shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)"
+              :message-id="message.message_id"
+            />
             <MessageContentBlock
-              :content="content"
+              v-else
+              :content="item.content!"
               :render-md="shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)"
               :message-id="message.message_id"
               :tool-progress="toolProgress"
@@ -233,6 +242,8 @@ import WarningMessage from "./WarningMessage.vue";
 import DistillStatusMessage from "./DistillStatusMessage.vue";
 import ErrorRetryButton from "./ErrorRetryButton.vue";
 import MessageContentBlock from "./MessageContentBlock.vue";
+import CitedText from "./CitedText.vue";
+import { coalesceContent } from "../../utils/coalesceContent";
 import MessageDisplayData from "./MessageDisplayData.vue";
 
 interface ToolDisplay {
@@ -487,6 +498,11 @@ const contentToRender = computed<LLMContent[]>(() =>
     : llmMessage.value?.Content?.filter((c) => c.Type === 2 && c.Text?.includes("[Operation")) ||
       [],
 );
+
+// Merge adjacent text blocks (and inject inline citation markers) so a single
+// sentence interrupted by web-search citation quotes renders as one flowing
+// paragraph instead of several stray lines. See utils/coalesceContent.ts.
+const coalescedContent = computed(() => coalesceContent(contentToRender.value));
 
 // Whether the main path has anything to render (mirrors the React early-returns
 // after the error/display_data branches).

@@ -53,6 +53,9 @@ export interface LLMContent {
   URL?: string;
   PageAge?: string;
   EncryptedContent?: string;
+  // Citations attached to a text block (Anthropic web search). Serialized as a
+  // JSON array on the wire; may arrive as the parsed array or a raw string.
+  Citations?: unknown;
 }
 
 // API types
