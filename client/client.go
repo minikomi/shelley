@@ -264,8 +264,10 @@ func cmdChat(cc *clientConfig, args []string) {
 		cid = *convID
 	}
 	output := map[string]any{
-		"event":           "accepted",
 		"conversation_id": cid,
+	}
+	if *wait {
+		output["event"] = "accepted"
 	}
 	if respBody.MessageID != "" {
 		output["message_id"] = respBody.MessageID
@@ -320,7 +322,7 @@ func archiveConversation(cc *clientConfig, client *http.Client, baseURL, convers
 	}
 }
 
-// streamEvent is one typed JSONL record emitted by chat -wait and read.
+// streamEvent is one typed JSONL record emitted while waiting.
 type streamEvent struct {
 	Event             string                 `json:"event"`
 	ConversationID    string                 `json:"conversation_id"`
@@ -329,6 +331,15 @@ type streamEvent struct {
 	ToolProgress      *llm.ToolProgress      `json:"tool_progress,omitempty"`
 	ConversationState *conversationStateWire `json:"conversation_state,omitempty"`
 	SequenceID        int64                  `json:"sequence_id,omitempty"`
+}
+
+// messageSummary is the compact output format for a read snapshot.
+type messageSummary struct {
+	SequenceID int64  `json:"sequence_id"`
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	EndOfTurn  bool   `json:"end_of_turn"`
 }
 
 type messageEvent struct {
@@ -412,12 +423,12 @@ func readSnapshot(cc *clientConfig, client *http.Client, baseURL, conversationID
 
 	encoder := json.NewEncoder(os.Stdout)
 	for _, msg := range sr.Messages {
-		event, err := messageStreamEvent(msg, conversationID)
+		summary, err := summarizeMessage(msg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error parsing message: %v\n", err)
 			os.Exit(1)
 		}
-		if err := encoder.Encode(event); err != nil {
+		if err := encoder.Encode(summary); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing message: %v\n", err)
 			os.Exit(1)
 		}
@@ -425,8 +436,9 @@ func readSnapshot(cc *clientConfig, client *http.Client, baseURL, conversationID
 }
 
 func readStream(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64) {
+	encoder := json.NewEncoder(os.Stdout)
 	err := streamUntilEnd(cc, client, baseURL, conversationID, after, func(event streamEvent) error {
-		return json.NewEncoder(os.Stdout).Encode(event)
+		return encoder.Encode(event)
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", err)
@@ -749,23 +761,7 @@ func messageStreamEvent(msg messageWire, fallbackConversationID string) (streamE
 		if err := json.Unmarshal([]byte(*msg.LlmData), message.LLM); err != nil {
 			return streamEvent{}, fmt.Errorf("decode message %d llm_data: %w", msg.SequenceID, err)
 		}
-		var texts []string
-		for _, content := range message.LLM.Content {
-			if content.Type == llm.ContentTypeText && content.Text != "" {
-				texts = append(texts, content.Text)
-			}
-			if content.Type == llm.ContentTypeToolUse && message.ToolName == "" {
-				message.ToolName = content.ToolName
-			}
-			if content.Type == llm.ContentTypeToolResult {
-				for _, result := range content.ToolResult {
-					if result.Type == llm.ContentTypeText && result.Text != "" {
-						texts = append(texts, result.Text)
-					}
-				}
-			}
-		}
-		message.Text = strings.Join(texts, "\n")
+		message.Text, message.ToolName = summarizeLLMMessage(message.LLM)
 	}
 	var err error
 	if message.UserData, err = rawJSON(msg.UserData); err != nil {
@@ -778,6 +774,43 @@ func messageStreamEvent(msg messageWire, fallbackConversationID string) (streamE
 		return streamEvent{}, fmt.Errorf("decode message %d display_data: %w", msg.SequenceID, err)
 	}
 	return streamEvent{Event: "message", ConversationID: conversationID, Message: message}, nil
+}
+
+func summarizeMessage(msg messageWire) (messageSummary, error) {
+	summary := messageSummary{SequenceID: msg.SequenceID, Type: msg.Type}
+	if msg.EndOfTurn != nil {
+		summary.EndOfTurn = *msg.EndOfTurn
+	}
+	if msg.LlmData == nil {
+		return summary, nil
+	}
+	var message llm.Message
+	if err := json.Unmarshal([]byte(*msg.LlmData), &message); err != nil {
+		return messageSummary{}, fmt.Errorf("decode message %d llm_data: %w", msg.SequenceID, err)
+	}
+	summary.Text, summary.ToolName = summarizeLLMMessage(&message)
+	return summary, nil
+}
+
+func summarizeLLMMessage(message *llm.Message) (string, string) {
+	var texts []string
+	var toolName string
+	for _, content := range message.Content {
+		if content.Type == llm.ContentTypeText && content.Text != "" {
+			texts = append(texts, content.Text)
+		}
+		if content.Type == llm.ContentTypeToolUse && toolName == "" {
+			toolName = content.ToolName
+		}
+		if content.Type == llm.ContentTypeToolResult {
+			for _, result := range content.ToolResult {
+				if result.Type == llm.ContentTypeText && result.Text != "" {
+					texts = append(texts, result.Text)
+				}
+			}
+		}
+	}
+	return strings.Join(texts, "\n"), toolName
 }
 
 func rawJSON(value *string) (json.RawMessage, error) {
@@ -814,8 +847,9 @@ Subcommands:
       email, discord, ntfy) for the conversation. New conversations only.
 
   read [-wait -after SEQUENCE_ID] CONVERSATION_ID
-      Read full structured messages as typed JSON lines.
-      With -wait, streams via SSE until the agent turn ends; -after is required.
+      Read messages as compact JSON lines.
+      With -wait, emits rich typed JSON lines until the agent turn ends;
+      -after is required.
 
   list [-archived] [-limit N] [-q QUERY]
       List conversations as JSON lines.

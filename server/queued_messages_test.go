@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 )
 
@@ -365,9 +364,7 @@ func TestHydrateDedupesQueuedAgainstInMemory(t *testing.T) {
 	// for "dup", mirroring QueueMessage having already enqueued it in memory.
 	mgr := NewConversationManager(convID, database, server.logger, server.toolSetConfig,
 		func(context.Context, llm.Message, llm.Usage) error { return nil },
-		func(context.Context, llm.Message, llm.Usage) (*generated.Message, error) {
-			return &generated.Message{}, nil
-		},
+		nil,
 		func(ConversationState) {}, server.streamPub)
 	mgr.mu.Lock()
 	mgr.pendingBatches = []pendingBatch{{
