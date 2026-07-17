@@ -85,9 +85,8 @@ type ConversationManager struct {
 	modelID             string
 	recordMessage       loop.MessageRecordFunc
 	// recordTurnStartMessage records the user message that begins a turn,
-	// folding the agent_working=true flip and timestamp bump into the INSERT Tx
-	// (see Server.recordTurnStartMessage). Falls back to recordMessage when nil.
-	recordTurnStartMessage loop.MessageRecordFunc
+	// folding the agent_working=true flip and timestamp bump into the INSERT Tx.
+	recordTurnStartMessage func(context.Context, llm.Message, llm.Usage) (*generated.Message, error)
 	logger                 *slog.Logger
 	toolSetConfig          claudetool.ToolSetConfig
 	toolSet                *claudetool.ToolSet // created per-conversation when loop starts
@@ -206,7 +205,7 @@ type ConversationManager struct {
 }
 
 // NewConversationManager constructs a manager with dependencies but defers hydration until needed.
-func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage, recordTurnStartMessage loop.MessageRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
+func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage loop.MessageRecordFunc, recordTurnStartMessage func(context.Context, llm.Message, llm.Usage) (*generated.Message, error), onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
 	logger := baseLogger
 	if logger == nil {
 		logger = slog.Default()
@@ -674,17 +673,17 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 // AcceptUserMessage enqueues a user message, ensuring the loop is ready first.
 // The message is recorded to the database immediately so it appears in the UI,
 // even if the loop is busy processing a previous request.
-func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service llm.Service, modelID string, message llm.Message) (bool, error) {
+func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service llm.Service, modelID string, message llm.Message) (bool, *generated.Message, error) {
 	if service == nil {
-		return false, fmt.Errorf("llm service is required")
+		return false, nil, fmt.Errorf("llm service is required")
 	}
 
 	if err := cm.Hydrate(ctx); err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	if err := cm.ensureLoop(service, modelID); err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	cm.mu.Lock()
@@ -692,12 +691,14 @@ func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service ll
 	cm.hasConversationEvents = true
 	loopInstance := cm.loop
 	cm.lastActivity = time.Now()
-	recordMessage := cm.recordMessage
 	recordTurnStart := cm.recordTurnStartMessage
 	cm.mu.Unlock()
 
 	if loopInstance == nil {
-		return false, fmt.Errorf("conversation loop not initialized")
+		return false, nil, fmt.Errorf("conversation loop not initialized")
+	}
+	if recordTurnStart == nil {
+		return false, nil, fmt.Errorf("turn-start recorder not configured")
 	}
 
 	// Flip the in-memory working flag and notify subscribers up front so the
@@ -707,30 +708,20 @@ func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service ll
 	// list-patch already carries working=true — no stale working=false snapshot,
 	// and no separate working-flip commit. syncAgentWorking does the in-memory
 	// flip + broadcast without its own DB write.
-	if recordTurnStart != nil {
-		cm.syncAgentWorking(true)
-		if err := recordTurnStart(ctx, message, llm.Usage{}); err != nil {
-			cm.logger.Error("failed to record user message immediately", "error", err)
-			// Continue anyway - the loop will also try to record it.
-		}
-	} else {
-		// No turn-start recorder wired (e.g. a manager built without one):
-		// fall back to the two-Tx ordering — persist working=true first, then
-		// the message — to preserve the no-flicker guarantee. Note recordMessage
-		// does not stamp user_email (it also serves tool_result rows), so this
-		// fallback drops author attribution; it's unreachable in production —
-		// getOrCreate*ConversationManager always wire a non-nil recordTurnStart.
-		cm.SetAgentWorking(true)
-		if recordMessage != nil {
-			if err := recordMessage(ctx, message, llm.Usage{}); err != nil {
-				cm.logger.Error("failed to record user message immediately", "error", err)
-			}
-		}
+	cm.syncAgentWorking(true)
+	recorded, err := recordTurnStart(ctx, message, llm.Usage{})
+	if err != nil {
+		cm.syncAgentWorking(false)
+		return false, nil, fmt.Errorf("record user message: %w", err)
+	}
+	if recorded == nil {
+		cm.syncAgentWorking(false)
+		return false, nil, fmt.Errorf("turn-start recorder returned no message")
 	}
 
 	loopInstance.QueueUserMessage(message)
 
-	return isFirst, nil
+	return isFirst, recorded, nil
 }
 
 // errRetryNotApplicable is returned by RetryLastLLMRequest when the latest

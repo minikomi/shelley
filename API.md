@@ -66,7 +66,8 @@ Unless noted, results exclude **archived** conversations.
   ```
 - `GET /api/conversations/archived` — archived list.
 - `POST /api/conversations/new` — create a conversation and post the
-  first user message.
+  first user message. The response includes the stored user message's
+  `message_id` and `sequence_id` for cursor-based streaming.
 - `POST /api/conversations/distill-new-generation` — compact the current
   conversation into the next generation of the same conversation. The
   optional `method` field (`default` or `compact`) is accepted for
@@ -92,7 +93,9 @@ Unless noted, results exclude **archived** conversations.
     - `?tail=<n>` — first frame contains only the last `n` messages.
   A `{"snapshot_complete": true}` frame follows the initial replay
   and precedes live updates.
-- `POST /api/conversation/<id>/chat` — send a user message.
+- `POST /api/conversation/<id>/chat` — send a user message. Accepted responses
+  include `conversation_id`, `message_id`, and `sequence_id`; pass the sequence
+  ID as `last_sequence_id` to stream that turn's response.
 - `POST /api/conversation/<id>/cancel` — interrupt the running loop.
 - `POST /api/conversation/<id>/archive` / `unarchive`.
 - `POST /api/conversation/<id>/hooks` — register an end-of-turn webhook.

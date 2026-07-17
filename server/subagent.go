@@ -139,7 +139,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 			}
 			return fmt.Sprintf("Subagent is busy; message queued and will be processed after its current turn. Conversation ID: %s", conversationID), nil
 		}
-		if _, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage); err != nil {
+		if _, _, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage); err != nil {
 			return "", fmt.Errorf("failed to accept user message: %w", err)
 		}
 		return fmt.Sprintf("Subagent started processing. Conversation ID: %s", conversationID), nil
@@ -179,7 +179,7 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 	}
 
 	// Accept the follow-up message (this starts a fresh turn).
-	if _, err = manager.AcceptUserMessage(ctx, llmService, modelID, userMessage); err != nil {
+	if _, _, err = manager.AcceptUserMessage(ctx, llmService, modelID, userMessage); err != nil {
 		// Release the slot like any other non-delivery exit; endWait also
 		// fires the async completion if a finish was suppressed while we
 		// held it (symmetry with the timeout/cancel paths).

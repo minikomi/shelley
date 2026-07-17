@@ -166,6 +166,7 @@ func cmdChat(cc *clientConfig, args []string) {
 	convID := fs.String("c", "", "Conversation ID to continue (creates new if omitted)")
 	model := fs.String("model", "", "Model to use (server default if empty)")
 	cwd := fs.String("cwd", "", "Working directory for the conversation")
+	wait := fs.Bool("wait", false, "Wait for the submitted turn to finish")
 	ephemeral := fs.Bool("ephemeral", false, "Wait for end of turn, then archive the conversation (for cron-style cleanup)")
 	noNotify := fs.Bool("disable-notifications", false, "Disable end-of-turn notifications for this conversation (new conversations only)")
 	fs.Parse(args)
@@ -245,79 +246,54 @@ func cmdChat(cc *clientConfig, args []string) {
 		os.Exit(1)
 	}
 
-	var respBody map[string]any
+	var respBody struct {
+		ConversationID string  `json:"conversation_id"`
+		MessageID      string  `json:"message_id"`
+		SequenceID     int64   `json:"sequence_id"`
+		Slug           *string `json:"slug"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing response: %v\n", err)
 		os.Exit(1)
 	}
 
-	cid := respBody["conversation_id"]
-	if cid == nil {
-		cid = *convID // when continuing, the chat endpoint doesn't echo the ID back
+	cid := respBody.ConversationID
+	if cid == "" {
+		cid = *convID
 	}
 	output := map[string]any{
 		"conversation_id": cid,
 	}
-	if slug, ok := respBody["slug"]; ok {
-		output["slug"] = slug
+	if respBody.MessageID != "" {
+		output["message_id"] = respBody.MessageID
+		output["sequence_id"] = respBody.SequenceID
+	}
+	if respBody.Slug != nil {
+		output["slug"] = *respBody.Slug
 	}
 
 	json.NewEncoder(os.Stdout).Encode(output)
 
-	if *ephemeral {
-		cidStr, ok := cid.(string)
-		if !ok || cidStr == "" {
-			fmt.Fprintf(os.Stderr, "Error: -ephemeral could not determine conversation ID\n")
+	if *wait || *ephemeral {
+		if cid == "" || respBody.SequenceID == 0 {
+			fmt.Fprintf(os.Stderr, "Error: chat response did not include a message cursor\n")
 			os.Exit(1)
 		}
-		waitForEndOfTurn(cc, client, baseURL, cidStr)
-		archiveConversation(cc, client, baseURL, cidStr)
+		if *wait {
+			readStream(cc, client, baseURL, cid, respBody.SequenceID)
+		} else {
+			waitForEndOfTurn(cc, client, baseURL, cid, respBody.SequenceID)
+		}
+		if *ephemeral {
+			archiveConversation(cc, client, baseURL, cid)
+		}
 	}
 }
 
 // waitForEndOfTurn streams the conversation until the agent's turn ends.
 // Stream events are discarded; only end-of-turn detection is performed.
-func waitForEndOfTurn(cc *clientConfig, client *http.Client, baseURL, conversationID string) {
-	req, err := cc.newRequest("GET", baseURL+"/api/conversation/"+conversationID+"/stream", nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
-		os.Exit(1)
-	}
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Error: HTTP %d\n", resp.StatusCode)
-		os.Exit(1)
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		var sr streamResponseWire
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &sr); err != nil {
-			continue
-		}
-		if sr.Heartbeat {
-			continue
-		}
-		for _, msg := range sr.Messages {
-			if (msg.Type == "agent" || msg.Type == "error") && msg.EndOfTurn != nil && *msg.EndOfTurn {
-				return
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
+func waitForEndOfTurn(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64) {
+	if err := streamUntilEnd(cc, client, baseURL, conversationID, after, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", err)
 		os.Exit(1)
 	}
@@ -353,10 +329,15 @@ type streamEvent struct {
 func cmdRead(cc *clientConfig, args []string) {
 	fs := flag.NewFlagSet("client read", flag.ExitOnError)
 	wait := fs.Bool("wait", false, "Wait for agent turn to finish (stream new messages)")
+	after := fs.Int64("after", -1, "Only stream messages after this sequence ID (required with -wait)")
 	fs.Parse(args)
 
 	if fs.NArg() == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: shelley client read [-wait] CONVERSATION_ID\n")
+		fmt.Fprintf(os.Stderr, "Usage: shelley client read [-wait -after SEQUENCE_ID] CONVERSATION_ID\n")
+		os.Exit(1)
+	}
+	if *wait && *after < 0 {
+		fmt.Fprintf(os.Stderr, "Error: -after SEQUENCE_ID is required with -wait\n")
 		os.Exit(1)
 	}
 	conversationID := fs.Arg(0)
@@ -368,7 +349,7 @@ func cmdRead(cc *clientConfig, args []string) {
 	}
 
 	if *wait {
-		readStream(cc, client, baseURL, conversationID)
+		readStream(cc, client, baseURL, conversationID, *after)
 	} else {
 		readSnapshot(cc, client, baseURL, conversationID)
 	}
@@ -404,24 +385,32 @@ func readSnapshot(cc *clientConfig, client *http.Client, baseURL, conversationID
 	}
 }
 
-func readStream(cc *clientConfig, client *http.Client, baseURL, conversationID string) {
-	req, err := cc.newRequest("GET", baseURL+"/api/conversation/"+conversationID+"/stream", nil)
+func readStream(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64) {
+	err := streamUntilEnd(cc, client, baseURL, conversationID, after, func(event streamEvent) error {
+		return json.NewEncoder(os.Stdout).Encode(event)
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func streamUntilEnd(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64, emit func(streamEvent) error) error {
+	streamURL := fmt.Sprintf("%s/api/conversation/%s/stream?last_sequence_id=%d", baseURL, conversationID, after)
+	req, err := cc.newRequest("GET", streamURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Error: HTTP %d\n", resp.StatusCode)
-		os.Exit(1)
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	seenSeqIDs := make(map[int64]bool)
@@ -437,7 +426,7 @@ func readStream(cc *clientConfig, client *http.Client, baseURL, conversationID s
 
 		var sr streamResponseWire
 		if err := json.Unmarshal([]byte(data), &sr); err != nil {
-			continue
+			return fmt.Errorf("decode event: %w", err)
 		}
 
 		if sr.Heartbeat || len(sr.Messages) == 0 {
@@ -451,18 +440,22 @@ func readStream(cc *clientConfig, client *http.Client, baseURL, conversationID s
 			seenSeqIDs[msg.SequenceID] = true
 
 			event := simplifyMessage(msg)
-			json.NewEncoder(os.Stdout).Encode(event)
+			if emit != nil {
+				if err := emit(event); err != nil {
+					return err
+				}
+			}
 
 			if (msg.Type == "agent" || msg.Type == "error") && event.EndOfTurn {
-				return
+				return nil
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", err)
-		os.Exit(1)
+		return err
 	}
+	return fmt.Errorf("stream ended before end of turn")
 }
 
 func cmdList(cc *clientConfig, args []string) {
@@ -710,18 +703,19 @@ Flags:
   -H HEADER    Extra HTTP header "Name: Value" (can be repeated)
 
 Subcommands:
-  chat -p PROMPT [-c CONVERSATION_ID] [-model MODEL] [-cwd DIR] [-ephemeral] [-disable-notifications]
+  chat -p PROMPT [-c CONVERSATION_ID] [-model MODEL] [-cwd DIR] [-wait] [-ephemeral] [-disable-notifications]
       Send a message. Creates a new conversation unless -c is given.
-      Prints JSON with conversation_id to stdout.
+      Prints JSON with conversation_id, message_id, and sequence_id.
+      With -wait, streams subsequent messages as JSON lines until the turn ends.
       With -ephemeral, waits for the agent turn to end and then archives
       the conversation (useful for cron-style invocations that clean up
       after themselves).
       With -disable-notifications, disables end-of-turn notifications (push,
       email, discord, ntfy) for the conversation. New conversations only.
 
-  read [-wait] CONVERSATION_ID
+  read [-wait -after SEQUENCE_ID] CONVERSATION_ID
       Read all messages in a conversation as JSON lines.
-      With -wait, streams via SSE until the agent turn ends.
+      With -wait, streams via SSE until the agent turn ends; -after is required.
 
   list [-archived] [-limit N] [-q QUERY]
       List conversations as JSON lines.
@@ -740,9 +734,8 @@ Connecting over HTTP with auth headers:
   shelley client -url http://localhost:9999 -H "X-Exedev-Userid: user" list
 
 Examples:
-  # Start a conversation and wait for the agent
-  ID=$(shelley client chat -p "list files" | jq -r .conversation_id)
-  shelley client read -wait "$ID"
+  # Start a conversation and stream the agent's response
+  shelley client chat -wait -p "list files"
 
   # Continue a conversation
   shelley client chat -c "$ID" -p "now count them"

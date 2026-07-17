@@ -886,7 +886,7 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
 			return s.recordMessage(ctx, conversationID, message, usage)
 		}
-		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
+		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage) (*generated.Message, error) {
 			return s.recordTurnStartMessage(ctx, conversationID, message, usage)
 		}
 
@@ -936,7 +936,7 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
 			return s.recordMessage(ctx, conversationID, message, usage)
 		}
-		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
+		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage) (*generated.Message, error) {
 			return s.recordTurnStartMessage(ctx, conversationID, message, usage)
 		}
 
@@ -1175,10 +1175,10 @@ func userEmailFromContext(ctx context.Context) string {
 // AND working=true, so the conversation-list patch can't briefly snapshot a
 // stale working=false row (the flicker the old ordering guarded against), and
 // we drop two commits (the working flip and the timestamp bump) per turn.
-func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage) error {
+func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage) (*generated.Message, error) {
 	params, err := s.buildCreateMessageParams(conversationID, message, usage)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	params.MarkAgentStart = true
 	params.BumpTimestamp = true
@@ -1190,7 +1190,7 @@ func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID stri
 	params.UserEmail = userEmailFromContext(ctx)
 	createdMsg, err := s.db.CreateMessage(ctx, params)
 	if err != nil {
-		return fmt.Errorf("failed to create turn-start message: %w", err)
+		return nil, fmt.Errorf("failed to create turn-start message: %w", err)
 	}
 
 	s.mu.Lock()
@@ -1201,7 +1201,7 @@ func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID stri
 	}
 
 	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, createdMsg)
-	return nil
+	return createdMsg, nil
 }
 
 // recordMessages records several messages for one conversation in a SINGLE DB

@@ -1302,7 +1302,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
+	firstMessage, acceptedMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1328,7 +1328,12 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":          "accepted",
+		"conversation_id": conversationID,
+		"message_id":      acceptedMessage.MessageID,
+		"sequence_id":     acceptedMessage.SequenceID,
+	})
 }
 
 // handleNewConversation handles POST /api/conversations/new - creates conversation implicitly on first message
@@ -1493,7 +1498,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
+	firstMessage, acceptedMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1523,6 +1528,8 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "accepted",
 		"conversation_id": conversationID,
+		"message_id":      acceptedMessage.MessageID,
+		"sequence_id":     acceptedMessage.SequenceID,
 	})
 }
 
