@@ -264,10 +264,8 @@ func cmdChat(cc *clientConfig, args []string) {
 		cid = *convID
 	}
 	output := map[string]any{
+		"event":           "accepted",
 		"conversation_id": cid,
-	}
-	if *wait {
-		output["event"] = "accepted"
 	}
 	if respBody.MessageID != "" {
 		output["message_id"] = respBody.MessageID
@@ -284,87 +282,67 @@ func cmdChat(cc *clientConfig, args []string) {
 			fmt.Fprintf(os.Stderr, "Error: chat response did not include a message cursor\n")
 			os.Exit(1)
 		}
+		var waitErr error
 		if *wait {
-			readStream(cc, client, baseURL, cid, respBody.SequenceID)
+			waitErr = readStream(cc, client, baseURL, cid, respBody.SequenceID)
 		} else {
-			waitForEndOfTurn(cc, client, baseURL, cid, respBody.SequenceID)
+			waitErr = waitForEndOfTurn(cc, client, baseURL, cid, respBody.SequenceID)
 		}
 		if *ephemeral {
-			archiveConversation(cc, client, baseURL, cid)
+			if err := archiveConversation(cc, client, baseURL, cid); err != nil {
+				fmt.Fprintf(os.Stderr, "Error archiving: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if waitErr != nil {
+			fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", waitErr)
+			os.Exit(1)
 		}
 	}
 }
 
 // waitForEndOfTurn streams the conversation until the agent's turn ends.
 // Stream events are discarded; only end-of-turn detection is performed.
-func waitForEndOfTurn(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64) {
-	if err := streamUntilEnd(cc, client, baseURL, conversationID, after, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", err)
-		os.Exit(1)
-	}
+func waitForEndOfTurn(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64) error {
+	return streamUntilEnd(cc, client, baseURL, conversationID, after, nil)
 }
 
-func archiveConversation(cc *clientConfig, client *http.Client, baseURL, conversationID string) {
+func archiveConversation(cc *clientConfig, client *http.Client, baseURL, conversationID string) error {
 	req, err := cc.newRequest("POST", baseURL+"/api/conversation/"+conversationID+"/archive", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating archive request: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("create request: %w", err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error archiving: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Error archiving: HTTP %d\n", resp.StatusCode)
-		os.Exit(1)
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+	return nil
 }
 
-// streamEvent is one typed JSONL record emitted while waiting.
+// streamEvent is one typed JSONL record emitted by chat or read.
 type streamEvent struct {
-	Event             string                 `json:"event"`
-	ConversationID    string                 `json:"conversation_id"`
-	Message           *messageEvent          `json:"message,omitempty"`
-	StreamDelta       *llm.StreamDelta       `json:"stream_delta,omitempty"`
-	ToolProgress      *llm.ToolProgress      `json:"tool_progress,omitempty"`
-	ConversationState *conversationStateWire `json:"conversation_state,omitempty"`
-	SequenceID        int64                  `json:"sequence_id,omitempty"`
-}
-
-// messageSummary is the compact output format for a read snapshot.
-type messageSummary struct {
-	SequenceID int64  `json:"sequence_id"`
-	Type       string `json:"type"`
-	Text       string `json:"text,omitempty"`
-	ToolName   string `json:"tool_name,omitempty"`
-	EndOfTurn  bool   `json:"end_of_turn"`
+	Event          string            `json:"event"`
+	ConversationID string            `json:"conversation_id"`
+	Message        *messageEvent     `json:"message,omitempty"`
+	StreamDelta    *llm.StreamDelta  `json:"stream_delta,omitempty"`
+	ToolProgress   *llm.ToolProgress `json:"tool_progress,omitempty"`
+	SequenceID     int64             `json:"sequence_id,omitempty"`
 }
 
 type messageEvent struct {
-	MessageID           string          `json:"message_id"`
-	SequenceID          int64           `json:"sequence_id"`
-	Type                string          `json:"type"`
-	Text                string          `json:"text,omitempty"`
-	ToolName            string          `json:"tool_name,omitempty"`
-	LLM                 *llm.Message    `json:"llm,omitempty"`
-	UserData            json.RawMessage `json:"user_data,omitempty"`
-	UsageData           json.RawMessage `json:"usage_data,omitempty"`
-	DisplayData         json.RawMessage `json:"display_data,omitempty"`
-	CreatedAt           string          `json:"created_at,omitempty"`
-	Generation          int64           `json:"generation"`
-	EndOfTurn           bool            `json:"end_of_turn"`
-	LLMAPIURL           *string         `json:"llm_api_url,omitempty"`
-	ModelName           *string         `json:"model_name,omitempty"`
-	ForkedFromMessageID *string         `json:"forked_from_message_id,omitempty"`
-	UserEmail           *string         `json:"user_email,omitempty"`
-}
-
-type conversationStateWire struct {
-	ConversationID string `json:"conversation_id"`
-	Working        bool   `json:"working"`
-	Model          string `json:"model,omitempty"`
+	MessageID   string          `json:"message_id"`
+	SequenceID  int64           `json:"sequence_id"`
+	Type        string          `json:"type"`
+	Text        string          `json:"text,omitempty"`
+	ToolName    string          `json:"tool_name,omitempty"`
+	UsageData   json.RawMessage `json:"usage_data,omitempty"`
+	DisplayData json.RawMessage `json:"display_data,omitempty"`
+	CreatedAt   string          `json:"created_at,omitempty"`
+	EndOfTurn   bool            `json:"end_of_turn"`
 }
 
 func cmdRead(cc *clientConfig, args []string) {
@@ -390,7 +368,10 @@ func cmdRead(cc *clientConfig, args []string) {
 	}
 
 	if *wait {
-		readStream(cc, client, baseURL, conversationID, *after)
+		if err := readStream(cc, client, baseURL, conversationID, *after); err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
 		readSnapshot(cc, client, baseURL, conversationID)
 	}
@@ -423,27 +404,23 @@ func readSnapshot(cc *clientConfig, client *http.Client, baseURL, conversationID
 
 	encoder := json.NewEncoder(os.Stdout)
 	for _, msg := range sr.Messages {
-		summary, err := summarizeMessage(msg)
+		event, err := messageStreamEvent(msg, conversationID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error parsing message: %v\n", err)
 			os.Exit(1)
 		}
-		if err := encoder.Encode(summary); err != nil {
+		if err := encoder.Encode(event); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing message: %v\n", err)
 			os.Exit(1)
 		}
 	}
 }
 
-func readStream(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64) {
+func readStream(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64) error {
 	encoder := json.NewEncoder(os.Stdout)
-	err := streamUntilEnd(cc, client, baseURL, conversationID, after, func(event streamEvent) error {
+	return streamUntilEnd(cc, client, baseURL, conversationID, after, func(event streamEvent) error {
 		return encoder.Encode(event)
 	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading stream: %v\n", err)
-		os.Exit(1)
-	}
 }
 
 func streamUntilEnd(cc *clientConfig, client *http.Client, baseURL, conversationID string, after int64, emit func(streamEvent) error) error {
@@ -516,6 +493,9 @@ func streamUntilEnd(cc *clientConfig, client *http.Client, baseURL, conversation
 					if err := emit(streamEvent{Event: terminalEvent, ConversationID: conversationID, SequenceID: msg.SequenceID}); err != nil {
 						return err
 					}
+				}
+				if msg.Type == "error" {
+					return fmt.Errorf("turn ended with error")
 				}
 				return nil
 			}
@@ -693,31 +673,22 @@ func cmdArchive(cc *clientConfig, args []string) {
 // --- Wire types for JSON parsing ---
 
 type streamResponseWire struct {
-	ConversationID    string                 `json:"conversation_id,omitempty"`
-	Messages          []messageWire          `json:"messages"`
-	Heartbeat         bool                   `json:"heartbeat"`
-	SnapshotComplete  bool                   `json:"snapshot_complete,omitempty"`
-	StreamDelta       *llm.StreamDelta       `json:"stream_delta,omitempty"`
-	ToolProgress      *llm.ToolProgress      `json:"tool_progress,omitempty"`
-	ConversationState *conversationStateWire `json:"conversation_state,omitempty"`
+	ConversationID string            `json:"conversation_id,omitempty"`
+	Messages       []messageWire     `json:"messages"`
+	StreamDelta    *llm.StreamDelta  `json:"stream_delta,omitempty"`
+	ToolProgress   *llm.ToolProgress `json:"tool_progress,omitempty"`
 }
 
 type messageWire struct {
-	MessageID           string  `json:"message_id"`
-	ConversationID      string  `json:"conversation_id"`
-	SequenceID          int64   `json:"sequence_id"`
-	Type                string  `json:"type"`
-	LlmData             *string `json:"llm_data,omitempty"`
-	UserData            *string `json:"user_data,omitempty"`
-	UsageData           *string `json:"usage_data,omitempty"`
-	CreatedAt           string  `json:"created_at"`
-	DisplayData         *string `json:"display_data,omitempty"`
-	Generation          int64   `json:"generation"`
-	EndOfTurn           *bool   `json:"end_of_turn,omitempty"`
-	LLMAPIURL           *string `json:"llm_api_url,omitempty"`
-	ModelName           *string `json:"model_name,omitempty"`
-	ForkedFromMessageID *string `json:"forked_from_message_id,omitempty"`
-	UserEmail           *string `json:"user_email,omitempty"`
+	MessageID      string  `json:"message_id"`
+	ConversationID string  `json:"conversation_id"`
+	SequenceID     int64   `json:"sequence_id"`
+	Type           string  `json:"type"`
+	LlmData        *string `json:"llm_data,omitempty"`
+	UsageData      *string `json:"usage_data,omitempty"`
+	CreatedAt      string  `json:"created_at"`
+	DisplayData    *string `json:"display_data,omitempty"`
+	EndOfTurn      *bool   `json:"end_of_turn,omitempty"`
 }
 
 func responseEvents(response streamResponseWire, conversationID string) []streamEvent {
@@ -728,12 +699,6 @@ func responseEvents(response streamResponseWire, conversationID string) []stream
 	if response.ToolProgress != nil {
 		events = append(events, streamEvent{Event: "tool_progress", ConversationID: conversationID, ToolProgress: response.ToolProgress})
 	}
-	if response.ConversationState != nil {
-		events = append(events, streamEvent{Event: "conversation_state", ConversationID: conversationID, ConversationState: response.ConversationState})
-	}
-	if response.SnapshotComplete {
-		events = append(events, streamEvent{Event: "snapshot_complete", ConversationID: conversationID})
-	}
 	return events
 }
 
@@ -743,30 +708,22 @@ func messageStreamEvent(msg messageWire, fallbackConversationID string) (streamE
 		conversationID = fallbackConversationID
 	}
 	message := &messageEvent{
-		MessageID:           msg.MessageID,
-		SequenceID:          msg.SequenceID,
-		Type:                msg.Type,
-		CreatedAt:           msg.CreatedAt,
-		Generation:          msg.Generation,
-		LLMAPIURL:           msg.LLMAPIURL,
-		ModelName:           msg.ModelName,
-		ForkedFromMessageID: msg.ForkedFromMessageID,
-		UserEmail:           msg.UserEmail,
+		MessageID:  msg.MessageID,
+		SequenceID: msg.SequenceID,
+		Type:       msg.Type,
+		CreatedAt:  msg.CreatedAt,
 	}
 	if msg.EndOfTurn != nil {
 		message.EndOfTurn = *msg.EndOfTurn
 	}
 	if msg.LlmData != nil {
-		message.LLM = new(llm.Message)
-		if err := json.Unmarshal([]byte(*msg.LlmData), message.LLM); err != nil {
+		var llmMessage llm.Message
+		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMessage); err != nil {
 			return streamEvent{}, fmt.Errorf("decode message %d llm_data: %w", msg.SequenceID, err)
 		}
-		message.Text, message.ToolName = summarizeLLMMessage(message.LLM)
+		message.Text, message.ToolName = summarizeLLMMessage(&llmMessage)
 	}
 	var err error
-	if message.UserData, err = rawJSON(msg.UserData); err != nil {
-		return streamEvent{}, fmt.Errorf("decode message %d user_data: %w", msg.SequenceID, err)
-	}
 	if message.UsageData, err = rawJSON(msg.UsageData); err != nil {
 		return streamEvent{}, fmt.Errorf("decode message %d usage_data: %w", msg.SequenceID, err)
 	}
@@ -774,22 +731,6 @@ func messageStreamEvent(msg messageWire, fallbackConversationID string) (streamE
 		return streamEvent{}, fmt.Errorf("decode message %d display_data: %w", msg.SequenceID, err)
 	}
 	return streamEvent{Event: "message", ConversationID: conversationID, Message: message}, nil
-}
-
-func summarizeMessage(msg messageWire) (messageSummary, error) {
-	summary := messageSummary{SequenceID: msg.SequenceID, Type: msg.Type}
-	if msg.EndOfTurn != nil {
-		summary.EndOfTurn = *msg.EndOfTurn
-	}
-	if msg.LlmData == nil {
-		return summary, nil
-	}
-	var message llm.Message
-	if err := json.Unmarshal([]byte(*msg.LlmData), &message); err != nil {
-		return messageSummary{}, fmt.Errorf("decode message %d llm_data: %w", msg.SequenceID, err)
-	}
-	summary.Text, summary.ToolName = summarizeLLMMessage(&message)
-	return summary, nil
 }
 
 func summarizeLLMMessage(message *llm.Message) (string, string) {
@@ -837,9 +778,9 @@ Flags:
 Subcommands:
   chat -p PROMPT [-c CONVERSATION_ID] [-model MODEL] [-cwd DIR] [-wait] [-ephemeral] [-disable-notifications]
       Send a message. Creates a new conversation unless -c is given.
-      Prints JSON with conversation_id, message_id, and sequence_id.
-      With -wait, emits rich typed JSON lines: deltas, tool progress, full
-      messages, conversation state, and a final done or error event.
+      Emits an accepted JSON event with conversation_id, message_id, and
+      sequence_id. With -wait, also emits message, stream_delta,
+      tool_progress, and terminal done or error events.
       With -ephemeral, waits for the agent turn to end and then archives
       the conversation (useful for cron-style invocations that clean up
       after themselves).
@@ -847,9 +788,9 @@ Subcommands:
       email, discord, ntfy) for the conversation. New conversations only.
 
   read [-wait -after SEQUENCE_ID] CONVERSATION_ID
-      Read messages as compact JSON lines.
-      With -wait, emits rich typed JSON lines until the agent turn ends;
-      -after is required.
+      Emit messages using the same JSON event shape as chat -wait.
+      With -wait, continue streaming until the agent turn ends; -after is
+      required.
 
   list [-archived] [-limit N] [-q QUERY]
       List conversations as JSON lines.
