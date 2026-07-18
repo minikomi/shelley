@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"shelley.exe.dev/llm"
 )
 
 func TestStreamUntilEndUsesCursor(t *testing.T) {
@@ -44,18 +47,68 @@ func TestStreamUntilEndUsesCursor(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 	message := events[2].Message
-	if events[2].Event != "message" || message == nil || message.MessageID != "message-1" || message.Text != "done" || len(message.UsageData) == 0 || len(message.DisplayData) == 0 {
+	if events[2].Event != "message" || message == nil || message.MessageID != "message-1" || message.Text != "done" || len(message.UsageData) == 0 {
 		t.Fatalf("events = %+v", events)
 	}
 	encoded, err := json.Marshal(events[2])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), `"llm"`) || strings.Contains(string(encoded), `"generation"`) {
+	if strings.Contains(string(encoded), `"llm"`) || strings.Contains(string(encoded), `"generation"`) || strings.Contains(string(encoded), `"display_data"`) {
 		t.Fatalf("message is not lean: %s", encoded)
 	}
 	if events[3].Event != "done" || events[3].SequenceID != 43 {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestMessageStreamEventIncludesRichTools(t *testing.T) {
+	started := time.Date(2026, time.July, 18, 1, 2, 3, 4, time.UTC)
+	ended := started.Add(time.Second)
+	llmMessage := llm.Message{Content: []llm.Content{
+		{Type: llm.ContentTypeText, Text: "Working"},
+		{ID: "tool-1", Type: llm.ContentTypeToolUse, ToolName: "bash", ToolInput: json.RawMessage(`{"command":"ls"}`)},
+		{ID: "tool-2", Type: llm.ContentTypeToolUse, ToolName: "read", ToolInput: json.RawMessage(`{"path":"README.md"}`)},
+		{
+			Type:             llm.ContentTypeToolResult,
+			ToolUseID:        "tool-1",
+			ToolResult:       []llm.Content{{Type: llm.ContentTypeText, Text: "output"}},
+			Display:          map[string]any{"working_dir": "/tmp"},
+			ToolUseStartTime: &started,
+			ToolUseEndTime:   &ended,
+		},
+		{
+			Type:       llm.ContentTypeToolResult,
+			ToolUseID:  "tool-2",
+			ToolError:  true,
+			ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "failed"}},
+		},
+	}}
+	raw, err := json.Marshal(llmMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawString := string(raw)
+	event, err := messageStreamEvent(messageWire{SequenceID: 7, Type: "agent", LlmData: &rawString}, "conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := event.Message
+	if len(message.ToolCalls) != 2 || message.ToolCalls[0].ID != "tool-1" || message.ToolCalls[0].Name != "bash" || string(message.ToolCalls[0].Input) != `{"command":"ls"}` {
+		t.Fatalf("tool calls = %+v", message.ToolCalls)
+	}
+	if len(message.ToolResults) != 2 || message.ToolResults[0].ToolUseID != "tool-1" || message.ToolResults[0].Text != "output" || message.ToolResults[0].StartedAt == nil || !message.ToolResults[0].StartedAt.Equal(started) {
+		t.Fatalf("tool results = %+v", message.ToolResults)
+	}
+	if !message.ToolResults[1].Error || message.ToolResults[1].Text != "failed" {
+		t.Fatalf("tool results = %+v", message.ToolResults)
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"tool_name"`) || !strings.Contains(string(encoded), `"tool_calls"`) || !strings.Contains(string(encoded), `"display":{"working_dir":"/tmp"}`) {
+		t.Fatalf("event = %s", encoded)
 	}
 }
 

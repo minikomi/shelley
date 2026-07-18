@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"shelley.exe.dev/llm"
 )
@@ -334,15 +335,30 @@ type streamEvent struct {
 }
 
 type messageEvent struct {
-	MessageID   string          `json:"message_id"`
-	SequenceID  int64           `json:"sequence_id"`
-	Type        string          `json:"type"`
-	Text        string          `json:"text,omitempty"`
-	ToolName    string          `json:"tool_name,omitempty"`
-	UsageData   json.RawMessage `json:"usage_data,omitempty"`
-	DisplayData json.RawMessage `json:"display_data,omitempty"`
-	CreatedAt   string          `json:"created_at,omitempty"`
-	EndOfTurn   bool            `json:"end_of_turn"`
+	MessageID   string            `json:"message_id"`
+	SequenceID  int64             `json:"sequence_id"`
+	Type        string            `json:"type"`
+	Text        string            `json:"text,omitempty"`
+	ToolCalls   []toolCallEvent   `json:"tool_calls,omitempty"`
+	ToolResults []toolResultEvent `json:"tool_results,omitempty"`
+	UsageData   json.RawMessage   `json:"usage_data,omitempty"`
+	CreatedAt   string            `json:"created_at,omitempty"`
+	EndOfTurn   bool              `json:"end_of_turn"`
+}
+
+type toolCallEvent struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+type toolResultEvent struct {
+	ToolUseID string     `json:"tool_use_id"`
+	Error     bool       `json:"error"`
+	Text      string     `json:"text,omitempty"`
+	Display   any        `json:"display,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }
 
 func cmdRead(cc *clientConfig, args []string) {
@@ -687,7 +703,6 @@ type messageWire struct {
 	LlmData        *string `json:"llm_data,omitempty"`
 	UsageData      *string `json:"usage_data,omitempty"`
 	CreatedAt      string  `json:"created_at"`
-	DisplayData    *string `json:"display_data,omitempty"`
 	EndOfTurn      *bool   `json:"end_of_turn,omitempty"`
 }
 
@@ -721,37 +736,53 @@ func messageStreamEvent(msg messageWire, fallbackConversationID string) (streamE
 		if err := json.Unmarshal([]byte(*msg.LlmData), &llmMessage); err != nil {
 			return streamEvent{}, fmt.Errorf("decode message %d llm_data: %w", msg.SequenceID, err)
 		}
-		message.Text, message.ToolName = summarizeLLMMessage(&llmMessage)
+		message.Text, message.ToolCalls, message.ToolResults = summarizeLLMMessage(&llmMessage)
 	}
 	var err error
 	if message.UsageData, err = rawJSON(msg.UsageData); err != nil {
 		return streamEvent{}, fmt.Errorf("decode message %d usage_data: %w", msg.SequenceID, err)
 	}
-	if message.DisplayData, err = rawJSON(msg.DisplayData); err != nil {
-		return streamEvent{}, fmt.Errorf("decode message %d display_data: %w", msg.SequenceID, err)
-	}
 	return streamEvent{Event: "message", ConversationID: conversationID, Message: message}, nil
 }
 
-func summarizeLLMMessage(message *llm.Message) (string, string) {
+func summarizeLLMMessage(message *llm.Message) (string, []toolCallEvent, []toolResultEvent) {
 	var texts []string
-	var toolName string
+	var toolCalls []toolCallEvent
+	var toolResults []toolResultEvent
 	for _, content := range message.Content {
+		switch content.Type {
+		case llm.ContentTypeText:
+			if content.Text != "" {
+				texts = append(texts, content.Text)
+			}
+		case llm.ContentTypeToolUse:
+			toolCalls = append(toolCalls, toolCallEvent{ID: content.ID, Name: content.ToolName, Input: content.ToolInput})
+		case llm.ContentTypeToolResult:
+			text := contentText(content.ToolResult)
+			if text != "" {
+				texts = append(texts, text)
+			}
+			toolResults = append(toolResults, toolResultEvent{
+				ToolUseID: content.ToolUseID,
+				Error:     content.ToolError,
+				Text:      text,
+				Display:   content.Display,
+				StartedAt: content.ToolUseStartTime,
+				EndedAt:   content.ToolUseEndTime,
+			})
+		}
+	}
+	return strings.Join(texts, "\n"), toolCalls, toolResults
+}
+
+func contentText(contents []llm.Content) string {
+	var texts []string
+	for _, content := range contents {
 		if content.Type == llm.ContentTypeText && content.Text != "" {
 			texts = append(texts, content.Text)
 		}
-		if content.Type == llm.ContentTypeToolUse && toolName == "" {
-			toolName = content.ToolName
-		}
-		if content.Type == llm.ContentTypeToolResult {
-			for _, result := range content.ToolResult {
-				if result.Type == llm.ContentTypeText && result.Text != "" {
-					texts = append(texts, result.Text)
-				}
-			}
-		}
 	}
-	return strings.Join(texts, "\n"), toolName
+	return strings.Join(texts, "\n")
 }
 
 func rawJSON(value *string) (json.RawMessage, error) {
@@ -781,6 +812,7 @@ Subcommands:
       Emits an accepted JSON event with conversation_id, message_id, and
       sequence_id. With -wait, also emits message, stream_delta,
       tool_progress, and terminal done or error events.
+      Message events include replayable tool calls and results.
       With -ephemeral, waits for the agent turn to end and then archives
       the conversation (useful for cron-style invocations that clean up
       after themselves).
