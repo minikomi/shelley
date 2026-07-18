@@ -206,7 +206,7 @@ func llmDataForAPI(llmData *string, msgType, messageID string) (*string, *bool) 
 	}
 
 	var endOfTurnPtr *bool
-	if msgType == string(db.MessageTypeAgent) {
+	if msgType == string(db.MessageTypeAgent) || msgType == string(db.MessageTypeError) {
 		eot := msg.EndOfTurn
 		endOfTurnPtr = &eot
 	}

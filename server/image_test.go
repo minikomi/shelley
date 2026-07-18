@@ -321,7 +321,7 @@ func TestHandleMessageImage(t *testing.T) {
 }
 
 // TestLlmDataForAPISingleParse verifies that llmDataForAPI computes both the
-// end-of-turn flag (for agent messages) and the image-stripped llm_data in a
+// end-of-turn flag (for agent and error messages) and the image-stripped llm_data in a
 // single JSON parse, matching the behavior of the previously-separate
 // extractEndOfTurn and stripImageDataFromLLMData helpers.
 func TestLlmDataForAPISingleParse(t *testing.T) {
@@ -345,6 +345,10 @@ func TestLlmDataForAPISingleParse(t *testing.T) {
 	gotData, gotEOT := llmDataForAPI(&s, string(db.MessageTypeAgent), "msg-eot")
 	if gotEOT == nil || *gotEOT != true {
 		t.Fatalf("expected end_of_turn=true, got %v", gotEOT)
+	}
+	_, errorEOT := llmDataForAPI(&s, string(db.MessageTypeError), "msg-eot")
+	if errorEOT == nil || !*errorEOT {
+		t.Fatalf("expected error end_of_turn=true, got %v", errorEOT)
 	}
 	if gotData == nil {
 		t.Fatal("expected non-nil llm_data")
