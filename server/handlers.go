@@ -3082,6 +3082,10 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if restart {
+		if err := s.db.SetSetting(r.Context(), db.ResumeAfterUpgradeSettingKey, "1"); err != nil {
+			s.logger.Error("Failed to mark resume-after-upgrade; continuing restart", "error", err)
+		}
+
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Upgrade complete. Restarting..."})
 
 		// Flush the response

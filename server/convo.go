@@ -985,6 +985,44 @@ func (cm *ConversationManager) ContinueAfterRefusal(ctx context.Context, ch Mode
 	return nil
 }
 
+// ResumeInterruptedTurn re-fires the LLM request for a turn that was cut short
+// by the process exiting (the upgrade-with-restart path; see
+// db.ConsumeResumeAfterUpgrade and Server.resumeInterruptedConversations). No
+// user message is added and no history row is mutated: the persisted messages
+// are the request, and loop.insertMissingToolResults patches any dangling
+// tool_use block in memory while building it.
+//
+// Shares retryMu with the retry/continue affordances so a resume can't race a
+// user-triggered retry of the same conversation.
+func (cm *ConversationManager) ResumeInterruptedTurn(ctx context.Context, service llm.Service, modelID string) error {
+	if service == nil {
+		return fmt.Errorf("llm service is required")
+	}
+
+	cm.retryMu.Lock()
+	defer cm.retryMu.Unlock()
+
+	if err := cm.Hydrate(ctx); err != nil {
+		return fmt.Errorf("failed to hydrate before resuming: %w", err)
+	}
+	if err := cm.ensureLoop(service, modelID); err != nil {
+		return fmt.Errorf("failed to build loop before resuming: %w", err)
+	}
+
+	cm.mu.Lock()
+	loopInstance := cm.loop
+	logger := cm.logger
+	cm.mu.Unlock()
+	if loopInstance == nil {
+		return fmt.Errorf("conversation loop not initialized")
+	}
+
+	logger.Info("resuming interrupted turn", "model", modelID)
+	cm.SetAgentWorking(true)
+	loopInstance.Retry()
+	return nil
+}
+
 // QueueMessage appends a user message to the conversation's queued_messages
 // JSON array (the single source of truth for queued user input) and holds it
 // for delivery after the current agent turn (or distillation) completes. It
