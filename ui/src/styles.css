@@ -8020,6 +8020,21 @@ kbd {
   text-overflow: ellipsis;
 }
 
+/* Globe marker on tabs that are shown in every conversation. */
+.terminal-panel-tab-globe {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+/* Separates this conversation's own terminals from the global ones. */
+.terminal-panel-tabs-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
 .terminal-panel-tab-close {
   display: flex;
   align-items: center;
@@ -8050,6 +8065,11 @@ kbd {
   border-radius: 4px;
   padding: 2px;
   flex-shrink: 0;
+}
+
+.terminal-panel-action-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .terminal-panel-actions-divider {

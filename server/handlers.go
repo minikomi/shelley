@@ -2878,7 +2878,17 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := r.Context()
+	// Terminals owned by this conversation would otherwise point at a
+	// conversation that no longer exists, so make them global first. If that
+	// fails, leave the conversation alone rather than orphaning them.
+	if err := s.terminals.GlobalizeConversation(conversationID); err != nil {
+		s.logger.Error("Failed to globalize conversation terminals", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 	if err := s.db.DeleteConversation(ctx, conversationID); err != nil {
+		// The terminals are already global at this point. That is harmless and
+		// visible to the user, so no rollback is attempted.
 		s.logger.Error("Failed to delete conversation", "conversationID", conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return

@@ -70,6 +70,7 @@
           :ephemeral-terminals="ephemeralTerminals"
           :set-ephemeral-terminals="setEphemeralTerminals"
           :on-terminal-attached="handleTerminalAttached"
+          :on-terminal-scope-change="handleTerminalScopeChange"
           :on-terminal-close="handleTerminalClose"
           :navigate-user-message-trigger="navigateUserMessageTrigger"
           :on-conversation-unarchived="handleConversationUnarchived"
@@ -351,6 +352,13 @@ function setEphemeralTerminals(
 
 function handleTerminalAttached(id: string, termId: string) {
   setEphemeralTerminals((prev) => prev.map((tm) => (tm.id === id ? { ...tm, termId } : tm)));
+}
+
+// Applied only after the server has persisted the new scope.
+function handleTerminalScopeChange(id: string, conversationId: string | null) {
+  setEphemeralTerminals((prev) =>
+    prev.map((tm) => (tm.id === id ? { ...tm, conversationId } : tm)),
+  );
 }
 
 function handleTerminalClose(id: string) {
@@ -839,22 +847,33 @@ onMounted(() => {
   let cancelled = false;
   fetch("/api/terminals")
     .then((r) => (r.ok ? r.json() : []))
-    .then((rows: Array<{ id: string; command: string; cwd: string; created_at: string }>) => {
-      if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
-      setEphemeralTerminals((prev) => {
-        const have = new Set(prev.map((tm) => tm.termId).filter(Boolean));
-        const restored: EphemeralTerminal[] = rows
-          .filter((r) => !have.has(r.id))
-          .map((r) => ({
-            id: r.id,
-            termId: r.id,
-            command: r.command,
-            cwd: r.cwd,
-            createdAt: new Date(r.created_at || Date.now()),
-          }));
-        return [...restored, ...prev];
-      });
-    })
+    .then(
+      (
+        rows: Array<{
+          id: string;
+          command: string;
+          cwd: string;
+          conversation_id: string | null;
+          created_at: string;
+        }>,
+      ) => {
+        if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
+        setEphemeralTerminals((prev) => {
+          const have = new Set(prev.map((tm) => tm.termId).filter(Boolean));
+          const restored: EphemeralTerminal[] = rows
+            .filter((r) => !have.has(r.id))
+            .map((r) => ({
+              id: r.id,
+              termId: r.id,
+              command: r.command,
+              cwd: r.cwd,
+              conversationId: r.conversation_id ?? null,
+              createdAt: new Date(r.created_at || Date.now()),
+            }));
+          return [...restored, ...prev];
+        });
+      },
+    )
     .catch((err) => console.warn("failed to fetch persistent terminals:", err));
   terminalsHydrationCancel = () => {
     cancelled = true;

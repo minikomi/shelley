@@ -23,13 +23,20 @@ import (
 // it survives the parent shelley exiting; it terminates when the user's
 // command exits or the session is killed.
 type TerminalSession struct {
-	ID        string    `json:"id"`
-	Command   string    `json:"command"`
-	Cwd       string    `json:"cwd"`
-	Socket    string    `json:"socket"`
-	LogFile   string    `json:"log_file"`
-	PID       int       `json:"pid"`
-	CreatedAt time.Time `json:"created_at"`
+	ID      string `json:"id"`
+	Command string `json:"command"`
+	Cwd     string `json:"cwd"`
+	Socket  string `json:"socket"`
+	LogFile string `json:"log_file"`
+	PID     int    `json:"pid"`
+	// ConversationID is the conversation that owns this terminal. Empty means
+	// global: the terminal is visible in every conversation. Records written
+	// before scoping existed unmarshal with an empty value and so read as
+	// global. On the wire this is represented as null (see terminalDTO); the
+	// "" <-> null conversion happens only in terminalDTO and in the scope
+	// handler.
+	ConversationID string    `json:"conversation_id"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // SpawnerFunc starts a dtach server hosting `cmd` on the given socket. The
@@ -145,7 +152,7 @@ func (t *TerminalSessions) Get(id string) *TerminalSession {
 // returns the session record together with the attached client. Doing the
 // attach inline closes the race where a fast-exiting command tears down the
 // socket before any external attach can succeed.
-func (t *TerminalSessions) Spawn(command, cwd string, cols, rows uint16, extraEnv []string) (*TerminalSession, *dtach.Client, error) {
+func (t *TerminalSessions) Spawn(command, cwd, conversationID string, cols, rows uint16, extraEnv []string) (*TerminalSession, *dtach.Client, error) {
 	if command == "" {
 		return nil, nil, errors.New("terminals: empty command")
 	}
@@ -181,30 +188,99 @@ func (t *TerminalSessions) Spawn(command, cwd string, cols, rows uint16, extraEn
 	}
 
 	sess := &TerminalSession{
-		ID:        id,
-		Command:   command,
-		Cwd:       cwd,
-		Socket:    socket,
-		LogFile:   logFile,
-		PID:       pid,
-		CreatedAt: time.Now().UTC(),
+		ID:             id,
+		Command:        command,
+		Cwd:            cwd,
+		Socket:         socket,
+		LogFile:        logFile,
+		PID:            pid,
+		ConversationID: conversationID,
+		CreatedAt:      time.Now().UTC(),
 	}
 
-	data, err := json.MarshalIndent(sess, "", "  ")
-	if err != nil {
+	if err := t.writeSession(sess); err != nil {
 		dc.Close()
 		return nil, nil, err
 	}
-	if err := os.WriteFile(filepath.Join(t.dir, id+".json"), data, 0o600); err != nil {
-		dc.Close()
-		return nil, nil, err
+
+	t.logger.Info("spawned persistent terminal", "id", id, "command", command, "cwd", cwd, "pid", sess.PID, "conversation_id", conversationID)
+	return sess, dc, nil
+}
+
+// writeSession persists a session record and then publishes it in memory. The
+// JSON is written to a temp file in the sessions dir and renamed over the
+// record so a crash mid-write can never leave a truncated file, and the
+// in-memory map is only updated once the durable write succeeded.
+func (t *TerminalSessions) writeSession(sess *TerminalSession) error {
+	data, err := json.MarshalIndent(sess, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(t.dir, sess.ID+".json.*")
+	if err != nil {
+		return fmt.Errorf("terminals: create temp record: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("terminals: write temp record: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("terminals: chmod temp record: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("terminals: close temp record: %w", err)
+	}
+	if err := os.Rename(tmpName, filepath.Join(t.dir, sess.ID+".json")); err != nil {
+		return fmt.Errorf("terminals: rename record: %w", err)
 	}
 
 	t.mu.Lock()
-	t.sessions[id] = sess
+	t.sessions[sess.ID] = sess
 	t.mu.Unlock()
-	t.logger.Info("spawned persistent terminal", "id", id, "command", command, "cwd", cwd, "pid", sess.PID)
-	return sess, dc, nil
+	return nil
+}
+
+// ErrNoSuchTerminal reports that a terminal id is not known.
+var ErrNoSuchTerminal = errors.New("terminals: unknown terminal id")
+
+// SetConversationID re-scopes a terminal. An empty conversationID makes the
+// terminal global. Returns the updated record.
+func (t *TerminalSessions) SetConversationID(id, conversationID string) (*TerminalSession, error) {
+	t.mu.Lock()
+	cur := t.sessions[id]
+	t.mu.Unlock()
+	if cur == nil {
+		return nil, ErrNoSuchTerminal
+	}
+	// Copy so a failed write leaves the in-memory record untouched.
+	updated := *cur
+	updated.ConversationID = conversationID
+	if err := t.writeSession(&updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// GlobalizeConversation re-scopes every terminal owned by conversationID to
+// global. Used when a conversation is permanently deleted so its terminals
+// remain reachable rather than pointing at a conversation that no longer
+// exists.
+func (t *TerminalSessions) GlobalizeConversation(conversationID string) error {
+	if conversationID == "" {
+		return nil
+	}
+	for _, s := range t.List() {
+		if s.ConversationID != conversationID {
+			continue
+		}
+		if _, err := t.SetConversationID(s.ID, ""); err != nil && !errors.Is(err, ErrNoSuchTerminal) {
+			return err
+		}
+	}
+	return nil
 }
 
 // attachWithRetry repeatedly tries to dial the dtach socket for up to the
