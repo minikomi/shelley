@@ -66,3 +66,19 @@ export function getTerminalTheme(isDark: boolean): Record<string, string> {
     brightWhite: "#ffffff",
   };
 }
+
+// visibleTerminals returns the terminals to show for a conversation: global
+// terminals first, then the ones owned by that conversation. Order within each
+// group is the order the terminals were created in, so re-scoping a terminal
+// moves it between groups without reshuffling anything else.
+//
+// Terminals not in this list are still mounted and attached; they are just not
+// offered as tabs.
+export function visibleTerminals<T extends { conversationId: string | null }>(
+  terminals: readonly T[],
+  conversationId: string | null,
+): T[] {
+  const local = conversationId ? terminals.filter((t) => t.conversationId === conversationId) : [];
+  const global = terminals.filter((t) => t.conversationId === null);
+  return [...global, ...local];
+}

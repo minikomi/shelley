@@ -249,6 +249,8 @@
       :auto-focus-id="terminalAutoFocusId"
       :can-insert-into-input="true"
       @attached="(id, termId) => onTerminalAttached?.(id, termId)"
+      @scope-change="(id, cid) => onTerminalScopeChange?.(id, cid)"
+      @scope-error="(message) => (error = message)"
       @close="onTerminalCloseHandler"
       @insert-into-input="handleInsertFromTerminal"
       @auto-focus-consumed="terminalAutoFocusId = null"
@@ -493,6 +495,7 @@ const props = withDefaults(
       next: EphemeralTerminal[] | ((prev: EphemeralTerminal[]) => EphemeralTerminal[]),
     ) => void;
     onTerminalAttached?: (id: string, termId: string) => void;
+    onTerminalScopeChange?: (id: string, conversationId: string | null) => void;
     onTerminalClose?: (id: string) => void;
     navigateUserMessageTrigger?: number;
     onConversationUnarchived?: (conversation: Conversation) => void;
@@ -2183,6 +2186,9 @@ async function sendMessage(message: string) {
           window.__SHELLEY_INIT__?.default_cwd ||
           "/",
         createdAt: new Date(),
+        // Owned by the conversation it was launched from. On /new there is no
+        // conversation yet, so it starts global.
+        conversationId: props.conversationId ?? null,
       };
       props.setEphemeralTerminals((prev) => [...prev, terminal]);
       const firstWord = shellCommand.split(/\s+/)[0];
@@ -2315,6 +2321,7 @@ function openInAppTerminal() {
     command: 'exec "${SHELL:-bash}" -i',
     cwd,
     createdAt: new Date(),
+    conversationId: props.conversationId ?? null,
   };
   props.setEphemeralTerminals((prev) => [...prev, terminal]);
   terminalAutoFocusId.value = terminal.id;

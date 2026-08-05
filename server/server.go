@@ -506,6 +506,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/terminals", s.handleTerminalsList)                                                    // List persistent dtach sessions
 	mux.HandleFunc("DELETE /api/terminals/{id}", s.handleTerminalDelete)
 	mux.HandleFunc("POST /api/terminals/{id}/kill", s.handleTerminalDelete)
+	mux.HandleFunc("PUT /api/terminals/{id}/scope", s.handleTerminalScope) // Move a terminal between conversation-local and global
 
 	// Custom models API
 	mux.Handle("/api/custom-models", http.HandlerFunc(s.handleCustomModels))
