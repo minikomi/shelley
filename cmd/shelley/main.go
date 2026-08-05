@@ -279,13 +279,10 @@ func setupDatabase(dbPath string, logger *slog.Logger) *db.DB {
 		logger.Warn("Failed to checkpoint WAL at startup", "error", err)
 	}
 
-	// agent_working is runtime-only state. If the previous process exited
-	// while a loop was running, the column can be left TRUE for one or more
-	// conversations. Clear them so the conversation list reflects reality.
-	if err := database.ResetAllAgentWorking(context.Background()); err != nil {
-		logger.Error("Failed to reset agent_working state", "error", err)
-		os.Exit(1)
-	}
+	// Note: stale agent_working values from a previous process are handled at
+	// server start (Server.StartWithListeners -> db.ConsumeResumeAfterUpgrade),
+	// which either clears them or resumes the interrupted turns after an upgrade
+	// restart.
 	return database
 }
 

@@ -1818,6 +1818,16 @@ func (s *Server) StartWithListener(listener net.Listener) error {
 // The Unix socket listener gets only the logger middleware (no CSRF, no requireHeader)
 // since it is local and trusted.
 func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string) error {
+	// agent_working is runtime-only state. Decide what to do with the values the
+	// previous process left behind BEFORE serving: an ordinary restart or crash
+	// clears them, while an upgrade-with-restart hands back the conversations
+	// that were mid-turn so we can resume them once the server is up.
+	resumeIDs, err := s.db.ConsumeResumeAfterUpgrade(context.Background())
+	if err != nil {
+		s.logger.Error("Failed to recover agent_working state", "error", err)
+		return err
+	}
+
 	// Set up shared mux with routes
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
@@ -1902,6 +1912,10 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 			}
 		}()
 	}
+
+	// Resume conversations interrupted by an upgrade restart now that the
+	// listeners (and therefore ports, streams and the subagent runner) are live.
+	go s.resumeInterruptedConversations(context.Background(), resumeIDs)
 
 	// Wait for shutdown signal or server error
 	quit := make(chan os.Signal, 1)
