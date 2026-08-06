@@ -94,24 +94,42 @@
             This build has diverged from mainline: it carries your customizations on top of
             {{ versionInfo.current_tag || "an unknown release" }}.
             <template v-if="versionInfo.has_update">
-              Upgrading starts a Shelley conversation that rebases your customizations onto
-              {{ versionInfo.latest_tag }} and rebuilds.
+              Upgrading starts a Shelley conversation that uses the selected model and reasoning
+              effort to rebase your customizations onto {{ versionInfo.latest_tag }} and rebuilds.
             </template>
             <template v-else-if="!versionInfo.error">Mainline has no newer release.</template>
           </div>
           <div v-if="versionInfo.has_update" class="version-actions">
             <div v-if="upgradeError" class="version-error">{{ upgradeError }}</div>
-            <button
-              :disabled="startingRebase"
-              class="version-btn version-btn-primary"
-              @click="handleRebaseUpgrade"
-            >
-              {{
-                startingRebase
-                  ? "Starting conversation..."
-                  : `Upgrade: rebase onto ${versionInfo.latest_tag}`
-              }}
-            </button>
+            <div class="version-rebase-bar">
+              <button
+                :disabled="startingRebase || !rebaseModel"
+                class="version-rebase-action"
+                @click="handleRebaseUpgrade"
+              >
+                <template v-if="startingRebase">Starting conversation...</template>
+                <template v-else>
+                  Rebase onto {{ versionInfo.latest_tag }} using
+                  <span class="version-rebase-model-name">{{ rebaseModelLabel }}</span>
+                </template>
+              </button>
+              <span v-tooltip.top="noModelsReason" class="version-rebase-model">
+                <ModelPicker
+                  append-to-body
+                  aria-label-prefix="Rebase model"
+                  trigger-label="Model"
+                  scroll-height="16rem"
+                  :catalog-actions="false"
+                  :disabled-reason="noModelsReason"
+                  :models="rebaseModels"
+                  :selected-model="rebaseModel"
+                  :thinking-level="rebaseThinkingLevel"
+                  :disabled="startingRebase || !rebaseModel"
+                  @select-model="rebaseModel = $event"
+                  @thinking-change="rebaseThinkingLevel = $event"
+                />
+              </span>
+            </div>
           </div>
         </template>
         <template v-else>
@@ -178,10 +196,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import { api } from "../../services/api";
-import type { VersionInfo, CommitInfo } from "../../types";
+import { prettyModelLabels } from "../../utils/modelNames";
+import type { VersionInfo, CommitInfo, Model } from "../../types";
 import Modal from "./Modal.vue";
+import ModelPicker from "./ModelPicker.vue";
+import { pickReadyModel, storedSelectedModel } from "./selectedModel";
+import { DEFAULT_THINKING_LEVEL, storedThinkingLevel, type ThinkingLevel } from "./thinkingLevel";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -201,6 +223,31 @@ const loadingAutoUpgrade = ref(true);
 const upgradingHeadless = ref(false);
 const headlessError = ref<string | null>(null);
 const headlessSuccess = ref<string | null>(null);
+const rebaseModels = ref<Model[]>([]);
+const rebaseModel = ref("");
+// Action-scoped: seeded from the composer's stored picks but never written
+// back, so configuring a rebase doesn't move the user's chat defaults.
+const rebaseThinkingLevel = ref<ThinkingLevel>(DEFAULT_THINKING_LEVEL);
+const noModelsReason = computed(() =>
+  rebaseModel.value ? undefined : "No models are ready; configure one in Manage models.",
+);
+const rebaseModelLabel = computed(() => {
+  const labels = prettyModelLabels(rebaseModels.value);
+  const name = labels.get(rebaseModel.value) || rebaseModel.value || "no model";
+  let effort = rebaseThinkingLevel.value;
+  if (effort === "default") {
+    const m = rebaseModels.value.find((x) => x.id === rebaseModel.value);
+    const d = m?.default_reasoning_level;
+    if (d && d !== "default") effort = d as ThinkingLevel;
+  }
+  return effort && effort !== "default" ? `${name} · ${effort}` : name;
+});
+
+function initializeRebase() {
+  rebaseModels.value = window.__SHELLEY_INIT__?.models || [];
+  rebaseModel.value = pickReadyModel(rebaseModels.value, storedSelectedModel());
+  rebaseThinkingLevel.value = storedThinkingLevel();
+}
 
 async function loadAutoUpgradeSetting() {
   loadingAutoUpgrade.value = true;
@@ -260,7 +307,7 @@ async function handleUpgradeAndRestart() {
 // default cwd and let the agent recreate the checkout per the skill.
 async function handleRebaseUpgrade() {
   const info = props.versionInfo;
-  if (!info) return;
+  if (!info || !rebaseModel.value) return;
   startingRebase.value = true;
   upgradeError.value = null;
   const dir = info.customization_dir;
@@ -278,6 +325,10 @@ async function handleRebaseUpgrade() {
   try {
     const response = await api.sendMessageWithNewConversation({
       message: prompt,
+      model: rebaseModel.value,
+      ...(rebaseThinkingLevel.value === "default"
+        ? {}
+        : { conversation_options: { thinking_level: rebaseThinkingLevel.value } }),
       ...(dir ? { cwd: dir } : {}),
     });
     emit("close");
@@ -324,6 +375,7 @@ watch(
   () => props.isOpen,
   (open) => {
     if (open) {
+      initializeRebase();
       if (
         props.versionInfo?.has_update &&
         props.versionInfo.current_tag &&

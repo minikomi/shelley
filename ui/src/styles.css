@@ -7470,7 +7470,6 @@ svg {
   color: var(--text-secondary);
   font-size: 0.813rem;
   line-height: 1.4;
-  margin-bottom: 0.75rem;
 }
 
 .version-error {
@@ -7577,6 +7576,121 @@ svg {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+.version-rebase-bar {
+  align-items: stretch;
+  background: var(--primary);
+  border-radius: 0.5rem;
+  color: white;
+  display: flex;
+  font-size: 0.875rem;
+  min-height: 2.75rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.version-rebase-action {
+  background: transparent;
+  border: 0;
+  border-radius: 0.5rem 0 0 0.5rem;
+  color: inherit;
+  cursor: pointer;
+  flex: 1;
+  font: inherit;
+  min-width: 0;
+  padding: 0.5rem 1rem;
+}
+
+.version-rebase-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.version-rebase-action:focus-visible {
+  box-shadow: inset 0 0 0 2px white;
+  outline: none;
+}
+
+.version-rebase-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The model name and its effort read as one phrase, so they wrap together to
+   the next line rather than breaking between (or inside) them. */
+.version-rebase-model-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The picker's trigger is the darker right segment of the split button. It is
+   a real PrimeVue Select, so PrimeVue owns opening, positioning and flipping;
+   only its chrome is restyled to match the bar. */
+.version-rebase-model {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.version-rebase-model .p-select {
+  background: rgba(0, 0, 0, 0.12);
+  border: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0 0.5rem 0.5rem 0;
+  box-shadow: none;
+  color: white;
+  font-size: 0.75rem;
+  width: auto;
+}
+
+.version-rebase-model .p-select:not(.p-disabled):hover {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.version-rebase-model .p-select-label {
+  align-items: center;
+  color: inherit;
+  display: flex;
+  padding: 0 0.25rem 0 0.75rem;
+}
+
+.version-rebase-model .p-select-dropdown {
+  color: inherit;
+  padding-inline-end: 0.5rem;
+  width: auto;
+}
+
+.version-rebase-model .p-select-dropdown svg {
+  height: 0.625rem;
+  width: 0.625rem;
+}
+
+@media (max-width: 52rem) {
+  .version-rebase-bar {
+    flex-direction: column;
+  }
+
+  .version-rebase-action {
+    border-radius: 0.5rem 0.5rem 0 0;
+  }
+
+  /* Stacked, the picker becomes a full-width row under the action: label on
+     the left, chevron out at the right edge, matching the trigger's shape on
+     one line. */
+  .version-rebase-model {
+    display: block;
+  }
+
+  .version-rebase-model .p-select {
+    border-left: 0;
+    border-radius: 0 0 0.5rem 0.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+    min-height: 2.5rem;
+    width: 100%;
+  }
+
+  .version-rebase-model .p-select-dropdown {
+    margin-inline-start: auto;
+  }
 }
 
 .version-btn {

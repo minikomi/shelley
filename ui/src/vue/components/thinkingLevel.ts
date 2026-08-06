@@ -13,3 +13,14 @@ export const THINKING_LEVELS: { value: ThinkingLevel; label: string }[] = [
   { value: "high", label: "high" },
   { value: "xhigh", label: "xhigh" },
 ];
+
+export const THINKING_LEVEL_KEY = "shelley.thinkingLevel.v2";
+
+// storedThinkingLevel is the user's last composer effort pick, or the
+// "default" sentinel when nothing valid is stored.
+export function storedThinkingLevel(): ThinkingLevel {
+  const stored = localStorage.getItem(THINKING_LEVEL_KEY);
+  return THINKING_LEVELS.some((l) => l.value === stored)
+    ? (stored as ThinkingLevel)
+    : DEFAULT_THINKING_LEVEL;
+}
