@@ -5,7 +5,7 @@ import type { ComputedRef, InjectionKey, Ref } from "vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import type { TranslationKeys } from "../../i18n/types";
 
-export type GroupBy = "none" | "cwd" | "git_repo";
+export type GroupBy = "none" | "cwd" | "git_repo" | "tag";
 
 // Parses the JSON-encoded tags field on a Conversation. Tolerates the empty
 // string and malformed JSON (treated as no tags).
@@ -75,6 +75,12 @@ export interface DrawerCtx {
   tagInputRef: Ref<HTMLInputElement | null>;
   draftLabels: ComputedRef<Record<string, string>>;
   groupBy: Ref<GroupBy>;
+  // Tag filter (see utils/tagFilter.ts). Rows read `selectedTags` to render
+  // their chips as selected, and call `toggleTagFilter` when one is clicked.
+  // The selection is derived from the search query (`tag:foo`), so toggling a
+  // chip edits that query — there is no second copy of the filter state.
+  selectedTags: Ref<string[]>;
+  toggleTagFilter: (tag: string) => void;
   formatDate: (timestamp: string) => string;
   formatCwdForDisplay: (p: string | null | undefined) => string | null;
   handleModifiedClick: (e: MouseEvent, conversation: Conversation) => boolean;

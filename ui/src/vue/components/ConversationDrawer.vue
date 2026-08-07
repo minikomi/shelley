@@ -75,7 +75,7 @@
           </Button>
           <div v-if="groupMenuOpen" class="group-by-menu">
             <button
-              v-for="value in ['none', 'cwd', 'git_repo'] as GroupBy[]"
+              v-for="value in ['none', 'cwd', 'git_repo', 'tag'] as GroupBy[]"
               :key="value"
               :class="`group-by-menu-item${groupBy === value ? ' active' : ''}`"
               @click="
@@ -166,8 +166,11 @@
       </div>
     </div>
 
-    <!-- Search bar (hidden until the header search toggle is clicked) -->
-    <div v-if="searchOpen" class="drawer-search">
+    <!-- Search bar (hidden until the header search toggle is clicked). Doubles
+         as the tag filter: `tag:` opens a dropdown of the tags currently on
+         screen, so there is one place to narrow the list rather than a search
+         box plus a separate filter control. -->
+    <div v-if="searchOpen" ref="searchWrapRef" class="drawer-search">
       <svg
         class="drawer-search-icon"
         fill="none"
@@ -187,7 +190,7 @@
         ref="searchInputRef"
         type="text"
         class="drawer-search-input"
-        :placeholder="t('searchConversations')"
+        :placeholder="t('searchOrTagPlaceholder')"
         :value="searchQuery"
         :aria-label="t('searchConversations')"
         @input="searchQuery = ($event.target as HTMLInputElement).value"
@@ -203,6 +206,41 @@
       >
         ✕
       </button>
+      <!-- Tag dropdown. Opens on a `tag:` term, listing only tags carried by
+           conversations still on screen, each with the count it would leave —
+           so a suggestion can never lead to an empty list. -->
+      <div
+        v-if="tagMenuOpen"
+        class="tag-filter-menu"
+        data-testid="tag-filter-panel"
+        role="listbox"
+        @mousedown.prevent
+      >
+        <div v-if="visibleOfferedTags.length > 0" class="tag-filter-options scrollable">
+          <button
+            v-for="(offer, i) in visibleOfferedTags"
+            :key="offer.tag"
+            type="button"
+            role="option"
+            :aria-selected="i === highlightIndex"
+            :class="`tag-filter-option${i === highlightIndex ? ' highlighted' : ''}`"
+            :data-testid="offer.untagged ? 'tag-filter-untagged-option' : 'tag-filter-option'"
+            :data-tag="offer.tag"
+            @mousemove="highlightIndex = i"
+            @click="chooseTerm(offer.term)"
+          >
+            <span
+              :class="`tag-filter-option-name${offer.untagged ? ' tag-filter-option-untagged' : ''}`"
+            >
+              <span v-if="!offer.untagged" class="conversation-tag-hash">#</span>{{ offer.tag }}
+            </span>
+            <span class="tag-filter-option-count">{{ offer.count }}</span>
+          </button>
+        </div>
+        <div v-else class="tag-filter-menu-empty">
+          {{ activeTagPrefix ? t("noMatchingTags") : t("noTagsToNarrow") }}
+        </div>
+      </div>
     </div>
 
     <!-- Conversations list -->
@@ -218,6 +256,22 @@
         class="text-secondary drawer-empty-state"
       >
         <p>{{ t("loading") }}</p>
+      </div>
+      <div
+        v-else-if="emptiedByTagFilter"
+        class="text-secondary drawer-empty-state"
+        data-testid="tag-filter-empty"
+      >
+        <p>{{ t("noConversationsMatchTags") }}</p>
+        <Button
+          class="drawer-empty-state-action"
+          severity="secondary"
+          size="small"
+          data-testid="tag-filter-empty-clear"
+          @click="clearTagFilter"
+        >
+          {{ t("clearTagFilter") }}
+        </Button>
       </div>
       <div
         v-else-if="displayedConversations.length === 0"
@@ -326,6 +380,21 @@ import { handleModifiedNavClick } from "../utils/openInNewTab";
 import ConversationRow from "./ConversationDrawerRow.vue";
 import Button from "primevue/button";
 import { DrawerCtxKey, type GroupBy, parseTags } from "./conversationDrawerShared";
+import {
+  UNTAGGED_TERM,
+  compareTagGroupKeys,
+  completeTermInQuery,
+  filterConversationsByQuery,
+  offeredTags,
+  parseSearchQuery,
+  queryHasTagFilter,
+  removeTagFromQuery,
+  removeUntaggedFromQuery,
+  tagGroupKey,
+  tagGroupLabel,
+  tagMatchesQuery,
+  toggleTagInQuery,
+} from "../../utils/tagFilter";
 import { perfCount } from "../../utils/perf";
 
 const props = defineProps<{
@@ -393,7 +462,7 @@ const expandedSubagents = ref<Set<string>>(new Set());
 const groupBy = ref<GroupBy>(
   (() => {
     const stored = localStorage.getItem("shelley-group-by");
-    return stored === "cwd" || stored === "git_repo" ? stored : "none";
+    return stored === "cwd" || stored === "git_repo" || stored === "tag" ? stored : "none";
   })(),
 );
 const collapsedGroups = ref<Set<string>>(new Set());
@@ -404,6 +473,16 @@ const copiedConvId = ref<string | null>(null);
 const pendingDeleteId = ref<string | null>(null);
 const pendingDeleteRef = ref<HTMLElement | null>(null);
 const groupMenuRef = ref<HTMLElement | null>(null);
+// --- Tag filter state (AND over tags; see utils/tagFilter.ts) ---
+// There is no separate filter state: the selection is parsed out of the search
+// query, which is the single source of truth. That keeps the filter visible and
+// editable as text, and makes "clear search" clear the filter too.
+const parsedQuery = computed(() => parseSearchQuery(searchQuery.value));
+const selectedTags = computed(() => parsedQuery.value.tags);
+const searchText = computed(() => parsedQuery.value.text);
+const activeTagPrefix = computed(() => parsedQuery.value.activeTagPrefix);
+const highlightIndex = ref(0);
+const searchWrapRef = ref<HTMLElement | null>(null);
 const renameInputRef = ref<HTMLInputElement | null>(null);
 let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -467,14 +546,15 @@ watch(showArchived, (sa) => {
   }
 });
 
-// Debounced FTS search across active + archived conversations.
-watch(searchQuery, () => {
+// Debounced FTS search across active + archived conversations. Only the free
+// text goes to the server; `tag:` terms are applied client-side.
+watch(searchText, () => {
   if (searchTimeout) {
     clearTimeout(searchTimeout);
     searchTimeout = null;
   }
   const seq = ++searchSeq;
-  const q = searchQuery.value.trim();
+  const q = searchText.value.trim();
   if (!q) {
     searchResults.value = null;
     searching.value = false;
@@ -756,6 +836,7 @@ function groupByLabel(value: GroupBy): string {
     none: t("noGrouping"),
     cwd: t("directory"),
     git_repo: t("gitRepo"),
+    tag: t("tags"),
   };
   return labels[value];
 }
@@ -777,9 +858,35 @@ function toggleSearch() {
 }
 
 function onSearchKeyDown(e: KeyboardEvent) {
+  if (isImeComposing(e)) return;
+  // While the tag dropdown is up it owns the arrows and Enter; the search box
+  // has no other use for them, and this makes `tag:` feel like an autocomplete.
+  if (tagMenuOpen.value && visibleOfferedTags.value.length > 0) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      highlightIndex.value = (highlightIndex.value + 1) % visibleOfferedTags.value.length;
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      highlightIndex.value =
+        (highlightIndex.value - 1 + visibleOfferedTags.value.length) %
+        visibleOfferedTags.value.length;
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      const pick = visibleOfferedTags.value[highlightIndex.value];
+      if (pick) chooseTerm(pick.term);
+      return;
+    }
+  }
   if (e.key === "Escape") {
     e.preventDefault();
-    if (searchQuery.value) {
+    // Escape peels one layer at a time: dropdown, then query, then the box.
+    if (tagMenuOpen.value) {
+      tagMenuDismissed.value = true;
+    } else if (searchQuery.value) {
       searchQuery.value = "";
     } else {
       searchOpen.value = false;
@@ -798,7 +905,10 @@ const topLevelConversations = computed(() => {
   resetOrderRefsForResort();
   void resortKey.value;
   const sorted = sortConversationsByBucket(
-    props.conversations.filter((c) => !c.parent_conversation_id),
+    filterConversationsByQuery(
+      props.conversations.filter((c) => !c.parent_conversation_id),
+      parsedQuery.value,
+    ),
   );
   const { items, order } = applyStableOrder(sorted, topOrder);
   topOrder = order;
@@ -837,18 +947,133 @@ const draftLabels = computed<Record<string, string>>(() => {
 const stableArchivedConversations = computed(() => {
   resetOrderRefsForResort();
   void resortKey.value;
-  const sorted = sortConversationsByBucket(archivedConversations.value);
+  const sorted = sortConversationsByBucket(
+    filterConversationsByQuery(archivedConversations.value, parsedQuery.value),
+  );
   const { items, order } = applyStableOrder(sorted, archivedOrder);
   archivedOrder = order;
   return items;
 });
 
-const isSearching = computed(() => searchQuery.value.trim().length > 0);
+// "Searching" means the FTS query is non-empty. A query of only `tag:` terms
+// is a filter over the normal list, not a search — so the list keeps its
+// grouping and ordering instead of collapsing into flat search results.
+const isSearching = computed(() => searchText.value.trim().length > 0);
 
 const displayedConversations = computed<(Conversation | ConversationWithState)[]>(() => {
-  if (isSearching.value) return searchResults.value ?? [];
+  // The tag filter is one predicate upstream of all three lists; the active
+  // and archived lists apply it in their own computeds above (before the
+  // stable-order pass), search results apply it here.
+  if (isSearching.value)
+    return filterConversationsByQuery(searchResults.value ?? [], parsedQuery.value);
   return showArchived.value ? stableArchivedConversations.value : topLevelConversations.value;
 });
+
+// --- Tag filter ---
+// The list the picker describes: whichever list is on screen, unfiltered.
+// Counts therefore always mean "conversations you would see here".
+const tagFilterPool = computed<Conversation[]>(() => {
+  if (isSearching.value) return searchResults.value ?? [];
+  if (showArchived.value) return archivedConversations.value;
+  return props.conversations.filter((c) => !c.parent_conversation_id);
+});
+
+// Progressive narrowing: only tags that co-occur with the current selection,
+// each with the size of the result set it would produce. Filtered by whatever
+// the user has typed after `tag:`.
+// The dropdown's entries. Each carries the whole token it inserts, so the
+// untagged entry — which is `is:untagged`, not a tag — is just another row
+// rather than a special case in the keyboard and click paths.
+interface TagOffer {
+  // Identity, and the value matched against what the user has typed.
+  tag: string;
+  count: number;
+  // The token written into the query when this entry is chosen.
+  term: string;
+  // Rendered without a leading `#`, since it is not a tag.
+  untagged?: boolean;
+}
+const currentOfferedTags = computed<TagOffer[]>(() => {
+  const offers: TagOffer[] = offeredTags(tagFilterPool.value, selectedTags.value).map((o) => ({
+    tag: o.tag,
+    count: o.count,
+    term: `tag:${o.tag}`,
+  }));
+  // "Untagged" is only meaningful before any tag is chosen: no conversation
+  // both carries a tag and has none, so offering it alongside a selection
+  // would be offering a guaranteed empty result.
+  if (selectedTags.value.length === 0 && !parsedQuery.value.untaggedOnly) {
+    const count = tagFilterPool.value.filter((c) => parseTags(c).length === 0).length;
+    if (count > 0) {
+      offers.push({ tag: t("untagged"), count, term: UNTAGGED_TERM, untagged: true });
+    }
+  }
+  return offers;
+});
+const visibleOfferedTags = computed(() =>
+  currentOfferedTags.value.filter((o) => tagMatchesQuery(o.tag, activeTagPrefix.value ?? "")),
+);
+
+// The dropdown is open whenever the caret sits in a `tag:` term. Dismissing it
+// (Escape, or a click outside) latches until the term changes, so it does not
+// immediately reopen on the next keystroke.
+const tagMenuDismissed = ref(false);
+const tagMenuOpen = computed(
+  () => searchOpen.value && activeTagPrefix.value !== null && !tagMenuDismissed.value,
+);
+watch(activeTagPrefix, () => {
+  tagMenuDismissed.value = false;
+  highlightIndex.value = 0;
+});
+function onTagMenuOutside(e: MouseEvent) {
+  if (searchWrapRef.value && !searchWrapRef.value.contains(e.target as Node)) {
+    tagMenuDismissed.value = true;
+  }
+}
+watch(tagMenuOpen, (open) => {
+  if (open) document.addEventListener("mousedown", onTagMenuOutside);
+  else document.removeEventListener("mousedown", onTagMenuOutside);
+});
+
+// True only when the tag filter is what emptied the list. It is not enough for
+// the list to be empty while a filter happens to be on: a search that matches
+// nothing would then be blamed on the filter. The filter is the cause only if
+// removing it would bring rows back, i.e. the same list unfiltered is
+// non-empty.
+const emptiedByTagFilter = computed(
+  () =>
+    queryHasTagFilter(parsedQuery.value) &&
+    displayedConversations.value.length === 0 &&
+    tagFilterPool.value.length > 0,
+);
+
+// Keep the keyboard highlight in range as the offered set narrows.
+watch(visibleOfferedTags, () => {
+  if (highlightIndex.value >= visibleOfferedTags.value.length) highlightIndex.value = 0;
+});
+
+// Completing a tag from the dropdown rewrites the `tag:` term in place and
+// leaves a trailing space, so the next keystroke starts a fresh term.
+function chooseTerm(term: string) {
+  searchQuery.value = completeTermInQuery(searchQuery.value, term);
+  highlightIndex.value = 0;
+  void nextTick(() => searchInputRef.value?.focus());
+}
+
+// Row chips and the filter share one path: both edit the query.
+function toggleTagFilter(tag: string) {
+  searchQuery.value = toggleTagInQuery(searchQuery.value, tag);
+  if (!searchOpen.value) searchOpen.value = true;
+}
+
+// Drops the tag terms but keeps the free text, so clearing a filter does not
+// also throw away what the user was searching for.
+function clearTagFilter() {
+  let next = searchQuery.value;
+  for (const tag of selectedTags.value) next = removeTagFromQuery(next, tag);
+  next = removeUntaggedFromQuery(next);
+  searchQuery.value = next.trim() === "" ? "" : next;
+}
 
 interface Group {
   label: string;
@@ -867,6 +1092,12 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
       key = conv.cwd || null;
     } else if (groupBy.value === "git_repo") {
       key = conv.git_worktree_root || conv.git_repo_root || null;
+    } else if (groupBy.value === "tag") {
+      // Tags are multi-valued, so the group key is the whole sorted tag set.
+      // That preserves the invariant the other modes have — every conversation
+      // appears exactly once — which a tag-per-group layout would break by
+      // duplicating rows across groups.
+      key = tagGroupKey(conv);
     }
     if (!key) {
       ungrouped.push(conv);
@@ -874,7 +1105,8 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
     }
     let group = groups.get(key);
     if (!group) {
-      group = { label: formatCwdForDisplay(key) || key, conversations: [] };
+      const label = groupBy.value === "tag" ? tagGroupLabel(conv) : formatCwdForDisplay(key) || key;
+      group = { label, conversations: [] };
       groups.set(key, group);
     }
     group.conversations.push(conv);
@@ -888,18 +1120,32 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
     nextGroupOrder[key] = order;
   }
 
-  const desiredKeys = [...groups.entries()]
-    .sort((a, b) => maxBucket(b[1].conversations) - maxBucket(a[1].conversations))
-    .map(([k]) => k);
-  const stableKeys = applyStableKeyOrder(desiredKeys, groupKeysOrder);
-  groupKeysOrder = stableKeys;
-  const sorted: [string, Group][] = stableKeys.map((k) => [k, groups.get(k)!]);
+  // Tag groups are ordered by their tags — first tag, then second — so the
+  // headings read like a sorted index and a group's position is predictable
+  // from its name. The other modes order by recency instead, and route through
+  // applyStableKeyOrder so a group that gets a new message does not jump the
+  // list out from under the cursor. That stability pass is deliberately
+  // skipped here: it pins previously-seen keys to their old positions, which
+  // for an alphabetical order would strand a newly-created group at the top.
+  let sorted: [string, Group][];
+  if (groupBy.value === "tag") {
+    sorted = [...groups.entries()].sort(([a], [b]) => compareTagGroupKeys(a, b));
+    groupKeysOrder = sorted.map(([k]) => k);
+  } else {
+    const desiredKeys = [...groups.entries()]
+      .sort((a, b) => maxBucket(b[1].conversations) - maxBucket(a[1].conversations))
+      .map(([k]) => k);
+    const stableKeys = applyStableKeyOrder(desiredKeys, groupKeysOrder);
+    groupKeysOrder = stableKeys;
+    sorted = stableKeys.map((k) => [k, groups.get(k)!]);
+  }
 
   if (ungrouped.length > 0) {
     const ungroupedSorted = sortConversationsByBucket(ungrouped);
     const { items, order } = applyStableOrder(ungroupedSorted, groupOrder["__ungrouped__"] || []);
     nextGroupOrder["__ungrouped__"] = order;
-    sorted.push(["__ungrouped__", { label: t("other"), conversations: items }]);
+    const ungroupedLabel = groupBy.value === "tag" ? t("untagged") : t("other");
+    sorted.push(["__ungrouped__", { label: ungroupedLabel, conversations: items }]);
   }
 
   groupOrder = nextGroupOrder;
@@ -919,6 +1165,7 @@ onUnmounted(() => {
   if (searchTimeout) clearTimeout(searchTimeout);
   if (copyTimeout) clearTimeout(copyTimeout);
   document.removeEventListener("mousedown", onGroupMenuOutside);
+  document.removeEventListener("mousedown", onTagMenuOutside);
   document.removeEventListener("mousedown", onPendingDeleteOutside);
   document.removeEventListener("mousedown", onTagEditorOutside);
 });
@@ -943,6 +1190,8 @@ provide(DrawerCtxKey, {
   tagInputRef,
   draftLabels,
   groupBy,
+  selectedTags,
+  toggleTagFilter,
   formatDate,
   formatCwdForDisplay,
   handleModifiedClick,
