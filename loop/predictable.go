@@ -1116,6 +1116,18 @@ func (s *PredictableService) makeToolSmorgasbordResponse(inputTokens uint64) *ll
 		ToolInput: json.RawMessage(screencastInput),
 	})
 
+	// browser: inject_css action (tests the injected-CSS UI widget)
+	injectCSSInput, _ := json.Marshal(map[string]string{
+		"action": "inject_css",
+		"css":    "#box {\n  color: lime;\n}",
+	})
+	content = append(content, llm.Content{
+		ID:        fmt.Sprintf("tool_inject_css_%d", (baseNano+20)%1000),
+		Type:      llm.ContentTypeToolUse,
+		ToolName:  "browser",
+		ToolInput: json.RawMessage(injectCSSInput),
+	})
+
 	// shell tool (yielding successor to bash; should reuse BashTool widget)
 	shellInput, _ := json.Marshal(map[string]string{"command": "echo 'hello from shell'"})
 	content = append(content, llm.Content{

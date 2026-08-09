@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.34.0",
   "scripts": {
     "build": "node scripts/build.js",
+    "watch": "node scripts/watch.mjs",
     "clean": "rm -rf dist/*",
     "lint": "eslint src --ext .ts,.tsx",
     "lint:fix": "eslint src --ext .ts,.tsx --fix",

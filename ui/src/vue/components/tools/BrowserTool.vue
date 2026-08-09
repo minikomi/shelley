@@ -6,6 +6,7 @@
   <BrowserEvalTool v-else-if="action === 'eval'" v-bind="props" />
   <BrowserResizeTool v-else-if="action === 'resize'" v-bind="props" />
   <ScreenshotTool v-else-if="action === 'screenshot'" v-bind="props" />
+  <BrowserInjectCSSTool v-else-if="action === 'inject_css'" v-bind="props" />
   <BrowserConsoleLogsTool
     v-else-if="action === 'console_logs'"
     tool-name="browser_recent_console_logs"
@@ -64,6 +65,7 @@ import BrowserNetworkTool from "./BrowserNetworkTool.vue";
 import BrowserAccessibilityTool from "./BrowserAccessibilityTool.vue";
 import BrowserProfileTool from "./BrowserProfileTool.vue";
 import ScreenshotTool from "./ScreenshotTool.vue";
+import BrowserInjectCSSTool from "./BrowserInjectCSSTool.vue";
 import GenericTool from "./GenericTool.vue";
 
 const props = defineProps<{

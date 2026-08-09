@@ -1,6 +1,6 @@
 # Shelley Makefile
 
-.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e ui serve clean help templates demo
+.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e ui ui-watch serve serve-ui clean help templates demo
 
 # Default target
 all: build
@@ -100,6 +100,19 @@ serve: ui
 	@echo "Starting Shelley..."
 	go run ./cmd/shelley serve
 
+# Serve for UI work: assets come from ui/dist on disk instead of the binary, so
+# a rebuilt dist/ takes effect on browser reload with no Go build and no
+# restart. Run `make ui-watch` in another terminal to rebuild dist/ on save.
+# Uses the predictable model and a scratch database so it cannot disturb real
+# conversations.
+serve-ui: ui
+	@echo "Starting Shelley on :8003 serving UI from ui/dist (run 'make ui-watch' alongside)..."
+	SHELLEY_UI_DIR=$(PWD)/ui/dist go run ./cmd/shelley --predictable-only --db /tmp/shelley-ui-dev.db serve -port 8003
+
+# Rebuild ui/dist whenever a UI source file changes. Pairs with `make serve-ui`.
+ui-watch:
+	@cd ui && pnpm run watch
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning..."
@@ -124,6 +137,8 @@ help:
 	@echo "  build-linux-aarch64  Build for Linux ARM64"
 	@echo "  build-linux-x86      Build for Linux x86_64"
 	@echo "  ui            Build UI only"
+	@echo "  ui-watch      Rebuild ui/dist on save (pairs with serve-ui)"
+	@echo "  serve-ui      Serve UI from ui/dist on disk, no rebuild/restart to see changes"
 	@echo "  templates     Build template tarballs"
 	@echo "  test          Run all tests (Go + E2E)"
 	@echo "  test-go       Run Go tests only"

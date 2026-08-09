@@ -53,8 +53,10 @@ for _, tool := range tools {
 ```
 
 ```json
-{"action": "screenshot", "selector": "#main"}
+{"action": "screenshot", "selector": "[data-testid='settings-panel']"}
 ```
+
+For focused UI iteration, identify the smallest stable selector around the component and reuse it for every screenshot after an edit. Capture the whole page only when locating the component or checking overall layout. This keeps the visual feedback large, relevant, and cheap without cloning the component out of its real CSS and application context.
 
 ## Screenshot Storage
 

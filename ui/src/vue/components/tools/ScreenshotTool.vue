@@ -14,6 +14,12 @@
       <div class="screenshot-tool-summary">
         <span class="screenshot-tool-emoji" :class="{ running: isRunning }">📷</span>
         <span class="screenshot-tool-filename" :title="filename">{{ filename }}</span>
+        <span
+          v-if="injectedCSS"
+          class="screenshot-injected-css-badge"
+          title="Injected CSS was live when this screenshot was taken, so it shows a temporary override rather than what the source files produce."
+          >injected CSS</span
+        >
         <span v-if="isComplete && hasError" class="screenshot-tool-error">✗</span>
         <span v-if="isComplete && !hasError" class="screenshot-tool-success">✓</span>
       </div>
@@ -130,6 +136,15 @@ const imageUrl = computed(() => imageContent.value?.DisplayImageURL || displayUr
 // On-disk path of the full-size screenshot (Display.path), so image comments
 // can point the agent at a file it can crop rather than at an image endpoint.
 const screenshotPath = computed(() => getStringField(props.display, "path"));
+
+// True when inject_css was active as the screenshot was captured. Surfaced as
+// a badge because the image then shows a live override, not the source files.
+const injectedCSS = computed(
+  () =>
+    typeof props.display === "object" &&
+    props.display !== null &&
+    (props.display as { injected_css?: unknown }).injected_css === true,
+);
 // Dimensions of that file, which exceed the rendered image's when the
 // screenshot had to be downscaled for the model.
 const sourceSize = computed(() => displaySourceSize(props.display));

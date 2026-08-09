@@ -12731,3 +12731,15 @@ kbd {
     animation-duration: 1.5s !important;
   }
 }
+/* Marks a screenshot taken while inject_css was live. The image shows a
+   temporary override rather than what the source files produce, so the badge
+   has to be visible next to the filename without being mistaken for an error. */
+.screenshot-injected-css-badge {
+  font-size: 0.75em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--warning-border, #d0a020);
+  color: var(--warning-text, #8a6d00);
+  background: var(--warning-bg, rgba(208, 160, 32, 0.12));
+  white-space: nowrap;
+}

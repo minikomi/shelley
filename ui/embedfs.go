@@ -18,7 +18,38 @@ var Dist embed.FS
 
 var assets http.FileSystem
 
+// devDir is the directory assets are served from when SHELLEY_UI_DIR is set,
+// or "" when assets come from the embedded filesystem.
+var devDir string
+
+// DevDir reports the directory UI assets are being served from live, or ""
+// when they come from the binary. Callers use this to skip caching that would
+// otherwise pin a stale build in the browser.
+func DevDir() string { return devDir }
+
+// UIDirEnv names the environment variable that points at a UI build directory
+// on disk. Setting it makes the server read every asset from that directory
+// per request instead of from the binary, so an esbuild watch can rebuild
+// ui/dist and a browser reload picks the change up with no Go build and no
+// server restart. Development only: an unset variable is the normal embedded
+// path.
+const UIDirEnv = "SHELLEY_UI_DIR"
+
 func init() {
+	if dir := os.Getenv(UIDirEnv); dir != "" {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			fmt.Fprintf(os.Stderr, "\nError: %s=%s is not a directory.\n\n", UIDirEnv, dir)
+			os.Exit(1)
+		}
+		devDir = dir
+		assets = http.Dir(dir)
+		// No staleness check: serving from disk is what makes a rebuilt
+		// directory take effect, so "sources newer than the build" is the
+		// expected steady state rather than an error.
+		return
+	}
+
 	sub, err := fs.Sub(Dist, "dist")
 	if err != nil {
 		// If the build is misconfigured and dist/ is missing, fail fast.
@@ -111,6 +142,12 @@ func Assets() http.FileSystem {
 // Checksums returns the content checksums for static assets.
 // These are computed during build and used for ETag generation.
 func Checksums() map[string]string {
+	// Serving from disk means the bytes change under the server as the watch
+	// rebuilds. Returning no checksums drops ETags, so the browser cannot 304
+	// its way into showing the previous build.
+	if devDir != "" {
+		return nil
+	}
 	data, err := fs.ReadFile(Dist, "dist/checksums.json")
 	if err != nil {
 		return nil

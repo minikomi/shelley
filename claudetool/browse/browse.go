@@ -580,12 +580,24 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 	// Get the full path to the screenshot
 	screenshotPath := GetScreenshotPath(id)
 
+	// A screenshot taken while inject_css is live shows a temporary override,
+	// not what the source files produce. Say so on every screenshot: without
+	// this an agent can look at the image, conclude the styling is correct, and
+	// "fix" a bug that was never in source — or forget to write the working
+	// rule into a stylesheet at all.
+	injected := b.injectedCSSActive(timeoutCtx)
+	injectedNote := ""
+	if injected {
+		injectedNote = fmt.Sprintf(" [injected CSS is live in <style id=%q>; this shows a temporary override, not the source files]", injectedStyleID)
+	}
+
 	display := map[string]any{
-		"type":     "screenshot",
-		"id":       id,
-		"url":      "/api/read?path=" + url.QueryEscape(screenshotPath),
-		"path":     screenshotPath,
-		"selector": input.Selector,
+		"type":         "screenshot",
+		"id":           id,
+		"url":          "/api/read?path=" + url.QueryEscape(screenshotPath),
+		"path":         screenshotPath,
+		"selector":     input.Selector,
+		"injected_css": injected,
 	}
 
 	// Dimensions of the file at "path", which may differ from the (possibly
@@ -609,7 +621,7 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 		return llm.ToolOut{LLMContent: []llm.Content{
 			{
 				Type: llm.ContentTypeText,
-				Text: fmt.Sprintf("Screenshot taken (saved as %s)", screenshotPath),
+				Text: fmt.Sprintf("Screenshot taken (saved as %s)%s", screenshotPath, injectedNote),
 			},
 		}, Display: display}
 	}
@@ -627,7 +639,7 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 
 	base64Data := base64.StdEncoding.EncodeToString(prepared.Data)
 
-	description := fmt.Sprintf("Screenshot taken (saved as %s)", screenshotPath)
+	description := fmt.Sprintf("Screenshot taken (saved as %s)%s", screenshotPath, injectedNote)
 	if prepared.Resized {
 		description += " [resized to fit model limits]"
 	}
@@ -675,8 +687,12 @@ func (b *BrowseTools) CombinedTool() *llm.Tool {
   Parameters: width (integer, required), height (integer, required), timeout (string, optional)
 
 - action: "screenshot"
-  Take a screenshot of the page or a specific element.
-  Parameters: selector (string, optional), timeout (string, optional)
+  Take a screenshot of the page or a specific element. For focused UI work, always pass the smallest stable CSS selector that contains the component being changed; keep using that selector after each edit instead of repeatedly capturing the whole page. Use a whole-page screenshot only to discover the component or verify overall layout.
+  Parameters: selector (string, strongly preferred for UI iteration), timeout (string, optional)
+
+- action: "inject_css"
+  Inject CSS into the live page for fast visual experimentation, without editing files or rebuilding. Rules go into a single style element that is replaced on each call; pass an empty css to clear it. The injection does not survive navigation or a full reload, and it overrides real stylesheets — once a rule looks right, write it into the actual stylesheet, and clear the injection before judging whether source is correct.
+  Parameters: css (string, required; empty clears), timeout (string, optional)
 
 - action: "console_logs"
   Get recent browser console logs.
@@ -735,7 +751,7 @@ Performance profiling (profile_* actions):
 			"action": {
 				"type": "string",
 				"description": "The browser action to perform",
-				"enum": ["navigate", "eval", "resize", "screenshot", "console_logs", "clear_console_logs", "screencast_start", "screencast_stop", "screencast_status", "emulate_help", "emulate_device", "emulate_custom", "emulate_reset", "emulate_dark_mode", "emulate_media", "network_help", "network_enable", "network_disable", "network_get_log", "network_clear", "network_cookies", "network_clear_cache", "accessibility_help", "accessibility_tree", "accessibility_query", "accessibility_node", "profile_help", "profile_metrics", "profile_cpu_start", "profile_cpu_stop", "profile_trace_start", "profile_trace_stop", "profile_coverage_start", "profile_coverage_stop"]
+				"enum": ["navigate", "eval", "resize", "screenshot", "inject_css", "console_logs", "clear_console_logs", "screencast_start", "screencast_stop", "screencast_status", "emulate_help", "emulate_device", "emulate_custom", "emulate_reset", "emulate_dark_mode", "emulate_media", "network_help", "network_enable", "network_disable", "network_get_log", "network_clear", "network_cookies", "network_clear_cache", "accessibility_help", "accessibility_tree", "accessibility_query", "accessibility_node", "profile_help", "profile_metrics", "profile_cpu_start", "profile_cpu_stop", "profile_trace_start", "profile_trace_stop", "profile_coverage_start", "profile_coverage_stop"]
 			},
 			"url": {
 				"type": "string",
@@ -761,9 +777,13 @@ Performance profiling (profile_* actions):
 				"type": "integer",
 				"description": "Max log entries to return (console_logs action, default 100)"
 			},
+			"css": {
+				"type": "string",
+				"description": "Stylesheet text to inject into the live page (inject_css action). Empty string clears the injection."
+			},
 			"selector": {
 				"type": "string",
-				"description": "CSS selector for element to screenshot (screenshot action)"
+				"description": "CSS selector to crop a screenshot to one element. Strongly preferred during focused UI iteration; reuse the smallest stable selector after every edit instead of capturing the whole page. Also used by accessibility_node."
 			},
 			"timeout": {
 				"type": "string",
@@ -903,6 +923,9 @@ type combinedInput struct {
 
 	// Profiling fields (profile_* actions).
 	Categories string `json:"categories,omitempty"`
+
+	// Live-CSS field (inject_css action).
+	CSS string `json:"css,omitempty"`
 }
 
 func (b *BrowseTools) runCombined(ctx context.Context, input combinedInput) llm.ToolOut {
@@ -915,6 +938,8 @@ func (b *BrowseTools) runCombined(ctx context.Context, input combinedInput) llm.
 		return b.resizeRun(ctx, resizeInput{Width: input.Width, Height: input.Height, Timeout: input.Timeout})
 	case "screenshot":
 		return b.screenshotRun(ctx, screenshotInput{Selector: input.Selector, Timeout: input.Timeout})
+	case "inject_css":
+		return b.injectCSSRun(ctx, input.CSS, input.Timeout)
 	case "console_logs":
 		return b.recentConsoleLogsRun(ctx, recentConsoleLogsInput{Limit: input.Limit})
 	case "clear_console_logs":

@@ -39,7 +39,8 @@ func TestCombinedTool(t *testing.T) {
 	var schema struct {
 		Required   []string `json:"required"`
 		Properties map[string]struct {
-			Enum []string `json:"enum"`
+			Enum        []string `json:"enum"`
+			Description string   `json:"description"`
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
@@ -69,6 +70,12 @@ func TestCombinedTool(t *testing.T) {
 		if !strings.Contains(tool.Description, keyword) {
 			t.Errorf("description missing %q", keyword)
 		}
+	}
+	if !strings.Contains(tool.Description, "smallest stable CSS selector") {
+		t.Error("description should direct focused UI iteration toward element screenshots")
+	}
+	if !strings.Contains(schema.Properties["selector"].Description, "focused UI iteration") {
+		t.Error("selector schema should explain focused UI iteration")
 	}
 }
 
