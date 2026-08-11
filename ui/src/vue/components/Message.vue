@@ -45,13 +45,13 @@
       :data-message-id="message.message_id"
       role="alert"
       aria-label="Error message"
-      @click="handleMessageClick"
-      @mouseenter="isHovered = true"
-      @mouseleave="isHovered = false"
+      @click="handleMessageClick($event, 'main')"
+      @mouseenter="hoveredActionKey = 'main'"
+      @mouseleave="hoveredActionKey = null"
     >
       <MessageActionBar
-        v-if="actionBarVisible && (hasCopyAction || hasUsageAction || hasForkAction)"
-        :on-copy="hasCopyAction ? handleCopy : undefined"
+        v-if="actionBarVisible('main') && (hasCopyAction || hasUsageAction || hasForkAction)"
+        :on-copy="hasCopyAction ? () => handleCopy(messageText) : undefined"
         :on-show-usage="hasUsageAction ? handleShowUsage : undefined"
         :on-fork="hasForkAction ? handleFork : undefined"
       />
@@ -84,13 +84,13 @@
       data-testid="message"
       :data-message-id="message.message_id"
       role="article"
-      @click="handleMessageClick"
-      @mouseenter="isHovered = true"
-      @mouseleave="isHovered = false"
+      @click="handleMessageClick($event, 'main')"
+      @mouseenter="hoveredActionKey = 'main'"
+      @mouseleave="hoveredActionKey = null"
     >
       <MessageActionBar
-        v-if="actionBarVisible && (hasCopyAction || hasUsageAction || hasForkAction)"
-        :on-copy="hasCopyAction ? handleCopy : undefined"
+        v-if="actionBarVisible('main') && (hasCopyAction || hasUsageAction || hasForkAction)"
+        :on-copy="hasCopyAction ? () => handleCopy(messageText) : undefined"
         :on-show-usage="hasUsageAction ? handleShowUsage : undefined"
         :on-fork="hasForkAction ? handleFork : undefined"
       />
@@ -125,76 +125,90 @@
       :data-message-id="message.message_id"
       :data-commentable="isCommentable ? 'true' : undefined"
       role="article"
-      @click="handleMessageClick"
-      @mouseenter="isHovered = true"
-      @mouseleave="isHovered = false"
     >
-      <MessageActionBar
-        v-if="actionBarVisible && (hasCopyAction || hasUsageAction || hasForkAction)"
-        :on-copy="hasCopyAction ? handleCopy : undefined"
-        :on-show-usage="hasUsageAction ? handleShowUsage : undefined"
-        :on-fork="hasForkAction ? handleFork : undefined"
-      />
-      <div class="message-content" data-testid="message-content">
+      <div class="message-content message-content-entities" data-testid="message-content">
         <div v-if="authorEmail" class="message-author-email" data-testid="message-author-email">
           {{ authorEmail }}
         </div>
-        <!-- Distillation box takes precedence over content blocks. -->
+        <!-- One action region per content entity (thinking blocks stand alone,
+             adjacent answer content stays grouped; see splitContentEntities).
+             Copy is scoped to the entity; info/fork stay message-level. -->
         <div
-          v-if="isDistilledUser"
-          class="distillation-file-box"
-          data-testid="distillation-file-box"
+          v-for="entity in contentEntities"
+          :key="entity.key"
+          class="msg-container-relative"
+          :data-content-entity="entity.kind"
+          @click="handleMessageClick($event, entity.key)"
+          @mouseenter="hoveredActionKey = entity.key"
+          @mouseleave="hoveredActionKey = null"
         >
-          <div class="distillation-file-box-header">
-            <div class="distillation-file-box-title">
-              {{ distillationEditable ? "Editable distillation" : "Compacted summary" }}
-            </div>
-            <button
-              v-if="distillationEditable"
-              type="button"
-              class="distillation-edit-button"
-              v-tooltip.top="'Edit distillation in modal'"
-              @click="openDistillationEditor"
-            >
-              Edit
-            </button>
-          </div>
-          <div v-if="distillationEditable" class="distillation-file-box-meta">
-            Shown from editable file <code>{{ distillationFile }}</code
-            >.
-          </div>
-          <div class="distillation-file-box-content">
-            <MarkdownContent
-              v-if="displayedDistillationContent"
-              :text="displayedDistillationContent"
-            />
-            <span v-else class="distillation-empty">Empty distillation</span>
-          </div>
-        </div>
+          <MessageActionBar
+            v-if="
+              actionBarVisible(entity.key) &&
+              (entity.copyText || hasUsageAction || hasForkAction)
+            "
+            :on-copy="entity.copyText ? () => handleCopy(entity.copyText) : undefined"
+            :on-show-usage="hasUsageAction ? handleShowUsage : undefined"
+            :on-fork="hasForkAction ? handleFork : undefined"
+          />
 
-        <template v-else>
-          <div v-for="(item, index) in coalescedContent" :key="index">
-            <CitedText
-              v-if="item.kind === 'text'"
-              :text="item.text"
-              :markdown-text="item.markdownText"
-              :citations="item.citations"
-              :render-markdown="shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)"
-              :message-id="message.message_id"
-              :cache-owner="message"
-              :run-key="String(index)"
-            />
-            <MessageContentBlock
-              v-else
-              :content="item.content!"
-              :render-md="shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)"
-              :message-id="message.message_id"
-              :tool-use-map="toolUseMap"
-              :server-tool-result-map="serverToolResultMap"
-              :on-comment-text-change="onCommentTextChange"
-            />
+          <!-- Distillation box takes precedence over content blocks. -->
+          <div
+            v-if="isDistilledUser"
+            class="distillation-file-box"
+            data-testid="distillation-file-box"
+          >
+            <div class="distillation-file-box-header">
+              <div class="distillation-file-box-title">
+                {{ distillationEditable ? "Editable distillation" : "Compacted summary" }}
+              </div>
+              <button
+                v-if="distillationEditable"
+                type="button"
+                class="distillation-edit-button"
+                v-tooltip.top="'Edit distillation in modal'"
+                @click="openDistillationEditor"
+              >
+                Edit
+              </button>
+            </div>
+            <div v-if="distillationEditable" class="distillation-file-box-meta">
+              Shown from editable file <code>{{ distillationFile }}</code
+              >.
+            </div>
+            <div class="distillation-file-box-content">
+              <MarkdownContent
+                v-if="displayedDistillationContent"
+                :text="displayedDistillationContent"
+              />
+              <span v-else class="distillation-empty">Empty distillation</span>
+            </div>
           </div>
-        </template>
+
+          <template v-else>
+            <div v-for="(item, index) in entity.items" :key="index">
+              <CitedText
+                v-if="item.kind === 'text'"
+                :text="item.text"
+                :markdown-text="item.markdownText"
+                :citations="item.citations"
+                :render-markdown="shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)"
+                :message-id="message.message_id"
+                :cache-owner="message"
+                :run-key="`${entity.key}-${index}`"
+              />
+              <MessageContentBlock
+                v-else
+                :content="item.content!"
+                :render-md="shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)"
+                :message-id="message.message_id"
+                :tool-use-map="toolUseMap"
+                :server-tool-result-map="serverToolResultMap"
+                :on-comment-text-change="onCommentTextChange"
+              />
+            </div>
+          </template>
+        </div>
       </div>
     </div>
     <UsageDetailModal
@@ -243,7 +257,7 @@ import ErrorRetryButton from "./ErrorRetryButton.vue";
 import RefusalContinueButton from "./RefusalContinueButton.vue";
 import MessageContentBlock from "./MessageContentBlock.vue";
 import CitedText from "./CitedText.vue";
-import { coalesceContent } from "../../utils/coalesceContent";
+import { coalesceContent, splitContentEntities } from "../../utils/coalesceContent";
 import { perfCount } from "../../utils/perf";
 import MessageDisplayData from "./MessageDisplayData.vue";
 
@@ -287,13 +301,19 @@ const isDistill = computed(() => isDistillStatusMessage(props.message));
 const isCwdChange = computed(() => cwdChange(props.message) !== null);
 
 // ---- Action bar state (show on hover or tap) ----
-const showActionBar = ref(false);
-const isHovered = ref(false);
+// One action bar per content entity, keyed by entity key ("main" for the
+// single-region error and display_data branches).
+const pinnedActionKey = ref<string | null>(null);
+const hoveredActionKey = ref<string | null>(null);
 const showUsageModal = ref(false);
 const showInfoModal = ref(false);
 const messageRef = ref<HTMLDivElement | null>(null);
 
-const actionBarVisible = computed(() => showActionBar.value || isHovered.value);
+// Hover temporarily takes precedence over a pinned region, so two sibling
+// action bars can never be visible at once.
+function actionBarVisible(key: string): boolean {
+  return key === (hoveredActionKey.value ?? pinnedActionKey.value);
+}
 
 // ---- Parsed message payloads ----
 function safeParse<T>(value: unknown, label: string): T | null {
@@ -531,6 +551,22 @@ const contentToRender = computed<LLMContent[]>(() =>
 // paragraph instead of several stray lines. See utils/coalesceContent.ts.
 const coalescedContent = computed(() => coalesceContent(contentToRender.value));
 
+// Thinking is a separate kind of output from the answer: each thinking block is
+// its own action region so Copy grabs just that block. A distilled user message
+// renders as a single box, so it stays one entity carrying the distillation text.
+const contentEntities = computed(() =>
+  isDistilledUser.value
+    ? [
+        {
+          key: "distillation",
+          kind: "content" as const,
+          items: [],
+          copyText: displayedDistillationContent.value || messageText.value,
+        },
+      ]
+    : splitContentEntities(coalescedContent.value),
+);
+
 // Whether the main path has anything to render (mirrors the React early-returns
 // after the error/display_data branches).
 const hasRenderableContent = computed(() => {
@@ -551,7 +587,7 @@ const messageClasses = computed(() => {
 });
 
 // ---- Handlers ----
-function handleMessageClick(e: MouseEvent) {
+function handleMessageClick(e: MouseEvent, key: string) {
   // Don't toggle if clicking on a link, button, or interactive element.
   const target = e.target as HTMLElement;
   if (
@@ -572,17 +608,16 @@ function handleMessageClick(e: MouseEvent) {
   ) {
     return;
   }
-  showActionBar.value = !showActionBar.value;
+  pinnedActionKey.value = pinnedActionKey.value === key ? null : key;
 }
 
-function handleCopy() {
-  const text = messageText.value;
+function handleCopy(text: string) {
   if (text) {
     navigator.clipboard.writeText(text).catch((err) => {
       console.error("Failed to copy text:", err);
     });
   }
-  showActionBar.value = false;
+  pinnedActionKey.value = null;
 }
 
 // Agent messages with token usage open the detailed usage modal; other
@@ -594,12 +629,12 @@ function handleShowUsage() {
   } else {
     showInfoModal.value = true;
   }
-  showActionBar.value = false;
+  pinnedActionKey.value = null;
 }
 
 function handleFork() {
   if (props.onFork) props.onFork(props.message.message_id);
-  showActionBar.value = false;
+  pinnedActionKey.value = null;
 }
 
 function openDistillationEditor(e: MouseEvent) {
@@ -607,14 +642,14 @@ function openDistillationEditor(e: MouseEvent) {
   showDistillationEditor.value = true;
 }
 
-// Close action bar when clicking outside (mirrors the React useEffect).
+// Close a pinned action bar when clicking outside the message.
 function handleClickOutside(e: MouseEvent) {
   const target = e.target as HTMLElement;
   if (!messageRef.value?.contains(target)) {
-    showActionBar.value = false;
+    pinnedActionKey.value = null;
   }
 }
-watch(showActionBar, (open) => {
+watch(pinnedActionKey, (open) => {
   if (open) {
     document.addEventListener("mousedown", handleClickOutside);
   } else {
