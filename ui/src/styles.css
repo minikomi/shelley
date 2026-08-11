@@ -9834,7 +9834,8 @@ kbd {
 }
 
 .thinking-text {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 0;
   font-style: italic;
   color: var(--text-secondary);
   white-space: pre-wrap;
@@ -9859,6 +9860,41 @@ kbd {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+}
+
+/* Content entities: a message renders its thinking and answer runs as sibling
+   regions inside one .message-content, each with its own floating action bar.
+   The message's vertical padding moves onto each entity so every region is a
+   full-height hover target and the overall spacing is unchanged. */
+.message-content-entities {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+[data-content-entity] {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+
+/* Agent content is shrink-to-fit (margin-right: auto), which would pull the
+   action bar leftwards over short thinking text. Stretch the entity container
+   so the bar sits at the far right of the message column. Agent/tool content
+   has no bubble background, so this is visually neutral; user bubbles keep
+   their shrink-to-fit width. */
+.message-agent .message-content-entities,
+.message-tool .message-content-entities {
+  width: 100%;
+}
+
+[data-content-entity] > .message-action-bar-wrapper {
+  top: auto;
+  /* The bar overlaps the entity's top padding, leaving a continuous hover
+     path while remaining one pixel above the rendered content. */
+  bottom: calc(100% - 1rem + 1px);
+}
+
+[data-content-entity="thinking"] .thinking-content-wrapper {
+  margin-bottom: 0;
 }
 
 /* BrowserProfileTool styles */
