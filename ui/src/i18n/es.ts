@@ -112,6 +112,7 @@ export const es: TranslationKeys = {
   directory: "Directorio",
   gitRepo: "Repositorio Git",
   other: "Otro",
+  untagged: "Sin etiquetas",
   collapseSubagents: "Contraer subagentes",
   expandSubagents: "Expandir subagentes",
   collapseSidebar: "Contraer barra lateral",

@@ -111,6 +111,7 @@ export const zhTW: TranslationKeys = {
   directory: "目錄",
   gitRepo: "Git 倉庫",
   other: "其他",
+  untagged: "無標籤",
   collapseSubagents: "收合子代理",
   expandSubagents: "展開子代理",
   collapseSidebar: "收合側邊欄",

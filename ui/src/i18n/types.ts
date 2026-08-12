@@ -111,6 +111,7 @@ export interface TranslationKeys {
   directory: string;
   gitRepo: string;
   other: string;
+  untagged: string;
   collapseSubagents: string;
   expandSubagents: string;
   collapseSidebar: string;

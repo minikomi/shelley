@@ -75,7 +75,7 @@
           </Button>
           <div v-if="groupMenuOpen" class="group-by-menu">
             <button
-              v-for="value in ['none', 'cwd', 'git_repo'] as GroupBy[]"
+              v-for="value in ['none', 'cwd', 'git_repo', 'tag'] as GroupBy[]"
               :key="value"
               :class="`group-by-menu-item${groupBy === value ? ' active' : ''}`"
               @click="
@@ -255,7 +255,7 @@
             </svg>
             <span
               class="conversation-group-label"
-              :title="key === '__ungrouped__' ? undefined : key"
+              :title="groupTitle(key, group)"
             >
               {{ group.label }}
             </span>
@@ -326,6 +326,7 @@ import { handleModifiedNavClick } from "../utils/openInNewTab";
 import ConversationRow from "./ConversationDrawerRow.vue";
 import Button from "primevue/button";
 import { DrawerCtxKey, type GroupBy, parseTags } from "./conversationDrawerShared";
+import { compareTagGroupKeys, tagGroupKey, tagGroupLabel } from "../../utils/tagFilter";
 import type { EphemeralTerminal } from "./terminalTypes";
 import { perfCount } from "../../utils/perf";
 
@@ -397,7 +398,7 @@ const expandedSubagents = ref<Set<string>>(new Set());
 const groupBy = ref<GroupBy>(
   (() => {
     const stored = localStorage.getItem("shelley-group-by");
-    return stored === "cwd" || stored === "git_repo" ? stored : "none";
+    return stored === "cwd" || stored === "git_repo" || stored === "tag" ? stored : "none";
   })(),
 );
 const collapsedGroups = ref<Set<string>>(new Set());
@@ -760,6 +761,7 @@ function groupByLabel(value: GroupBy): string {
     none: t("noGrouping"),
     cwd: t("directory"),
     git_repo: t("gitRepo"),
+    tag: t("tags"),
   };
   return labels[value];
 }
@@ -871,6 +873,10 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
       key = conv.cwd || null;
     } else if (groupBy.value === "git_repo") {
       key = conv.git_worktree_root || conv.git_repo_root || null;
+    } else if (groupBy.value === "tag") {
+      // The key is the whole sorted tag set, so every conversation appears
+      // exactly once (a tag-per-group layout would duplicate rows).
+      key = tagGroupKey(conv);
     }
     if (!key) {
       ungrouped.push(conv);
@@ -878,7 +884,8 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
     }
     let group = groups.get(key);
     if (!group) {
-      group = { label: formatCwdForDisplay(key) || key, conversations: [] };
+      const label = groupBy.value === "tag" ? tagGroupLabel(conv) : formatCwdForDisplay(key) || key;
+      group = { label, conversations: [] };
       groups.set(key, group);
     }
     group.conversations.push(conv);
@@ -892,23 +899,42 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
     nextGroupOrder[key] = order;
   }
 
-  const desiredKeys = [...groups.entries()]
-    .sort((a, b) => maxBucket(b[1].conversations) - maxBucket(a[1].conversations))
-    .map(([k]) => k);
-  const stableKeys = applyStableKeyOrder(desiredKeys, groupKeysOrder);
-  groupKeysOrder = stableKeys;
-  const sorted: [string, Group][] = stableKeys.map((k) => [k, groups.get(k)!]);
+  // Tag groups sort alphabetically by their tags, so a group's position is
+  // predictable from its name. The recency-ordered modes route through
+  // applyStableKeyOrder instead; that pass is skipped here because it pins
+  // seen keys to old positions, stranding a new group at the top of an
+  // alphabetical list.
+  let sorted: [string, Group][];
+  if (groupBy.value === "tag") {
+    sorted = [...groups.entries()].sort(([a], [b]) => compareTagGroupKeys(a, b));
+    groupKeysOrder = sorted.map(([k]) => k);
+  } else {
+    const desiredKeys = [...groups.entries()]
+      .sort((a, b) => maxBucket(b[1].conversations) - maxBucket(a[1].conversations))
+      .map(([k]) => k);
+    const stableKeys = applyStableKeyOrder(desiredKeys, groupKeysOrder);
+    groupKeysOrder = stableKeys;
+    sorted = stableKeys.map((k) => [k, groups.get(k)!]);
+  }
 
   if (ungrouped.length > 0) {
     const ungroupedSorted = sortConversationsByBucket(ungrouped);
     const { items, order } = applyStableOrder(ungroupedSorted, groupOrder["__ungrouped__"] || []);
     nextGroupOrder["__ungrouped__"] = order;
-    sorted.push(["__ungrouped__", { label: t("other"), conversations: items }]);
+    const ungroupedLabel = groupBy.value === "tag" ? t("untagged") : t("other");
+    sorted.push(["__ungrouped__", { label: ungroupedLabel, conversations: items }]);
   }
 
   groupOrder = nextGroupOrder;
   return sorted;
 });
+
+// The hover title for a truncated group heading: the full label for tag
+// groups (their key is NUL-joined, not for eyes), the untruncated path else.
+function groupTitle(key: string, group: Group): string | undefined {
+  if (key === "__ungrouped__") return undefined;
+  return groupBy.value === "tag" ? group.label : key;
+}
 
 // Maintain the flat visual order for archive-based next-selection.
 watch(

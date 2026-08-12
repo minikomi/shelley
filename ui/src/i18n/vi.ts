@@ -111,6 +111,7 @@ export const vi: TranslationKeys = {
   directory: "Thư mục",
   gitRepo: "Git Repo",
   other: "Khác",
+  untagged: "Chưa gắn thẻ",
   collapseSubagents: "Thu gọn subagent",
   expandSubagents: "Mở rộng subagent",
   collapseSidebar: "Thu gọn sidebar",
