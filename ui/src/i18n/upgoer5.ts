@@ -111,6 +111,7 @@ export const upgoer5: TranslationKeys = {
   directory: "Place",
   gitRepo: "Where Your Work Lives",
   other: "Other",
+  untagged: "No word stickers",
   collapseSubagents: "Close up little helpers",
   expandSubagents: "Open up little helpers",
   collapseSidebar: "Make side part small",

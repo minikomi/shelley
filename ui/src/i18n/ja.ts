@@ -111,6 +111,7 @@ export const ja: TranslationKeys = {
   directory: "ディレクトリ",
   gitRepo: "Gitリポジトリ",
   other: "その他",
+  untagged: "タグなし",
   collapseSubagents: "サブエージェントを折りたたむ",
   expandSubagents: "サブエージェントを展開",
   collapseSidebar: "サイドバーを折りたたむ",

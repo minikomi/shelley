@@ -111,6 +111,7 @@ export const zhCN: TranslationKeys = {
   directory: "目录",
   gitRepo: "Git 仓库",
   other: "其他",
+  untagged: "无标签",
   collapseSubagents: "折叠子代理",
   expandSubagents: "展开子代理",
   collapseSidebar: "折叠侧边栏",

@@ -5,7 +5,7 @@ import type { ComputedRef, InjectionKey, Ref } from "vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import type { TranslationKeys } from "../../i18n/types";
 
-export type GroupBy = "none" | "cwd" | "git_repo";
+export type GroupBy = "none" | "cwd" | "git_repo" | "tag";
 
 // Parses the JSON-encoded tags field on a Conversation. Tolerates the empty
 // string and malformed JSON (treated as no tags).

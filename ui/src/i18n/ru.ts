@@ -111,6 +111,7 @@ export const ru: TranslationKeys = {
   directory: "Каталог",
   gitRepo: "Git-репозиторий",
   other: "Другое",
+  untagged: "Без тегов",
   collapseSubagents: "Свернуть субагентов",
   expandSubagents: "Развернуть субагентов",
   collapseSidebar: "Свернуть боковую панель",
