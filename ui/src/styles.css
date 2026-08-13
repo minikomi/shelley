@@ -11779,6 +11779,15 @@ kbd {
   white-space: nowrap;
 }
 
+/* While editing, a long tag must truncate inside the chip rather than push
+   the remove button past the chip's max-width, where the chip's own
+   overflow:hidden would clip it out of reach. */
+.conversation-tag-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conversation-item.active .conversation-tag {
   color: rgba(255, 255, 255, 0.85);
 }
@@ -11789,6 +11798,7 @@ kbd {
 }
 
 .conversation-tag-remove {
+  flex-shrink: 0;
   background: none;
   border: none;
   color: inherit;

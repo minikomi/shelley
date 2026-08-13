@@ -50,7 +50,8 @@
       >
         <template v-for="tag in conversationTags" :key="tag">
           <span v-if="tagsEditing" class="conversation-tag conversation-tag-removable">
-            <span class="conversation-tag-hash">#</span>{{ tag }}
+            <span class="conversation-tag-hash">#</span>
+            <span class="conversation-tag-text">{{ tag }}</span>
             <button
               type="button"
               class="conversation-tag-remove"
