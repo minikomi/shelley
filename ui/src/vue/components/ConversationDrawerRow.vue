@@ -79,18 +79,31 @@
         <form
           v-if="tagsEditing"
           class="conversation-tag-inline-form"
-          @submit.prevent="ctx.handleAddTag(conversation)"
+          @submit.prevent="onTagSubmit"
         >
           <span class="conversation-tag-hash">#</span>
-          <input
-            ref="tagInput"
-            type="text"
-            :value="ctx.tagInput.value"
-            :placeholder="ctx.t('addTagPlaceholder')"
-            class="conversation-tag-inline-input"
-            @input="ctx.tagInput.value = ($event.target as HTMLInputElement).value"
-            @keydown="onTagInputKeyDown"
-          />
+          <span class="conversation-tag-inline-completion">
+            <span
+              v-if="tagCompletionSuffix"
+              class="conversation-tag-completion-ghost"
+              aria-hidden="true"
+              data-testid="tag-completion-suffix"
+            ><span>{{ ctx.tagInput.value }}</span>{{ tagCompletionSuffix }}</span>
+            <input
+              ref="tagInput"
+              type="text"
+              :value="ctx.tagInput.value"
+              :placeholder="ctx.t('addTagPlaceholder')"
+              class="conversation-tag-inline-input"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              @input="onTagInput"
+              @compositionstart="onTagCompositionStart"
+              @compositionend="onTagCompositionEnd"
+              @keydown="onTagInputKeyDown"
+            />
+          </span>
         </form>
       </div>
 
@@ -324,7 +337,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, inject, ref, watch, type VNode } from "vue";
+import { computed, defineComponent, h, inject, nextTick, ref, watch, type VNode } from "vue";
 import Button from "primevue/button";
 import type { Conversation, ConversationWithState } from "../../types";
 import { isImeComposing } from "../../utils/imeComposing";
@@ -345,6 +358,8 @@ const ctx = inject(DrawerCtxKey)!;
 
 const renameInput = ref<HTMLInputElement | null>(null);
 const tagInput = ref<HTMLInputElement | null>(null);
+const tagInputComposing = ref(false);
+const submitTagAfterComposition = ref(false);
 
 const convState = computed(() => props.conversation as ConversationWithState);
 const isDraft = computed(() => !!props.conversation.is_draft);
@@ -395,6 +410,13 @@ const conversationTags = computed(() => {
 const tagsEditing = computed(
   () => !isDraft.value && ctx.tagEditorId.value === props.conversation.conversation_id,
 );
+const tagCompletionSuffix = computed(() => {
+  if (!tagInputComposing.value || !ctx.tagInput.value) return "";
+  const completed = ctx.completeTag(props.conversation, ctx.tagInput.value);
+  return completed?.startsWith(ctx.tagInput.value)
+    ? completed.slice(ctx.tagInput.value.length)
+    : "";
+});
 
 function tagFiltered(tag: string): boolean {
   return isTagSelected(ctx.selectedTags.value, tag);
@@ -413,14 +435,91 @@ function onSubClick(e: MouseEvent, sub: Conversation) {
   if (ctx.handleModifiedClick(e, sub)) return;
   ctx.selectConversation(sub);
 }
+// Inline autocomplete, select-the-remainder style. Complete insertions at the
+// end, including mobile keyboards that omit inputType; never complete deletes
+// or active IME composition.
+function completeTagInput(input: HTMLInputElement) {
+  const typed = input.value;
+  ctx.tagInput.value = typed;
+  if (input.selectionStart !== typed.length || input.selectionEnd !== typed.length) return;
+  const completed = ctx.completeTag(props.conversation, typed);
+  if (completed === null) return;
+  ctx.tagInput.value = completed;
+  input.value = completed;
+  input.setSelectionRange(typed.length, completed.length);
+}
+function onTagInput(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const inputEvent = e as InputEvent;
+  ctx.tagInput.value = input.value;
+  if (inputEvent.isComposing) return;
+  if (
+    inputEvent.inputType &&
+    !["insertText", "insertCompositionText", "insertReplacementText"].includes(
+      inputEvent.inputType,
+    )
+  ) {
+    return;
+  }
+  completeTagInput(input);
+}
+async function onTagSubmit() {
+  submitTagAfterComposition.value = false;
+  const input = tagInput.value;
+  const typed = input?.value ?? ctx.tagInput.value;
+  ctx.tagInput.value = ctx.completeTag(props.conversation, typed) ?? typed;
+  input?.focus();
+  await ctx.handleAddTag(props.conversation);
+  await nextTick();
+  tagInput.value?.focus();
+}
+function onTagCompositionStart() {
+  tagInputComposing.value = true;
+  submitTagAfterComposition.value = false;
+}
+function onTagCompositionEnd(e: CompositionEvent) {
+  tagInputComposing.value = false;
+  const input = e.target as HTMLInputElement;
+  completeTagInput(input);
+  if (!submitTagAfterComposition.value) return;
+  submitTagAfterComposition.value = false;
+  input.form?.requestSubmit();
+}
+// A live completion: caret somewhere before a selection that runs to the end.
+function completionSelection(input: HTMLInputElement): number | null {
+  const { selectionStart, selectionEnd, value } = input;
+  if (selectionStart === null || selectionEnd === null) return null;
+  return selectionStart > 0 && selectionStart < selectionEnd && selectionEnd === value.length
+    ? selectionStart
+    : null;
+}
 function onTagInputKeyDown(e: KeyboardEvent) {
   if (isImeComposing(e)) {
-    // Stop the Enter that confirms an IME conversion from submitting the form.
-    if (e.key === "Enter") e.preventDefault();
+    // Do not cancel Gboard's Enter: Chrome may use its default action to
+    // submit the form. If it only ends composition, submit afterward.
+    if (e.key === "Enter" && tagInputComposing.value) {
+      submitTagAfterComposition.value = true;
+    }
+    return;
+  }
+  const input = e.target as HTMLInputElement;
+  const selStart = completionSelection(input);
+  // Tab accepts the completion without submitting (ArrowRight does too, via
+  // the browser default); Enter accepts and submits, through the form.
+  if (e.key === "Tab" && selStart !== null) {
+    e.preventDefault();
+    input.setSelectionRange(input.value.length, input.value.length);
     return;
   }
   if (e.key === "Escape") {
     e.preventDefault();
+    // Peel one layer: first the completion, then the editor.
+    if (selStart !== null) {
+      const typed = input.value.slice(0, selStart);
+      ctx.tagInput.value = typed;
+      input.value = typed;
+      return;
+    }
     ctx.tagEditorId.value = null;
     ctx.tagInput.value = "";
   }

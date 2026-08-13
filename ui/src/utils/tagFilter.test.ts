@@ -3,6 +3,7 @@ import {
   filterConversationsByTags,
   foldTag,
   compareTagGroupKeys,
+  completeTagPrefix,
   completeTermInQuery,
   filterConversationsByQuery,
   formatTagTerm,
@@ -113,6 +114,26 @@ run("offered tags never include a tag that does not co-occur", () => {
 
 run("offered tags exclude what is already selected", () => {
   assert(!offeredTags(corpus, ["infra"]).some((o) => o.tag === "infra"), "selected tag dropped");
+});
+
+run("completeTagPrefix extends the typed prefix with the most-used tag", () => {
+  const pool = [
+    conv("1", ["terminal-work", "terse"]),
+    conv("2", ["terminal-work"]),
+    conv("3", ["other"]),
+  ];
+  assert(completeTagPrefix(pool, "term", []) === "terminal-work", "extends prefix");
+  // `terse` also matches `ter`, but terminal-work is on more conversations.
+  assert(completeTagPrefix(pool, "ter", []) === "terminal-work", "most-used wins");
+  assert(completeTagPrefix(pool, "TERM", []) === "terminal-work", "case-insensitive");
+  assert(completeTagPrefix(pool, "zzz", []) === null, "no match");
+  assert(completeTagPrefix(pool, "", []) === null, "empty prefix offers nothing");
+  assert(completeTagPrefix(pool, "  ", []) === null, "whitespace offers nothing");
+  // An exact match is not a completion — there is nothing left to fill in.
+  assert(completeTagPrefix(pool, "terminal-work", []) === null, "exact match is done");
+  // Tags already on the conversation would only be duplicates.
+  assert(completeTagPrefix(pool, "term", ["terminal-work"]) === null, "own tags excluded");
+  assert(completeTagPrefix(pool, "ter", ["Terminal-Work"]) === "terse", "exclusion folds case");
 });
 
 run("offered tags sort by count descending then alphabetically", () => {

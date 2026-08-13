@@ -445,4 +445,145 @@ test.describe("Tag filter", () => {
     await expect(row(page, none.conversationId)).toHaveCount(0);
     await expect(pairGroup.locator(".conversation-group-label")).toHaveText("#gt-blue #gt-red");
   });
+
+  test("the row tag editor autocompletes existing tags inline", async ({ page, request }) => {
+    // `ac-terminal-work` exists on donor; typing `ac-term` on target should
+    // complete it, select-the-remainder style, with Enter accepting.
+    const donor = await createConversationViaAPIWithDetails(request, "autocomplete donor", {
+      cwd: "/tmp",
+    });
+    const target = await createConversationViaAPIWithDetails(request, "autocomplete target", {
+      cwd: "/tmp",
+    });
+    const mobileTarget = await createConversationViaAPIWithDetails(
+      request,
+      "mobile autocomplete target",
+      { cwd: "/tmp" },
+    );
+    const compositionTarget = await createConversationViaAPIWithDetails(
+      request,
+      "composition autocomplete target",
+      { cwd: "/tmp" },
+    );
+    const actionTarget = await createConversationViaAPIWithDetails(
+      request,
+      "mobile action autocomplete target",
+      { cwd: "/tmp" },
+    );
+    await setTags(request, donor.conversationId, ["ac-terminal-work"]);
+
+    await page.goto(`/c/${target.slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+    await openDrawer(page);
+
+    const targetRow = row(page, target.conversationId);
+    await targetRow.hover();
+    await targetRow.locator('button[aria-label="Edit tags"]').click();
+    const input = targetRow.locator(".conversation-tag-inline-input");
+    await expect(input).toBeFocused();
+
+    // Typing a prefix fills in the extension and selects it.
+    await input.pressSequentially("ac-term");
+    await expect(input).toHaveValue("ac-terminal-work");
+    const selection = await input.evaluate((el: HTMLInputElement) => ({
+      start: el.selectionStart,
+      end: el.selectionEnd,
+    }));
+    expect(selection).toEqual({ start: "ac-term".length, end: "ac-terminal-work".length });
+
+    // Escape peels the completion first, leaving exactly what was typed…
+    await input.press("Escape");
+    await expect(input).toHaveValue("ac-term");
+
+    // …and typing again re-completes; Enter accepts and saves the full tag.
+    await input.pressSequentially("i");
+    await expect(input).toHaveValue("ac-terminal-work");
+    await input.press("Enter");
+    await expect(
+      targetRow.locator(".conversation-tag").filter({ hasText: "ac-terminal-work" }),
+    ).toBeVisible();
+
+    // The tag now on the row is excluded from its own suggestions, so the
+    // same prefix stays literal.
+    await input.pressSequentially("ac-term");
+    await expect(input).toHaveValue("ac-term");
+
+    // Some mobile keyboards omit InputEvent.inputType. Treat that as an
+    // insertion rather than disabling completion on those browsers.
+    const mobileRow = row(page, mobileTarget.conversationId);
+    await mobileRow.hover();
+    await mobileRow.locator('button[aria-label="Edit tags"]').click();
+    const mobileInput = mobileRow.locator(".conversation-tag-inline-input");
+    await mobileInput.evaluate((el: HTMLInputElement) => {
+      el.value = "ac-term";
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    await expect(mobileInput).toHaveValue("ac-terminal-work");
+    await mobileInput.press("Escape");
+    await mobileInput.press("Escape");
+
+    // Gboard keeps ordinary Latin text in composition. Show the completion
+    // suffix without rewriting its active range, then commit it at the end.
+    const compositionRow = row(page, compositionTarget.conversationId);
+    await compositionRow.hover();
+    await compositionRow.locator('button[aria-label="Edit tags"]').click();
+    const compositionInput = compositionRow.locator(".conversation-tag-inline-input");
+    await compositionInput.evaluate((el: HTMLInputElement) => {
+      el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      el.value = "ac-term";
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertCompositionText",
+          isComposing: true,
+        }),
+      );
+    });
+    await expect(compositionInput).toHaveValue("ac-term");
+    await expect(compositionRow.getByTestId("tag-completion-suffix")).toHaveText(
+      "ac-terminal-work",
+    );
+    await compositionInput.evaluate((el: HTMLInputElement) => {
+      el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "ac-term" }));
+    });
+    await expect(compositionInput).toHaveValue("ac-terminal-work");
+    await compositionInput.press("Escape");
+    await compositionInput.press("Escape");
+
+    // Gboard sends a composing Enter for its action arrow. Do not cancel it;
+    // if Chrome only ends composition, submit from compositionend.
+    const actionRow = row(page, actionTarget.conversationId);
+    await actionRow.hover();
+    await actionRow.locator('button[aria-label="Edit tags"]').click();
+    const actionInput = actionRow.locator(".conversation-tag-inline-input");
+    await actionInput.evaluate((el: HTMLInputElement) => {
+      el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      el.value = "ac-term";
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertCompositionText",
+          isComposing: true,
+        }),
+      );
+      const enter = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "Enter",
+        code: "Enter",
+        isComposing: true,
+      });
+      el.dispatchEvent(enter);
+      if (enter.defaultPrevented) throw new Error("composing Enter was cancelled");
+      el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "ac-term" }));
+    });
+    await expect(
+      actionRow.locator(".conversation-tag").filter({ hasText: "ac-terminal-work" }),
+    ).toBeVisible();
+    await expect(actionInput).toBeFocused();
+    await expect(actionInput).toHaveValue("");
+  });
 });

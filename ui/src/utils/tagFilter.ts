@@ -108,6 +108,28 @@ export function offeredTags(
   );
 }
 
+// The best completion for a half-typed tag: an existing tag that strictly
+// extends the typed prefix, preferring the most-used one (offeredTags order).
+// Matches the raw lowercased prefix so the caller can splice `tag` in with
+// the selection starting at prefix.length. `exclude` holds the tags already
+// on the conversation being edited; completing to one would only duplicate.
+export function completeTagPrefix(
+  conversations: Conversation[],
+  prefix: string,
+  exclude: readonly string[],
+): string | null {
+  const typed = prefix.toLowerCase();
+  if (!typed.trim()) return null;
+  const excluded = new Set(exclude.map(foldTag));
+  for (const offer of offeredTags(conversations, [])) {
+    const candidate = foldTag(offer.tag);
+    if (candidate === typed || !candidate.startsWith(typed)) continue;
+    if (excluded.has(candidate)) continue;
+    return offer.tag;
+  }
+  return null;
+}
+
 export function isTagSelected(selected: readonly string[], tag: string): boolean {
   const folded = foldTag(tag);
   return folded !== "" && selected.some((t) => foldTag(t) === folded);
