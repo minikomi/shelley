@@ -1,6 +1,14 @@
 // Shared thinking-level constants/types. "default" leaves the request unset so
 // the selected model's configured/provider default applies.
-export type ThinkingLevel = "default" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkingLevel =
+  | "default"
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "default";
 
@@ -12,4 +20,5 @@ export const THINKING_LEVELS: { value: ThinkingLevel; label: string }[] = [
   { value: "medium", label: "medium" },
   { value: "high", label: "high" },
   { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
 ];

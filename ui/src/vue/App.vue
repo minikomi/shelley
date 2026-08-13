@@ -696,7 +696,7 @@ async function handleFirstMessage(
   model: string,
   cwd?: string,
   toolOverrides?: Record<string, "on" | "off">,
-  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
 ) {
   try {
     const hasOverrides = toolOverrides && Object.keys(toolOverrides).length > 0;

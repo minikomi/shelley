@@ -2431,7 +2431,7 @@ func (s *Server) handleModelCommand(ctx context.Context, w http.ResponseWriter, 
 // reasoningLevelNames are the user-facing reasoning levels accepted by /model.
 // They match the levels offered by the ThinkingLevelPicker in the UI. The word
 // "default" is deliberately not a level: it selects the default MODEL instead.
-var reasoningLevelNames = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+var reasoningLevelNames = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func isReasoningLevelName(s string) bool {
 	s = strings.ToLower(strings.TrimSpace(s))
@@ -3857,9 +3857,9 @@ func validateConversationOptions(opts db.ConversationOptions) string {
 	}
 	if opts.ThinkingLevel != "" {
 		switch opts.ThinkingLevel {
-		case "off", "minimal", "low", "medium", "high", "xhigh":
+		case "off", "minimal", "low", "medium", "high", "xhigh", "max":
 		default:
-			return fmt.Sprintf("Invalid thinking_level: %q; must be one of off, minimal, low, medium, high, xhigh", opts.ThinkingLevel)
+			return fmt.Sprintf("Invalid thinking_level: %q; must be one of off, minimal, low, medium, high, xhigh, max", opts.ThinkingLevel)
 		}
 	}
 	return ""

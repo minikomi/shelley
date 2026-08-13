@@ -70,7 +70,7 @@ export interface Model {
   is_default?: boolean;
   supports_images?: boolean;
   supports_reasoning?: boolean;
-  reasoning_levels?: ("off" | "minimal" | "low" | "medium" | "high" | "xhigh")[];
+  reasoning_levels?: ("off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max")[];
   // Tier is 1 for prominent models and 2 for models overshadowed by a better
   // available sibling. The picker keeps tier-2 models behind a "more models"
   // toggle. Absent/0 is treated as tier 1 by the UI.
@@ -87,7 +87,7 @@ export interface ChatRequest {
   conversation_options?: {
     tool_overrides?: Record<string, "on" | "off">;
     disable_all_tools?: boolean;
-    thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
     disable_notifications?: boolean;
   };
   queue?: boolean;

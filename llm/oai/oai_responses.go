@@ -484,6 +484,29 @@ func (s *ResponsesService) DefaultReasoningLevel() string {
 
 func (s *ResponsesService) SupportsServerSideWebSearch() bool { return true }
 
+// SupportsReasoning reports whether reasoning controls are accepted. All
+// OpenAI Responses models accept reasoning.effort, so this is always true.
+func (s *ResponsesService) SupportsReasoning() bool { return true }
+
+// SupportedReasoningLevels advertises the generic levels this model accepts.
+// The GPT-5.6 family (sol/terra/luna) supports reasoning.effort values
+// none, low, medium, high, xhigh, and max — but not minimal. Other models
+// return nil, meaning all standard levels.
+func (s *ResponsesService) SupportedReasoningLevels() []llm.ThinkingLevel {
+	model := cmp.Or(s.Model, DefaultModel)
+	if strings.HasPrefix(model.ModelName, "gpt-5.6") {
+		return []llm.ThinkingLevel{
+			llm.ThinkingLevelOff,
+			llm.ThinkingLevelLow,
+			llm.ThinkingLevelMedium,
+			llm.ThinkingLevelHigh,
+			llm.ThinkingLevelXHigh,
+			llm.ThinkingLevelMax,
+		}
+	}
+	return nil
+}
+
 // SupportsImages reports whether this service accepts image inputs.
 // OpenAI Responses API supports images for vision models; set
 // Model.SupportsImages to enable image inputs.
