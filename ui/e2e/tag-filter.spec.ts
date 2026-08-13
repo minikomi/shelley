@@ -586,4 +586,24 @@ test.describe("Tag filter", () => {
     await expect(actionInput).toBeFocused();
     await expect(actionInput).toHaveValue("");
   });
+
+  test("the remove button on an overlong tag stays clickable", async ({ page, request }) => {
+    // A tag longer than the chip's max-width used to push the remove button
+    // into the chip's hidden overflow, where it could not be clicked.
+    const long = "overlong-" + "x".repeat(120);
+    const conv = await createConversationViaAPIWithDetails(request, "overlong tag removal", {
+      cwd: "/tmp",
+    });
+    await setTags(request, conv.conversationId, [long]);
+
+    await page.goto(`/c/${conv.slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+    await openDrawer(page);
+
+    const convRow = row(page, conv.conversationId);
+    await convRow.hover();
+    await convRow.locator('button[aria-label="Edit tags"]').click();
+    await convRow.locator(`button[aria-label="Remove tag ${long}"]`).click();
+    await expect(convRow.locator(".conversation-tag-removable")).toHaveCount(0);
+  });
 });
