@@ -1276,15 +1276,16 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		req.ReasoningEffort = level.ThinkingEffort()
 	}
 	// Many chat-completions backends (Fireworks gpt-oss, GLM, etc.) only
-	// accept low/medium/high for `reasoning_effort` and reject "minimal" and
-	// "xhigh" with HTTP 400. Clamp those down to the closest supported tier.
-	// Verbatim user-configured ReasoningEffort strings are intentionally
-	// preserved (they're an explicit "I know what this provider takes").
+	// accept low/medium/high for `reasoning_effort` and reject "minimal",
+	// "xhigh", and "max" with HTTP 400. Clamp those down to the closest
+	// supported tier. Verbatim user-configured ReasoningEffort strings are
+	// intentionally preserved (they're an explicit "I know what this
+	// provider takes").
 	if req.ReasoningEffort != "" && req.ReasoningEffort != s.ReasoningEffort {
 		switch req.ReasoningEffort {
 		case "minimal":
 			req.ReasoningEffort = "low"
-		case "xhigh":
+		case "xhigh", "max":
 			req.ReasoningEffort = "high"
 		}
 	}

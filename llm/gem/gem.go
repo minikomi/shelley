@@ -400,8 +400,8 @@ func (s *Service) thinkingConfig(req *llm.Request) *gemini.ThinkingConfig {
 			return nil
 		}
 		// Gemini 3.x only accepts low/medium/high (plus, on some snapshots,
-		// minimal). xhigh always errors with HTTP 400; clamp to high.
-		if effort == "xhigh" {
+		// minimal). xhigh and max always error with HTTP 400; clamp to high.
+		if effort == "xhigh" || effort == "max" {
 			effort = "high"
 		}
 		return &gemini.ThinkingConfig{ThinkingLevel: effort, IncludeThoughts: true}
