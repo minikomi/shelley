@@ -11817,14 +11817,39 @@ kbd {
   display: inline-flex;
   flex: 1;
   min-width: 4rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.conversation-tag-inline-completion {
+  position: relative;
+  display: inline-flex;
+  flex: 1;
+  min-width: 4rem;
+}
+
+.conversation-tag-completion-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 0.15rem;
+  font: inherit;
+  white-space: pre;
+  color: color-mix(in srgb, currentColor 45%, transparent);
+  pointer-events: none;
+}
+
+.conversation-tag-completion-ghost > span {
+  visibility: hidden;
 }
 
 .conversation-tag-inline-input {
-  flex: 1;
+  position: relative;
+  width: 100%;
   min-width: 4rem;
   padding: 0 0.15rem;
-  font-size: 0.75rem;
-  line-height: 1.4;
+  font: inherit;
   border: none;
   border-radius: 0;
   background-color: transparent;

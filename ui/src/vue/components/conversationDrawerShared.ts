@@ -92,7 +92,9 @@ export interface DrawerCtx {
   handleRename: (conversationId: string) => void;
   handleRenameKeyDown: (e: KeyboardEvent, conversationId: string) => void;
   handleOpenTagEditor: (e: MouseEvent, conversationId: string) => void;
-  handleAddTag: (conversation: Conversation) => void;
+  handleAddTag: (conversation: Conversation) => Promise<void>;
+  // Tag-editor autocomplete: an existing tag extending `typed`, or null.
+  completeTag: (conversation: Conversation, typed: string) => string | null;
   handleRemoveTag: (conversation: Conversation, tag: string) => void;
   handleArchive: (e: MouseEvent, conversationId: string) => void;
   handleUnarchive: (e: MouseEvent, conversationId: string) => void;

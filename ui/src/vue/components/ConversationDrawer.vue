@@ -383,6 +383,7 @@ import type { EphemeralTerminal } from "./terminalTypes";
 import {
   UNTAGGED_TERM,
   compareTagGroupKeys,
+  completeTagPrefix,
   completeTermInQuery,
   filterConversationsByQuery,
   formatTagTerm,
@@ -769,6 +770,18 @@ async function handleAddTag(conversation: Conversation) {
   }
   tagInput.value = "";
   await saveTags(conversation.conversation_id, [...current, value]);
+}
+// Inline autocomplete for the row's tag editor: completes across every tag
+// in sight, minus the conversation's own. A typed leading `#` is kept but is
+// not part of any stored tag.
+function completeTag(conversation: Conversation, typed: string): string | null {
+  const hashes = /^#+/.exec(typed)?.[0] ?? "";
+  const completed = completeTagPrefix(
+    [...props.conversations, ...archivedConversations.value],
+    typed.slice(hashes.length),
+    parseTags(conversation),
+  );
+  return completed === null ? null : hashes + completed;
 }
 async function handleRemoveTag(conversation: Conversation, tag: string) {
   const current = parseTags(conversation);
@@ -1209,6 +1222,7 @@ provide(DrawerCtxKey, {
   handleRenameKeyDown,
   handleOpenTagEditor,
   handleAddTag,
+  completeTag,
   handleRemoveTag,
   handleArchive,
   handleUnarchive,
