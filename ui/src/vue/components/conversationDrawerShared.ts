@@ -78,6 +78,10 @@ export interface DrawerCtx {
   tagInputRef: Ref<HTMLInputElement | null>;
   draftLabels: ComputedRef<Record<string, string>>;
   groupBy: Ref<GroupBy>;
+  // Tag filter: the selection is derived from the search query (`tag:foo`),
+  // so toggling a chip edits that query.
+  selectedTags: Ref<string[]>;
+  toggleTagFilter: (tag: string) => void;
   formatDate: (timestamp: string) => string;
   formatCwdForDisplay: (p: string | null | undefined) => string | null;
   handleModifiedClick: (e: MouseEvent, conversation: Conversation) => boolean;

@@ -61,9 +61,20 @@
               ×
             </button>
           </span>
-          <span v-else class="conversation-tag" :title="`#${tag}`">
+          <!-- Not editing: clicking a chip toggles it in the drawer's tag
+               filter. While the editor is open the chips mean "remove". -->
+          <button
+            v-else
+            type="button"
+            :class="`conversation-tag conversation-tag-filterable${tagFiltered(tag) ? ' conversation-tag-filter-on' : ''}`"
+            :title="`#${tag}`"
+            :aria-pressed="tagFiltered(tag)"
+            data-testid="conversation-tag-chip"
+            :data-tag="tag"
+            @click="onTagChipClick($event, tag)"
+          >
             <span class="conversation-tag-hash">#</span>{{ tag }}
-          </span>
+          </button>
         </template>
         <form
           v-if="tagsEditing"
@@ -297,11 +308,7 @@
               <template v-else>{{ sub.slug }}</template>
             </div>
           </div>
-          <span
-            v-if="sub.working"
-            class="working-indicator"
-            :title="ctx.t('subagentIsWorking')"
-          />
+          <span v-if="sub.working" class="working-indicator" :title="ctx.t('subagentIsWorking')" />
         </div>
         <div class="conversation-preview" :title="sub.preview || undefined">
           {{ sub.preview || "\u00a0" }}
@@ -327,6 +334,7 @@ import {
   stripSnippetMarks,
   renderSnippetSegments,
 } from "./conversationDrawerShared";
+import { isTagSelected } from "../../utils/tagFilter";
 import { perfCount } from "../../utils/perf";
 
 const props = defineProps<{
@@ -387,6 +395,15 @@ const conversationTags = computed(() => {
 const tagsEditing = computed(
   () => !isDraft.value && ctx.tagEditorId.value === props.conversation.conversation_id,
 );
+
+function tagFiltered(tag: string): boolean {
+  return isTagSelected(ctx.selectedTags.value, tag);
+}
+function onTagChipClick(e: MouseEvent, tag: string) {
+  // Don't let the click also select the conversation.
+  e.stopPropagation();
+  ctx.toggleTagFilter(tag);
+}
 
 function onRowClick(e: MouseEvent) {
   if (ctx.handleModifiedClick(e, props.conversation)) return;
