@@ -101,6 +101,7 @@ import Modal from "./Modal.vue";
 import CoalescedToolCall from "./CoalescedToolCall.vue";
 import SubagentPillLive from "./SubagentPillLive.vue";
 import ToolPillLabel from "./ToolPillLabel.vue";
+import { isCancelledToolResult } from "../utils/toolStatus";
 
 const props = defineProps<{
   items: CoalescedItem[];
@@ -155,8 +156,7 @@ const statusState = computed<"running" | "cancelled" | "failed" | "success" | nu
   if (!s) return null;
   const running = !s.hasResult;
   const resultText = s.toolResult?.[0]?.Text ?? "";
-  const cancelled =
-    !!s.toolError && !!s.hasResult && resultText.includes("Tool execution cancelled by user");
+  const cancelled = !!s.toolError && !!s.hasResult && isCancelledToolResult(resultText);
   const failed = !!s.toolError && !!s.hasResult && !cancelled;
   return running ? "running" : cancelled ? "cancelled" : failed ? "failed" : "success";
 });

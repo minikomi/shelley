@@ -266,6 +266,13 @@ func (l *Loop) Go(ctx context.Context) error {
 			// Send request to LLM
 			l.logger.Debug("processing queued messages", "count", 1)
 			if err := l.processLLMRequest(ctx); err != nil {
+				if ctx.Err() != nil {
+					// Cancelled: exit promptly so CancelConversation's wait for
+					// this goroutine (loopDone) returns as soon as the cancelled
+					// tool results are recorded.
+					l.logger.Info("conversation loop canceled")
+					return ctx.Err()
+				}
 				l.logger.Error("failed to process LLM request", "error", err)
 				time.Sleep(time.Second) // Wait before retrying
 				continue
@@ -756,8 +763,41 @@ func (l *Loop) handleRefusal(ctx context.Context, resp *llm.Response) error {
 	return nil
 }
 
+const (
+	// cancelledToolResultText is the sentinel recorded as the FINAL line of a
+	// tool result when the user cancels an in-progress tool. Any output the
+	// tool produced before cancellation precedes it. The UI matches on the
+	// trailing sentinel (ui/src/vue/utils/toolStatus.ts) to render the
+	// "cancelled" state — keep the two in sync.
+	cancelledToolResultText = "Tool execution cancelled by user"
+	// notExecutedToolResultText is recorded for tools in a batch that never
+	// started because an earlier tool was cancelled. It also ends with the
+	// sentinel so the UI renders these as cancelled, not failed.
+	notExecutedToolResultText = "Tool not executed because an earlier tool call was cancelled\n\n" + cancelledToolResultText
+	// abandonedToolResultText is recorded when a cancelled tool ignores its
+	// context and does not return within toolCancelGrace. Its eventual result
+	// is discarded (see executeToolCalls) so it can never be persisted after
+	// the turn's end-of-turn message.
+	abandonedToolResultText = "Tool did not stop within the grace period after cancellation; its output was discarded\n\n" + cancelledToolResultText
+)
+
+// toolCancelGrace is how long a cancelled tool gets to return its partial
+// output (ctx-aware tools like bash embed it in their error) before the loop
+// abandons it and synthesizes a cancelled result. Purely a UX knob — the
+// server's CancelConversation orders the end-of-turn message after the loop
+// exits regardless of how long that takes.
+const toolCancelGrace = 1 * time.Second
+
 // executeToolCalls runs the tools from an LLM response and appends the results
 // to l.history. It does NOT call processLLMRequest — the caller loops instead.
+//
+// Cancellation: the loop is the ONLY writer of tool_result messages, including
+// cancelled ones. When ctx is cancelled mid-batch, completed results are kept,
+// the interrupted tool's output (returned in its error by ctx-aware tools like
+// bash) is preserved with the cancelled sentinel appended, unstarted tools get
+// not-executed results, and the single ordered result message is persisted
+// with a non-cancellable context. CancelConversation just cancels and waits
+// for the loop goroutine to exit — it never fabricates tool results.
 func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) error {
 	var toolResults []llm.Content
 	// Collect the usage of indirect LLM calls made by tools (keyword_search,
@@ -770,6 +810,20 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 
 	for _, c := range content {
 		if c.Type != llm.ContentTypeToolUse {
+			continue
+		}
+
+		// Cancelled before this tool started: record a not-executed result so
+		// every tool_use still gets a tool_result, without running the tool.
+		if ctx.Err() != nil {
+			toolResults = append(toolResults, llm.Content{
+				Type:      llm.ContentTypeToolResult,
+				ToolUseID: c.ID,
+				ToolError: true,
+				ToolResult: []llm.Content{
+					{Type: llm.ContentTypeText, Text: notExecutedToolResultText},
+				},
+			})
 			continue
 		}
 
@@ -808,16 +862,67 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 		toolCtx = llm.WithToolUseID(toolCtx, c.ID)
 		toolCtx = llm.WithLLMService(toolCtx, l.llm)
 		startTime := time.Now()
-		result := tool.Run(toolCtx, c.ToolInput)
+
+		// Run the tool in a goroutine so a cancelled tool that ignores its
+		// context cannot block this loop past the grace period — and, crucially,
+		// cannot deliver a LATE result: once abandoned, its only outlet is a
+		// buffered channel nobody reads, so it can never be persisted after the
+		// turn's end-of-turn message.
+		resultCh := make(chan llm.ToolOut, 1)
+		go func() {
+			resultCh <- tool.Run(toolCtx, c.ToolInput)
+		}()
+
+		var result llm.ToolOut
+		abandoned := false
+		select {
+		case result = <-resultCh:
+		case <-ctx.Done():
+			// Cancelled. Give the tool a bounded grace to return its partial
+			// output (ctx-aware tools return promptly with it in their error).
+			grace := time.NewTimer(toolCancelGrace)
+			select {
+			case result = <-resultCh:
+				grace.Stop()
+			case <-grace.C:
+				abandoned = true
+			}
+		}
 		endTime := time.Now()
 
 		var toolResultContent []llm.Content
-		if result.Error != nil {
-			l.logger.Error("tool execution failed", "name", c.ToolName, "error", result.Error)
+		if abandoned {
+			l.logger.Warn("tool ignored cancellation; abandoning", "name", c.ToolName, "id", c.ID)
 			toolResultContent = []llm.Content{
-				{Type: llm.ContentTypeText, Text: result.Error.Error()},
+				{Type: llm.ContentTypeText, Text: abandonedToolResultText},
+			}
+			toolResults = append(toolResults, llm.Content{
+				Type:             llm.ContentTypeToolResult,
+				ToolUseID:        c.ID,
+				ToolError:        true,
+				ToolResult:       toolResultContent,
+				ToolUseStartTime: &startTime,
+				ToolUseEndTime:   &endTime,
+			})
+			continue
+		}
+		if result.Error != nil {
+			text := result.Error.Error()
+			if ctx.Err() != nil {
+				// Cancelled while running. Ctx-aware tools (e.g. bash) return
+				// their partial output inside the error; keep it and append the
+				// sentinel as the final line so the UI shows "cancelled".
+				l.logger.Info("tool cancelled by user", "name", c.ToolName)
+				text = strings.TrimRight(text, "\r\n") + "\n\n" + cancelledToolResultText
+			} else {
+				l.logger.Error("tool execution failed", "name", c.ToolName, "error", result.Error)
+			}
+			toolResultContent = []llm.Content{
+				{Type: llm.ContentTypeText, Text: text},
 			}
 		} else {
+			// A tool that succeeds despite a concurrent cancel keeps its real
+			// result (active success wins the race).
 			toolResultContent = result.LLMContent
 			l.logger.Debug("tool executed successfully", "name", c.ToolName, "duration", endTime.Sub(startTime))
 		}
@@ -853,13 +958,17 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 		}
 		l.mu.Unlock()
 
-		// Record tool result message
-		if err := l.recordMessage(ctx, toolMessage, llm.Usage{}, otherUsage.Take()); err != nil {
+		// Record tool result message. Use a non-cancellable context so a
+		// user cancel mid-batch doesn't lose the results we just built —
+		// this message is the cancelled tools' only record.
+		if err := l.recordMessage(context.WithoutCancel(ctx), toolMessage, llm.Usage{}, otherUsage.Take()); err != nil {
 			l.logger.Error("failed to record tool result message", "error", err)
 		}
 	}
 
-	return nil
+	// Cancelled mid-batch: results are recorded, but the turn must not
+	// continue with another LLM request.
+	return ctx.Err()
 }
 
 // insertMissingToolResults fixes tool_result issues in the conversation history:

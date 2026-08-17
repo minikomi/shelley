@@ -2771,3 +2771,227 @@ func TestToolOtherUsageAttachedToToolResult(t *testing.T) {
 		}
 	}
 }
+
+// TestExecuteToolCallsCancellationPreservesOutput verifies the loop's
+// cancellation behavior for a sequential multi-tool batch: completed tools
+// keep their real results, the interrupted tool's partial output (returned in
+// its error, as ctx-aware tools like bash do) is preserved with the cancelled
+// sentinel appended, unstarted tools get not-executed results, and exactly one
+// ordered result message is recorded despite the cancelled context.
+func TestExecuteToolCallsCancellationPreservesOutput(t *testing.T) {
+	var recordedMessages []llm.Message
+	recordFunc := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		recordedMessages = append(recordedMessages, message)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	testTool := &llm.Tool{
+		Name:        "bash",
+		Description: "test tool",
+		InputSchema: llm.MustSchema(`{"type": "object", "properties": {"command": {"type": "string"}}}`),
+		Run: func(toolCtx context.Context, input json.RawMessage) llm.ToolOut {
+			var in struct {
+				Command string `json:"command"`
+			}
+			if err := json.Unmarshal(input, &in); err != nil {
+				t.Fatalf("bad input: %v", err)
+			}
+			switch in.Command {
+			case "ok":
+				return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "first output"}}}
+			case "cancel-me":
+				// Simulate a ctx-aware tool: cancel arrives mid-run; return the
+				// partial output inside the error, like bash does.
+				cancel()
+				<-toolCtx.Done()
+				return llm.ErrorToolOut(fmt.Errorf("[command failed: %w]\npartial output line", toolCtx.Err()))
+			default:
+				t.Fatalf("tool %q should not have run after cancel", in.Command)
+				return llm.ToolOut{}
+			}
+		},
+	}
+
+	loop := NewLoop(Config{
+		LLM:           NewPredictableService(),
+		Tools:         []*llm.Tool{testTool},
+		RecordMessage: recordFunc,
+	})
+
+	content := []llm.Content{
+		{ID: "tc_1", Type: llm.ContentTypeToolUse, ToolName: "bash", ToolInput: json.RawMessage(`{"command":"ok"}`)},
+		{ID: "tc_2", Type: llm.ContentTypeToolUse, ToolName: "bash", ToolInput: json.RawMessage(`{"command":"cancel-me"}`)},
+		{ID: "tc_3", Type: llm.ContentTypeToolUse, ToolName: "bash", ToolInput: json.RawMessage(`{"command":"never"}`)},
+	}
+
+	err := loop.executeToolCalls(ctx, content)
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	if len(recordedMessages) != 1 {
+		t.Fatalf("expected exactly 1 recorded message, got %d", len(recordedMessages))
+	}
+	msg := recordedMessages[0]
+	if msg.Role != llm.MessageRoleUser {
+		t.Errorf("expected user role, got %s", msg.Role)
+	}
+	if len(msg.Content) != 3 {
+		t.Fatalf("expected 3 tool results, got %d", len(msg.Content))
+	}
+
+	// Result 1: completed normally, kept as-is.
+	r1 := msg.Content[0]
+	if r1.ToolUseID != "tc_1" || r1.ToolError || r1.ToolResult[0].Text != "first output" {
+		t.Errorf("completed tool result mangled: %+v", r1)
+	}
+
+	// Result 2: cancelled mid-run; partial output preserved, sentinel last line.
+	r2 := msg.Content[1]
+	if r2.ToolUseID != "tc_2" || !r2.ToolError {
+		t.Errorf("cancelled tool result wrong id/error: %+v", r2)
+	}
+	if !strings.Contains(r2.ToolResult[0].Text, "partial output line") {
+		t.Errorf("cancelled tool result lost output: %q", r2.ToolResult[0].Text)
+	}
+	if !strings.HasSuffix(strings.TrimRight(r2.ToolResult[0].Text, "\r\n"), cancelledToolResultText) {
+		t.Errorf("cancelled tool result missing trailing sentinel: %q", r2.ToolResult[0].Text)
+	}
+
+	// Result 3: never started.
+	r3 := msg.Content[2]
+	if r3.ToolUseID != "tc_3" || !r3.ToolError || r3.ToolResult[0].Text != notExecutedToolResultText {
+		t.Errorf("unstarted tool result wrong: %+v", r3)
+	}
+
+	// In-memory history matches what was recorded.
+	hist := loop.GetHistory()
+	if len(hist) != 1 || len(hist[0].Content) != 3 {
+		t.Errorf("history diverged from recorded message: %+v", hist)
+	}
+}
+
+// TestExecuteToolCallsCancelActiveSuccessWins verifies that a tool that
+// completes successfully despite a concurrent cancel keeps its real result.
+func TestExecuteToolCallsCancelActiveSuccessWins(t *testing.T) {
+	var recordedMessages []llm.Message
+	recordFunc := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+		recordedMessages = append(recordedMessages, message)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	testTool := &llm.Tool{
+		Name:        "bash",
+		Description: "test tool",
+		InputSchema: llm.MustSchema(`{"type": "object", "properties": {}}`),
+		Run: func(toolCtx context.Context, input json.RawMessage) llm.ToolOut {
+			cancel() // cancel races the tool, but the tool still succeeds
+			return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "made it"}}}
+		},
+	}
+
+	loop := NewLoop(Config{
+		LLM:           NewPredictableService(),
+		Tools:         []*llm.Tool{testTool},
+		RecordMessage: recordFunc,
+	})
+
+	content := []llm.Content{
+		{ID: "tc_1", Type: llm.ContentTypeToolUse, ToolName: "bash", ToolInput: json.RawMessage(`{}`)},
+	}
+	if err := loop.executeToolCalls(ctx, content); err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if len(recordedMessages) != 1 {
+		t.Fatalf("expected 1 recorded message, got %d", len(recordedMessages))
+	}
+	r := recordedMessages[0].Content[0]
+	if r.ToolError || r.ToolResult[0].Text != "made it" {
+		t.Errorf("successful result should win over cancel: %+v", r)
+	}
+}
+
+// TestExecuteToolCallsAbandonsContextIgnoringTool verifies that a cancelled
+// tool which ignores its context cannot persist a late result. The loop waits
+// toolCancelGrace, records an abandoned-tool result, and drops whatever the
+// tool eventually returns — so no tool_result can land after the turn's
+// end-of-turn message (the transcript-corruption bug from review).
+func TestExecuteToolCallsAbandonsContextIgnoringTool(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var recordedMessages []llm.Message
+	recordFunc := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+		mu.Lock()
+		defer mu.Unlock()
+		recordedMessages = append(recordedMessages, message)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	toolReturned := make(chan struct{})
+	testTool := &llm.Tool{
+		Name:        "stubborn",
+		Description: "ignores ctx",
+		InputSchema: llm.MustSchema(`{"type": "object", "properties": {}}`),
+		Run: func(toolCtx context.Context, input json.RawMessage) llm.ToolOut {
+			cancel()
+			// Deliberately ignore toolCtx: block until the test releases us,
+			// then return a SUCCESS that must be discarded.
+			<-release
+			close(toolReturned)
+			return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "late success"}}}
+		},
+	}
+
+	loop := NewLoop(Config{
+		LLM:           NewPredictableService(),
+		Tools:         []*llm.Tool{testTool},
+		RecordMessage: recordFunc,
+	})
+
+	content := []llm.Content{
+		{ID: "tc_1", Type: llm.ContentTypeToolUse, ToolName: "stubborn", ToolInput: json.RawMessage(`{}`)},
+	}
+	if err := loop.executeToolCalls(ctx, content); err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// The batch is recorded with an abandoned result before the tool returns.
+	mu.Lock()
+	if len(recordedMessages) != 1 {
+		mu.Unlock()
+		t.Fatalf("expected 1 recorded message, got %d", len(recordedMessages))
+	}
+	r := recordedMessages[0].Content[0]
+	mu.Unlock()
+	if r.ToolUseID != "tc_1" || !r.ToolError || r.ToolResult[0].Text != abandonedToolResultText {
+		t.Errorf("abandoned tool result wrong: %+v", r)
+	}
+
+	// Now let the tool finish — simulating a late success after
+	// CancelConversation has already recorded the end-of-turn message — and
+	// verify nothing further is ever recorded.
+	close(release)
+	<-toolReturned
+	// The abandoned goroutine's only outlet is a buffered channel nobody
+	// reads; give it no legitimate way to record. Any recording would have to
+	// happen synchronously in the (already returned) executeToolCalls, so
+	// checking immediately after the tool returns is race-free.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(recordedMessages) != 1 {
+		t.Fatalf("late tool result was persisted: %+v", recordedMessages)
+	}
+}
