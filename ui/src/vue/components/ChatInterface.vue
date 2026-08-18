@@ -3,7 +3,15 @@
      bar, terminal/diff/git panels, model/thinking pickers, distill, TOC,
      scroll behavior. Preserves the e2e DOM/ARIA/CSS contract. -->
 <template>
-  <div class="full-height flex flex-col">
+  <div class="full-height secondary-workspace-shell">
+    <div
+      class="secondary-workspace"
+      :class="[
+        `secondary-workspace-${dockLayout.placement}`,
+        { 'secondary-workspace-fullscreen': dockLayout.fullscreen },
+      ]"
+    >
+      <main class="secondary-workspace-primary flex flex-col">
     <!-- Header -->
     <div class="header">
       <div class="header-left">
@@ -241,22 +249,6 @@
       </div>
     </div>
 
-    <!-- Terminal Panel -->
-    <TerminalPanel
-      :terminals="ephemeralTerminals"
-      :conversation-id="conversationId"
-      :model="selectedModel"
-      :auto-focus-id="terminalAutoFocusId"
-      :can-insert-into-input="true"
-      @attached="(id, termId) => onTerminalAttached?.(id, termId)"
-      @scope-change="(id, cid) => onTerminalScopeChange?.(id, cid)"
-      @scope-error="(message) => (error = message)"
-      @close="onTerminalCloseHandler"
-      @insert-into-input="handleInsertFromTerminal"
-      @auto-focus-consumed="terminalAutoFocusId = null"
-      @active-terminal-exited="focusMessageInputIfUnfocused"
-    />
-
     <!-- Status bar -->
     <div :class="statusBarClass">
       <div class="status-bar-content">
@@ -301,6 +293,30 @@
         <ChatStatusContent v-bind="statusContentProps" />
       </template>
     </MessageInput>
+      </main>
+
+      <SecondaryDock
+        ref="secondaryDockRef"
+        title="Terminal"
+        :visible="visibleTerminalsForConversation.length > 0"
+        @layout-change="onDockLayoutChange"
+      >
+        <TerminalPanel
+          :terminals="ephemeralTerminals"
+          :conversation-id="conversationId"
+          :model="selectedModel"
+          :auto-focus-id="terminalAutoFocusId"
+          :can-insert-into-input="true"
+          @attached="(id, termId) => onTerminalAttached?.(id, termId)"
+          @scope-change="(id, cid) => onTerminalScopeChange?.(id, cid)"
+          @scope-error="(message) => (error = message)"
+          @close="onTerminalCloseHandler"
+          @insert-into-input="handleInsertFromTerminal"
+          @auto-focus-consumed="terminalAutoFocusId = null"
+          @active-terminal-exited="focusMessageInputIfUnfocused"
+        />
+      </SecondaryDock>
+    </div>
 
     <!-- Directory Picker Modal -->
     <DirectoryPickerModal
@@ -453,6 +469,8 @@ import ImageCommentModal from "./ImageCommentModal.vue";
 import GitGraphViewer from "./GitGraphViewer.vue";
 import AgentsMdEditorModal from "./AgentsMdEditorModal.vue";
 import TerminalPanel from "./TerminalPanel.vue";
+import SecondaryDock, { type SecondaryDockLayout } from "./SecondaryDock.vue";
+import { visibleTerminals } from "./terminalHelpers";
 import VersionChecker from "./VersionChecker.vue";
 import ChatOverflowMenu from "./ChatOverflowMenu.vue";
 import { matchChatInterfaceAction } from "../../utils/menuShortcuts";
@@ -827,6 +845,32 @@ const scrollToBottomTooltip = computed(() =>
 const lastKnownMessageCount = ref<number | null>(null);
 const terminalInjectedText = ref<string | null>(null);
 const terminalAutoFocusId = ref<string | null>(null);
+const secondaryDockRef = ref<{ expand: () => void } | null>(null);
+const dockLayout = ref<SecondaryDockLayout>({
+  placement: "bottom",
+  collapsed: false,
+  fullscreen: false,
+});
+const visibleTerminalsForConversation = computed(() =>
+  visibleTerminals(props.ephemeralTerminals, props.conversationId),
+);
+
+function onDockLayoutChange(layout: SecondaryDockLayout) {
+  dockLayout.value = layout;
+}
+
+let knownDockTerminalIds = new Set<string>();
+watch(
+  () => props.ephemeralTerminals.map((terminal) => terminal.id),
+  (ids) => {
+    const visibleIds = new Set(visibleTerminalsForConversation.value.map((terminal) => terminal.id));
+    if (ids.some((id) => !knownDockTerminalIds.has(id) && visibleIds.has(id))) {
+      secondaryDockRef.value?.expand();
+    }
+    knownDockTerminalIds = new Set(ids);
+  },
+  { immediate: true },
+);
 
 // ---- refs to DOM ----
 const messagesContainerRef = ref<HTMLDivElement | null>(null);
@@ -2341,6 +2385,7 @@ function openInAppTerminal() {
 function focusOrOpenTerminal() {
   const existing = props.ephemeralTerminals;
   if (existing.length > 0) {
+    secondaryDockRef.value?.expand();
     // Reset to null first so re-focusing the terminal that's already in
     // autoFocusId still fires TerminalPanel's watcher (it watches the value,
     // not a trigger). nextTick re-assigns the id to run the focus effect.

@@ -1,46 +1,10 @@
-<!-- Vue port of components/TerminalPanel.tsx. A bottom dock of ephemeral
-     terminals backed by server-side dtach sessions (so they survive
-     conversation switches + reloads). Preserves the .terminal-panel* class
-     contract, the action-button titles, and the tab status indicators.
-
-     The EphemeralTerminal type is re-exported here (from terminalTypes.ts) so
-     other code can `import type { EphemeralTerminal } from
-     "./components/TerminalPanel.vue"` exactly as it imported from the React
-     module. The actual xterm.js + websocket lifecycle lives in the
-     TerminalInstance.vue child (one per terminal).
-
-     React callback props are mapped to emits:
-       onClose                -> emit("close", id)
-       onInsertIntoInput      -> emit("insert-into-input", text)
-       onAutoFocusConsumed    -> emit("auto-focus-consumed")
-       onActiveTerminalExited -> emit("active-terminal-exited")
-       onAttached             -> emit("attached", id, termId)
-     The presence of an onInsertIntoInput handler in React (which gates the
-     insert buttons) is mirrored by the required `canInsertIntoInput` prop. -->
+<!-- Ephemeral terminal content for Shelley’s secondary dock. Terminal sessions,
+     tabs, command actions, and xterm lifecycle live here; placement, sizing,
+     collapse, and fullscreen belong to SecondaryDock.vue. -->
 <template>
-  <div
-    v-show="visible.length > 0"
-    :class="`terminal-panel${minimized ? ' terminal-panel-minimized' : ''}`"
-    :style="minimized ? undefined : { height: `${height}px`, flexShrink: 0 }"
-  >
-    <!-- Resize handle at top — hidden when minimized -->
-    <div v-if="!minimized" class="terminal-panel-resize-handle" @mousedown="handleResizeMouseDown">
-      <div class="terminal-panel-resize-grip" />
-    </div>
-
+  <div v-show="visible.length > 0" class="terminal-panel">
     <!-- Tab bar + actions -->
     <div class="terminal-panel-header">
-      <!-- Minimize/maximize toggle -->
-      <button
-        v-tooltip.top="minimized ? 'Expand terminals' : 'Minimize terminals'"
-        class="terminal-panel-action-btn"
-        :aria-label="minimized ? 'Expand terminals' : 'Minimize terminals'"
-        @click="toggleMinimized"
-      >
-        <ChevronUpIcon v-if="minimized" />
-        <ChevronDownIcon v-else />
-      </button>
-
       <div class="terminal-panel-tabs">
         <template v-for="(t, i) in visible" :key="t.id">
           <!-- Separator between global terminals and the ones pinned to this
@@ -61,7 +25,11 @@
                  server has already forgotten the session, so a scope PUT
                  would 404. The tooltip lives on a wrapper because a disabled
                  button does not emit hover events. -->
-            <span v-if="isAlive(t.id)" v-tooltip.top="scopeTooltip(t)" class="terminal-panel-tab-scope">
+            <span
+              v-if="isAlive(t.id)"
+              v-tooltip.top="scopeTooltip(t)"
+              class="terminal-panel-tab-scope"
+            >
               <button
                 :class="`terminal-panel-tab-pin${t.conversationId !== null ? ' terminal-panel-tab-pin-pinned' : ''}`"
                 :disabled="scopeDisabled(t)"
@@ -104,8 +72,7 @@
         </template>
       </div>
 
-      <!-- Action buttons — hidden when minimized -->
-      <div v-if="!minimized" class="terminal-panel-actions">
+      <div class="terminal-panel-actions">
         <button
           v-tooltip.top="'Copy visible screen'"
           :class="`terminal-panel-action-btn${copyFeedback === 'copyScreen' ? ' terminal-panel-action-btn-feedback' : ''}`"
@@ -156,8 +123,8 @@
       </div>
     </div>
 
-    <!-- Terminal content area — hidden (not unmounted) when minimized -->
-    <div class="terminal-panel-content" :style="minimized ? { display: 'none' } : undefined">
+    <!-- Terminal content stays mounted so sessions survive dock state changes. -->
+    <div class="terminal-panel-content">
       <TerminalInstance
         v-for="t in terminals"
         :key="t.id"
@@ -188,8 +155,6 @@ import InsertIcon from "./terminalIcons/InsertIcon.vue";
 import InsertAllIcon from "./terminalIcons/InsertAllIcon.vue";
 import CheckIcon from "./terminalIcons/CheckIcon.vue";
 import CloseIcon from "./terminalIcons/CloseIcon.vue";
-import ChevronUpIcon from "./terminalIcons/ChevronUpIcon.vue";
-import ChevronDownIcon from "./terminalIcons/ChevronDownIcon.vue";
 import PinIcon from "./terminalIcons/PinIcon.vue";
 
 // Re-export EphemeralTerminal so importers can keep importing it from this
@@ -222,8 +187,6 @@ const emit = defineEmits<{
 }>();
 
 const activeTabId = ref<string | null>(null);
-const height = ref(300);
-const minimized = ref(false);
 const copyFeedback = ref<string | null>(null);
 const statusMap = ref<Map<string, { status: TermStatus; exitCode: number | null }>>(new Map());
 // Terminals to offer as tabs here: this conversation's own, then the global
@@ -285,10 +248,6 @@ async function toggleScope(t: EphemeralTerminal) {
   }
 }
 
-const isResizingRef = { current: false };
-const startYRef = { current: 0 };
-const startHeightRef = { current: 0 };
-
 // Detect dark mode
 const isDark = ref(isDarkModeActive());
 let observer: MutationObserver | null = null;
@@ -330,7 +289,6 @@ watch(
       activeTabId.value,
     );
     activeTabId.value = next.id;
-    if (next.created) minimized.value = false; // expand when a new terminal arrives
   },
   { immediate: true },
 );
@@ -348,30 +306,6 @@ function handleStatusChange(id: string, status: TermStatus, exitCode: number | n
     exitCode: exitCode ?? existing?.exitCode ?? null,
   });
   statusMap.value = next;
-}
-
-// Resize drag
-function handleResizeMouseDown(e: MouseEvent) {
-  e.preventDefault();
-  isResizingRef.current = true;
-  startYRef.current = e.clientY;
-  startHeightRef.current = height.value;
-
-  const handleMouseMove = (ev: MouseEvent) => {
-    if (!isResizingRef.current) return;
-    // Dragging up increases height
-    const delta = startYRef.current - ev.clientY;
-    height.value = Math.max(80, Math.min(800, startHeightRef.current + delta));
-  };
-
-  const handleMouseUp = () => {
-    isResizingRef.current = false;
-    document.removeEventListener("mousemove", handleMouseMove);
-    document.removeEventListener("mouseup", handleMouseUp);
-  };
-
-  document.addEventListener("mousemove", handleMouseMove);
-  document.addEventListener("mouseup", handleMouseUp);
 }
 
 function showFeedback(type: string) {
@@ -402,7 +336,6 @@ watch(
       const xterm = xtermRegistry.get(autoFocusId);
       if (xterm) {
         activeTabId.value = autoFocusId;
-        minimized.value = false; // expand when focusing a terminal
         // Double-rAF to ensure we're past any keyup/form events that might steal focus
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
@@ -498,38 +431,9 @@ function handleCloseActive() {
   if (activeTabId.value) emit("close", activeTabId.value);
 }
 
-function toggleMinimized() {
-  minimized.value = !minimized.value;
-}
-
 function onTabClick(id: string) {
   activeTabId.value = id;
-  if (minimized.value) minimized.value = false;
 }
-
-// Refit terminals when un-minimizing by nudging the container to trigger
-// ResizeObserver (React effect on [minimized, activeTabId]).
-const wasMinimizedRef = { current: minimized.value };
-watch(
-  () => [minimized.value, activeTabId.value] as const,
-  () => {
-    const wasMinimized = wasMinimizedRef.current;
-    wasMinimizedRef.current = minimized.value;
-    if (wasMinimized && !minimized.value && activeTabId.value) {
-      const timer = setTimeout(() => {
-        const el = document.querySelector(`[data-terminal-id="${activeTabId.value}"]`);
-        if (el) {
-          (el as HTMLElement).style.height = "99.9%";
-          requestAnimationFrame(() => {
-            (el as HTMLElement).style.height = "100%";
-          });
-        }
-      }, 30);
-      // No explicit cleanup needed; the timer is short-lived.
-      void timer;
-    }
-  },
-);
 
 // Truncate command for tab label
 function tabLabel(cmd: string): string {

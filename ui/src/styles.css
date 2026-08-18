@@ -8304,49 +8304,238 @@ kbd {
   background: var(--gray-900);
 }
 
-/* ===== Terminal Panel ===== */
-.terminal-panel {
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
-  background: var(--bg-secondary);
-  min-height: 80px;
-  max-height: 800px;
+/* ===== Secondary workspace dock ===== */
+.secondary-workspace-shell {
+  position: relative;
   overflow: hidden;
 }
 
-.terminal-panel-minimized {
-  min-height: unset;
-  max-height: unset;
-  height: auto;
-  flex-shrink: 0;
+.secondary-workspace {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.terminal-panel-minimized .terminal-panel-header {
-  border-bottom: none;
+.secondary-workspace-bottom {
+  flex-direction: column;
 }
 
-.terminal-panel-resize-handle {
-  height: 6px;
-  cursor: ns-resize;
+.secondary-workspace-right {
+  flex-direction: row;
+}
+
+.secondary-workspace-primary {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.secondary-workspace-fullscreen .secondary-workspace-primary {
+  display: none;
+}
+
+.secondary-dock {
+  display: flex;
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.secondary-dock-bottom {
+  width: 100%;
+  border-top: 1px solid var(--border);
+}
+
+.secondary-dock-right {
+  height: 100%;
+  border-left: 1px solid var(--border);
+}
+
+.secondary-dock-fullscreen {
+  width: 100% !important;
+  height: 100% !important;
+  flex: 1 1 auto;
+  border: 0;
+}
+
+.secondary-dock-collapsed.secondary-dock-bottom {
+  height: 38px !important;
+}
+
+.secondary-dock-collapsed.secondary-dock-right {
+  width: 42px !important;
+}
+
+.secondary-dock-resize-handle {
+  position: absolute;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
   user-select: none;
 }
 
-.terminal-panel-resize-handle:hover {
+.secondary-dock-bottom > .secondary-dock-resize-handle {
+  inset: -4px 0 auto;
+  height: 9px;
+  cursor: ns-resize;
+}
+
+.secondary-dock-right > .secondary-dock-resize-handle {
+  inset: 0 auto 0 -4px;
+  width: 9px;
+  cursor: ew-resize;
+}
+
+.secondary-dock-resize-grip {
+  border-radius: 999px;
+  background: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.secondary-dock-bottom .secondary-dock-resize-grip {
+  width: 42px;
+  height: 3px;
+}
+
+.secondary-dock-right .secondary-dock-resize-grip {
+  width: 3px;
+  height: 42px;
+}
+
+.secondary-dock-resize-handle:hover .secondary-dock-resize-grip,
+.secondary-dock-resizing .secondary-dock-resize-grip {
+  opacity: 1;
+}
+
+.secondary-dock-resizing {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.secondary-dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 38px;
+  padding: 0 8px;
+  flex: 0 0 auto;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.secondary-dock-title,
+.secondary-dock-button {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.secondary-dock-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.secondary-dock-title svg,
+.secondary-dock-button svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.secondary-dock-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.secondary-dock-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+}
+
+.secondary-dock-title:hover,
+.secondary-dock-button:hover {
+  color: var(--text-primary);
+}
+
+.secondary-dock-button:hover {
   background: var(--bg-tertiary);
 }
 
-.terminal-panel-resize-grip {
-  width: 40px;
-  height: 3px;
-  background: var(--text-tertiary);
-  border-radius: 2px;
+.secondary-dock-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.secondary-dock-collapsed .secondary-dock-content {
+  display: none;
+}
+
+.secondary-dock-right:not(.secondary-dock-collapsed) {
+  flex-direction: column;
+}
+
+.secondary-dock-bottom:not(.secondary-dock-collapsed) {
+  flex-direction: column;
+}
+
+.secondary-dock-right.secondary-dock-collapsed .secondary-dock-header {
+  width: 41px;
+  height: 100%;
+  padding: 7px 0;
+  flex-direction: column;
+  border-bottom: 0;
+}
+
+.secondary-dock-right.secondary-dock-collapsed .secondary-dock-title {
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.secondary-dock-right.secondary-dock-collapsed .secondary-dock-title span {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+.secondary-dock-right.secondary-dock-collapsed .secondary-dock-controls {
+  flex-direction: column;
+}
+
+/* ===== Terminal Panel ===== */
+.terminal-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-secondary);
 }
 
 .terminal-panel-header {
