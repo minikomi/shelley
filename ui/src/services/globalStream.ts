@@ -187,7 +187,7 @@ export function connectGlobalStream({
         if (m.sequence_id > maxSeq) maxSeq = m.sequence_id;
       }
       if (toolIds.length > 0) messageStore.clearToolProgress(convId, toolIds);
-      if (sawAgentMsg) messageStore.resetStreamingText(convId);
+      if (sawAgentMsg) messageStore.resetStreaming(convId);
       messageStore.upsertMessages(convId, data.messages);
       if (maxSeq > 0) messageStore.setMaxSequenceIdKnown(convId, maxSeq);
     }
@@ -229,8 +229,11 @@ export function connectGlobalStream({
     if (data.tool_progress) {
       messageStore.setToolProgress(convId, data.tool_progress);
     }
-    if (data.stream_delta && data.stream_delta.type === "text") {
-      messageStore.appendStreamDelta(convId, data.stream_delta.text);
+    if (data.stream_delta?.type === "text") {
+      messageStore.appendStreamText(convId, data.stream_delta.text);
+    }
+    if (data.stream_delta?.type === "thinking") {
+      messageStore.appendStreamThinking(convId, data.stream_delta.text);
     }
   };
 

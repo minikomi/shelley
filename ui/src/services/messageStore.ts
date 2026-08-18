@@ -292,11 +292,12 @@ export interface ConversationCacheRecord {
 export interface TransientState {
   toolProgress: Record<string, ToolProgress>;
   streamingText: string;
+  streamingThinking: string;
   agentWorking: boolean;
 }
 
 function emptyTransient(): TransientState {
-  return { toolProgress: {}, streamingText: "", agentWorking: false };
+  return { toolProgress: {}, streamingText: "", streamingThinking: "", agentWorking: false };
 }
 
 function emptyRecord(id: string): ConversationCacheRecord {
@@ -1652,17 +1653,25 @@ export class MessageStore {
     this.notifyTransient(id);
   }
 
-  appendStreamDelta(id: string, text: string): void {
+  appendStreamText(id: string, text: string): void {
     if (!text) return;
     const t = this.getTransient(id);
     t.streamingText = t.streamingText + text;
     this.notifyTransient(id);
   }
 
-  resetStreamingText(id: string): void {
+  appendStreamThinking(id: string, text: string): void {
+    if (!text) return;
     const t = this.getTransient(id);
-    if (!t.streamingText) return;
+    t.streamingThinking = t.streamingThinking + text;
+    this.notifyTransient(id);
+  }
+
+  resetStreaming(id: string): void {
+    const t = this.getTransient(id);
+    if (!t.streamingText && !t.streamingThinking) return;
     t.streamingText = "";
+    t.streamingThinking = "";
     this.notifyTransient(id);
   }
 
@@ -1678,7 +1687,7 @@ export class MessageStore {
     // (conversations.agent_working) and is authoritative across the
     // lifetime of the conversation, not per-session transient.
     //
-    // toolProgress and streamingText, on the other hand, are stream-only
+    // Tool progress and streamed content, on the other hand, are stream-only
     // ephemera that don't survive a tab switch / refresh and would be
     // misleading if carried across a focus change.
     //

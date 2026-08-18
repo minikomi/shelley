@@ -165,12 +165,19 @@
             </div>
           </template>
           <!-- streaming preview -->
-          <div v-if="showStreamingPreview" class="message message-agent streaming-message">
+          <div
+            v-if="showStreamingPreview || showStreamingThinking"
+            class="message message-agent streaming-message"
+          >
             <div class="message-content" data-testid="message-content">
-              <div v-if="markdownMode === 'off'" class="whitespace-pre-wrap break-words">
+              <ThinkingContent v-if="showStreamingThinking" :thinking="streamingThinking" />
+              <div
+                v-if="showStreamingPreview && markdownMode === 'off'"
+                class="whitespace-pre-wrap break-words"
+              >
                 {{ streamingText }}<span class="streaming-cursor">▊</span>
               </div>
-              <div v-else class="streaming-markdown">
+              <div v-else-if="showStreamingPreview" class="streaming-markdown">
                 <MarkdownContent :text="streamingText" />
                 <span class="streaming-cursor">▊</span>
               </div>
@@ -460,6 +467,7 @@ import MessageRenderNode from "./MessageRenderNode.vue";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import ThinkingContent from "./tools/ThinkingContent.vue";
 
 // Props mirror ChatInterfaceProps in the React source. Callbacks that
 // ChatInterface awaits or simply invokes are passed as function props
@@ -812,6 +820,7 @@ const toolProgress = ref<Record<string, ToolProgress>>({});
 // via a changed prop identity (see composables/toolProgress.ts).
 provideToolProgress(toolProgress);
 const streamingText = ref("");
+const streamingThinking = ref("");
 const showAdvancedSettings = ref(false);
 const advancedSettingsRef = ref<HTMLDivElement | null>(null);
 const availableTools = ref<Array<{ name: string; summary: string; default_on: boolean }>>([]);
@@ -1524,6 +1533,10 @@ const showStreamingPreview = computed(
   () => conversationViewMode.value === "all" && !!streamingText.value && agentWorking.value,
 );
 
+const showStreamingThinking = computed(
+  () => conversationViewMode.value === "all" && !!streamingThinking.value && agentWorking.value,
+);
+
 // ---- scroll ----
 const MAX_SCROLL_OFFSET = 0x7fffffff;
 function observedBottomScrollTop(listHeight: number, containerHeight: number): number {
@@ -1615,6 +1628,7 @@ function syncTransientFromStore(focusedId: string) {
   perfCount("chat.syncTransient");
   toolProgress.value = tr.toolProgress;
   streamingText.value = tr.streamingText;
+  streamingThinking.value = tr.streamingThinking;
   agentWorking.value = tr.agentWorking;
 }
 
@@ -2170,6 +2184,7 @@ async function sendMessage(message: string) {
       error.value = null;
       agentWorking.value = true;
       streamingText.value = "";
+      streamingThinking.value = "";
       await sendFirstMessage(prompt);
     } catch (err) {
       console.error("Failed to send /new message:", err);
@@ -2214,6 +2229,7 @@ async function sendMessage(message: string) {
     error.value = null;
     agentWorking.value = true;
     streamingText.value = "";
+    streamingThinking.value = "";
 
     if (!props.conversationId && inflightCreate) {
       try {
@@ -2925,6 +2941,7 @@ watch(
       contextWindowSize.value = 0;
       toolProgress.value = {};
       streamingText.value = "";
+      streamingThinking.value = "";
       agentWorking.value = false;
       if (loadingProgressDelay) {
         clearTimeout(loadingProgressDelay);
@@ -2942,6 +2959,7 @@ watch(
     agentWorking.value = initialTransient.agentWorking;
     toolProgress.value = {};
     streamingText.value = "";
+    streamingThinking.value = "";
 
     unsubStore = messageStore.subscribe(focusedId, () => syncFromStore(focusedId));
     unsubTransient = messageStore.subscribeTransient(focusedId, () =>
@@ -3136,7 +3154,7 @@ watch(
 
 // Auto-scroll after DOM updates (mirrors the useLayoutEffect).
 watch(
-  [messages, loading],
+  [messages, loading, streamingText, streamingThinking],
   () => {
     if (loading.value) return;
     nextTick(() => {
