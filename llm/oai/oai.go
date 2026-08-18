@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -1077,6 +1078,124 @@ func (s *Service) toLLMResponse(r *openai.ChatCompletionResponse) *llm.Response 
 	}
 }
 
+type chatCompletionStreamResponse struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index int `json:"index"`
+		Delta struct {
+			Content          string            `json:"content"`
+			Role             string            `json:"role"`
+			ToolCalls        []openai.ToolCall `json:"tool_calls"`
+			ReasoningContent string            `json:"reasoning_content"`
+			Reasoning        string            `json:"reasoning"`
+		} `json:"delta"`
+		FinishReason openai.FinishReason `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *openai.Usage `json:"usage"`
+}
+
+func (s *Service) consumeChatCompletionStream(stream *openai.ChatCompletionStream, onStream func(llm.StreamDelta)) (*llm.Response, error) {
+	msg := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant}
+	headers := stream.Header()
+	var (
+		id           string
+		model        string
+		finishReason openai.FinishReason
+		usage        openai.Usage
+		started      bool
+	)
+
+	for {
+		raw, err := stream.RecvRaw()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			if started {
+				return nil, fmt.Errorf("chat completion stream failed after response started: %v", err)
+			}
+			return nil, err
+		}
+		var chunk chatCompletionStreamResponse
+		if err := json.Unmarshal(raw, &chunk); err != nil {
+			if started {
+				return nil, fmt.Errorf("chat completion stream failed after response started: %v", err)
+			}
+			return nil, err
+		}
+		started = true
+		if chunk.ID != "" {
+			id = chunk.ID
+		}
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
+		if chunk.Usage != nil {
+			usage = *chunk.Usage
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		choice := chunk.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+		delta := choice.Delta
+		if delta.Role != "" {
+			msg.Role = delta.Role
+		}
+		reasoning := cmp.Or(delta.ReasoningContent, delta.Reasoning)
+		if reasoning != "" {
+			msg.ReasoningContent += reasoning
+			if onStream != nil {
+				onStream(llm.StreamDelta{Type: "thinking", Text: reasoning, Index: 0})
+			}
+		}
+		if delta.Content != "" {
+			msg.Content += delta.Content
+			if onStream != nil {
+				index := 0
+				if msg.ReasoningContent != "" {
+					index = 1
+				}
+				onStream(llm.StreamDelta{Type: "text", Text: delta.Content, Index: index})
+			}
+		}
+		for _, fragment := range delta.ToolCalls {
+			index := 0
+			if fragment.Index != nil {
+				index = *fragment.Index
+			}
+			for len(msg.ToolCalls) <= index {
+				msg.ToolCalls = append(msg.ToolCalls, openai.ToolCall{})
+			}
+			toolCall := &msg.ToolCalls[index]
+			if fragment.ID != "" {
+				toolCall.ID = fragment.ID
+			}
+			if fragment.Type != "" {
+				toolCall.Type = fragment.Type
+			}
+			toolCall.Function.Name += fragment.Function.Name
+			toolCall.Function.Arguments += fragment.Function.Arguments
+		}
+	}
+
+	if finishReason == "" {
+		return nil, fmt.Errorf("incomplete chat completion stream: no finish reason")
+	}
+	return &llm.Response{
+		ID:         id,
+		Model:      model,
+		Role:       toRoleFromString(msg.Role),
+		Content:    toLLMContents(msg),
+		StopReason: toStopReason(string(finishReason)),
+		Usage:      s.toLLMUsage(usage, headers),
+	}, nil
+}
+
 // toRoleFromString converts a role string to llm.MessageRole.
 func toRoleFromString(role string) llm.MessageRole {
 	if role == "tool" || role == "system" || role == "function" {
@@ -1287,6 +1406,10 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		ToolChoice:          fromLLMToolChoice(ir.ToolChoice), // TODO: make fromLLMToolChoice return an error when a perfect translation is not possible
 		MaxCompletionTokens: cmp.Or(s.MaxTokens, DefaultMaxTokens),
 	}
+	streaming := ir.OnStream != nil
+	if streaming && (s.ProviderName == "fireworks" || s.ProviderName == "openai") {
+		req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
+	}
 
 	// Reasoning effort. Precedence:
 	//   1. ir.ThinkingLevel (request-level override)
@@ -1380,11 +1503,30 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			}
 		}
 
-		resp, err := client.CreateChatCompletion(ctx, req)
+		var (
+			result *llm.Response
+			err    error
+		)
+		if streaming {
+			var stream *openai.ChatCompletionStream
+			stream, err = client.CreateChatCompletionStream(ctx, req)
+			if err == nil {
+				result, err = s.consumeChatCompletionStream(stream, ir.OnStream)
+				closeErr := stream.Close()
+				if err == nil && closeErr != nil {
+					err = closeErr
+				}
+			}
+		} else {
+			var resp openai.ChatCompletionResponse
+			resp, err = client.CreateChatCompletion(ctx, req)
+			if err == nil {
+				result = s.toLLMResponse(&resp)
+			}
+		}
 
 		// Handle successful response
 		if err == nil {
-			result := s.toLLMResponse(&resp)
 			// Record the endpoint actually used. baseURL omits the
 			// OpenAIURL fallback (the go-openai client applies it
 			// internally), so apply it here to avoid recording a

@@ -189,6 +189,26 @@ await run("connects on creation", () => {
   s.handle.close();
 });
 
+await run("routes text and thinking deltas separately", () => {
+  reset();
+  const id = "stream-deltas";
+  messageStore.resetTransient(id);
+  const s = newStream();
+  latest().emitOpen();
+  latest().emitMessage({
+    conversation_id: id,
+    stream_delta: { type: "thinking", text: "consider", index: 0, seq: 1 },
+  });
+  latest().emitMessage({
+    conversation_id: id,
+    stream_delta: { type: "text", text: "answer", index: 1, seq: 2 },
+  });
+  const transient = messageStore.getTransient(id);
+  assert(transient.streamingThinking === "consider", "thinking delta routed to thinking");
+  assert(transient.streamingText === "answer", "text delta routed to text");
+  s.handle.close();
+});
+
 await run("foreground resume reconnects a silent (zombie) connection", () => {
   reset();
   markAllStaleCalls = 0;
