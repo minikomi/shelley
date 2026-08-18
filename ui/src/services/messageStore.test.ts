@@ -631,6 +631,63 @@ async function main(): Promise<void> {
     await s2.close();
   });
 
+  await run("an empty draft cache rejects a streamed sequence-2 first message", async () => {
+    // Draft creation seeds an empty cache as complete so focusing the draft
+    // does not blur the composer behind a loading state. Promotion creates the
+    // system prompt as sequence 1 without broadcasting it, then streams the
+    // user's message as sequence 2. Treating that append as contiguous poisons
+    // the cache permanently: the system-prompt card disappears in this browser
+    // while a cold browser fetches the complete server history and shows it.
+    const { factory, dbName, keyId, rawKey } = freshFactory();
+    const s = storeFor({ factory, dbName, keyId, rawKey });
+    const id = "c-draft-prefix-race";
+    s.applyFullHistory(id, {
+      conversation_id: id,
+      messages: [],
+      context_window_size: 0,
+      max_sequence_id: 0,
+    });
+    await s.settle();
+
+    s.upsertMessages(id, [msg(id, 2)]);
+    const rec = s.peek(id)!;
+    assert(rec.hasFullHistory === false, "sequence 2 cannot extend an empty full history");
+    assert(needsBackfill(rec), "the missing system prompt must force a full REST repair");
+    await s.settle();
+    await s.close();
+
+    const s2 = storeFor({ factory, dbName, keyId, rawKey });
+    const hyd = await s2.hydrate(id);
+    assert(hyd !== null, "hydrated");
+    assert(hyd!.hasFullHistory === false, "the missing prefix stays invalid on disk");
+    await s2.close();
+  });
+
+  await run("hydrate repairs a previously certified cache missing sequence 1", async () => {
+    // Older code could certify rows 2..N as a full history during draft
+    // promotion. Row counts cannot detect that poison because the cache wrote
+    // exactly the number of rows it later reads. The sequence-space invariant
+    // can: every complete conversation starts at sequence 1.
+    const { factory, dbName, keyId, rawKey } = freshFactory();
+    const s = storeFor({ factory, dbName, keyId, rawKey });
+    const id = "c-certified-missing-prefix";
+    s.applyFullHistory(id, {
+      conversation_id: id,
+      messages: [msg(id, 2), msg(id, 3)],
+      context_window_size: 0,
+      max_sequence_id: 3,
+    });
+    await s.settle();
+    await s.close();
+
+    const s2 = storeFor({ factory, dbName, keyId, rawKey });
+    const hyd = await s2.hydrate(id);
+    assert(hyd !== null, "hydrated");
+    assert(hyd!.hasFullHistory === false, "a missing prefix must not remain certified");
+    assert(needsBackfill(hyd), "the next focus must fetch full history");
+    await s2.close();
+  });
+
   await run("a redelivered message replaces the cached copy, not duplicates it", async () => {
     // Redelivery is normal: a stream reconnect can resend rows we already
     // hold, and subpub replays from a cursor. Upserting by message_id must be

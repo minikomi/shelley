@@ -361,7 +361,6 @@ function mergeRecords(
  * append, so the first one past the disk tail must be exactly tail + 1.
  */
 function joinsUp(disk: ConversationCacheRecord, hot: ConversationCacheRecord): boolean {
-  if (disk.messages.length === 0) return true;
   const known = new Set(disk.messages.map((m) => m.message_id));
   let firstNew = Infinity;
   for (const m of hot.messages) {
@@ -369,7 +368,7 @@ function joinsUp(disk: ConversationCacheRecord, hot: ConversationCacheRecord): b
     if (m.sequence_id > disk.maxSequenceId && m.sequence_id < firstNew) firstNew = m.sequence_id;
   }
   if (firstNew === Infinity) return true;
-  return firstNew === disk.maxSequenceId + 1;
+  return firstNew === (disk.messages.length > 0 ? disk.maxSequenceId + 1 : 1);
 }
 
 function convRange(id: string): IDBKeyRange {
@@ -961,6 +960,13 @@ export class MessageStore {
           // evidence of damage" so an older cache still works.
           const lostRows =
             typeof meta.message_count === "number" && decrypted.length < meta.message_count;
+          // Every server-side conversation starts its sequence space at 1.
+          // Internal gaps can be legitimate (forks preserve sequence ids), but
+          // a non-empty cache whose first row is >1 has lost its prefix. This
+          // also repairs the draft-promotion race where the cache was seeded
+          // as an empty full history, the unbroadcast system prompt became
+          // sequence 1, and the first streamed row arrived as sequence 2.
+          const lostPrefix = decrypted.length > 0 && minSeq !== 1;
           rec = {
             conversation_id: id,
             messages: decrypted,
@@ -969,7 +975,7 @@ export class MessageStore {
             minSequenceId: minSeq,
             maxSequenceId: maxSeq,
             maxSequenceIdKnown: meta.max_sequence_id_known,
-            hasFullHistory: meta.has_full_history && !lostRows,
+            hasFullHistory: meta.has_full_history && !lostRows && !lostPrefix,
             needsRefresh: !!meta.needs_refresh,
             updatedAt: meta.updated_at,
           };
@@ -986,6 +992,14 @@ export class MessageStore {
               "fail",
               "hydrate.rows_missing",
               { conversation_id: id, expected: meta.message_count, got: decrypted.length },
+              id,
+            );
+          }
+          if (lostPrefix) {
+            cacheDiag(
+              "fail",
+              "hydrate.prefix_missing",
+              { conversation_id: id, first_sequence_id: minSeq },
               id,
             );
           }
@@ -1105,9 +1119,8 @@ export class MessageStore {
     }
     if (
       rec.hasFullHistory &&
-      rec.messages.length > 0 &&
       firstNewSeq !== Infinity &&
-      firstNewSeq !== prevMax + 1
+      firstNewSeq !== (rec.messages.length > 0 ? prevMax + 1 : 1)
     ) {
       rec.hasFullHistory = false;
       cacheDiag(
@@ -1244,7 +1257,7 @@ export class MessageStore {
     // A live append must continue the history we already hold. If it skips
     // ahead, messages were committed while we weren't listening and the
     // cached set now has a hole — mirror mergeRecords.joinsUp().
-    if (stillFull && firstNewSeq !== Infinity && prevMax >= 0 && firstNewSeq !== prevMax + 1) {
+    if (stillFull && firstNewSeq !== Infinity && firstNewSeq !== (prevMax >= 0 ? prevMax + 1 : 1)) {
       stillFull = false;
     }
     const observedAfter = await msgs.count(convRange(id));
