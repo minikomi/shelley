@@ -518,7 +518,7 @@ const props = withDefaults(
     onTerminalClose?: (id: string) => void;
     navigateUserMessageTrigger?: number;
     onConversationUnarchived?: (conversation: Conversation) => void;
-    onDraftCreated?: (conversationId: string) => void;
+    onDraftCreated?: (conversation: Conversation) => void;
     /** Comment block from the standalone file editor (App-level modal) to
      *  inject into the message input. Fresh object per submit. */
     externalCommentText?: { text: string } | null;
@@ -2516,22 +2516,11 @@ async function saveDraft(value: string) {
         saveCachedDraft(conv.conversation_id, cached.value, conv.updated_at);
         clearCachedDraft(null);
       }
-      // Seed the message store with an empty full-history record for the
-      // brand-new draft *before* conversationId flips to it. Otherwise the
-      // conversation-switch watcher runs loadMessages on a cache miss, which
-      // sets loading=true and disables the textarea. Disabling the focused
-      // textarea blurs it (dismissing the soft keyboard mid-typing on iOS);
-      // with a cache hit, loadMessages short-circuits and never toggles
-      // loading. Mirrors the React implementation.
-      messageStore.applyFullHistory(conv.conversation_id, {
-        conversation_id: conv.conversation_id,
-        messages: [],
-        conversation: conv,
-        context_window_size: 0,
-        max_sequence_id: 0,
-      });
+      // App receives the complete draft row before switching conversation ids,
+      // so its currentConversation fallback can identify this as a draft and
+      // skip message loading without pretending the empty cache is history.
       lazyDraftId.value = conv.conversation_id;
-      props.onDraftCreated?.(conv.conversation_id);
+      props.onDraftCreated?.(conv);
       return conv.conversation_id;
     });
   inflightCreate = p;
@@ -3008,6 +2997,19 @@ watch(
     void loadMessages(focusedId);
   },
   { immediate: true },
+);
+
+// A promoted draft keeps the same conversation id, so the switch watcher above
+// does not run again. Fetch the complete history once its row changes from
+// draft to real conversation; this captures the persisted system prompt as
+// well as the streamed user message.
+watch(
+  () => [props.conversationId, props.currentConversation?.is_draft] as const,
+  ([id, isDraft], [previousID, wasDraft]) => {
+    if (id && id === previousID && wasDraft === true && isDraft === false) {
+      void loadMessages(id);
+    }
+  },
 );
 
 // draftConvId mirror.

@@ -655,8 +655,13 @@ async function archiveFromPalette(conversationId: string) {
   }
 }
 
-function onDraftCreated(id: string) {
-  currentConversationId.value = id;
+function onDraftCreated(conversation: Conversation) {
+  // The conversation-list patch can arrive after createDraft resolves. Keep
+  // the returned draft as the current fallback before changing ids so
+  // ChatInterface sees is_draft immediately and skips message loading without
+  // fabricating an empty complete message cache.
+  viewedConversation.value = conversation;
+  currentConversationId.value = conversation.conversation_id;
 }
 
 function onCommandPaletteClose() {

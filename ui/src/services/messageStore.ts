@@ -40,6 +40,12 @@
 // fork can hold a complete history with holes in it. Lost rows are detected by
 // row count instead (ConvMetaRow.message_count).
 //
+// For the same reason we do not require a cached history to START at sequence
+// 1: a fork taken after a compaction legitimately begins well past it. What a
+// full REST snapshot establishes is that whatever it returned IS the whole
+// history. The one exception is an EMPTY snapshot with live rows grafted on
+// top, which establishes nothing — see applyFullHistory.
+//
 // At-rest encryption (v4): the sensitive payload of each row is AES-GCM
 // encrypted with a per-browser key derived server-side from a long-lived
 // secret + a session cookie (see services/cryptoKey.ts + server/cache_key.go).
@@ -362,7 +368,6 @@ function mergeRecords(
  * append, so the first one past the disk tail must be exactly tail + 1.
  */
 function joinsUp(disk: ConversationCacheRecord, hot: ConversationCacheRecord): boolean {
-  if (disk.messages.length === 0) return true;
   const known = new Set(disk.messages.map((m) => m.message_id));
   let firstNew = Infinity;
   for (const m of hot.messages) {
@@ -370,7 +375,7 @@ function joinsUp(disk: ConversationCacheRecord, hot: ConversationCacheRecord): b
     if (m.sequence_id > disk.maxSequenceId && m.sequence_id < firstNew) firstNew = m.sequence_id;
   }
   if (firstNew === Infinity) return true;
-  return firstNew === disk.maxSequenceId + 1;
+  return firstNew === (disk.messages.length > 0 ? disk.maxSequenceId + 1 : 1);
 }
 
 function convRange(id: string): IDBKeyRange {
@@ -1106,9 +1111,8 @@ export class MessageStore {
     }
     if (
       rec.hasFullHistory &&
-      rec.messages.length > 0 &&
       firstNewSeq !== Infinity &&
-      firstNewSeq !== prevMax + 1
+      firstNewSeq !== (rec.messages.length > 0 ? prevMax + 1 : 1)
     ) {
       rec.hasFullHistory = false;
       cacheDiag(
@@ -1245,7 +1249,7 @@ export class MessageStore {
     // A live append must continue the history we already hold. If it skips
     // ahead, messages were committed while we weren't listening and the
     // cached set now has a hole — mirror mergeRecords.joinsUp().
-    if (stillFull && firstNewSeq !== Infinity && prevMax >= 0 && firstNewSeq !== prevMax + 1) {
+    if (stillFull && firstNewSeq !== Infinity && firstNewSeq !== (prevMax >= 0 ? prevMax + 1 : 1)) {
       stillFull = false;
     }
     const observedAfter = await msgs.count(convRange(id));
@@ -1367,6 +1371,23 @@ export class MessageStore {
       responseKnown,
       maxSeq < 0 ? 0 : maxSeq,
     );
+    // A full GET returns the conversation's whole history, so whatever the
+    // snapshot starts at IS the start — forks legitimately begin well past
+    // sequence 1 (CopyMessagesForFork preserves source ids). But an EMPTY
+    // snapshot certifies nothing: when we graft locally-cached rows on top of
+    // one, those rows are only a complete history if they start at sequence 1.
+    //
+    // Draft promotion hits exactly that. The server flips is_draft and
+    // announces it, then creates the system prompt as sequence 1 WITHOUT
+    // broadcasting it (see convo.go createSystemPrompt), then streams the
+    // user's message as sequence 2. A refetch racing that window returns zero
+    // messages while seq 2 is already hot, so certifying would permanently
+    // hide the system prompt in this browser — upsertMessages' join check
+    // can't catch it, because seq 2 arrived BEFORE the certification, not
+    // after. Refusing here keeps the cache honestly incomplete so the next
+    // focus repairs it via a full REST load.
+    const certifiesFullHistory =
+      responseMessages.length > 0 || messages.length === 0 || minSeq === 1;
     const rec: ConversationCacheRecord = {
       conversation_id: id,
       messages,
@@ -1375,7 +1396,7 @@ export class MessageStore {
       minSequenceId: minSeq,
       maxSequenceId: maxSeq,
       maxSequenceIdKnown: knownAfter,
-      hasFullHistory: true,
+      hasFullHistory: certifiesFullHistory,
       needsRefresh: false,
       updatedAt: Date.now(),
     };
@@ -1440,7 +1461,11 @@ export class MessageStore {
       max_sequence_id_known: Math.max(existing?.max_sequence_id_known ?? 0, rec.maxSequenceIdKnown),
       // Ratchet against any concurrent writer that pushed local higher.
       max_sequence_id_local: Math.max(existing?.max_sequence_id_local ?? -1, rec.maxSequenceId),
-      has_full_history: true,
+      // Mirror the in-memory record rather than hardcoding true: an empty
+      // snapshot with grafted live rows is not a complete history (see
+      // applyFullHistory), and persisting `true` here would let the next
+      // reload hydrate the certification we just refused.
+      has_full_history: rec.hasFullHistory,
       message_count: rowCount,
       // A full REST snapshot IS the re-verification, so clear any pending
       // reconnect-driven refresh flag.

@@ -1143,6 +1143,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// transaction: a concurrent PUT /draft can no longer slip between an
 	// override and the promote, so the promoted row's model is exactly what
 	// the loop below pins to. For non-drafts this branch is skipped.
+	promotedDraft := existing.IsDraft
 	if existing.IsDraft {
 		// Apply send-time conversation_options. The web UI autosaves a draft
 		// (via POST /draft) as soon as the composer has text, and that draft is
@@ -1207,6 +1208,35 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		s.logger.Error("Failed to get conversation manager", "conversationID", conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
+	}
+
+	// Announce the rows hydrate just created for a promoted draft — in practice
+	// the system prompt, sequence 1.
+	//
+	// createSystemPrompt deliberately neither broadcasts nor bumps updated_at:
+	// it is lazy internal metadata, and bumping would reorder the conversation
+	// list every time a stream connects to a brand-new conversation. That is
+	// right for ordinary hydration, but promotion makes it user-visible: the
+	// is_draft flip is announced BEFORE hydrate runs, so a client refetching on
+	// that signal sees an empty conversation, and then the only row it ever
+	// hears about is the user's message at sequence 2. Its history would start
+	// at 2 forever (the client cache correctly refuses to call that complete,
+	// but nothing re-renders the missing prompt until the next focus).
+	//
+	// Publishing here rather than from createSystemPrompt is deliberate:
+	// getOrCreateConversationManager registers the manager only AFTER Hydrate
+	// returns, so a notify fired during hydrate finds no manager and is
+	// silently dropped. Mirrors startNewGeneration's post-hydrate broadcast.
+	if promotedDraft {
+		if msgs, lerr := s.db.ListMessages(ctx, conversationID); lerr == nil {
+			for i := range msgs {
+				if msgs[i].Type == string(db.MessageTypeSystem) {
+					s.notifySubscribersNewMessage(ctx, conversationID, &msgs[i])
+				}
+			}
+		} else {
+			s.logger.Warn("Failed to list messages to announce promoted draft's system prompt", "conversationID", conversationID, "error", lerr)
+		}
 	}
 
 	// Built-in /model command: switch the conversation to a different model
