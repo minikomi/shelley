@@ -246,6 +246,7 @@ import { useI18n } from "./composables/i18n";
 import { ConversationsListKey, CurrentConversationIdKey } from "./composables/subagentLive";
 import { provideOpenFileEditor } from "./composables/fileEditor";
 import { useFeatureFlag } from "./composables/featureFlags";
+import { useMobileDrawerSwipe } from "./composables/mobileDrawerSwipe";
 import PerfHud from "./components/PerfHud.vue";
 
 const perfHudEnabled = useFeatureFlag("performance-hud");
@@ -316,6 +317,11 @@ provide(ConversationsListKey, conversations);
 provide(CurrentConversationIdKey, currentConversationId);
 const viewedConversation = ref<Conversation | null>(null);
 const drawerOpen = ref(false);
+useMobileDrawerSwipe(drawerOpen);
+watch(drawerOpen, (open) => {
+  if (!open || !window.matchMedia("(max-width: 767px)").matches) return;
+  document.querySelector<HTMLTextAreaElement>('[data-testid="message-input"]')?.blur();
+});
 // The drawer starts expanded unless the user collapsed it last time.
 const drawerCollapsed = ref(initialDrawerCollapsed(localStorage));
 const commandPaletteOpen = ref(false);
