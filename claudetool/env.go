@@ -2,6 +2,7 @@ package claudetool
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -33,8 +34,14 @@ type ShelleyEnv struct {
 	Port int
 	// DBPath is the path to shelley's SQLite database, exposed as SHELLEY_DB
 	// so the agent can read its own conversation history (e.g. resolve
-	// [seq:N] pointers from a checkpoint summary) with sqlite3.
+	// [seq:N] pointers from a compaction summary) with sqlite3.
 	DBPath string
+	// BinDir holds shelley-provided helper scripts (currently
+	// shelley-history). When set it is PREPENDED to PATH, so the agent can run
+	// them by name. Prepended rather than appended because these are shelley's
+	// own tools and a stale same-named binary earlier in PATH would silently
+	// shadow them.
+	BinDir string
 }
 
 // shelleyEnvKeys lists every environment variable name ShelleyEnv may set. We
@@ -50,6 +57,10 @@ var shelleyEnvKeys = []string{
 	"SHELLEY_PORT",
 	"SHELLEY_URL",
 	"SHELLEY_DB",
+	// PATH is managed here only when BinDir is set, and the replacement is
+	// built from the live PATH, so stripping it first prevents two PATH
+	// entries in the same environment.
+	"PATH",
 }
 
 // Environ returns the SHELLEY_* "KEY=VALUE" entries for this context. cwd is the
@@ -78,6 +89,19 @@ func (e ShelleyEnv) Environ(cwd string) []string {
 		add("SHELLEY_URL", fmt.Sprintf("http://localhost:%d", e.Port))
 	}
 	add("SHELLEY_DB", e.DBPath)
+	// PATH is always re-emitted, because stripShelleyEnv removes it from the
+	// inherited environment: returning nothing here would hand the command an
+	// environment with no PATH at all. BinDir goes first when set, so shelley's
+	// own helpers cannot be shadowed by a same-named binary elsewhere.
+	path := os.Getenv("PATH")
+	switch {
+	case e.BinDir != "" && path != "":
+		out = append(out, "PATH="+e.BinDir+string(os.PathListSeparator)+path)
+	case e.BinDir != "":
+		out = append(out, "PATH="+e.BinDir)
+	case path != "":
+		out = append(out, "PATH="+path)
+	}
 	return out
 }
 

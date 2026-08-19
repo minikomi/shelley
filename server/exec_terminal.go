@@ -117,6 +117,7 @@ func buildTerminalEnv(conversationID, slug, model, userEmail, cwd string, listen
 		UserEmail:        userEmail,
 		Port:             listenPort,
 		DBPath:           DBPath,
+		BinDir:           historyScriptDir(),
 	}.Environ(cwd)
 }
 

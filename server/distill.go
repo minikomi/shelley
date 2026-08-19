@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -228,6 +229,174 @@ type DistillNewGenerationRequest struct {
 	Instructions string `json:"instructions,omitempty"`
 }
 
+// compactionError carries the HTTP status the distill endpoint should report
+// for a setup failure. startCompaction is called both from that endpoint and
+// from the automatic trigger, so it returns errors rather than writing
+// responses; the trigger just logs them.
+type compactionError struct {
+	status int
+	err    error
+}
+
+func (e *compactionError) Error() string { return e.err.Error() }
+func (e *compactionError) Unwrap() error { return e.err }
+
+func compactionErrorf(status int, format string, args ...any) *compactionError {
+	return &compactionError{status: status, err: fmt.Errorf(format, args...)}
+}
+
+// compactionHTTPStatus returns the status to report for err, defaulting to 500.
+func compactionHTTPStatus(err error) int {
+	var ce *compactionError
+	if errors.As(err, &ce) {
+		return ce.status
+	}
+	return http.StatusInternalServerError
+}
+
+// startCompaction performs the compaction setup sequence and launches the
+// summarization goroutine. It returns the conversation as of the new
+// generation.
+//
+// This is shared by the /compact endpoint and the automatic trigger, and it
+// must stay shared: every failure path below has to undo the generation bump
+// (see rollbackCompactionFailure), and a second copy of that logic is how a
+// conversation ends up stranded on an empty generation with its context — and
+// any fork of it — wiped. The order is load-bearing too: validate the model
+// before force-writing it onto the conversation, and take the distilling lock
+// before any mutation, so a rejected concurrent attempt has no side effects.
+//
+// cwd and instructions may be empty. checkpoint selects the summarizer.
+func (s *Server) startCompaction(ctx context.Context, conversationID, modelID, cwd, instructions string, checkpoint bool) (generated.Conversation, error) {
+	sourceConv, err := s.db.GetConversationByID(ctx, conversationID)
+	if err != nil {
+		s.logger.Error("Failed to get source conversation", "conversationID", conversationID, "error", err)
+		return generated.Conversation{}, compactionErrorf(http.StatusNotFound, "source conversation not found: %w", err)
+	}
+	// Capture the generation we are compacting FROM, before incrementing, to
+	// select the right messages to summarize and copy.
+	sourceGeneration := sourceConv.CurrentGeneration
+	messages, err := s.db.ListMessages(ctx, conversationID)
+	if err != nil {
+		s.logger.Error("Failed to get messages", "conversationID", conversationID, "error", err)
+		return generated.Conversation{}, compactionErrorf(http.StatusInternalServerError, "failed to get messages: %w", err)
+	}
+
+	if modelID == "" && sourceConv.Model != nil {
+		modelID = *sourceConv.Model
+	}
+	if modelID == "" {
+		modelID = s.effectiveDefaultModel(s.getModelList())
+	}
+	// Validate before mutating: the model is force-written onto the
+	// conversation below, so an unknown model would otherwise brick the
+	// conversation (every subsequent chat rejects the stored model).
+	if _, err := s.llmManager.GetService(modelID); err != nil {
+		return generated.Conversation{}, compactionErrorf(http.StatusBadRequest, "unknown model %q: %w", modelID, err)
+	}
+
+	manager, err := s.getOrCreateConversationManager(ctx, conversationID, "")
+	if err != nil {
+		s.logger.Error("Failed to create conversation manager for compaction", "conversationID", conversationID, "error", err)
+		return generated.Conversation{}, compactionErrorf(http.StatusInternalServerError, "failed to create conversation manager: %w", err)
+	}
+	// Acquire the distilling state before any mutation so a rejected
+	// concurrent request has no side effects.
+	if !manager.BeginDistillingSetup() {
+		return generated.Conversation{}, compactionErrorf(http.StatusConflict, "compaction already in progress")
+	}
+	setupComplete := false
+	defer func() {
+		if !setupComplete {
+			manager.SetDistilling(false)
+		}
+	}()
+
+	if cwd != "" && (sourceConv.Cwd == nil || *sourceConv.Cwd != cwd) {
+		if err := s.db.UpdateConversationCwd(ctx, conversationID, cwd); err != nil {
+			s.logger.Error("Failed to update cwd for new generation", "error", err)
+			return generated.Conversation{}, compactionErrorf(http.StatusInternalServerError, "failed to update cwd: %w", err)
+		}
+	}
+	if sourceConv.Model == nil || *sourceConv.Model != modelID {
+		if err := s.db.ForceUpdateConversationModel(ctx, conversationID, modelID); err != nil {
+			s.logger.Error("Failed to update model for new generation", "error", err)
+			return generated.Conversation{}, compactionErrorf(http.StatusInternalServerError, "failed to update model: %w", err)
+		}
+	}
+
+	conversation, err := db.WithTxRes(s.db, ctx, func(q *generated.Queries) (generated.Conversation, error) {
+		return q.IncrementConversationGeneration(ctx, conversationID)
+	})
+	if err != nil {
+		s.logger.Error("Failed to increment generation", "conversationID", conversationID, "error", err)
+		return generated.Conversation{}, compactionErrorf(http.StatusInternalServerError, "failed to increment generation: %w", err)
+	}
+	manager.ResetLoop()
+
+	method := distillMethodCompact
+	statusText := "Compacting conversation…"
+	if checkpoint {
+		method = distillMethodCheckpoint
+		statusText = "Checkpointing conversation…"
+	}
+	sourceSlug := "unknown"
+	if sourceConv.Slug != nil {
+		sourceSlug = *sourceConv.Slug
+	}
+	statusMsg, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: conversationID,
+		Type:           db.MessageTypeAgent,
+		LLMData: llm.Message{
+			Role:    llm.MessageRoleAssistant,
+			Content: []llm.Content{{Type: llm.ContentTypeText, Text: statusText}},
+		},
+		UserData: map[string]string{
+			"distill_status": "in_progress",
+			"source_slug":    sourceSlug,
+			"new_generation": "true",
+			"distill_method": method,
+		},
+		ExcludedFromContext: true,
+	})
+	if err != nil {
+		s.logger.Error("Failed to create status message", "conversationID", conversationID, "error", err)
+		// WithoutCancel: a client disconnect mid-setup must not strand the
+		// conversation on the just-created empty generation.
+		s.rollbackCompactionFailure(context.WithoutCancel(ctx), s.logger, conversationID, "Compaction failed during setup", sourceGeneration)
+		return generated.Conversation{}, compactionErrorf(http.StatusInternalServerError, "failed to create status message: %w", err)
+	}
+	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, statusMsg)
+
+	if err := manager.Hydrate(ctx); err != nil {
+		s.logger.Error("Failed to hydrate new generation", "conversationID", conversationID, "error", err)
+		// WithoutCancel: a client disconnect mid-setup must not strand the
+		// conversation on the just-created empty generation.
+		s.rollbackCompactionFailure(context.WithoutCancel(ctx), s.logger, conversationID, "Compaction failed during setup", sourceGeneration)
+		return generated.Conversation{}, compactionErrorf(http.StatusInternalServerError, "failed to hydrate new generation: %w", err)
+	}
+	if fresh, ferr := s.db.GetConversationByID(ctx, conversationID); ferr == nil {
+		conversation = *fresh
+	}
+	if currentMessages, merr := s.db.ListMessages(ctx, conversationID); merr == nil {
+		for i := range currentMessages {
+			msg := &currentMessages[i]
+			if msg.Generation == conversation.CurrentGeneration && msg.Type == string(db.MessageTypeSystem) && msg.UserData == nil {
+				go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, msg)
+			}
+		}
+	}
+	go s.notifySubscribers(context.WithoutCancel(ctx), conversationID)
+	setupComplete = true
+	manager.FinishDistillingSetup()
+
+	ctxNoCancel := context.WithoutCancel(ctx)
+	go func() {
+		s.runDistillNewGeneration(ctxNoCancel, conversationID, sourceSlug, modelID, instructions, checkpoint, sourceGeneration, messages)
+	}()
+	return conversation, nil
+}
+
 // handleDistillNewGeneration handles POST /api/conversations/distill-new-generation.
 // It keeps the visible conversation, marks old messages as previous generation,
 // and inserts the distillation into the next generation.
@@ -257,145 +426,15 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 		http.Error(w, fmt.Sprintf("unknown distill method %q", req.Method), http.StatusBadRequest)
 		return
 	}
-	method := distillMethodCompact
-	// The flag decides the summarizer. Read per-compaction rather than cached,
-	// so toggling it takes effect on the next /compact with no restart.
+	// The flag decides the summarizer, and is read per-compaction rather than
+	// cached, so toggling it takes effect on the next /compact with no restart.
 	checkpoint := s.featureFlagEnabled(ctx, FlagAutomaticCompaction)
-	if checkpoint {
-		method = distillMethodCheckpoint
-	}
 
-	sourceConv, err := s.db.GetConversationByID(ctx, req.SourceConversationID)
+	conversation, err := s.startCompaction(ctx, req.SourceConversationID, req.Model, req.Cwd, req.Instructions, checkpoint)
 	if err != nil {
-		s.logger.Error("Failed to get source conversation", "conversationID", req.SourceConversationID, "error", err)
-		http.Error(w, "Source conversation not found", http.StatusNotFound)
+		http.Error(w, err.Error(), compactionHTTPStatus(err))
 		return
 	}
-	// Capture the generation we are distilling FROM, before incrementing.
-	// The pi strategy needs it to select the right messages to copy/summarize.
-	sourceGeneration := sourceConv.CurrentGeneration
-	messages, err := s.db.ListMessages(ctx, req.SourceConversationID)
-	if err != nil {
-		s.logger.Error("Failed to get messages", "conversationID", req.SourceConversationID, "error", err)
-		http.Error(w, "Failed to get messages", http.StatusInternalServerError)
-		return
-	}
-
-	modelID := req.Model
-	if modelID == "" && sourceConv.Model != nil {
-		modelID = *sourceConv.Model
-	}
-	if modelID == "" {
-		modelID = s.effectiveDefaultModel(s.getModelList())
-	}
-	// Validate before mutating: the model is force-written onto the
-	// conversation below, so an unknown model would otherwise brick the
-	// conversation (every subsequent chat rejects the stored model).
-	if _, err := s.llmManager.GetService(modelID); err != nil {
-		http.Error(w, fmt.Sprintf("unknown model %q: %v", modelID, err), http.StatusBadRequest)
-		return
-	}
-
-	manager, err := s.getOrCreateConversationManager(ctx, req.SourceConversationID, "")
-	if err != nil {
-		s.logger.Error("Failed to create conversation manager for distill-new-generation", "conversationID", req.SourceConversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	// Acquire the distilling state before any mutation so a rejected
-	// concurrent request has no side effects.
-	if !manager.BeginDistillingSetup() {
-		http.Error(w, "Distillation already in progress", http.StatusConflict)
-		return
-	}
-	setupComplete := false
-	defer func() {
-		if !setupComplete {
-			manager.SetDistilling(false)
-		}
-	}()
-
-	if req.Cwd != "" && (sourceConv.Cwd == nil || *sourceConv.Cwd != req.Cwd) {
-		if err := s.db.UpdateConversationCwd(ctx, req.SourceConversationID, req.Cwd); err != nil {
-			s.logger.Error("Failed to update cwd for new generation", "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-	}
-	if sourceConv.Model == nil || *sourceConv.Model != modelID {
-		if err := s.db.ForceUpdateConversationModel(ctx, req.SourceConversationID, modelID); err != nil {
-			s.logger.Error("Failed to update model for new generation", "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	conversation, err := db.WithTxRes(s.db, ctx, func(q *generated.Queries) (generated.Conversation, error) {
-		return q.IncrementConversationGeneration(ctx, req.SourceConversationID)
-	})
-	if err != nil {
-		s.logger.Error("Failed to increment generation", "conversationID", req.SourceConversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	manager.ResetLoop()
-
-	sourceSlug := "unknown"
-	if sourceConv.Slug != nil {
-		sourceSlug = *sourceConv.Slug
-	}
-	statusMsg, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: req.SourceConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData: llm.Message{
-			Role:    llm.MessageRoleAssistant,
-			Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Distilling conversation…"}},
-		},
-		UserData: map[string]string{
-			"distill_status": "in_progress",
-			"source_slug":    sourceSlug,
-			"new_generation": "true",
-			"distill_method": method,
-		},
-		ExcludedFromContext: true,
-	})
-	if err != nil {
-		s.logger.Error("Failed to create status message", "conversationID", req.SourceConversationID, "error", err)
-		// WithoutCancel: a client disconnect mid-setup must not strand the
-		// conversation on the just-created empty generation.
-		s.rollbackCompactionFailure(context.WithoutCancel(ctx), s.logger, req.SourceConversationID, "Compaction failed during setup", sourceGeneration)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), req.SourceConversationID, statusMsg)
-
-	if err := manager.Hydrate(ctx); err != nil {
-		s.logger.Error("Failed to hydrate new generation", "conversationID", req.SourceConversationID, "error", err)
-		// WithoutCancel: a client disconnect mid-setup must not strand the
-		// conversation on the just-created empty generation.
-		s.rollbackCompactionFailure(context.WithoutCancel(ctx), s.logger, req.SourceConversationID, "Compaction failed during setup", sourceGeneration)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	if fresh, ferr := s.db.GetConversationByID(ctx, req.SourceConversationID); ferr == nil {
-		conversation = *fresh
-	}
-	if currentMessages, merr := s.db.ListMessages(ctx, req.SourceConversationID); merr == nil {
-		for i := range currentMessages {
-			msg := &currentMessages[i]
-			if msg.Generation == conversation.CurrentGeneration && msg.Type == string(db.MessageTypeSystem) && msg.UserData == nil {
-				go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), req.SourceConversationID, msg)
-			}
-		}
-	}
-	go s.notifySubscribers(context.WithoutCancel(ctx), req.SourceConversationID)
-	setupComplete = true
-	manager.FinishDistillingSetup()
-
-	ctxNoCancel := context.WithoutCancel(ctx)
-	go func() {
-		s.runDistillNewGeneration(ctxNoCancel, req.SourceConversationID, sourceSlug, modelID, req.Instructions, checkpoint, sourceGeneration, messages)
-	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

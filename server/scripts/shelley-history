@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# shelley-history — read this conversation's original messages by sequence number.
+#
+# Compaction replaces old messages in the model's context with a summary, but
+# never deletes them: they stay in shelley's database in an earlier generation.
+# A [seq:N] pointer in a compaction summary names one of those rows, and this
+# script resolves it.
+#
+# Reading a message needs more than the obvious json_extract on Content[0].Text:
+# a message's content is a list of blocks whose text lives in different places
+# depending on the block (plain text, reasoning, a tool call's name and input, or
+# a tool result nesting its text one level deeper again). Getting that wrong
+# returns blank rows for exactly the tool-heavy messages worth reading, so the
+# query lives here instead of in a prompt.
+#
+# Usage:
+#   shelley-history 480 500       # read messages 480..500
+#   shelley-history 480           # read message 480
+#   shelley-history --search TERM # find messages containing TERM
+set -euo pipefail
+
+die() { echo "shelley-history: $*" >&2; exit 1; }
+
+[[ -n "${SHELLEY_DB:-}" ]] || die "SHELLEY_DB is not set (are you running outside shelley?)"
+[[ -f "$SHELLEY_DB" ]] || die "database not found: $SHELLEY_DB"
+[[ -n "${SHELLEY_CONVERSATION_ID:-}" ]] || die "SHELLEY_CONVERSATION_ID is not set"
+command -v sqlite3 >/dev/null || die "sqlite3 is not installed"
+
+# Flatten one message's content blocks into readable text. Each block
+# contributes whichever of its fields carries content; tool results are a nested
+# list and need their own aggregate.
+read -r -d '' BODY_SQL <<'SQL' || true
+  COALESCE(NULLIF(json_extract(c.value,'$.Text'), ''), '')
+  || COALESCE(NULLIF(json_extract(c.value,'$.Thinking'), ''), '')
+  || COALESCE(NULLIF(json_extract(c.value,'$.ToolName'), '') || ' ' || COALESCE(json_extract(c.value,'$.ToolInput'), ''), '')
+  || COALESCE((SELECT group_concat(COALESCE(json_extract(r.value,'$.Text'), ''), '')
+               FROM json_each(json_extract(c.value,'$.ToolResult')) r), '')
+SQL
+
+if [[ "${1:-}" == "--search" ]]; then
+  term="${2:-}"
+  [[ -n "$term" ]] || die "usage: shelley-history --search TERM"
+  sqlite3 -readonly "$SHELLEY_DB" "
+    SELECT m.sequence_id || '  [' || m.type || ']  ' || substr(replace($BODY_SQL, char(10), ' '), 1, 200)
+    FROM messages m, json_each(json_extract(m.llm_data,'\$.Content')) c
+    WHERE m.conversation_id = '$SHELLEY_CONVERSATION_ID'
+      AND $BODY_SQL LIKE '%' || replace('$term', '''', '''''') || '%'
+    ORDER BY m.sequence_id;"
+  exit 0
+fi
+
+first="${1:-}"
+[[ -n "$first" ]] || die "usage: shelley-history FIRST [LAST] | --search TERM"
+[[ "$first" =~ ^[0-9]+$ ]] || die "not a sequence number: $first"
+last="${2:-$first}"
+[[ "$last" =~ ^[0-9]+$ ]] || die "not a sequence number: $last"
+
+sqlite3 -readonly "$SHELLEY_DB" "
+  SELECT '=== seq ' || m.sequence_id || ' [' || m.type || '] ===' || char(10) || $BODY_SQL
+  FROM messages m, json_each(json_extract(m.llm_data,'\$.Content')) c
+  WHERE m.conversation_id = '$SHELLEY_CONVERSATION_ID'
+    AND m.sequence_id BETWEEN $first AND $last
+    AND trim($BODY_SQL) != ''
+  ORDER BY m.sequence_id, c.key;"

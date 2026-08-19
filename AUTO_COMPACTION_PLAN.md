@@ -32,23 +32,23 @@ infer them from the transcript and occasionally get them wrong.
 
 | # | Piece | State |
 |---|---|---|
-| 1 | `automatic-compaction` flag registered | done, but **inert** — nothing reads it |
+| 1 | `automatic-compaction` flag | done; read per compaction, default false |
 | 2 | `SHELLEY_DB` exported to bash/terminals | done |
 | 3 | Stage 1: deterministic reduction | done (`server/compact_checkpoint.go`) |
 | 4 | Stage 2: checkpoint prompt + `[seq:N]` + validation | done |
 | 5 | Pointer sanitization | done |
 | 6 | Stage 3: host repo facts | done |
-| 7 | Retrieval suffix (sqlite directive) | done |
+| 7 | Retrieval suffix + `shelley-history` helper | done |
 | 8 | Fast: workhorse summarizer, thinking off, no thinking in input | done |
 | 9 | Provenance on the summary message | done |
-| 10 | Thread `checkpoint bool` through the distill path | ~90%, 3 compile errors |
-| 11 | **Read the flag; decide `checkpoint`** | **not started** |
-| 12 | **Automatic trigger** | **not started** |
-| 13 | Extract compaction setup from the HTTP handler | not started — biggest piece |
-| 14 | Tests | not started |
-| 15 | UI (status wording, provenance, flag toggle copy) | not started |
+| 10 | Thread `checkpoint bool` through the distill path | done |
+| 11 | Read the flag; decide `checkpoint` | done |
+| 12 | Automatic threshold trigger | done |
+| 13 | Extract shared compaction setup | done (`startCompaction`) |
+| 14 | Tests | done: reduction, pointers, helper install, trigger guards |
+| 15 | UI wording + provenance | done |
 
-Roughly: the summarizer half is written, the trigger half is not.
+The implementation is ready to try. The flag stays off by default.
 
 ## What is written
 
@@ -100,16 +100,9 @@ Roughly: the summarizer half is written, the trigger half is not.
   new generation and leaves the old rows in place, and `SHELLEY_DB` /
   `SHELLEY_CONVERSATION_ID` are already in every bash environment.
 
-## What remains
+## Implemented behavior
 
-### 11. Read the flag
-
-`performPiDistillation` takes `checkpoint bool` but nothing sets it. One call to
-`s.featureFlagEnabled(ctx, FlagAutomaticCompaction)` at the two entry points
-(the HTTP handler, and the new trigger). The flag is read per-compaction, not
-cached, so toggling it takes effect on the next compaction.
-
-### 12. Automatic trigger
+### Flag and automatic trigger
 
 `maybeScheduleCompaction(ctx, conversationID, createdMsg)`, called from the two
 `markAgentDone` sites in `server/server.go` (~1153 in `recordMessage`, ~1308 in
@@ -128,10 +121,10 @@ Guards, in order:
   branch; `len(cm.pendingBatches) > 0`).
 - `calculateContextWindowSizeFromMsg(createdMsg)` vs
   `svc.TokenContextWindow() * 0.7` -> under, return
-- `manager.BeginDistillingSetup()` fails -> return (a manual compaction is
-  already running; do not race it)
+- manager is already distilling -> return (a manual compaction is already
+  running; do not race it)
 
-Then `go` the same work the handler does.
+Then it starts the shared setup in a goroutine.
 
 Threshold: 0.7 of the window, matching the parked branch. Open question whether
 it should be absolute or window-derived — window-derived for now, since the
@@ -144,23 +137,21 @@ noise — measured: one compaction freed 264 tokens, then ran 49 turns and retur
 the existing cut-point calculation already gives (`findPiCutPoint` returning 0
 means nothing to do).
 
-### 13. Extract compaction setup
+### Shared setup
 
 The trigger cannot call `handleDistillNewGeneration` — it is an
-`http.HandlerFunc`, and ~80 lines of its body are the compaction setup sequence
-that both entry points need, inline:
+`http.HandlerFunc`. The setup sequence is now `startCompaction`, shared by the
+handler and trigger:
 
     validate model -> BeginDistillingSetup -> update cwd/model
     -> IncrementConversationGeneration -> ResetLoop
     -> insert "Compacting…" status -> Hydrate -> notify
 
-Extract as `func (s *Server) startCompaction(ctx, conversationID, modelID, instructions string, checkpoint bool) error`,
-with the handler reduced to request decoding plus a call to it. This is the only
-structural refactor in the plan, and it is mechanical. It matters because every
-failure path in there rolls back the generation bump — duplicating that logic in
-the trigger is how you get a conversation stranded on an empty generation.
+`startCompaction` owns all rollback paths, so a failure cannot strand a
+conversation on an empty generation. The handler is now request decoding plus a
+call to it.
 
-### 14. Tests
+### Tests
 
 - `reduceCheckpointTranscript`: budgets applied per role; recent boost; oldest
   dropped at the cap; **`[seq:N]` present on every entry including collapsed
@@ -173,24 +164,24 @@ the trigger is how you get a conversation stranded on an empty generation.
 - `checkpointHostFacts`: patch paths counted and sorted; non-repo cwd omits the
   block.
 - Trigger, with the predictable model: under threshold does nothing; over
-  threshold with pending work does nothing; over threshold and idle compacts
-  once and not twice; flag off never fires.
+  threshold with pending work does nothing; over threshold and idle starts the
+  shared compaction path; flag off never fires. The trigger start is observed
+  with a channel, not a sleep or polling loop.
 - Flag off produces byte-identical output to today (guards the whole premise).
 
 No sleeps. The predictable model returns a structurally valid working state so
 validation is exercised.
 
-### 15. UI
+### UI
 
 - `DistillStatusMessage.vue`: "Checkpointing…/Checkpointed" for
   `distill_method: "checkpoint"`.
 - `Message.vue`: title "Checkpoint summary"; provenance line
   `messages N–M · summarized by <model>` from the user_data already stamped.
-- An automatic compaction appears with no user action, so the status message is
-  the only thing telling the user why the conversation just changed. It must say
-  it was automatic, not merely that it happened.
-- Flag description must state what turning it on actually changes — both halves,
-  not just "automatic".
+- An automatic compaction appears with no user action, so its status says
+  "Checkpointing" rather than masquerading as the old manual compact.
+- Flag description states both concrete changes: automatic trigger and
+  source-mapped checkpoint summaries.
 
 ## Then measure, before trusting any of it
 

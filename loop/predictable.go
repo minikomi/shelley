@@ -107,6 +107,14 @@ func (s *PredictableService) TokenContextWindow() int {
 	return s.tokenContextWindow
 }
 
+// SetTokenContextWindow overrides the reported context window. Tests for
+// threshold-triggered behavior (automatic compaction) use it to cross the
+// threshold with a small, readable amount of usage instead of fabricating
+// hundreds of thousands of tokens.
+func (s *PredictableService) SetTokenContextWindow(tokens int) {
+	s.tokenContextWindow = tokens
+}
+
 // MaxImageDimension returns the maximum allowed image dimension.
 func (s *PredictableService) MaxImageDimension() int {
 	return 2000

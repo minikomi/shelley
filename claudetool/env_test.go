@@ -24,15 +24,32 @@ func TestShelleyEnvEnviron(t *testing.T) {
 		"SHELLEY_PORT=8123",
 		"SHELLEY_URL=http://localhost:8123",
 	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("Environ() = %v, want %v", got, want)
+	for _, entry := range want {
+		if !slices.Contains(got, entry) {
+			t.Errorf("Environ() missing %q in %v", entry, got)
+		}
+	}
+	if !slices.ContainsFunc(got, func(entry string) bool { return strings.HasPrefix(entry, "PATH=") }) {
+		t.Errorf("Environ() did not restore PATH after stripShelleyEnv removed it: %v", got)
 	}
 }
 
 func TestShelleyEnvOmitsEmpty(t *testing.T) {
 	got := ShelleyEnv{ConversationID: "x"}.Environ("")
-	if !slices.Equal(got, []string{"SHELLEY_CONVERSATION_ID=x"}) {
-		t.Fatalf("expected only conversation id, got %v", got)
+	if !slices.Contains(got, "SHELLEY_CONVERSATION_ID=x") {
+		t.Fatalf("missing conversation id: %v", got)
+	}
+	if len(got) != 2 || !slices.ContainsFunc(got, func(entry string) bool { return strings.HasPrefix(entry, "PATH=") }) {
+		t.Fatalf("expected only conversation id plus PATH, got %v", got)
+	}
+}
+
+func TestShelleyEnvPrependsBinDir(t *testing.T) {
+	got := ShelleyEnv{BinDir: "/shelley/bin"}.Environ("")
+	if !slices.ContainsFunc(got, func(entry string) bool {
+		return strings.HasPrefix(entry, "PATH=/shelley/bin:")
+	}) {
+		t.Errorf("BinDir did not lead PATH: %v", got)
 	}
 }
 
@@ -61,7 +78,10 @@ func TestStripShelleyEnv(t *testing.T) {
 		"SHELLEY_GIT_ROOT=/x",
 	}
 	got := stripShelleyEnv(slices.Clone(in))
-	want := []string{"PATH=/bin", "HOME=/root"}
+	// PATH is Shelley-managed now: ShelleyEnv.Environ re-emits it, optionally
+	// with the shelley-history helper directory prepended. Keeping the inherited
+	// PATH here would leave two PATH entries when environments are joined.
+	want := []string{"HOME=/root"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("stripShelleyEnv = %v, want %v", got, want)
 	}

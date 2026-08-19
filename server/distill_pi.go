@@ -484,6 +484,14 @@ func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older [
 		if err := validateCheckpointSummary(summary); err != nil {
 			return "", err
 		}
+		// Log shape divergence without failing on it: the prompt asks for a
+		// state block and topic notes, and a model that skipped them wrote
+		// something still worth keeping. A run of these means the prompt needs
+		// work, which is only visible if it is recorded.
+		if hasState, hasTopics, hasPointers := checkpointSummaryShape(summary); !hasState || !hasTopics || !hasPointers {
+			s.logger.Warn("checkpoint summary diverged from the requested shape",
+				"has_state_block", hasState, "has_topic_notes", hasTopics, "has_pointers", hasPointers)
+		}
 		// Validity is existence anywhere in this conversation, not membership
 		// in the summarized span, so build the id set from every message the
 		// conversation has — a pointer carried forward from a previous summary

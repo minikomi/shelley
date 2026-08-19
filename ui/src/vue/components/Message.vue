@@ -160,7 +160,13 @@
           >
             <div class="distillation-file-box-header">
               <div class="distillation-file-box-title">
-                {{ distillationEditable ? "Editable distillation" : "Compacted summary" }}
+                {{
+                  distillationEditable
+                    ? "Editable distillation"
+                    : isCheckpointSummary
+                      ? "Checkpoint summary"
+                      : "Compacted summary"
+                }}
               </div>
               <button
                 v-if="distillationEditable"
@@ -175,6 +181,9 @@
             <div v-if="distillationEditable" class="distillation-file-box-meta">
               Shown from editable file <code>{{ distillationFile }}</code
               >.
+            </div>
+            <div v-else-if="distillationProvenance" class="distillation-file-box-meta">
+              {{ distillationProvenance }}
             </div>
             <div class="distillation-file-box-content">
               <MarkdownContent
@@ -382,6 +391,8 @@ const distillation = computed(() => {
   let distillationContent = "";
   let distillationEditable = false;
   let isDistilledUser = false;
+  let isCheckpointSummary = false;
+  let distillationProvenance = "";
   if (isUser.value && props.message.user_data) {
     try {
       const ud =
@@ -391,22 +402,40 @@ const distillation = computed(() => {
       if (ud?.distilled === "true") {
         distillationFile = ud.distillation_file || "";
         distillationContent = ud.distillation_content || "";
-        // "compact" summaries are generated checkpoints paired with a verbatim
-        // recent tail; they are not editable. Only the default distillation
-        // (which writes an editable temp file) is.
+        // "compact"/"checkpoint" summaries are generated checkpoints paired
+        // with a verbatim recent tail; they are not editable. Only the default
+        // distillation (which writes an editable temp file) is.
         distillationEditable = ud.distillation_editable === "true" && !!distillationFile;
         isDistilledUser = true;
+        isCheckpointSummary = ud.distill_method === "checkpoint";
+        // Provenance stamped by the server: summarized sequence range and the
+        // model that actually wrote the summary.
+        const first = ud.compacts_first_sequence_id;
+        const last = ud.compacts_through_sequence_id;
+        const parts: string[] = [];
+        if (first && last) parts.push(`messages ${first}–${last}`);
+        if (ud.summarizer_model) parts.push(`summarized by ${ud.summarizer_model}`);
+        distillationProvenance = parts.join(" · ");
       }
     } catch {
       // ignore
     }
   }
-  return { distillationFile, distillationContent, distillationEditable, isDistilledUser };
+  return {
+    distillationFile,
+    distillationContent,
+    distillationEditable,
+    isDistilledUser,
+    isCheckpointSummary,
+    distillationProvenance,
+  };
 });
 
 const isDistilledUser = computed(() => distillation.value.isDistilledUser);
 const distillationFile = computed(() => distillation.value.distillationFile);
 const distillationEditable = computed(() => distillation.value.distillationEditable);
+const isCheckpointSummary = computed(() => distillation.value.isCheckpointSummary);
+const distillationProvenance = computed(() => distillation.value.distillationProvenance);
 
 const showDistillationEditor = ref(false);
 const distillationContentOverride = ref<string | null>(null);

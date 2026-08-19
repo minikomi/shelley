@@ -596,6 +596,16 @@ func (cm *ConversationManager) IsDistilling() bool {
 	return cm.distilling
 }
 
+// HasPendingWork reports whether messages are queued for delivery to the loop.
+// A turn can end with the queue non-empty (the user typed while the agent was
+// working, or a subagent finished mid-turn); the drain that feeds those batches
+// back into the loop runs right after.
+func (cm *ConversationManager) HasPendingWork() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return len(cm.pendingBatches) > 0
+}
+
 func (cm *ConversationManager) waitDistillingSetup() {
 	cm.mu.Lock()
 	setupDone := cm.distillSetupDone
@@ -1819,6 +1829,7 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 		UserEmail:        cm.userEmail,
 		Port:             cm.serverPort,
 		DBPath:           DBPath,
+		BinDir:           historyScriptDir(),
 	}
 	cm.mu.Unlock()
 

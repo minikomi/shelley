@@ -395,6 +395,12 @@ type Server struct {
 	// to force summarization without a giant transcript.
 	piDistillKeepRecentTokens int
 
+	// automaticCompactionStarter runs the work after maybeScheduleCompaction has
+	// passed every guard. Production starts the shared compaction setup; tests
+	// replace it with a channel send so they can prove scheduling without a
+	// polling sleep or a real LLM call.
+	automaticCompactionStarter func(context.Context, string, string)
+
 	// IndexedDB cache encryption master secret — see cache_key.go.
 	// Lives on the Server (not a package-global) so tests with
 	// independent DBs don't share state.
@@ -421,10 +427,22 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		exitProcess:         os.Exit,
 	}
 
+	s.automaticCompactionStarter = func(ctx context.Context, conversationID, modelID string) {
+		if _, err := s.startCompaction(ctx, conversationID, modelID, "", "", true); err != nil {
+			// Includes the benign race with a manual /compact started between
+			// maybeScheduleCompaction's guard and this goroutine.
+			s.logger.Info("automatic compaction not started", "conversationID", conversationID, "reason", err)
+		}
+	}
+
 	s.conversationListStream = newConversationListStream(s)
 	s.streamPub = subpub.New[StreamResponse]()
 	s.conversationListGitCache = newConversationListGitCache()
 	s.fileListCache = newFileListCache()
+
+	if _, err := installHistoryScript(historyScriptDir()); err != nil {
+		panic(fmt.Errorf("install shelley-history: %w", err))
+	}
 
 	// Persistent terminal sessions live alongside the database so that they
 	// survive shelley restarts. In tests DBPath is empty; use a unique
@@ -1157,6 +1175,9 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 		if mgr != nil {
 			mgr.syncAgentWorking(false)
 		}
+		// A turn just ended: consider compacting. WithoutCancel because the
+		// decision (and the compaction it may start) outlives this request.
+		s.maybeScheduleCompaction(context.WithoutCancel(ctx), conversationID, createdMsg)
 	}
 
 	// Touch active manager activity time if present and bump its max sequence ID.
@@ -1309,6 +1330,10 @@ func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs
 			mgr.SetAgentWorking(false)
 		}
 		mgr.Touch()
+	}
+
+	if markAgentDone && len(created) > 0 {
+		s.maybeScheduleCompaction(context.WithoutCancel(ctx), conversationID, &created[len(created)-1])
 	}
 
 	go s.notifySubscribersNewMessages(context.WithoutCancel(ctx), conversationID, created)
