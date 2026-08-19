@@ -326,11 +326,9 @@ Pointers:
 // PATH is one line to cite and correct by construction.
 const checkpointSummaryPrefix = `The conversation history before this point was compacted into the working state below. The original messages were NOT deleted; see the retrieval note after it.
 
-<working-state>
 `
 
 const checkpointSummaryRetrievalSuffix = `
-</working-state>
 
 Each [seq:N] or [seq:N-M] above cites an original message by sequence number. Those messages are still in shelley's database, verbatim, and you can read them from bash:
 

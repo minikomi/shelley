@@ -317,3 +317,21 @@ func TestCheckpointPromptStatesItsContract(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckpointWrapperLeavesTheStateFenceAsMarkdown: custom HTML containers
+// such as <working-state> make CommonMark treat their contents as an HTML
+// block, so the inner ```state fence is rendered as ordinary text. The wrapper
+// must be plain Markdown around the model output, not a synthetic XML element.
+func TestCheckpointWrapperLeavesTheStateFenceAsMarkdown(t *testing.T) {
+	t.Parallel()
+	wrapped := checkpointSummaryPrefix + "```state\ngoal: ship it\n```" + checkpointSummaryRetrievalSuffix
+	if strings.Contains(wrapped, "<working-state>") || strings.Contains(wrapped, "</working-state>") {
+		t.Fatalf("checkpoint wrapper contains an HTML block that swallows Markdown fences:\n%s", wrapped)
+	}
+	if !strings.Contains(wrapped, "\n\n```state\n") {
+		t.Fatalf("state fence is not separated from the prefix by a Markdown paragraph break:\n%s", wrapped)
+	}
+	if !strings.Contains(wrapped, "```\n\nEach [seq:N]") {
+		t.Fatalf("retrieval note is not separated from the state fence by a Markdown paragraph break:\n%s", wrapped)
+	}
+}
