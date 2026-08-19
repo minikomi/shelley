@@ -205,11 +205,24 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 	if execErr != nil {
 		return llm.ErrorToolOut(execErr)
 	}
-	if bashkit.ChainsCdWithCommand(req.Command) {
-		hint := "[shelley hint: this command chained `cd <path>` with another command. `cd` inside a bash invocation does not persist across tool calls. Prefer calling the change_dir tool once, then running subsequent commands directly.]"
-		out = hint + "\n\n" + out
+	if paths := bashkit.ChainedCdPaths(req.Command); len(paths) > 0 {
+		out = chainedCdHint(paths, wd) + "\n\n" + out
 	}
 	return llm.ToolOut{LLMContent: llm.TextContent(out), Display: display}
+}
+
+func chainedCdHint(paths []string, workingDir string) string {
+	if len(paths) == 1 && paths[0] != "" && cdPathIsCurrentDir(paths[0], workingDir) {
+		return "[shelley hint: this command chained `cd <path>` with another command, but that path is already the current working directory. Drop the redundant `cd` and run the remaining command directly.]"
+	}
+	return "[shelley hint: this command chained `cd <path>` with another command. `cd` inside a bash invocation does not persist across tool calls. Prefer calling the change_dir tool once, then running subsequent commands directly.]"
+}
+
+func cdPathIsCurrentDir(path, workingDir string) bool {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workingDir, path)
+	}
+	return filepath.Clean(path) == filepath.Clean(workingDir)
 }
 
 const (
