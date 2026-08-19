@@ -83,6 +83,28 @@ func TestReduceBudgetsByRole(t *testing.T) {
 	}
 }
 
+// TestReduceToolResultKeepsHeadAndTail guards against the generic pi serializer
+// cutting tool output from the end before checkpoint reduction can preserve it.
+// Commands commonly report the useful result or failure in their final lines.
+func TestReduceToolResultKeepsHeadAndTail(t *testing.T) {
+	t.Parallel()
+	output := "HEAD_COMMAND_OUTPUT\n" + strings.Repeat("middle noise\n", 5000) + "TAIL_ERROR_SUMMARY"
+	msg := toolResultMsg(output)
+	if got := checkpointMessageBudget(msg, true); got != checkpointToolResultMaxTokens {
+		t.Fatalf("recent summarized tool result budget = %d, want %d", got, checkpointToolResultMaxTokens)
+	}
+	reduced := reduceCheckpointTranscript([]piContextMessage{entry(1, msg)})
+	if !strings.Contains(reduced, "HEAD_COMMAND_OUTPUT") {
+		t.Errorf("tool result lost its head:\n%s", reduced)
+	}
+	if !strings.Contains(reduced, "TAIL_ERROR_SUMMARY") {
+		t.Errorf("tool result lost its tail:\n%s", reduced)
+	}
+	if !strings.Contains(reduced, "characters omitted") {
+		t.Errorf("tool result did not report its omitted middle:\n%s", reduced)
+	}
+}
+
 // TestReduceDropsThinking: thinking is the bulkiest content and the least
 // load-bearing, since anything it concluded that mattered was acted on.
 func TestReduceDropsThinking(t *testing.T) {

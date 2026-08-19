@@ -52,9 +52,10 @@ const (
 	checkpointUserMaxTokens       = 4000
 	checkpointAssistantMaxTokens  = 1500
 	checkpointToolResultMaxTokens = 600
-	// The last checkpointRecentMessages entries get their budget multiplied,
-	// because detail near the cut point is what the next turn is most likely
-	// to need.
+	// The last checkpointRecentMessages non-tool entries get their budget
+	// multiplied, because detail near the cut point is what the next turn is most
+	// likely to need. Tool results stay aggressively bounded; the true recent
+	// tail is copied verbatim outside this reduction.
 	checkpointRecentMessages     = 30
 	checkpointRecentBudgetFactor = 3
 	// checkpointTranscriptMaxTokens caps the whole reduced transcript. Past
@@ -75,11 +76,11 @@ var checkpointOmissionExample = fmt.Sprintf(checkpointOmissionMarker, "N")
 
 // checkpointMessageBudget returns the reduction budget for one rendered entry.
 func checkpointMessageBudget(msg llm.Message, recent bool) int {
+	if isToolResultMessage(msg) {
+		return checkpointToolResultMaxTokens
+	}
 	budget := checkpointAssistantMaxTokens
-	switch {
-	case isToolResultMessage(msg):
-		budget = checkpointToolResultMaxTokens
-	case msg.Role == llm.MessageRoleUser:
+	if msg.Role == llm.MessageRoleUser {
 		budget = checkpointUserMaxTokens
 	}
 	if recent {
@@ -153,6 +154,21 @@ func firstLine(s string, maxChars int) string {
 	return s
 }
 
+func checkpointToolResultBody(msg llm.Message) string {
+	var text strings.Builder
+	for _, c := range msg.Content {
+		if c.Type != llm.ContentTypeToolResult {
+			continue
+		}
+		for _, result := range c.ToolResult {
+			if result.Type == llm.ContentTypeText {
+				text.WriteString(result.Text)
+			}
+		}
+	}
+	return "[Tool result]: " + text.String()
+}
+
 // reduceCheckpointTranscript is stage 1: it renders the messages to be
 // summarized as a plain-text transcript with each entry prefixed by its
 // [seq:N] marker, bounded per message and overall, with no LLM involved.
@@ -173,9 +189,13 @@ func reduceCheckpointTranscript(entries []piContextMessage) string {
 		msg := withoutThinking(entry.llm)
 		body, collapsed := failedOrEmptyToolResult(msg)
 		if !collapsed {
-			body = serializePiConversation([]llm.Message{msg})
-			if strings.TrimSpace(body) == "" {
-				continue
+			if isToolResultMessage(msg) {
+				body = checkpointToolResultBody(msg)
+			} else {
+				body = serializePiConversation([]llm.Message{msg})
+				if strings.TrimSpace(body) == "" {
+					continue
+				}
 			}
 			recent := i >= len(entries)-checkpointRecentMessages
 			body = truncateMiddleForSummary(body, checkpointMessageBudget(msg, recent))
