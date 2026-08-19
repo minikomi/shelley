@@ -116,6 +116,7 @@ func buildTerminalEnv(conversationID, slug, model, userEmail, cwd string, listen
 		Model:            model,
 		UserEmail:        userEmail,
 		Port:             listenPort,
+		DBPath:           DBPath,
 	}.Environ(cwd)
 }
 

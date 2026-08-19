@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 	"unicode/utf8"
 
 	"shelley.exe.dev/db"
@@ -103,15 +104,27 @@ func truncateUTF8(s string, maxBytes int) string {
 	return s[:maxBytes] + "..."
 }
 
-// distillMethodCompact is the single conversation-shrinking strategy: it uses
-// the compaction algorithm (modeled on the pi coding agent) to summarize older
-// messages and keep recent ones verbatim. distillMethodDefault is the legacy
-// "default" briefing strategy value, retained only so the endpoint keeps
-// accepting it for compatibility (it is coerced to compaction).
+// distillMethodCompact is the conversation-shrinking strategy: it uses the
+// compaction algorithm (modeled on the pi coding agent) to summarize older
+// messages and keep recent ones verbatim. distillMethodCheckpoint is the same
+// mechanism with the checkpoint summarizer (see compact_checkpoint.go),
+// selected by FlagAutomaticCompaction; it is a label on the message rather than
+// a separate code path, so the UI can say "checkpoint" and the summary can
+// carry provenance. distillMethodDefault is the legacy "default" briefing
+// strategy value, retained only so the endpoint keeps accepting it for
+// compatibility (it is coerced to compaction).
 const (
-	distillMethodDefault = "default"
-	distillMethodCompact = "compact"
+	distillMethodDefault    = "default"
+	distillMethodCompact    = "compact"
+	distillMethodCheckpoint = "checkpoint"
 )
+
+// compactionSummaryTimeout bounds a single summarization call. Past this the
+// attempt fails and the conversation is left uncompacted, which is the right
+// trade: compaction is an optimization, and a summarizer that has not produced
+// a first byte in two minutes is not going to save the turn it was meant to fit
+// inside.
+const compactionSummaryTimeout = 120 * time.Second
 
 // steeringSection formats optional user-provided guidance that steers what the
 // distillation/summary should emphasize. Appended to the summarizer's input.
@@ -119,7 +132,7 @@ func steeringSection(instructions string) string {
 	return "\n\n## User Guidance\n\nThe user provided the following guidance on what to preserve or emphasize in this distillation. Follow it closely:\n\n" + instructions
 }
 
-func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, sourceGeneration int64, messages []generated.Message) {
+func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, checkpoint bool, sourceGeneration int64, messages []generated.Message) {
 	defer func() {
 		s.mu.Lock()
 		manager, ok := s.activeConversations[conversationID]
@@ -130,7 +143,7 @@ func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, so
 		}
 	}()
 
-	s.performPiDistillation(ctx, conversationID, sourceSlug, modelID, instructions, sourceGeneration, messages)
+	s.performPiDistillation(ctx, conversationID, sourceSlug, modelID, instructions, checkpoint, sourceGeneration, messages)
 	// The new generation's messages carry no usage data yet, so the UI's
 	// context-usage bar would keep showing the pre-distillation size until the
 	// next agent turn. Broadcast an estimate of the new generation's context
@@ -245,6 +258,12 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	method := distillMethodCompact
+	// The flag decides the summarizer. Read per-compaction rather than cached,
+	// so toggling it takes effect on the next /compact with no restart.
+	checkpoint := s.featureFlagEnabled(ctx, FlagAutomaticCompaction)
+	if checkpoint {
+		method = distillMethodCheckpoint
+	}
 
 	sourceConv, err := s.db.GetConversationByID(ctx, req.SourceConversationID)
 	if err != nil {
@@ -375,7 +394,7 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 
 	ctxNoCancel := context.WithoutCancel(ctx)
 	go func() {
-		s.runDistillNewGeneration(ctxNoCancel, req.SourceConversationID, sourceSlug, modelID, req.Instructions, sourceGeneration, messages)
+		s.runDistillNewGeneration(ctxNoCancel, req.SourceConversationID, sourceSlug, modelID, req.Instructions, checkpoint, sourceGeneration, messages)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

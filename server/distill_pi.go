@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
-	"time"
 
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/llmhttp"
+	"shelley.exe.dev/models"
 )
 
 // This file implements a second distillation strategy modeled on the
@@ -415,11 +416,38 @@ func userDataForCopy(m generated.Message) map[string]string {
 	return userData
 }
 
-// generatePiSummary runs the structured pi summarization prompt over the older
-// messages and returns the summary text (with file-operation tags appended).
-func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older []llm.Message, instructions string) (string, error) {
-	conversationText := serializePiConversation(older)
-	promptText := fmt.Sprintf("<conversation>\n%s\n</conversation>\n\n%s", conversationText, piSummarizationPrompt)
+// generatePiSummary runs a summarization prompt over the older messages and
+// returns the summary text.
+//
+// checkpoint selects the strategy. False is the original pi task report over a
+// lightly-truncated transcript, with derived file tags appended. True is the
+// checkpoint working state (see compact_checkpoint.go): the transcript is
+// reduced deterministically first, entries carry [seq:N] markers, invented
+// pointers are stripped afterward, and the output must parse as a working state
+// or this returns an error so the caller rolls back.
+//
+// Previously-distilled messages are resolved to their real prior summary text
+// before either path sees them, so re-compacting does not feed the summarizer
+// "Distillation written to ..." placeholders.
+func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older []piContextMessage, instructions string, checkpoint bool) (string, error) {
+	resolved := make([]piContextMessage, len(older))
+	for i, entry := range older {
+		resolved[i] = piContextMessage{llm: resolvePiSummarizationText(s.logger, entry), source: entry.source}
+	}
+
+	prompt := piSummarizationPrompt
+	var conversationText string
+	if checkpoint {
+		prompt = checkpointSummarizationPrompt
+		conversationText = reduceCheckpointTranscript(resolved)
+	} else {
+		plain := make([]llm.Message, len(resolved))
+		for i, entry := range resolved {
+			plain[i] = entry.llm
+		}
+		conversationText = serializePiConversation(plain)
+	}
+	promptText := fmt.Sprintf("<conversation>\n%s\n</conversation>\n\n%s", conversationText, prompt)
 	if steer := strings.TrimSpace(instructions); steer != "" {
 		promptText += steeringSection(steer)
 	}
@@ -452,9 +480,55 @@ func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older [
 		return "", fmt.Errorf("summarization returned empty result")
 	}
 
-	readFiles, modifiedFiles := extractPiFileOps(older)
+	if checkpoint {
+		if err := validateCheckpointSummary(summary); err != nil {
+			return "", err
+		}
+		// Validity is existence anywhere in this conversation, not membership
+		// in the summarized span, so build the id set from every message the
+		// conversation has — a pointer carried forward from a previous summary
+		// cites a message from before this compaction's input.
+		valid, verr := s.conversationSequenceIDs(ctx, resolved)
+		if verr != nil {
+			return "", verr
+		}
+		sanitized, removed := sanitizeCheckpointPointers(summary, valid)
+		if removed > 0 {
+			s.logger.Warn("removed unverifiable checkpoint pointers", "count", removed)
+		}
+		return sanitized, nil
+	}
+	readFiles, modifiedFiles := extractPiFileOps(plainMessages(resolved))
 	summary += formatPiFileOperations(readFiles, modifiedFiles)
 	return summary, nil
+}
+
+// plainMessages drops the DB rows from a piContextMessage slice.
+func plainMessages(entries []piContextMessage) []llm.Message {
+	out := make([]llm.Message, len(entries))
+	for i, entry := range entries {
+		out[i] = entry.llm
+	}
+	return out
+}
+
+// conversationSequenceIDs returns the set of sequence ids a [seq:N] pointer may
+// legitimately name: every message in the conversation, across all
+// generations. Scoping to one conversation is what stops an id from another
+// conversation satisfying the check.
+func (s *Server) conversationSequenceIDs(ctx context.Context, entries []piContextMessage) (map[int64]bool, error) {
+	if len(entries) == 0 {
+		return map[int64]bool{}, nil
+	}
+	all, err := s.db.ListMessages(ctx, entries[0].source.ConversationID)
+	if err != nil {
+		return nil, fmt.Errorf("listing messages to validate pointers: %w", err)
+	}
+	valid := make(map[int64]bool, len(all))
+	for _, m := range all {
+		valid[m.SequenceID] = true
+	}
+	return valid, nil
 }
 
 // rollbackCompactionFailure restores the conversation to its pre-compaction
@@ -498,10 +572,18 @@ func (s *Server) rollbackCompactionFailure(ctx context.Context, logger *slog.Log
 }
 
 // performPiDistillation summarizes older history and copies recent messages
-// verbatim into the conversation's (already-incremented) new generation. It is
-// the pi-algorithm counterpart to performDistillation.
-func (s *Server) performPiDistillation(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, sourceGeneration int64, messages []generated.Message) string {
-	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug, "method", "compact")
+// verbatim into the conversation's (already-incremented) new generation.
+//
+// checkpoint picks the summarizer: false is pi's task report, true is the
+// checkpoint working state with [seq:N] pointers (see compact_checkpoint.go).
+// Everything else — cut point, verbatim tail, single batched write, rollback on
+// failure — is identical either way.
+func (s *Server) performPiDistillation(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, checkpoint bool, sourceGeneration int64, messages []generated.Message) string {
+	method := distillMethodCompact
+	if checkpoint {
+		method = distillMethodCheckpoint
+	}
+	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug, "method", method)
 
 	// Tag the ctx so the summarization calls' usage is collected (and so the
 	// gateway request logs carry the conversation ID; the HTTP request ctx
@@ -527,6 +609,13 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 		return ""
 	}
 
+	// The conversation's working directory, used only to read host-known repo
+	// facts (branch, commit) for the checkpoint's repo-state block.
+	cwd := ""
+	if conv, cerr := s.db.GetConversationByID(ctx, conversationID); cerr == nil && conv.Cwd != nil {
+		cwd = *conv.Cwd
+	}
+
 	keepRecentTokens := defaultPiDistillSettings.keepRecentTokens
 	if s.piDistillKeepRecentTokens > 0 {
 		keepRecentTokens = s.piDistillKeepRecentTokens
@@ -541,18 +630,27 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	logger.Info("pi cut point computed", "total", len(ctxMsgs), "summarized", len(older), "kept", len(recent))
 
 	// Resolve any previously-distilled placeholder text in the older slice to
-	// the real prior summary before summarizing, so re-distillation doesn't
-	// feed the summarizer "Distillation written to ..." placeholders.
-	olderMsgs := make([]llm.Message, len(older))
-	for i, entry := range older {
-		olderMsgs[i] = resolvePiSummarizationText(logger, entry)
-	}
-
+	// the real prior summary before summarizing (done inside generatePiSummary,
+	// which needs the DB rows for [seq:N] markers as well as the text).
 	var summary string
 	var fallbackNotice string
+	summaryModelID := modelID
+	if checkpoint {
+		// A checkpoint summary is a mechanical reading task over an
+		// already-reduced transcript, and it sits between the user's turns, so
+		// latency is the scarce resource, not capability. Send it to the
+		// conversation provider's cheap fast model rather than the conversation
+		// model, which on an automatic trigger the user never asked to pay for
+		// or wait on.
+		if fast := models.WorkhorseModel(s.llmManager, modelID); fast != "" && fast != modelID {
+			if fastSvc, ferr := s.llmManager.GetService(fast); ferr == nil {
+				summaryModelID, svc = fast, fastSvc
+			}
+		}
+	}
 	if len(older) > 0 {
-		distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-		summary, err = s.generatePiSummary(distillCtx, svc, olderMsgs, instructions)
+		distillCtx, cancel := context.WithTimeout(ctx, compactionSummaryTimeout)
+		summary, err = s.generatePiSummary(distillCtx, svc, older, instructions, checkpoint)
 		cancel()
 		if err != nil {
 			// Some models decline summarization prompts (e.g. fable returns
@@ -560,19 +658,20 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 			// transcripts). Retry once with the server's default model before
 			// giving up.
 			fallbackID := s.effectiveDefaultModel(s.getModelList())
-			if fallbackID == "" || fallbackID == modelID {
-				logger.Warn("no fallback model available for summarization retry", "model", modelID, "default_model", fallbackID)
+			if fallbackID == "" || fallbackID == summaryModelID {
+				logger.Warn("no fallback model available for summarization retry", "model", summaryModelID, "default_model", fallbackID)
 			} else {
 				fallbackErr := err
 				logger.Warn("pi summarization failed; retrying with default model", "error", err, "fallback_model", fallbackID)
 				if fallbackSvc, ferr := s.llmManager.GetService(fallbackID); ferr != nil {
 					logger.Error("Failed to get fallback LLM service", "model", fallbackID, "error", ferr)
 				} else {
-					distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-					summary, err = s.generatePiSummary(distillCtx, fallbackSvc, olderMsgs, instructions)
+					distillCtx, cancel := context.WithTimeout(ctx, compactionSummaryTimeout)
+					summary, err = s.generatePiSummary(distillCtx, fallbackSvc, older, instructions, checkpoint)
 					cancel()
 					if err == nil {
-						fallbackNotice = fmt.Sprintf("Note: %s failed to summarize the conversation (%v); the summary was generated by %s instead.", modelID, fallbackErr, fallbackID)
+						fallbackNotice = fmt.Sprintf("Note: %s failed to summarize the conversation (%v); the summary was generated by %s instead.", summaryModelID, fallbackErr, fallbackID)
+						summaryModelID = fallbackID
 					}
 				}
 			}
@@ -595,7 +694,16 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	// would be misleading. We therefore store the summary text inline in
 	// user_data (no editable temp file) and put it directly in the message
 	// body so it renders as-is.
-	wrapped := piCompactionSummaryPrefix + summary + piCompactionSummarySuffix
+	//
+	// The checkpoint variant appends host-known repo facts (stage 3) and a
+	// retrieval note telling the reading model that the summarized messages are
+	// still in the database and how to read them by [seq:N].
+	var wrapped string
+	if checkpoint {
+		wrapped = checkpointSummaryPrefix + summary + checkpointHostFacts(cwd, older) + checkpointSummaryRetrievalSuffix
+	} else {
+		wrapped = piCompactionSummaryPrefix + summary + piCompactionSummarySuffix
+	}
 	// Build the summary message (if any) plus the verbatim recent tail, then
 	// write them all in ONE transaction. Doing each in its own Tx fired a
 	// full conversation-list recompute per message (one per commit hook),
@@ -627,7 +735,15 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 		userData := map[string]string{
 			"distilled":            "true",
 			"distillation_content": wrapped,
-			"distill_method":       distillMethodCompact,
+			"distill_method":       method,
+		}
+		if checkpoint {
+			// Provenance: which span was summarized, and which model actually
+			// wrote it. On an automatic compaction the user did not choose
+			// either, so both belong on the message rather than only in a log.
+			userData["summarizer_model"] = summaryModelID
+			userData["compacts_first_sequence_id"] = strconv.FormatInt(older[0].source.SequenceID, 10)
+			userData["compacts_through_sequence_id"] = strconv.FormatInt(older[len(older)-1].source.SequenceID, 10)
 		}
 		// Attach the summarization calls' usage (primary + fallback) to the
 		// summary message so compaction cost is visible in cost reporting.

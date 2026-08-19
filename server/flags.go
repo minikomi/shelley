@@ -28,3 +28,29 @@ var FlagPerformanceHUD = featureflags.Register(featureflags.Flag{
 	Description: "Show a heads-up display of UI recomputation counters (also available via __shelleyPerf in the console).",
 	Default:     false,
 })
+
+// FlagAutomaticCompaction switches compaction from a manual, task-report
+// summarizer to an automatic, checkpoint-style one. When false (the default),
+// /compact behaves exactly as before: the user triggers it, and the summary is
+// pi's chronological task report.
+//
+// When true, two things change together, because neither is much use alone:
+//
+//  1. Compaction triggers itself. A turn ending over
+//     compactionThresholdFraction of the model's context window schedules a
+//     compaction, so a long conversation shrinks without the user watching a
+//     usage bar (see maybeScheduleCompaction).
+//  2. The summary becomes a topic-based checkpoint whose claims carry [seq:N]
+//     pointers back to the messages they came from. An automatic summarizer is
+//     one the user did not ask for and does not review, so it has to be
+//     recoverable: the summarized rows stay in the database, and the summary
+//     tells the reading model how to query them (see
+//     checkpointCompactionSummarySuffix).
+//
+// The underlying mechanism is unchanged either way — same cut point, same
+// verbatim recent tail, same generation bump, same rollback on failure.
+var FlagAutomaticCompaction = featureflags.Register(featureflags.Flag{
+	Name:        "automatic-compaction",
+	Description: "Compact long conversations automatically, using topic-based checkpoint summaries with [seq:N] pointers back to the original messages.",
+	Default:     false,
+})

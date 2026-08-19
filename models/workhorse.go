@@ -36,7 +36,7 @@ var workhorseFamilies = map[Provider]workhorseFamily{
 // that call fails, or no workhorse is configured, it uses the conversation
 // model once.
 func WorkhorseDo(ctx context.Context, p WorkhorseProvider, conversationModelID string, req *llm.Request) (*llm.Response, error) {
-	modelID := workhorseModel(p, conversationModelID)
+	modelID := WorkhorseModel(p, conversationModelID)
 	if modelID == "" {
 		return nil, fmt.Errorf("no workhorse model available (conversation model %q)", conversationModelID)
 	}
@@ -60,7 +60,10 @@ func WorkhorseDo(ctx context.Context, p WorkhorseProvider, conversationModelID s
 	return do(conversationModelID)
 }
 
-func workhorseModel(c WorkhorseProvider, conversationModelID string) string {
+// WorkhorseModel returns the cheap fast model to use for a background task on
+// behalf of conversationModelID, or conversationModelID itself when its
+// provider has no workhorse family configured.
+func WorkhorseModel(c WorkhorseProvider, conversationModelID string) string {
 	info := c.GetModelInfo(conversationModelID)
 	if info == nil {
 		return conversationModelID

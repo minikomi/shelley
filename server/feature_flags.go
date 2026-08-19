@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -92,4 +93,31 @@ func (s *Server) handleDeleteFeatureFlag(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// featureFlagEnabled returns the effective boolean value of a registered flag:
+// its stored override if there is one, otherwise its registered default.
+//
+// Read at the point of use rather than cached, so toggling a flag takes effect
+// on the next operation without a restart. A read error falls back to the
+// default: a flag is by definition the safe-to-be-wrong path, and failing a
+// user's action because a flag lookup failed would be worse than running the
+// default behavior.
+func (s *Server) featureFlagEnabled(ctx context.Context, flag featureflags.Flag) bool {
+	def, _ := flag.Default.(bool)
+	overrides, err := s.db.GetAllFeatureFlagOverrides(ctx)
+	if err != nil {
+		s.logger.Warn("Failed to read feature flag overrides; using default", "flag", flag.Name, "error", err)
+		return def
+	}
+	raw, ok := overrides[flag.Name]
+	if !ok {
+		return def
+	}
+	var b bool
+	if err := json.Unmarshal([]byte(raw), &b); err != nil {
+		s.logger.Warn("Feature flag override is not a bool; using default", "flag", flag.Name, "error", err)
+		return def
+	}
+	return b
 }

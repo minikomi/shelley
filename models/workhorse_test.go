@@ -97,8 +97,8 @@ func TestWorkhorseModel(t *testing.T) {
 		{"unknown-custom-model", "unknown-custom-model"},
 		{"", ""},
 	} {
-		if got := workhorseModel(catalog, test.conversationModel); got != test.want {
-			t.Errorf("workhorseModel(%q) = %q, want %q", test.conversationModel, got, test.want)
+		if got := WorkhorseModel(catalog, test.conversationModel); got != test.want {
+			t.Errorf("WorkhorseModel(%q) = %q, want %q", test.conversationModel, got, test.want)
 		}
 	}
 }

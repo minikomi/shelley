@@ -1818,6 +1818,7 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 		Model:            modelID,
 		UserEmail:        cm.userEmail,
 		Port:             cm.serverPort,
+		DBPath:           DBPath,
 	}
 	cm.mu.Unlock()
 
