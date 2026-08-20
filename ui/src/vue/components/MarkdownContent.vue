@@ -19,6 +19,8 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { highlightCode, normalizeCodeLanguage } from "../../services/markdownHighlight";
+import { applyHighlightTokens } from "../../utils/codeHighlight";
 import { COMMENT_ICON } from "../../utils/icons";
 import { renderMarkdownToSafeHTML } from "../../utils/markdownRender";
 import { perfWrap } from "../../utils/perf";
@@ -77,22 +79,62 @@ watch(
   [html, containerRef],
   () => {
     const root = containerRef.value;
-    if (!root || !props.commentable) return;
-    for (const img of root.querySelectorAll("img")) {
-      // The wrapper marks an image as already done: this runs whenever the
-      // container ref settles, not only when the HTML is replaced.
-      if (!isCommentable(img) || img.closest(".commentable-image-link")) continue;
-      img.setAttribute("role", "button");
-      img.setAttribute("tabindex", "0");
-      img.classList.add("commentable-image");
-      const wrap = document.createElement("span");
-      wrap.className = "commentable-image-link";
-      img.replaceWith(wrap);
-      wrap.append(img, badge());
+    if (!root) return;
+    if (props.commentable) {
+      for (const img of root.querySelectorAll("img")) {
+        // The wrapper marks an image as already done: this runs whenever the
+        // container ref settles, not only when the HTML is replaced.
+        if (!isCommentable(img) || img.closest(".commentable-image-link")) continue;
+        img.setAttribute("role", "button");
+        img.setAttribute("tabindex", "0");
+        img.classList.add("commentable-image");
+        const wrap = document.createElement("span");
+        wrap.className = "commentable-image-link";
+        img.replaceWith(wrap);
+        wrap.append(img, badge());
+      }
     }
+    highlightFencedCode(root);
   },
   { flush: "post", immediate: true },
 );
+
+function languageFor(code: HTMLElement): string | undefined {
+  for (const className of code.classList) {
+    const match = /^language-(.+)$/.exec(className);
+    if (match) return normalizeCodeLanguage(match[1]);
+  }
+  return undefined;
+}
+
+function highlightFencedCode(root: HTMLElement): void {
+  for (const code of root.querySelectorAll<HTMLElement>("pre > code")) {
+    if (code.dataset.shelleyCodeHighlight) continue;
+    const language = languageFor(code);
+    if (!language) continue;
+
+    const source = code.textContent ?? "";
+    code.dataset.shelleyCodeHighlight = "pending";
+    void highlightCode(language, source)
+      .then((result) => {
+        // v-html can replace this code block while the worker is still tokenizing.
+        if (!root.contains(code) || code.dataset.shelleyCodeHighlight !== "pending") return;
+        if (code.textContent !== source) return;
+        if (result.kind === "unknown") {
+          delete code.dataset.shelleyCodeHighlight;
+          return;
+        }
+        applyHighlightTokens(code, source, result.lines);
+        code.dataset.shelleyCodeHighlight = language;
+      })
+      .catch((error: unknown) => {
+        if (root.contains(code) && code.dataset.shelleyCodeHighlight === "pending") {
+          delete code.dataset.shelleyCodeHighlight;
+        }
+        console.error("Syntax highlighting failed", error);
+      });
+  }
+}
 
 function badge(): HTMLElement {
   const el = document.createElement("span");

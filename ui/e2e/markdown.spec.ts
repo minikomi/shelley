@@ -26,6 +26,57 @@ test.describe("Markdown rendering", () => {
     await expect(agent.locator("code")).toContainText("code");
   });
 
+  test("highlights bundled languages and aliases without changing plain fences", async ({ page, request }) => {
+    const highlightedFences = [
+      ["elixir", "answer = 42\n"],
+      ["haskell", "answer :: Int\nanswer = 42\n"],
+      ["zig", "const answer: i32 = 42;\n"],
+      ["Dockerfile", "FROM alpine:latest\n"],
+      ["nix", "answer = 42;\n"],
+      ["clojure", "(def answer 42)\n"],
+      ["clj", "(def alias-answer 42)\n"],
+    ] as const;
+    const unknownSource = "leave_this_plain();\n";
+    const unlabeledSource = "also_plain();\n";
+    const markdown = [
+      ...highlightedFences.map(([language, source]) => `\`\`\`${language}\n${source}\`\`\``),
+      `\`\`\`unknown-language\n${unknownSource}\`\`\``,
+      `\`\`\`\n${unlabeledSource}\`\`\``,
+    ].join("\n\n");
+    const slug = await createConversationViaAPI(request, `markdown: ${markdown}`);
+    await page.goto(`/c/${slug}`);
+    await page.waitForLoadState("domcontentloaded");
+
+    const blocks = page.locator(".message-agent").last().locator("pre > code");
+    await expect(blocks).toHaveCount(highlightedFences.length + 2, { timeout: 30000 });
+
+    for (const [index, [language, source]] of highlightedFences.entries()) {
+      const block = blocks.nth(index);
+      await expect(block).toHaveClass(`language-${language}`);
+      const tokens = block.locator(".shelley-code-token");
+      await expect(tokens.first()).toBeAttached({ timeout: 30000 });
+      expect(await block.textContent()).toBe(source);
+    }
+
+    const unknown = blocks.nth(highlightedFences.length);
+    const unlabeled = blocks.nth(highlightedFences.length + 1);
+    await expect(unknown).toHaveClass("language-unknown-language");
+    expect(await unlabeled.getAttribute("class")).toBeNull();
+    expect(await unknown.textContent()).toBe(unknownSource);
+    expect(await unlabeled.textContent()).toBe(unlabeledSource);
+    await expect(unknown.locator(".shelley-code-token")).toHaveCount(0);
+    await expect(unlabeled.locator(".shelley-code-token")).toHaveCount(0);
+
+    const tokens = blocks.nth(0).locator(".shelley-code-token");
+    const tokenCount = await tokens.count();
+    const lightColor = await tokens.first().evaluate((token) => getComputedStyle(token).color);
+    await page.locator("html").evaluate((root) => root.classList.toggle("dark", true));
+    await expect
+      .poll(() => tokens.first().evaluate((token) => getComputedStyle(token).color))
+      .not.toBe(lightColor);
+    expect(await tokens.count()).toBe(tokenCount);
+  });
+
   test("renders local images via the per-message file endpoint", async ({ page, request }) => {
     // The "inline image" predictable pattern writes a tiny PNG into the
     // conversation cwd (/tmp) via bash, then references it with relative-path

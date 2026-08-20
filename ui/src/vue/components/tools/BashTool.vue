@@ -7,7 +7,12 @@
     <div class="bash-tool-header" @click="isExpanded = !isExpanded">
       <div class="bash-tool-summary">
         <span class="bash-tool-emoji" :class="{ running: isRunning }">🛠️</span>
-        <span class="bash-tool-command" :title="command">{{ displayCommand }}</span>
+        <HighlightedCode
+          class="bash-tool-command"
+          :source="displayCommand"
+          language="shellscript"
+          :title="command"
+        />
         <span v-if="displayData?.workingDir" class="bash-tool-cwd" :title="displayData.workingDir">
           in {{ displayData.workingDir }}
         </span>
@@ -47,7 +52,12 @@
       </div>
       <div class="bash-tool-section">
         <div class="bash-tool-label">Command:</div>
-        <pre class="bash-tool-code">{{ command }}</pre>
+        <HighlightedCode
+          tag="pre"
+          class="bash-tool-code"
+          :source="command"
+          language="shellscript"
+        />
       </div>
 
       <div v-if="isRunning && streamingOutput" class="bash-tool-section">
@@ -76,6 +86,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import type { LLMContent } from "../../../types";
+import HighlightedCode from "../HighlightedCode.vue";
 import AnsiText from "./AnsiText.vue";
 import { useToolExpanded, useInToolDetail } from "../../composables/toolDetail";
 import ToolChevron from "./ToolChevron.vue";
