@@ -402,6 +402,12 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, timeout 
 	if execCtx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("[command timed out after %s, showing output until timeout]\n%s", timeout, out)
 	}
+	if execCtx.Err() == context.Canceled {
+		// cmd.Wait commonly reports only "signal: killed" after CommandContext
+		// stops the process. Preserve the cancellation cause so the loop can
+		// classify this as an interrupted tool rather than an ordinary failure.
+		return "", fmt.Errorf("[command cancelled: %w]\n%s", execCtx.Err(), out)
+	}
 	if err != nil {
 		return "", fmt.Errorf("[command failed: %w]\n%s", err, out)
 	}

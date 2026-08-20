@@ -13,6 +13,8 @@ import (
 	"shelley.exe.dev/subpub"
 )
 
+func alwaysPublishStream() bool { return true }
+
 // TestStreamFlusherAssignsMonotonicSeq verifies that each partial update the
 // streamFlusher broadcasts carries a monotonically increasing per-conversation
 // sequence number, regardless of whether the delta is text (batched) or a
@@ -51,7 +53,7 @@ func TestStreamFlusherAssignsMonotonicSeq(t *testing.T) {
 	// Use a long interval so the periodic timer never fires on its own; only
 	// explicit Flushes and kind-change boundaries emit deltas. This keeps the
 	// expected sequence deterministic.
-	sf := newStreamFlusher(manager, time.Hour)
+	sf := newStreamFlusher(manager, time.Hour, alwaysPublishStream)
 
 	// Thinking deltas are batched like text; pushing a delta of a different
 	// kind flushes the previous buffer first.
@@ -119,7 +121,7 @@ func TestStreamFlusherBatchesThinkingDeltas(t *testing.T) {
 	}()
 
 	// Long interval: only explicit Flushes and kind-change boundaries emit.
-	sf := newStreamFlusher(manager, time.Hour)
+	sf := newStreamFlusher(manager, time.Hour, alwaysPublishStream)
 
 	// A burst of thinking deltas must coalesce into ONE broadcast.
 	sf.Push(llm.StreamDelta{Type: "thinking", Text: "a", Index: 0})
@@ -188,7 +190,7 @@ func TestThinkingDeltaFloodDoesNotDisconnectSubscriber(t *testing.T) {
 	// Subscribe and never drain: a stalled client.
 	_, status := manager.subpub.SubscribeWithStatus(subCtx, -1)
 
-	sf := newStreamFlusher(manager, 50*time.Millisecond)
+	sf := newStreamFlusher(manager, 50*time.Millisecond, alwaysPublishStream)
 	for range subpub.SubscriberQueueCapacity + 50 {
 		sf.Push(llm.StreamDelta{Type: "thinking", Text: "t", Index: 0})
 	}
@@ -276,7 +278,7 @@ setup:
 	// fast as a provider SSE stream hands them to OnStream. Well beyond the
 	// combined bounded-queue capacity (~400) if broadcast per-token; a
 	// handful of flushes if batched.
-	sf := newStreamFlusher(manager, 50*time.Millisecond)
+	sf := newStreamFlusher(manager, 50*time.Millisecond, alwaysPublishStream)
 	for range 2000 {
 		sf.Push(llm.StreamDelta{Type: "thinking", Text: "tok ", Index: 0})
 	}

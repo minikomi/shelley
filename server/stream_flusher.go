@@ -15,6 +15,9 @@ import (
 type streamFlusher struct {
 	cm       *ConversationManager
 	interval time.Duration
+	// shouldPublish rejects buffered deltas from a loop generation that has
+	// since been cancelled or replaced.
+	shouldPublish func() bool
 
 	mu      sync.Mutex
 	buf     []llm.StreamDelta
@@ -29,10 +32,11 @@ func (sf *streamFlusher) nextSeq() int64 {
 	return sf.cm.streamDeltaSeq.Add(1)
 }
 
-func newStreamFlusher(cm *ConversationManager, interval time.Duration) *streamFlusher {
+func newStreamFlusher(cm *ConversationManager, interval time.Duration, shouldPublish func() bool) *streamFlusher {
 	return &streamFlusher{
-		cm:       cm,
-		interval: interval,
+		cm:            cm,
+		interval:      interval,
+		shouldPublish: shouldPublish,
 	}
 }
 
@@ -70,6 +74,9 @@ func (sf *streamFlusher) flush() {
 	}
 	sf.mu.Unlock()
 
+	if !sf.shouldPublish() {
+		return
+	}
 	for i := range deltas {
 		sf.cm.broadcastStream(StreamResponse{
 			StreamDelta: &deltas[i],

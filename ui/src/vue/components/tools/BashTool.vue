@@ -80,6 +80,7 @@ import AnsiText from "./AnsiText.vue";
 import { useToolExpanded, useInToolDetail } from "../../composables/toolDetail";
 import ToolChevron from "./ToolChevron.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { isCancelledToolResult } from "../../utils/toolStatus";
 
 interface BashDisplayData {
   workingDir: string;
@@ -160,9 +161,7 @@ const output = computed(() =>
     : "",
 );
 
-const isCancelled = computed(
-  () => props.hasError && output.value.includes("Tool execution cancelled by user"),
-);
+const isCancelled = computed(() => props.hasError && isCancelledToolResult(output.value));
 
 const displayCommand = computed(() => {
   const cmd = command.value;
