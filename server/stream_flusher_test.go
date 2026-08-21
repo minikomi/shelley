@@ -244,7 +244,7 @@ func TestUnifiedStreamSurvivesThinkingFlood(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := newBlockingStreamWriter()
+	w := newBlockingStreamWriter(0)
 	req := httptest.NewRequest(http.MethodGet, "/api/stream2?conversation_list_hash="+currentHash, nil).WithContext(ctx)
 	done := make(chan struct{})
 	go func() {

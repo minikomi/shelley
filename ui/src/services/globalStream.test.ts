@@ -279,13 +279,13 @@ await run("pageshow (bfcache restore) reconnects a stale connection", () => {
   s.handle.close();
 });
 
-await run("resume during a CONNECTING attempt does not tear it down", () => {
+await run("resume reconnects a stale CONNECTING attempt", () => {
   reset();
   markAllStaleCalls = 0;
   const s = newStream();
   // The very first EventSource is created but has not opened yet
-  // (readyState CONNECTING). A resume signal arriving now must leave the
-  // in-progress handshake alone rather than churning it.
+  // (readyState CONNECTING). Safari can leave this state stuck indefinitely
+  // after a background or network transition.
   const connecting = latest();
   assert(connecting.readyState === 0, "socket is CONNECTING");
   now += 120000; // even with an old wall clock
@@ -293,8 +293,22 @@ await run("resume during a CONNECTING attempt does not tear it down", () => {
   fakeDocument.dispatch("visibilitychange");
   fakeWindow.dispatch("pageshow");
   fakeWindow.dispatch("online");
-  assert(!connecting.closed, "CONNECTING socket left intact");
-  assert(FakeEventSource.instances.length === 1, "no extra EventSource opened");
+  assert(connecting.closed, "stale CONNECTING socket closed");
+  assert(FakeEventSource.instances.length === 2, "replacement EventSource opened");
+  s.handle.close();
+});
+
+await run("late error from a replaced source cannot close the replacement", () => {
+  reset();
+  const s = newStream();
+  const old = latest();
+  const oldOnError = old.onerror;
+  s.handle.forceReconnect();
+  const replacement = latest();
+
+  oldOnError?.();
+  assert(!replacement.closed, "replacement remains open after stale callback");
+  assert(FakeEventSource.instances.length === 2, "stale callback did not reconnect again");
   s.handle.close();
 });
 

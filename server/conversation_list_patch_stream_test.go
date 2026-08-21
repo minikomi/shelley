@@ -302,7 +302,7 @@ func TestConversationListPatchStreamRapidReordersApplyCleanly(t *testing.T) {
 	<-done
 }
 
-func TestConversationListPatchStreamCurrentHashSkipsInitial(t *testing.T) {
+func TestConversationListPatchStreamCurrentHashSendsHeartbeat(t *testing.T) {
 	t.Parallel()
 	server, _, _ := newTestServer(t)
 	// Prime current state.
@@ -320,8 +320,11 @@ func TestConversationListPatchStreamCurrentHashSkipsInitial(t *testing.T) {
 
 	select {
 	case <-rec.flushed:
-		t.Fatalf("did not expect any events; body=%s", rec.getString())
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatalf("expected initial heartbeat; body=%s", rec.getString())
+	}
+	if !strings.Contains(rec.getString(), `"heartbeat":true`) {
+		t.Fatalf("expected initial heartbeat; body=%s", rec.getString())
 	}
 	cancel()
 	<-done

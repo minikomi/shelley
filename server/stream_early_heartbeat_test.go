@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,11 +82,9 @@ func TestConversationStreamFlushesEarlyHeartbeat(t *testing.T) {
 	<-done
 }
 
-// TestConversationListOnlyStreamDoesNotSendEarlyHeartbeat preserves the
-// existing contract for the list-only stream: when the client supplies a
-// conversation_list_hash that matches the current snapshot and no conversation,
-// the server stays silent until something actually changes.
-func TestConversationListOnlyStreamDoesNotSendEarlyHeartbeat(t *testing.T) {
+// TestConversationListOnlyStreamFlushesEarlyHeartbeat verifies that a matching
+// list hash still commits the SSE response immediately.
+func TestConversationListOnlyStreamFlushesEarlyHeartbeat(t *testing.T) {
 	t.Parallel()
 	server, _, _ := newTestServer(t)
 	if err := server.conversationListStream.recompute(context.Background()); err != nil {
@@ -105,8 +104,16 @@ func TestConversationListOnlyStreamDoesNotSendEarlyHeartbeat(t *testing.T) {
 
 	select {
 	case <-rec.flushed:
-		t.Fatalf("list-only stream should be silent until a change; got body=%q", rec.getString())
-	case <-time.After(150 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatalf("list-only stream did not flush an initial heartbeat; body=%q", rec.getString())
+	}
+	var first StreamResponse
+	body := rec.getString()
+	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(body, "data: "), "\n\n")), &first); err != nil {
+		t.Fatalf("unmarshal initial heartbeat: %v; body=%q", err, body)
+	}
+	if !first.Heartbeat {
+		t.Fatalf("first chunk should be a heartbeat, got %+v", first)
 	}
 
 	cancel()
@@ -188,13 +195,16 @@ type blockingStreamWriter struct {
 	releaseOnce sync.Once
 	deadlineMu  sync.Mutex
 	deadlines   []time.Time
+	passWrites  int32
+	writes      atomic.Int32
 }
 
-func newBlockingStreamWriter() *blockingStreamWriter {
+func newBlockingStreamWriter(passWrites int32) *blockingStreamWriter {
 	return &blockingStreamWriter{
-		header:  make(http.Header),
-		entered: make(chan struct{}),
-		release: make(chan struct{}),
+		header:     make(http.Header),
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+		passWrites: passWrites,
 	}
 }
 
@@ -202,6 +212,9 @@ func (w *blockingStreamWriter) Header() http.Header { return w.header }
 func (w *blockingStreamWriter) WriteHeader(int)     {}
 func (w *blockingStreamWriter) Flush()              {}
 func (w *blockingStreamWriter) Write(p []byte) (int, error) {
+	if w.writes.Add(1) <= w.passWrites {
+		return len(p), nil
+	}
 	w.enteredOnce.Do(func() { close(w.entered) })
 	<-w.release
 	return len(p), nil
@@ -245,7 +258,7 @@ func TestUnifiedStreamClosesWhenItsSubscriptionFallsBehind(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := newBlockingStreamWriter()
+	w := newBlockingStreamWriter(1)
 	req := httptest.NewRequest(http.MethodGet, "/api/stream2?conversation_list_hash="+currentHash, nil).WithContext(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -316,7 +329,7 @@ func TestLegacyStreamLogsAndStaysOpenWhenSubscriptionFallsBehind(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	w := newBlockingStreamWriter()
+	w := newBlockingStreamWriter(0)
 	req := httptest.NewRequest(http.MethodGet, "/api/conversation/"+conversation.ConversationID+"/stream", nil).WithContext(ctx)
 	done := make(chan struct{})
 	go func() {

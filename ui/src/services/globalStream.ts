@@ -163,18 +163,11 @@ export function connectGlobalStream({
     connect();
   };
 
-  // reconnectIfStale reconnects only when the current connection looks dead:
-  // no EventSource, an explicitly-closed one, or one that hasn't delivered a
-  // frame within STALE_MS (one missed heartbeat plus margin). Called when the
-  // tab is brought back to the foreground or the network returns, where a
-  // zombie socket can report readyState OPEN while being silently dead.
+  // reconnectIfStale reconnects when the current connection has not opened or
+  // delivered a frame within STALE_MS. Safari can leave EventSource stuck in
+  // CONNECTING after a background or network transition without firing error.
   const reconnectIfStale = () => {
     if (closed) return;
-    // A CONNECTING socket (readyState 0) is mid-handshake and making
-    // progress; tearing it down would only restart it. Leave it be and let
-    // its onopen/onerror resolve. We only act on a missing socket, an
-    // explicitly-closed one, or an OPEN-but-silent (zombie) one.
-    if (eventSource && eventSource.readyState === 0) return;
     const stale =
       !eventSource || eventSource.readyState === 2 || Date.now() - lastFrameAt > STALE_MS;
     if (stale) reconnectNow();
@@ -263,7 +256,9 @@ export function connectGlobalStream({
     // lastFrameAt and tear down the freshly-opened one.
     lastFrameAt = Date.now();
     connectionOpenedAt = 0;
-    eventSource = api.createStream({ conversationListHash: getHash() ?? undefined });
+    const source = api.createStream({ conversationListHash: getHash() ?? undefined });
+    eventSource = source;
+    resetHeartbeat();
 
     const markConnected = () => {
       // NB: attempts is NOT reset here. A connection only counts as healthy
@@ -285,12 +280,14 @@ export function connectGlobalStream({
       hasEverConnected = true;
     };
 
-    eventSource.onopen = () => {
+    source.onopen = () => {
+      if (eventSource !== source) return;
       markConnected();
       resetHeartbeat();
     };
 
-    eventSource.onmessage = (ev) => {
+    source.onmessage = (ev) => {
+      if (eventSource !== source) return;
       markConnected();
       resetHeartbeat();
       try {
@@ -301,9 +298,9 @@ export function connectGlobalStream({
       }
     };
 
-    eventSource.onerror = () => {
-      if (closed) return;
-      eventSource?.close();
+    source.onerror = () => {
+      if (closed || eventSource !== source) return;
+      source.close();
       eventSource = null;
       clearHeartbeat();
       // A connection that survived STABLE_CONNECTION_MS before dying was
