@@ -25,6 +25,14 @@ export const SLASH_COMMANDS = {
     description: "compacts this conversation",
     takesArgs: true,
   },
+  CHECKPOINT: {
+    // Same compaction mechanics as /compact, but the summary uses the
+    // topic-based checkpoint format (durable topics with context, decisions,
+    // rationale, anchors) instead of the task-report format.
+    command: "/checkpoint",
+    description: "compacts with a topic-based checkpoint summary",
+    takesArgs: true,
+  },
   DISTILL: {
     // Legacy alias for /compact, kept for compatibility. Compacts too.
     command: "/distill",

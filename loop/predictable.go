@@ -340,6 +340,14 @@ func (s *PredictableService) Do(ctx context.Context, req *llm.Request) (*llm.Res
 			return s.makeResponse("", inputTokens), nil
 		}
 
+		// A checkpoint summarization request (server/distill_pi.go's
+		// checkpointSummarizationPrompt) must yield structurally valid
+		// topic-Markdown, or the server rejects the summary and rolls the
+		// compaction back.
+		if strings.Contains(inputText, "topic-based context checkpoint") {
+			return s.makeResponse("## Predictable checkpoint \u2014 active\n- **Context:** Summarized by the predictable model.", inputTokens), nil
+		}
+
 		// Default response for undefined inputs
 		return s.makeResponse("edit predictable.go to add a response for that one...", inputTokens), nil
 	}

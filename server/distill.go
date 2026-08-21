@@ -103,14 +103,19 @@ func truncateUTF8(s string, maxBytes int) string {
 	return s[:maxBytes] + "..."
 }
 
-// distillMethodCompact is the single conversation-shrinking strategy: it uses
-// the compaction algorithm (modeled on the pi coding agent) to summarize older
-// messages and keep recent ones verbatim. distillMethodDefault is the legacy
-// "default" briefing strategy value, retained only so the endpoint keeps
-// accepting it for compatibility (it is coerced to compaction).
+// distillMethodCompact is the default conversation-shrinking strategy: it
+// uses the compaction algorithm (modeled on the pi coding agent) to summarize
+// older messages and keep recent ones verbatim. distillMethodCheckpoint uses
+// the same cut-point/verbatim-tail mechanics but swaps the summarizer to the
+// topic-based checkpoint prompt (see checkpointSummarizationPrompt), excludes
+// hidden thinking from the summarizer input, validates the output structure,
+// and omits the derived file-operation tags. distillMethodDefault is the
+// legacy "default" briefing strategy value, retained only so the endpoint
+// keeps accepting it for compatibility (it is coerced to compaction).
 const (
-	distillMethodDefault = "default"
-	distillMethodCompact = "compact"
+	distillMethodDefault    = "default"
+	distillMethodCompact    = "compact"
+	distillMethodCheckpoint = "checkpoint"
 )
 
 // steeringSection formats optional user-provided guidance that steers what the
@@ -119,7 +124,7 @@ func steeringSection(instructions string) string {
 	return "\n\n## User Guidance\n\nThe user provided the following guidance on what to preserve or emphasize in this distillation. Follow it closely:\n\n" + instructions
 }
 
-func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, sourceGeneration int64, messages []generated.Message) {
+func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, sourceSlug, modelID, method, instructions string, sourceGeneration int64, messages []generated.Message) {
 	defer func() {
 		s.mu.Lock()
 		manager, ok := s.activeConversations[conversationID]
@@ -130,7 +135,7 @@ func (s *Server) runDistillNewGeneration(ctx context.Context, conversationID, so
 		}
 	}()
 
-	s.performPiDistillation(ctx, conversationID, sourceSlug, modelID, instructions, sourceGeneration, messages)
+	s.performPiDistillation(ctx, conversationID, sourceSlug, modelID, method, instructions, sourceGeneration, messages)
 	// The new generation's messages carry no usage data yet, so the UI's
 	// context-usage bar would keep showing the pre-distillation size until the
 	// next agent turn. Broadcast an estimate of the new generation's context
@@ -206,9 +211,10 @@ type DistillNewGenerationRequest struct {
 	SourceConversationID string `json:"source_conversation_id"`
 	Model                string `json:"model,omitempty"`
 	Cwd                  string `json:"cwd,omitempty"`
-	// Method selects the distillation strategy: "default" (single briefing
-	// message) or "compact" (summarize-old + keep-recent-verbatim).
-	// Empty defaults to "default".
+	// Method selects the summarization strategy: "compact" (pi task-report
+	// summary; also the value for empty or legacy "default") or "checkpoint"
+	// (topic-based checkpoint summary). Both share the same compaction
+	// mechanics (cut point, verbatim recent tail, rollback).
 	Method string `json:"method,omitempty"`
 	// Instructions is optional free-form user guidance that steers what the
 	// distillation should preserve or emphasize.
@@ -236,15 +242,25 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// We have consolidated on compaction as the single strategy. The legacy
+	// We have consolidated on compaction as the base strategy. The legacy
 	// "default" distillation method is retained only for request
-	// compatibility: any method value (including empty or "default") is
-	// coerced to compaction. Reject only clearly bogus method strings.
-	if req.Method != "" && req.Method != distillMethodDefault && req.Method != distillMethodCompact {
+	// compatibility: empty and "default" are coerced to compaction.
+	// "checkpoint" selects the topic-based checkpoint summarizer. Reject
+	// clearly bogus method strings.
+	var method string
+	switch req.Method {
+	case "", distillMethodDefault, distillMethodCompact:
+		method = distillMethodCompact
+	case distillMethodCheckpoint:
+		if !s.featureFlagBool(ctx, FlagCheckpointCompaction) {
+			http.Error(w, "checkpoint compaction is disabled", http.StatusNotFound)
+			return
+		}
+		method = distillMethodCheckpoint
+	default:
 		http.Error(w, fmt.Sprintf("unknown distill method %q", req.Method), http.StatusBadRequest)
 		return
 	}
-	method := distillMethodCompact
 
 	sourceConv, err := s.db.GetConversationByID(ctx, req.SourceConversationID)
 	if err != nil {
@@ -375,7 +391,7 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 
 	ctxNoCancel := context.WithoutCancel(ctx)
 	go func() {
-		s.runDistillNewGeneration(ctxNoCancel, req.SourceConversationID, sourceSlug, modelID, req.Instructions, sourceGeneration, messages)
+		s.runDistillNewGeneration(ctxNoCancel, req.SourceConversationID, sourceSlug, modelID, method, req.Instructions, sourceGeneration, messages)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

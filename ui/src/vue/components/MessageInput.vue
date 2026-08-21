@@ -335,6 +335,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "../composables/i18n";
+import { useFeatureFlag } from "../composables/featureFlags";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import { isImeComposing } from "../../utils/imeComposing";
@@ -783,10 +784,13 @@ const slashQuery = computed(() => {
   const match = message.value.match(/^\/[a-zA-Z0-9_-]*$/);
   return match ? match[0].slice(1).toLowerCase() : null;
 });
+const checkpointCompactionEnabled = useFeatureFlag("checkpoint-compaction");
 const slashSuggestions = computed(() => {
   if (slashQuery.value === null) return [];
-  return Object.values(SLASH_COMMANDS).filter((item) =>
-    item.command.slice(1).startsWith(slashQuery.value!),
+  return Object.values(SLASH_COMMANDS).filter(
+    (item) =>
+      (item !== SLASH_COMMANDS.CHECKPOINT || checkpointCompactionEnabled.value) &&
+      item.command.slice(1).startsWith(slashQuery.value!),
   );
 });
 const exactSlashCommand = computed(() =>

@@ -49,10 +49,17 @@ const sourceSlug = computed(() => parsed.value.sourceSlug);
 const isInProgress = computed(() => status.value === "in_progress");
 const isError = computed(() => status.value === "error");
 const isCompact = computed(() => parsed.value.method === "compact");
-// Verb/noun vary by strategy: "compact" vs "distill".
-const gerund = computed(() => (isCompact.value ? "Compacting" : "Distilling"));
-const pastParticiple = computed(() => (isCompact.value ? "Compacted" : "Distilled"));
-const noun = computed(() => (isCompact.value ? "Compaction" : "Distillation"));
+const isCheckpoint = computed(() => parsed.value.method === "checkpoint");
+// Verb/noun vary by strategy: "checkpoint" vs "compact" vs "distill".
+const gerund = computed(() =>
+  isCheckpoint.value ? "Checkpointing" : isCompact.value ? "Compacting" : "Distilling",
+);
+const pastParticiple = computed(() =>
+  isCheckpoint.value ? "Checkpointed" : isCompact.value ? "Compacted" : "Distilled",
+);
+const noun = computed(() =>
+  isCheckpoint.value ? "Checkpoint" : isCompact.value ? "Compaction" : "Distillation",
+);
 
 const containerClass = computed(() =>
   isError.value

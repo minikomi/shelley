@@ -1930,6 +1930,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		Model:            modelID,
 		UserEmail:        cm.userEmail,
 		Port:             cm.serverPort,
+		DBPath:           DBPath,
 	}
 	cm.mu.Unlock()
 

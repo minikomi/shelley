@@ -26,6 +26,16 @@ func TestFlagReflectionEmojiFaviconRegistered(t *testing.T) {
 	}
 }
 
+func TestCheckpointCompactionFlagRegisteredOff(t *testing.T) {
+	flag, ok := featureflags.Lookup("checkpoint-compaction")
+	if !ok {
+		t.Fatal("checkpoint-compaction not registered")
+	}
+	if flag.Default != false {
+		t.Fatalf("checkpoint-compaction default = %v, want false", flag.Default)
+	}
+}
+
 func TestPatchStrategyFlagsRegisteredOff(t *testing.T) {
 	for _, name := range []string{"patch-simple", "patch-openai-raw"} {
 		flag, ok := featureflags.Lookup(name)

@@ -256,7 +256,7 @@ func All() []Model {
 			Build: antSvc(ant.Claude46Opus),
 		},
 		{
-			ID: "glm-5.2-fireworks", Provider: ProviderFireworks,
+			ID: "glm-5.2-fireworks", Provider: ProviderFireworks, Tags: "checkpoint",
 			Description: "GLM-5.2 on Fireworks", APIModelName: oai.GLM52Fireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.GLM52Fireworks, "fireworks"),
@@ -286,7 +286,7 @@ func All() []Model {
 			Build: oaiChatSvc(oai.KimiK27CodeFireworks, "fireworks"),
 		},
 		{
-			ID: "kimi-k3-fireworks", Provider: ProviderFireworks,
+			ID: "kimi-k3-fireworks", Provider: ProviderFireworks, Tags: "checkpoint-backup",
 			Description: "Kimi K3 on Fireworks", APIModelName: oai.KimiK3Fireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.KimiK3Fireworks, "fireworks"),

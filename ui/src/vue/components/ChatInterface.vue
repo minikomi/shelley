@@ -519,7 +519,7 @@ const props = withDefaults(
       sourceConversationId: string,
       model: string,
       cwd?: string,
-      method?: "default" | "compact",
+      method?: "default" | "compact" | "checkpoint",
       instructions?: string,
     ) => Promise<void>;
     mostRecentCwd?: string | null;
@@ -559,6 +559,7 @@ const { t } = useI18n();
 const { markdownMode } = useMarkdownMode();
 const { conversationViewMode } = useConversationView();
 const toolPillsEnabled = useFeatureFlag("tool-pills");
+const checkpointCompactionEnabled = useFeatureFlag("checkpoint-compaction");
 const {
   hasUpdate,
   versionInfo,
@@ -2288,11 +2289,23 @@ async function sendMessage(message: string) {
     }
     return;
   }
-  // /compact and its legacy alias /distill both run compaction.
+  // /compact and its legacy alias /distill both run compaction; /checkpoint
+  // runs the same compaction with the topic-based checkpoint summary.
   for (const cmd of [SLASH_COMMANDS.COMPACT.command, SLASH_COMMANDS.DISTILL.command]) {
     if (trimmedMessage === cmd || trimmedMessage.startsWith(`${cmd} `)) {
       const instructions = trimmedMessage.slice(cmd.length).trim();
       await handleDistillCompactNewGeneration(instructions || undefined);
+      return;
+    }
+  }
+  {
+    const cmd = SLASH_COMMANDS.CHECKPOINT.command;
+    if (
+      checkpointCompactionEnabled.value &&
+      (trimmedMessage === cmd || trimmedMessage.startsWith(`${cmd} `))
+    ) {
+      const instructions = trimmedMessage.slice(cmd.length).trim();
+      await handleDistillCompactNewGeneration(instructions || undefined, "checkpoint");
       return;
     }
   }
@@ -2420,13 +2433,16 @@ async function handleCancel() {
   }
 }
 
-async function handleDistillCompactNewGeneration(instructions?: string) {
+async function handleDistillCompactNewGeneration(
+  instructions?: string,
+  method: "compact" | "checkpoint" = "compact",
+) {
   if (!props.conversationId || !props.onDistillNewGeneration) return;
   await props.onDistillNewGeneration(
     props.conversationId,
     selectedModel.value,
     props.currentConversation?.cwd || selectedCwd.value || undefined,
-    "compact",
+    method,
     instructions,
   );
 }

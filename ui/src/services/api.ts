@@ -175,7 +175,7 @@ class ApiService {
     sourceConversationId: string,
     model?: string,
     cwd?: string,
-    method?: "default" | "compact",
+    method?: "default" | "compact" | "checkpoint",
     instructions?: string,
   ): Promise<{ conversation_id: string; current_generation: number }> {
     const response = await fetch(`${this.baseUrl}/conversations/distill-new-generation`, {

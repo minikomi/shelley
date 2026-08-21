@@ -31,6 +31,10 @@ type ShelleyEnv struct {
 	// SHELLEY_PORT and SHELLEY_URL (http://localhost:<port>) are exported so
 	// scripts on the VM can reach the shelley API without the auth proxy.
 	Port int
+	// DBPath is the path to shelley's SQLite database, exposed as SHELLEY_DB
+	// so the agent can read its own conversation history (e.g. resolve
+	// [seq:N] pointers from a checkpoint summary) with sqlite3.
+	DBPath string
 }
 
 // shelleyEnvKeys lists every environment variable name ShelleyEnv may set. We
@@ -45,6 +49,7 @@ var shelleyEnvKeys = []string{
 	"SHELLEY_GIT_ROOT",
 	"SHELLEY_PORT",
 	"SHELLEY_URL",
+	"SHELLEY_DB",
 }
 
 // Environ returns the SHELLEY_* "KEY=VALUE" entries for this context. cwd is the
@@ -72,6 +77,7 @@ func (e ShelleyEnv) Environ(cwd string) []string {
 		add("SHELLEY_PORT", fmt.Sprintf("%d", e.Port))
 		add("SHELLEY_URL", fmt.Sprintf("http://localhost:%d", e.Port))
 	}
+	add("SHELLEY_DB", e.DBPath)
 	return out
 }
 

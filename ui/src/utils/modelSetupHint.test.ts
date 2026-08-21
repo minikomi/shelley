@@ -246,6 +246,7 @@ for (const llm of [
   "/new",
   "/new do a thing",
   "/compact",
+  "/checkpoint",
   "/distill",
   "/model claude-opus-4.8",
   "/models",

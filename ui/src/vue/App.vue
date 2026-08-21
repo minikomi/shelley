@@ -743,7 +743,7 @@ async function handleDistillNewGeneration(
   sourceConversationId: string,
   model: string,
   cwd?: string,
-  method?: "default" | "compact",
+  method?: "default" | "compact" | "checkpoint",
   instructions?: string,
 ) {
   try {

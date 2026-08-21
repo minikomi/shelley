@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +83,45 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`
 
+// checkpointSummarizationPrompt is the topic-based checkpoint variant of the
+// summarization prompt, derived from AUTOMATIC_COMPACTION_PROPOSAL.md and its
+// prompt experiments. Unlike the pi task report, it organizes by durable topic
+// and preserves decisions, rationale, and user preferences. Selected by the
+// checkpoint-compaction feature flag.
+const checkpointSummarizationPrompt = `The messages above are a conversation to summarize. Create a topic-based context checkpoint that another LLM will use to continue the work.
+
+Organize the checkpoint by durable topic, not as a chronological task report. For each topic use this EXACT format:
+
+## <Topic> — <done|active|blocked>
+- **Context:** Durable current state.
+- **Decisions:** Choices already made.
+- **Rationale:** Why those choices matter.
+- **Anchors:** Exact file paths, symbols, branches, commands, errors, commits, or artifacts.
+- **Continuation:** Remaining work, only when applicable.
+
+Each transcript line is prefixed with its message sequence number, like "[seq:42]". Cite that exact marker inline, attached to the claim it supports — a decision, an error, a user instruction — so a reader can retrieve the original text later. Use ONLY sequence numbers that actually appear in the transcript; never invent or guess one.
+
+Requirements:
+- Preserve user requirements, preferences, decisions, and rationale.
+- Preserve exact file paths, function names, commands, and error messages.
+- Describe current state; omit routine verification history unless it changes what happens next.
+- Omit bullet lines that do not apply to a topic, but every topic needs **Context:**.
+- Do not invent file lists or references.`
+
+// validateCheckpointSummary rejects malformed checkpoint output (a refusal,
+// prose without structure, ...) so a bad summary never becomes the new
+// generation's opening context. Requires at least one topic heading and one
+// Context line, per the checkpoint format.
+func validateCheckpointSummary(summary string) error {
+	if !strings.Contains(summary, "## ") {
+		return fmt.Errorf("checkpoint summary has no topic headings")
+	}
+	if !strings.Contains(summary, "**Context:**") {
+		return fmt.Errorf("checkpoint summary has no Context section")
+	}
+	return nil
+}
+
 // piCompactionSummaryPrefix/Suffix wrap the summary when it is presented to the
 // LLM as the opening context message, matching pi's COMPACTION_SUMMARY_PREFIX.
 const piCompactionSummaryPrefix = `The conversation history before this point was compacted into the following summary:
@@ -90,6 +131,48 @@ const piCompactionSummaryPrefix = `The conversation history before this point wa
 
 const piCompactionSummarySuffix = `
 </summary>`
+
+// checkpointCompactionSummarySuffix follows the checkpoint summary. It teaches
+// the reading model to resolve [seq:N] pointers with sqlite+bash: shelley
+// exports SHELLEY_DB and SHELLEY_CONVERSATION_ID to every bash command, and
+// the summarized messages remain in the messages table (older generation), so
+// exact original text is one query away. This is the retrieval half of
+// checkpointing without needing dedicated tools.
+const checkpointCompactionSummarySuffix = `
+</summary>
+
+Older messages are not lost. Each [seq:N] or [seq:N-M] pointer above cites an original message by sequence number; to read the exact original text, query shelley's database from bash:
+
+sqlite3 "$SHELLEY_DB" "SELECT sequence_id, type, json_extract(llm_data,'$.Content[0].Text') FROM messages WHERE conversation_id='$SHELLEY_CONVERSATION_ID' AND sequence_id BETWEEN N AND M ORDER BY sequence_id;"
+
+Tool calls/results store their payload deeper in the llm_data JSON; select the whole llm_data column for those rows. To search older history instead of following a pointer, filter with AND llm_data LIKE '%term%' in place of the sequence range.`
+
+// historyPointerPattern matches [seq:N] and [seq:N-M] pointers in a checkpoint
+// summary.
+var historyPointerPattern = regexp.MustCompile(`\[seq:(\d+)(?:-(\d+))?\]`)
+
+// sanitizeCheckpointPointers strips any [seq:N] / [seq:N-M] pointer that does
+// not name a real message in this conversation. A pointer is the reader's only
+// route back to original text, so a fabricated one is worse than no citation
+// at all: they follow it and land somewhere unrelated, with nothing to signal
+// the citation was invented. Validity is existence in the conversation, not
+// membership in the summarized span.
+func sanitizeCheckpointPointers(summary string, valid map[int64]bool) string {
+	return historyPointerPattern.ReplaceAllStringFunc(summary, func(match string) string {
+		sub := historyPointerPattern.FindStringSubmatch(match)
+		a, err := strconv.ParseInt(sub[1], 10, 64)
+		if err != nil || !valid[a] {
+			return "[unverifiable pointer removed]"
+		}
+		if sub[2] != "" {
+			b, err := strconv.ParseInt(sub[2], 10, 64)
+			if err != nil || !valid[b] || b < a {
+				return "[unverifiable pointer removed]"
+			}
+		}
+		return match
+	})
+}
 
 // estimatePiMessageTokens ports pi's character/4 heuristic for one message.
 func estimatePiMessageTokens(msg llm.Message) int {
@@ -167,11 +250,22 @@ func findPiCutPoint(messages []llm.Message, keepRecentTokens int) int {
 
 // serializePiConversation renders messages into the plain-text transcript pi
 // feeds to the summarization model. Ported from pi's serializeConversation.
-func serializePiConversation(messages []llm.Message) string {
+// includeThinking controls whether hidden assistant thinking is included; the
+// checkpoint strategy omits it (the checkpoint captures observable state, and
+// thinking bloats the summarizer input).
+//
+// seqs, when non-nil, is a parallel slice of message sequence ids; each
+// message's lines are then prefixed with a [seq:N] marker so the checkpoint
+// summarizer can cite retrievable pointers.
+func serializePiConversation(messages []llm.Message, includeThinking bool, seqs []int64) string {
 	const toolResultMaxChars = 2000
 	var parts []string
 
-	for _, msg := range messages {
+	for i, msg := range messages {
+		prefix := ""
+		if seqs != nil {
+			prefix = fmt.Sprintf("[seq:%d] ", seqs[i])
+		}
 		switch msg.Role {
 		case llm.MessageRoleUser:
 			// A user message may carry tool results (Shelley stores tool
@@ -186,7 +280,7 @@ func serializePiConversation(messages []llm.Message) string {
 					}
 				}
 				if text != "" {
-					parts = append(parts, "[Tool result]: "+truncateForSummary(text, toolResultMaxChars))
+					parts = append(parts, prefix+"[Tool result]: "+truncateForSummary(text, toolResultMaxChars))
 				}
 				continue
 			}
@@ -197,7 +291,7 @@ func serializePiConversation(messages []llm.Message) string {
 				}
 			}
 			if text.Len() > 0 {
-				parts = append(parts, "[User]: "+text.String())
+				parts = append(parts, prefix+"[User]: "+text.String())
 			}
 		case llm.MessageRoleAssistant:
 			var textParts, thinkingParts, toolCalls []string
@@ -211,14 +305,14 @@ func serializePiConversation(messages []llm.Message) string {
 					toolCalls = append(toolCalls, fmt.Sprintf("%s(%s)", c.ToolName, string(c.ToolInput)))
 				}
 			}
-			if len(thinkingParts) > 0 {
-				parts = append(parts, "[Assistant thinking]: "+strings.Join(thinkingParts, "\n"))
+			if includeThinking && len(thinkingParts) > 0 {
+				parts = append(parts, prefix+"[Assistant thinking]: "+strings.Join(thinkingParts, "\n"))
 			}
 			if len(textParts) > 0 {
-				parts = append(parts, "[Assistant]: "+strings.Join(textParts, "\n"))
+				parts = append(parts, prefix+"[Assistant]: "+strings.Join(textParts, "\n"))
 			}
 			if len(toolCalls) > 0 {
-				parts = append(parts, "[Assistant tool calls]: "+strings.Join(toolCalls, "; "))
+				parts = append(parts, prefix+"[Assistant tool calls]: "+strings.Join(toolCalls, "; "))
 			}
 		}
 	}
@@ -415,11 +509,22 @@ func userDataForCopy(m generated.Message) map[string]string {
 	return userData
 }
 
-// generatePiSummary runs the structured pi summarization prompt over the older
-// messages and returns the summary text (with file-operation tags appended).
-func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older []llm.Message, instructions string) (string, error) {
-	conversationText := serializePiConversation(older)
-	promptText := fmt.Sprintf("<conversation>\n%s\n</conversation>\n\n%s", conversationText, piSummarizationPrompt)
+// generatePiSummary runs the summarization prompt over the older messages and
+// returns the summary text. checkpoint selects the topic-based checkpoint
+// prompt: thinking is excluded from the input, transcript lines carry [seq:N]
+// markers (from seqs) the summarizer cites as retrievable pointers, the output
+// structure is validated, and the derived file-operation tags are omitted (the
+// summarizer preserves important paths itself). Otherwise the original pi
+// task-report prompt and file tags are used.
+func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older []llm.Message, seqs []int64, instructions string, checkpoint bool) (string, error) {
+	prompt := piSummarizationPrompt
+	if checkpoint {
+		prompt = checkpointSummarizationPrompt
+	} else {
+		seqs = nil // pi task report cites nothing; don't add marker noise
+	}
+	conversationText := serializePiConversation(older, !checkpoint, seqs)
+	promptText := fmt.Sprintf("<conversation>\n%s\n</conversation>\n\n%s", conversationText, prompt)
 	if steer := strings.TrimSpace(instructions); steer != "" {
 		promptText += steeringSection(steer)
 	}
@@ -452,9 +557,45 @@ func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older [
 		return "", fmt.Errorf("summarization returned empty result")
 	}
 
+	if checkpoint {
+		if err := validateCheckpointSummary(summary); err != nil {
+			return "", err
+		}
+		return summary, nil
+	}
 	readFiles, modifiedFiles := extractPiFileOps(older)
 	summary += formatPiFileOperations(readFiles, modifiedFiles)
 	return summary, nil
+}
+
+// checkpointSummarizerService returns the service for the first available
+// model tagged "checkpoint" (then "checkpoint-backup"), or ("", nil) when
+// none exists. Eval sweeps across real conversations picked glm-5.2 for the
+// tag: it completed every fixture where kimi-k3 timed out on the large
+// transcripts, at lower cost.
+func (s *Server) checkpointSummarizerService() (string, llm.Service) {
+	for _, tag := range []string{"checkpoint", "checkpoint-backup"} {
+		for _, id := range s.llmManager.GetAvailableModels() {
+			info := s.llmManager.GetModelInfo(id)
+			if info == nil || !hasModelTag(info.Tags, tag) {
+				continue
+			}
+			if svc, err := s.llmManager.GetService(id); err == nil {
+				return id, svc
+			}
+		}
+	}
+	return "", nil
+}
+
+// hasModelTag checks if a comma-separated tag list contains the exact tag.
+func hasModelTag(tags, tag string) bool {
+	for _, t := range strings.Split(tags, ",") {
+		if strings.TrimSpace(t) == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // rollbackCompactionFailure restores the conversation to its pre-compaction
@@ -498,10 +639,11 @@ func (s *Server) rollbackCompactionFailure(ctx context.Context, logger *slog.Log
 }
 
 // performPiDistillation summarizes older history and copies recent messages
-// verbatim into the conversation's (already-incremented) new generation. It is
-// the pi-algorithm counterpart to performDistillation.
-func (s *Server) performPiDistillation(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, sourceGeneration int64, messages []generated.Message) string {
-	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug, "method", "compact")
+// verbatim into the conversation's (already-incremented) new generation.
+// method selects the summarizer: distillMethodCompact (pi task report) or
+// distillMethodCheckpoint (topic-based checkpoint).
+func (s *Server) performPiDistillation(ctx context.Context, conversationID, sourceSlug, modelID, method, instructions string, sourceGeneration int64, messages []generated.Message) string {
+	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug, "method", method)
 
 	// Tag the ctx so the summarization calls' usage is collected (and so the
 	// gateway request logs carry the conversation ID; the HTTP request ctx
@@ -550,9 +692,26 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 
 	var summary string
 	var fallbackNotice string
+	summaryModelID := modelID
+	checkpoint := method == distillMethodCheckpoint
+	if checkpoint {
+		// Checkpoint summaries prefer a dedicated summarizer model (tag
+		// "checkpoint", currently glm-5.2): sweeping real conversations showed
+		// the conversation's own model is often slower or refuses, while the
+		// tagged model completed every fixture at lower cost. Fall back to the
+		// conversation model when no tagged model is available.
+		if tid, tsvc := s.checkpointSummarizerService(); tsvc != nil {
+			summaryModelID = tid
+			svc = tsvc
+		}
+	}
+	olderSeqs := make([]int64, len(older))
+	for i, entry := range older {
+		olderSeqs[i] = entry.source.SequenceID
+	}
 	if len(older) > 0 {
 		distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-		summary, err = s.generatePiSummary(distillCtx, svc, olderMsgs, instructions)
+		summary, err = s.generatePiSummary(distillCtx, svc, olderMsgs, olderSeqs, instructions, checkpoint)
 		cancel()
 		if err != nil {
 			// Some models decline summarization prompts (e.g. fable returns
@@ -560,8 +719,8 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 			// transcripts). Retry once with the server's default model before
 			// giving up.
 			fallbackID := s.effectiveDefaultModel(s.getModelList())
-			if fallbackID == "" || fallbackID == modelID {
-				logger.Warn("no fallback model available for summarization retry", "model", modelID, "default_model", fallbackID)
+			if fallbackID == "" || fallbackID == summaryModelID {
+				logger.Warn("no fallback model available for summarization retry", "model", summaryModelID, "default_model", fallbackID)
 			} else {
 				fallbackErr := err
 				logger.Warn("pi summarization failed; retrying with default model", "error", err, "fallback_model", fallbackID)
@@ -569,10 +728,11 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 					logger.Error("Failed to get fallback LLM service", "model", fallbackID, "error", ferr)
 				} else {
 					distillCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
-					summary, err = s.generatePiSummary(distillCtx, fallbackSvc, olderMsgs, instructions)
+					summary, err = s.generatePiSummary(distillCtx, fallbackSvc, olderMsgs, olderSeqs, instructions, checkpoint)
 					cancel()
 					if err == nil {
-						fallbackNotice = fmt.Sprintf("Note: %s failed to summarize the conversation (%v); the summary was generated by %s instead.", modelID, fallbackErr, fallbackID)
+						fallbackNotice = fmt.Sprintf("Note: %s failed to summarize the conversation (%v); the summary was generated by %s instead.", summaryModelID, fallbackErr, fallbackID)
+						summaryModelID = fallbackID
 					}
 				}
 			}
@@ -595,7 +755,19 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	// would be misleading. We therefore store the summary text inline in
 	// user_data (no editable temp file) and put it directly in the message
 	// body so it renders as-is.
-	wrapped := piCompactionSummaryPrefix + summary + piCompactionSummarySuffix
+	suffix := piCompactionSummarySuffix
+	if checkpoint && summary != "" {
+		// Strip fabricated [seq:N] pointers (validity = the sequence id names
+		// a real message in this conversation) and teach the reader how to
+		// resolve real ones with sqlite+bash.
+		validSeqs := make(map[int64]bool, len(messages))
+		for i := range messages {
+			validSeqs[messages[i].SequenceID] = true
+		}
+		summary = sanitizeCheckpointPointers(summary, validSeqs)
+		suffix = checkpointCompactionSummarySuffix
+	}
+	wrapped := piCompactionSummaryPrefix + summary + suffix
 	// Build the summary message (if any) plus the verbatim recent tail, then
 	// write them all in ONE transaction. Doing each in its own Tx fired a
 	// full conversation-list recompute per message (one per commit hook),
@@ -627,7 +799,15 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 		userData := map[string]string{
 			"distilled":            "true",
 			"distillation_content": wrapped,
-			"distill_method":       distillMethodCompact,
+			"distill_method":       method,
+			// Provenance: which generation and message range was summarized,
+			// and which model actually produced the summary (may be the
+			// fallback). The originals stay in the previous generation, so
+			// this makes the checkpoint auditable.
+			"compacts_source_generation":   fmt.Sprintf("%d", sourceGeneration),
+			"compacts_first_sequence_id":   fmt.Sprintf("%d", older[0].source.SequenceID),
+			"compacts_through_sequence_id": fmt.Sprintf("%d", older[len(older)-1].source.SequenceID),
+			"summarizer_model":             summaryModelID,
 		}
 		// Attach the summarization calls' usage (primary + fallback) to the
 		// summary message so compaction cost is visible in cost reporting.

@@ -41,6 +41,14 @@ var FlagPerformanceHUD = featureflags.Register(featureflags.Flag{
 	Default:     false,
 })
 
+// FlagCheckpointCompaction enables the experimental topic-based checkpoint
+// summarizer and its /checkpoint slash command.
+var FlagCheckpointCompaction = featureflags.Register(featureflags.Flag{
+	Name:        "checkpoint-compaction",
+	Description: "Enable topic-based checkpoint compaction with sequence pointers into older conversation history.",
+	Default:     false,
+})
+
 // FlagPatchSimple switches the patch tool from its full nested patches schema
 // to a simplified path-and-edits replacement schema.
 var FlagPatchSimple = featureflags.Register(featureflags.Flag{

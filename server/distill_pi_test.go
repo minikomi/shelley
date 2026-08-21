@@ -76,7 +76,7 @@ func TestSerializePiConversationRendersRolesAndTools(t *testing.T) {
 		},
 		toolResultMsg("file.go"),
 	}
-	out := serializePiConversation(msgs)
+	out := serializePiConversation(msgs, true, nil)
 	for _, want := range []string{"[User]: fix the bug", "[Assistant]: on it", "[Assistant tool calls]: bash(", "[Tool result]: file.go"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("serialized conversation missing %q\n---\n%s", want, out)
@@ -259,6 +259,158 @@ func TestPiDistillForcesSummaryWhenOverBudget(t *testing.T) {
 			t.Fatalf("expected a pi summary message in the new generation")
 		}
 	})
+}
+
+// TestCheckpointDistillProducesValidatedSummaryWithProvenance drives the
+// handler with method="checkpoint" and verifies the summary message is tagged
+// distill_method=checkpoint, passes the checkpoint structure validation
+// (topic heading + Context line), carries provenance user_data (source
+// generation, sequence range, summarizer model), and omits the derived
+// file-operation tags.
+func TestCheckpointDistillProducesValidatedSummaryWithProvenance(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		h := NewTestHarness(t)
+		defer stopActiveConversationLoops(h.server)
+		h.server.piDistillKeepRecentTokens = 1
+
+		h.NewConversation("echo: alpha", "")
+		h.WaitResponse()
+		synctest.Wait()
+		h.Chat("echo: beta")
+		h.WaitResponse()
+		synctest.Wait()
+		convID := h.convID
+		ctx := context.Background()
+
+		if err := h.db.SetFeatureFlagOverride(ctx, FlagCheckpointCompaction.Name, `true`); err != nil {
+			t.Fatalf("enable checkpoint compaction: %v", err)
+		}
+
+		before, err := h.db.GetConversationByID(ctx, convID)
+		if err != nil {
+			t.Fatalf("GetConversationByID: %v", err)
+		}
+
+		reqBody := DistillNewGenerationRequest{
+			SourceConversationID: convID,
+			Model:                "predictable",
+			Method:               distillMethodCheckpoint,
+		}
+		body, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/conversations/distill-new-generation", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.server.handleDistillNewGeneration(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+
+		waitForConversationDistillingToClear(t, h.server, convID)
+		synctest.Wait()
+
+		after, err := h.db.GetConversationByID(ctx, convID)
+		if err != nil {
+			t.Fatalf("GetConversationByID: %v", err)
+		}
+		if after.CurrentGeneration != before.CurrentGeneration+1 {
+			t.Fatalf("generation = %d, want %d (checkpoint distill must not roll back)", after.CurrentGeneration, before.CurrentGeneration+1)
+		}
+
+		msgs, err := h.db.ListMessages(ctx, convID)
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		var sawSummary bool
+		for _, m := range msgs {
+			if m.Generation != after.CurrentGeneration || m.UserData == nil {
+				continue
+			}
+			var ud map[string]string
+			if json.Unmarshal([]byte(*m.UserData), &ud) != nil {
+				continue
+			}
+			if ud["distilled"] != "true" || ud["distill_method"] != distillMethodCheckpoint {
+				continue
+			}
+			sawSummary = true
+			content := ud["distillation_content"]
+			if !strings.Contains(content, "## ") || !strings.Contains(content, "**Context:**") {
+				t.Errorf("checkpoint summary missing topic structure: %q", content)
+			}
+			if strings.Contains(content, "<read-files>") || strings.Contains(content, "<modified-files>") {
+				t.Errorf("checkpoint summary must omit derived file tags: %q", content)
+			}
+			if !strings.Contains(content, "$SHELLEY_DB") || !strings.Contains(content, "$SHELLEY_CONVERSATION_ID") {
+				t.Errorf("checkpoint summary must include sqlite retrieval instructions: %q", content)
+			}
+			if ud["compacts_source_generation"] == "" || ud["compacts_first_sequence_id"] == "" ||
+				ud["compacts_through_sequence_id"] == "" || ud["summarizer_model"] == "" {
+				t.Errorf("checkpoint summary missing provenance user_data: %+v", ud)
+			}
+		}
+		if !sawSummary {
+			t.Fatalf("expected a checkpoint summary message in the new generation")
+		}
+
+		// Terminal status must carry the checkpoint method so the UI wording
+		// matches the strategy.
+		statuses := distillStatusMessages(t, h, convID)
+		if len(statuses) == 0 || statuses[len(statuses)-1]["distill_method"] != distillMethodCheckpoint {
+			t.Fatalf("terminal status distill_method = %v, want %q", statuses, distillMethodCheckpoint)
+		}
+	})
+}
+
+// TestSerializePiConversationSeqMarkers verifies that passing sequence ids
+// prefixes each transcript line with a [seq:N] marker.
+func TestSerializePiConversationSeqMarkers(t *testing.T) {
+	msgs := []llm.Message{
+		textMsg(llm.MessageRoleUser, "fix the bug"),
+		textMsg(llm.MessageRoleAssistant, "on it"),
+	}
+	out := serializePiConversation(msgs, false, []int64{7, 9})
+	for _, want := range []string{"[seq:7] [User]: fix the bug", "[seq:9] [Assistant]: on it"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("serialized conversation missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// TestSanitizeCheckpointPointers verifies fabricated [seq:N] pointers are
+// stripped while pointers naming real messages survive.
+func TestSanitizeCheckpointPointers(t *testing.T) {
+	valid := map[int64]bool{5: true, 8: true}
+	in := "kept [seq:5] and range [seq:5-8], dropped [seq:99] and bad range [seq:8-5]"
+	out := sanitizeCheckpointPointers(in, valid)
+	if !strings.Contains(out, "[seq:5]") || !strings.Contains(out, "[seq:5-8]") {
+		t.Errorf("valid pointers removed: %q", out)
+	}
+	if strings.Contains(out, "[seq:99]") || strings.Contains(out, "[seq:8-5]") {
+		t.Errorf("invalid pointers kept: %q", out)
+	}
+	if !strings.Contains(out, "[unverifiable pointer removed]") {
+		t.Errorf("expected removal placeholder: %q", out)
+	}
+}
+
+// TestValidateCheckpointSummary covers the structural validation applied to
+// checkpoint summaries before they are accepted.
+func TestValidateCheckpointSummary(t *testing.T) {
+	t.Parallel()
+	valid := "## Topic \u2014 active\n- **Context:** state"
+	if err := validateCheckpointSummary(valid); err != nil {
+		t.Errorf("valid summary rejected: %v", err)
+	}
+	for _, bad := range []string{
+		"I cannot summarize this conversation.",
+		"- **Context:** state without a heading",
+		"## Topic without a context line",
+	} {
+		if err := validateCheckpointSummary(bad); err == nil {
+			t.Errorf("malformed summary accepted: %q", bad)
+		}
+	}
 }
 
 // TestPiReDistillPreservesPriorSummary verifies that distilling an
