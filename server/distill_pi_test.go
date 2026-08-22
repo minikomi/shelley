@@ -64,6 +64,63 @@ func TestFindPiCutPointKeepsAllWhenSmall(t *testing.T) {
 	}
 }
 
+func TestEstimatePiMessageTokensCountsImageData(t *testing.T) {
+	msg := llm.Message{
+		Role: llm.MessageRoleUser,
+		Content: []llm.Content{
+			{
+				Type:      llm.ContentTypeText,
+				MediaType: "image/png",
+				Data:      strings.Repeat("a", 400),
+			},
+			{
+				Type: llm.ContentTypeToolResult,
+				ToolResult: []llm.Content{{
+					Type:      llm.ContentTypeText,
+					MediaType: "image/jpeg",
+					Data:      strings.Repeat("b", 400),
+				}},
+			},
+		},
+	}
+
+	if got := estimatePiMessageTokens(msg); got != 200 {
+		t.Fatalf("estimated tokens = %d, want 200", got)
+	}
+}
+
+func TestFindPiCutPointExcludesImageHeavyHistory(t *testing.T) {
+	msgs := []llm.Message{
+		textMsg(llm.MessageRoleUser, "inspect the page"),
+		{
+			Role: llm.MessageRoleAssistant,
+			Content: []llm.Content{{
+				ID:        "screenshot-1",
+				Type:      llm.ContentTypeToolUse,
+				ToolName:  "browser",
+				ToolInput: json.RawMessage(`{"action":"screenshot"}`),
+			}},
+		},
+		{
+			Role: llm.MessageRoleUser,
+			Content: []llm.Content{{
+				Type:      llm.ContentTypeToolResult,
+				ToolUseID: "screenshot-1",
+				ToolResult: []llm.Content{{
+					Type:      llm.ContentTypeText,
+					MediaType: "image/png",
+					Data:      strings.Repeat("a", 100_000),
+				}},
+			}},
+		},
+		textMsg(llm.MessageRoleAssistant, "The page looks correct."),
+	}
+
+	if cut := findPiCutPoint(msgs, 20_000); cut != 3 {
+		t.Fatalf("cut = %d, want 3 so the oversized screenshot is summarized instead of carried", cut)
+	}
+}
+
 func TestSerializePiConversationRendersRolesAndTools(t *testing.T) {
 	msgs := []llm.Message{
 		textMsg(llm.MessageRoleUser, "fix the bug"),
@@ -128,6 +185,17 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 		synctest.Wait()
 		convID := h.convID
 		ctx := context.Background()
+		const imageData = "small-image-data-that-fits-the-retention-budget"
+		if err := h.server.recordMessage(ctx, convID, llm.Message{
+			Role: llm.MessageRoleUser,
+			Content: []llm.Content{{
+				Type:      llm.ContentTypeText,
+				MediaType: "image/png",
+				Data:      imageData,
+			}},
+		}, llm.Usage{}, nil); err != nil {
+			t.Fatalf("record image message: %v", err)
+		}
 
 		beforeGen, err := h.db.GetConversationByID(ctx, convID)
 		if err != nil {
@@ -165,7 +233,7 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 		}
 		// New generation context should contain the system prompt plus the
 		// verbatim-copied recent messages (the original user/agent turns).
-		var sawUserEcho, sawCarriedFlag bool
+		var sawUserEcho, sawCarriedFlag, sawCarriedImage bool
 		for _, m := range ctxMsgs {
 			if m.Generation != after.CurrentGeneration {
 				t.Fatalf("context message from stale generation %d", m.Generation)
@@ -173,6 +241,9 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 			if m.Type == string(db.MessageTypeUser) && m.LlmData != nil &&
 				strings.Contains(*m.LlmData, "first thing") {
 				sawUserEcho = true
+			}
+			if m.LlmData != nil && strings.Contains(*m.LlmData, imageData) {
+				sawCarriedImage = true
 			}
 			// Copied messages are stamped compaction_carried=true so the UI can
 			// collapse the replayed tail behind a single band.
@@ -188,6 +259,9 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 		}
 		if !sawCarriedFlag {
 			t.Fatalf("expected copied messages stamped compaction_carried=true")
+		}
+		if !sawCarriedImage {
+			t.Fatal("expected an image within the retention budget to be copied verbatim")
 		}
 	})
 }

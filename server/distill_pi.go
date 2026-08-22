@@ -98,6 +98,9 @@ func estimatePiMessageTokens(msg llm.Message) int {
 		switch c.Type {
 		case llm.ContentTypeText:
 			chars += len(c.Text)
+			if c.MediaType != "" {
+				chars += len(c.Data)
+			}
 		case llm.ContentTypeThinking, llm.ContentTypeRedactedThinking:
 			chars += len(c.Thinking)
 		case llm.ContentTypeToolUse:
@@ -105,6 +108,9 @@ func estimatePiMessageTokens(msg llm.Message) int {
 		case llm.ContentTypeToolResult:
 			for _, r := range c.ToolResult {
 				chars += len(r.Text)
+				if r.MediaType != "" {
+					chars += len(r.Data)
+				}
 			}
 		}
 	}
