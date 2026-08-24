@@ -61,6 +61,10 @@ type elisionCandidate struct {
 	priority     int
 }
 
+type explorationRun struct {
+	members []elisionCandidate
+}
+
 const (
 	elisionPriorityHistory = iota
 	elisionPriorityExploration
@@ -114,12 +118,33 @@ func ShapeLiveContext(req *llm.Request, contextWindow int, cfg LiveContextElisio
 		return left.contentIndex < right.contentIndex
 	})
 
+	runs := collectExplorationRuns(req.Messages[:tailStart], candidates)
 	outbound := cloneRequestForElision(req)
 	clonedMessages := make(map[int]bool)
+	handledRunMembers := make(map[elisionCandidateKey]bool)
 	current := stats.BeforeTokens
 	for _, candidate := range candidates {
 		if current <= target {
 			break
+		}
+		key := keyForCandidate(candidate)
+		if handledRunMembers[key] {
+			continue
+		}
+		if run, ok := runs[key]; ok {
+			marker := explorationRunMarker(run)
+			saved := replaceExplorationRun(outbound, clonedMessages, run, marker)
+			if saved <= 0 {
+				continue
+			}
+			current -= saved
+			stats.ElidedTokens += saved
+			stats.ElidedResults += len(run.members)
+			stats.ExplorationResultsElided += len(run.members)
+			for _, member := range run.members {
+				handledRunMembers[keyForCandidate(member)] = true
+			}
+			continue
 		}
 		marker := elisionMarker(candidate)
 		markerTokens := estimateTextTokens(marker)
@@ -127,15 +152,7 @@ func ShapeLiveContext(req *llm.Request, contextWindow int, cfg LiveContextElisio
 			continue
 		}
 
-		if !clonedMessages[candidate.messageIndex] {
-			message := outbound.Messages[candidate.messageIndex]
-			message.Content = append([]llm.Content(nil), message.Content...)
-			outbound.Messages[candidate.messageIndex] = message
-			clonedMessages[candidate.messageIndex] = true
-		}
-		content := outbound.Messages[candidate.messageIndex].Content[candidate.contentIndex]
-		content.ToolResult = llm.TextContent(marker)
-		outbound.Messages[candidate.messageIndex].Content[candidate.contentIndex] = content
+		replaceToolResult(outbound, clonedMessages, candidate, marker)
 
 		saved := candidate.tokens - markerTokens
 		current -= saved
@@ -181,18 +198,7 @@ func protectedTailStart(messages []llm.Message, budget int) (start, tokens int) 
 }
 
 func collectElisionCandidates(messages []llm.Message, minimum int) []elisionCandidate {
-	toolUses := make(map[string]toolUseInfo)
-	for _, message := range messages {
-		for _, content := range message.Content {
-			if content.Type != llm.ContentTypeToolUse {
-				continue
-			}
-			toolUses[content.ID] = toolUseInfo{
-				name:    content.ToolName,
-				command: commandFromToolInput(content.ToolInput),
-			}
-		}
-	}
+	toolUses := collectToolUseInfo(messages)
 
 	var candidates []elisionCandidate
 	for messageIndex, message := range messages {
@@ -229,6 +235,87 @@ func collectElisionCandidates(messages []llm.Message, minimum int) []elisionCand
 		}
 	}
 	return candidates
+}
+
+func collectToolUseInfo(messages []llm.Message) map[string]toolUseInfo {
+	toolUses := make(map[string]toolUseInfo)
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if content.Type != llm.ContentTypeToolUse {
+				continue
+			}
+			toolUses[content.ID] = toolUseInfo{
+				name:    content.ToolName,
+				command: commandFromToolInput(content.ToolInput),
+			}
+		}
+	}
+	return toolUses
+}
+
+type elisionCandidateKey struct {
+	messageIndex int
+	contentIndex int
+}
+
+func keyForCandidate(candidate elisionCandidate) elisionCandidateKey {
+	return elisionCandidateKey{messageIndex: candidate.messageIndex, contentIndex: candidate.contentIndex}
+}
+
+// collectExplorationRuns finds uninterrupted stretches of large successful
+// read/search results. Assistant tool-use messages between result batches are
+// part of the run; prose, a non-observational tool, or a failed result ends it.
+func collectExplorationRuns(messages []llm.Message, candidates []elisionCandidate) map[elisionCandidateKey]explorationRun {
+	toolUses := collectToolUseInfo(messages)
+	var exploration []elisionCandidate
+	for _, candidate := range candidates {
+		if candidate.priority == elisionPriorityExploration && !candidate.failed {
+			exploration = append(exploration, candidate)
+		}
+	}
+	sort.Slice(exploration, func(i, j int) bool {
+		if exploration[i].messageIndex != exploration[j].messageIndex {
+			return exploration[i].messageIndex < exploration[j].messageIndex
+		}
+		return exploration[i].contentIndex < exploration[j].contentIndex
+	})
+
+	out := make(map[elisionCandidateKey]explorationRun)
+	for start := 0; start < len(exploration); {
+		end := start + 1
+		for end < len(exploration) && explorationSpan(messages, toolUses, exploration[end-1], exploration[end]) {
+			end++
+		}
+		if end-start > 1 {
+			run := explorationRun{members: exploration[start:end]}
+			out[keyForCandidate(run.members[0])] = run
+		}
+		start = end
+	}
+	return out
+}
+
+func explorationSpan(messages []llm.Message, toolUses map[string]toolUseInfo, previous, next elisionCandidate) bool {
+	for messageIndex := previous.messageIndex; messageIndex <= next.messageIndex; messageIndex++ {
+		for _, content := range messages[messageIndex].Content {
+			switch content.Type {
+			case llm.ContentTypeToolUse:
+				if !isExplorationCommand(commandFromToolInput(content.ToolInput)) {
+					return false
+				}
+			case llm.ContentTypeToolResult:
+				info, ok := toolUses[content.ToolUseID]
+				if content.ToolError || !ok || !isExplorationCommand(info.command) {
+					return false
+				}
+			case llm.ContentTypeText, llm.ContentTypeThinking, llm.ContentTypeRedactedThinking:
+				if strings.TrimSpace(content.Text+content.Thinking) != "" {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func textOnlyToolResult(contents []llm.Content) bool {
@@ -303,6 +390,44 @@ func elisionMarker(candidate elisionCandidate) string {
 	fmt.Fprintf(&out, "original_tokens_estimate: %d\n", candidate.tokens)
 	fmt.Fprintf(&out, "recover: shelley-history %d %d]", candidate.sequenceID, candidate.sequenceID)
 	return out.String()
+}
+
+func explorationRunMarker(run explorationRun) string {
+	start := run.members[0].sequenceID
+	end := run.members[len(run.members)-1].sequenceID
+	return fmt.Sprintf(
+		"[Exploration run elided: %d sequential read/search commands.\n\nhistory: [seq:%d-%d]\nrecover: shelley-history %d %d]",
+		len(run.members), start, end, start, end,
+	)
+}
+
+func replaceExplorationRun(outbound *llm.Request, clonedMessages map[int]bool, run explorationRun, marker string) int {
+	saved := 0
+	for index, candidate := range run.members {
+		replacement := " "
+		if index == 0 {
+			replacement = marker
+		}
+		replacementTokens := estimateTextTokens(replacement)
+		if candidate.tokens <= replacementTokens {
+			continue
+		}
+		replaceToolResult(outbound, clonedMessages, candidate, replacement)
+		saved += candidate.tokens - replacementTokens
+	}
+	return saved
+}
+
+func replaceToolResult(outbound *llm.Request, clonedMessages map[int]bool, candidate elisionCandidate, replacement string) {
+	if !clonedMessages[candidate.messageIndex] {
+		message := outbound.Messages[candidate.messageIndex]
+		message.Content = append([]llm.Content(nil), message.Content...)
+		outbound.Messages[candidate.messageIndex] = message
+		clonedMessages[candidate.messageIndex] = true
+	}
+	content := outbound.Messages[candidate.messageIndex].Content[candidate.contentIndex]
+	content.ToolResult = llm.TextContent(replacement)
+	outbound.Messages[candidate.messageIndex].Content[candidate.contentIndex] = content
 }
 
 func shortCommand(command string) string {

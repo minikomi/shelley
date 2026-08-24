@@ -99,6 +99,39 @@ func TestShapeLiveContextPrioritizesHistoryAndPreservesFailures(t *testing.T) {
 	}
 }
 
+func TestShapeLiveContextCollapsesExplorationRun(t *testing.T) {
+	t.Parallel()
+	req := &llm.Request{Messages: []llm.Message{
+		{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+			Type: llm.ContentTypeToolUse, ID: "cat", ToolName: "bash", ToolInput: []byte(`{"command":"cat server/convo.go"}`),
+		}}},
+		{SequenceID: 184, Role: llm.MessageRoleUser, Content: []llm.Content{{
+			Type: llm.ContentTypeToolResult, ToolUseID: "cat", ToolResult: llm.TextContent(strings.Repeat("source\n", 600)),
+		}}},
+		{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+			Type: llm.ContentTypeToolUse, ID: "sed", ToolName: "bash", ToolInput: []byte(`{"command":"sed -n '1,80p' server/convo.go"}`),
+		}}},
+		{SequenceID: 185, Role: llm.MessageRoleUser, Content: []llm.Content{{
+			Type: llm.ContentTypeToolResult, ToolUseID: "sed", ToolResult: llm.TextContent(strings.Repeat("source\n", 600)),
+		}}},
+		{Role: llm.MessageRoleUser, Content: llm.TextContent(strings.Repeat("recent ", 10))},
+	}}
+	before := estimateRequestTokens(req)
+	outbound, stats := ShapeLiveContext(req, before*2, testElisionConfig())
+	if stats.ExplorationResultsElided != 2 {
+		t.Fatalf("exploration results elided = %d, want 2: %+v", stats.ExplorationResultsElided, stats)
+	}
+	leader := outbound.Messages[1].Content[0].ToolResult[0].Text
+	if !strings.Contains(leader, "Exploration run elided: 2") ||
+		!strings.Contains(leader, "[seq:184-185]") ||
+		!strings.Contains(leader, "shelley-history 184 185") {
+		t.Fatalf("unexpected run marker:\n%s", leader)
+	}
+	if got := outbound.Messages[3].Content[0].ToolResult[0].Text; got != " " {
+		t.Fatalf("run follower = %q, want protocol-preserving blank", got)
+	}
+}
+
 func TestShapeLiveContextDefersAtCompactionPressure(t *testing.T) {
 	t.Parallel()
 	req := elisionRequest("grep -R TODO .", strings.Repeat("result\n", 600), 184, false)
