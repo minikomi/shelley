@@ -123,7 +123,8 @@ func TestShapeLiveContextCollapsesExplorationRun(t *testing.T) {
 	}
 	leader := outbound.Messages[1].Content[0].ToolResult[0].Text
 	if !strings.Contains(leader, "Exploration run elided: 2") ||
-		!strings.Contains(leader, "[seq:184-185]") ||
+		!strings.Contains(leader, "- cat server/convo.go") ||
+		!strings.Contains(leader, "- sed -n '1,80p' server/convo.go") ||
 		!strings.Contains(leader, "shelley-history 184 185") {
 		t.Fatalf("unexpected run marker:\n%s", leader)
 	}

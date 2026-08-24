@@ -395,10 +395,13 @@ func elisionMarker(candidate elisionCandidate) string {
 func explorationRunMarker(run explorationRun) string {
 	start := run.members[0].sequenceID
 	end := run.members[len(run.members)-1].sequenceID
-	return fmt.Sprintf(
-		"[Exploration run elided: %d sequential read/search commands.\n\nhistory: [seq:%d-%d]\nrecover: shelley-history %d %d]",
-		len(run.members), start, end, start, end,
-	)
+	var out strings.Builder
+	fmt.Fprintf(&out, "[Exploration run elided: %d sequential read/search commands.\n\ncommands:\n", len(run.members))
+	for _, member := range run.members {
+		fmt.Fprintf(&out, "- %s\n", shortRunCommand(member.command))
+	}
+	fmt.Fprintf(&out, "\nrecover: shelley-history %d %d]", start, end)
+	return out.String()
 }
 
 func replaceExplorationRun(outbound *llm.Request, clonedMessages map[int]bool, run explorationRun, marker string) int {
@@ -436,6 +439,14 @@ func shortCommand(command string) string {
 		return command
 	}
 	return command[:157] + "..."
+}
+
+func shortRunCommand(command string) string {
+	command = strings.Join(strings.Fields(command), " ")
+	if len(command) <= 96 {
+		return command
+	}
+	return command[:93] + "..."
 }
 
 func cloneRequestForElision(req *llm.Request) *llm.Request {
