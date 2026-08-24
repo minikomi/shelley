@@ -9695,6 +9695,17 @@ kbd {
   stroke: var(--border-color);
   stroke-width: 1;
 }
+.context-composition-compaction-line {
+  stroke: var(--text-primary);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.5;
+  pointer-events: none;
+}
+.context-composition-compaction-label {
+  font-size: 9px;
+  fill: var(--text-secondary);
+}
 .context-composition-hover-line {
   stroke: var(--text-secondary);
   stroke-width: 1;
@@ -9744,6 +9755,12 @@ kbd {
   color: var(--text-secondary);
   font-size: 0.68rem;
   line-height: 1.35;
+}
+
+.context-composition-compaction-note {
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 0.65rem;
 }
 
 .token-cost-controls {

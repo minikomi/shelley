@@ -27,6 +27,22 @@
         />
         <path v-for="(category, index) in CATEGORIES" :key="category.key" :d="areaPath(index)" :class="`context-composition-area-${category.key}`" />
         <polyline :points="totalLine" class="context-composition-total-line" />
+        <line
+          v-for="index in compactionStarts"
+          :key="`compaction-${index}`"
+          :x1="xAt(index)"
+          :y1="PADT"
+          :x2="xAt(index)"
+          :y2="H - PADB"
+          class="context-composition-compaction-line"
+        />
+        <text
+          v-for="index in compactionStarts"
+          :key="`compaction-label-${index}`"
+          :x="xAt(index) + 4"
+          :y="PADT + 10"
+          class="context-composition-compaction-label"
+        >compacted</text>
         <line :x1="PADL" :y1="H - PADB" :x2="W - PADR" :y2="H - PADB" class="context-composition-axis" />
         <line
           v-if="hoverX !== null"
@@ -61,6 +77,9 @@
           current <b>{{ formatTokenCount(points.at(-1)!.total) }}</b> · {{ (points.at(-1)!.total / props.maxContextTokens * 100).toFixed(1) }}%
         </template>
       </div>
+      <div v-if="compactionStarts.length" class="context-composition-compaction-note">
+        Dashed lines mark compactions.
+      </div>
     </template>
     <div v-else class="context-composition-readout">No context data yet.</div>
   </div>
@@ -82,7 +101,7 @@ const TYPE_TOOL_USE = 5;
 const TYPE_TOOL_RESULT = 6;
 const TYPE_WEB_SEARCH_TOOL_RESULT = 8;
 const W = 280;
-const H = 150;
+const H = 275;
 const PADL = 32;
 const PADR = 6;
 const PADT = 6;
@@ -98,7 +117,7 @@ const CATEGORIES = [
 ] as const;
 type Category = (typeof CATEGORIES)[number]["key"];
 type Composition = Record<Category, number>;
-type Point = Composition & { total: number };
+type Point = Composition & { total: number; generation: number };
 
 const points = computed<Point[]>(() => {
   const running: Composition = { text: 0, toolCalls: 0, toolOutput: 0, images: 0 };
@@ -123,6 +142,7 @@ const points = computed<Point[]>(() => {
     const scale = estimated > 0 ? total / estimated : 0;
     out.push({
       total,
+      generation: message.generation,
       text: Math.round(running.text * scale),
       toolCalls: Math.round(running.toolCalls * scale),
       toolOutput: Math.round(running.toolOutput * scale),
@@ -134,6 +154,11 @@ const points = computed<Point[]>(() => {
 
 const chartMax = computed(() => niceTokenCeiling(Math.max(...points.value.map((point) => point.total), 1)));
 const yTicks = computed(() => [0, Math.round(chartMax.value / 2), chartMax.value]);
+const compactionStarts = computed(() =>
+  points.value.flatMap((point, index) =>
+    index > 0 && point.generation !== points.value[index - 1].generation ? [index] : [],
+  ),
+);
 const visibleThresholds = computed(() =>
   [
     { fraction: 0.4, label: "40%" },
