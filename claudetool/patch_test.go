@@ -931,6 +931,8 @@ func TestApplyPatchProfileToolAndExecution(t *testing.T) {
 	for _, want := range []string{
 		`beginning with "*** Begin Patch" and ending with "*** End Patch"`,
 		`Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.`,
+		`up to 3 unchanged lines before and after the edit when available`,
+		`unless fewer lines already include a unique structural anchor`,
 		`a parse or match failure rejects the entire patch without changing files`,
 		`For "matched 0 locations," reread the current file and retry with exact current context`,
 	} {
