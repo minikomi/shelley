@@ -184,7 +184,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted, nextTick } from "vue";
-import type { Conversation } from "../../types";
+import type { Conversation, Message } from "../../types";
 import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
 import { tildifyPath } from "../../utils/tildify";
 import { useI18n } from "../composables/i18n";
@@ -217,6 +217,7 @@ const props = defineProps<{
   maxContextTokens: number;
   usageEntries: UsageEntry[];
   otherUsageRows: OtherUsageRow[];
+  messages: Message[];
   hostname: string;
   models: ModelInfo[];
   selectedModel: string;
@@ -264,6 +265,7 @@ const readoutProps = computed(() => ({
   maxContextTokens: props.maxContextTokens,
   usageEntries: props.usageEntries,
   otherUsageRows: props.otherUsageRows,
+  messages: props.messages,
   models: props.models,
   selectedModel: props.selectedModel,
   thinkingLevel: props.thinkingLevel,

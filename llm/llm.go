@@ -240,10 +240,16 @@ func FormatRetryEvent(event RetryEvent) string {
 
 // Message represents a message in the conversation.
 type Message struct {
-	Role      MessageRole `json:"Role"`
-	Content   []Content   `json:"Content"`
-	ToolUse   *ToolUse    `json:"ToolUse,omitempty"` // use to control whether/which tool to use
-	EndOfTurn bool        `json:"EndOfTurn"`         // true if this message completes the agent's turn (no tool calls to make)
+	// SequenceID is the canonical conversation sequence for a hydrated
+	// message. It is intentionally in-memory-only: providers and persisted
+	// llm_data must never see Shelley database metadata. A zero value means
+	// the message was created during this live loop and has no stable recovery
+	// pointer yet.
+	SequenceID int64       `json:"-"`
+	Role       MessageRole `json:"Role"`
+	Content    []Content   `json:"Content"`
+	ToolUse    *ToolUse    `json:"ToolUse,omitempty"` // use to control whether/which tool to use
+	EndOfTurn  bool        `json:"EndOfTurn"`         // true if this message completes the agent's turn (no tool calls to make)
 
 	// ExcludedFromContext indicates this message should be stored but not sent back to the LLM.
 	// Used for truncated responses we want to keep for cost tracking but that would confuse the LLM.

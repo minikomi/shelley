@@ -27,7 +27,7 @@ func TestFlagReflectionEmojiFaviconRegistered(t *testing.T) {
 }
 
 func TestPatchStrategyFlagsRegisteredOff(t *testing.T) {
-	for _, name := range []string{"patch-simple", "patch-openai-raw"} {
+	for _, name := range []string{"patch-simple", "patch-openai-raw", "live_context_elision"} {
 		flag, ok := featureflags.Lookup(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)

@@ -199,6 +199,9 @@ type ConversationManager struct {
 	// onStateChange is called when the conversation state changes.
 	// This allows the server to broadcast state changes to all subscribers.
 	onStateChange func(state ConversationState)
+	// liveContextElisionEnabled is read before every provider request. The
+	// shaper uses it without changing canonical DB messages.
+	liveContextElisionEnabled func(context.Context) bool
 
 	// onDone is called when the agent finishes working (transitions to not working).
 	// Used by subagents to notify their parent conversation.
@@ -280,7 +283,7 @@ type ConversationManager struct {
 type messageBatchRecordFunc func(ctx context.Context, msgs []recordMessageInput) error
 
 // NewConversationManager constructs a manager with dependencies but defers hydration until needed.
-func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage, recordTurnStartMessage loop.MessageRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
+func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage, recordTurnStartMessage loop.MessageRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse], liveContextElisionEnabled func(context.Context) bool) *ConversationManager {
 	logger := baseLogger
 	if logger == nil {
 		logger = slog.Default()
@@ -288,17 +291,18 @@ func NewConversationManager(conversationID string, database *db.DB, baseLogger *
 	logger = logger.With("conversationID", conversationID)
 
 	return &ConversationManager{
-		conversationID:         conversationID,
-		db:                     database,
-		lastActivity:           time.Now(),
-		recordMessage:          recordMessage,
-		recordTurnStartMessage: recordTurnStartMessage,
-		recordMessageBatch:     recordMessageBatch,
-		logger:                 logger,
-		toolSetConfig:          toolSetConfig,
-		subpub:                 subpub.New[StreamResponse](),
-		streamPub:              streamPub,
-		onStateChange:          onStateChange,
+		conversationID:            conversationID,
+		db:                        database,
+		lastActivity:              time.Now(),
+		recordMessage:             recordMessage,
+		recordTurnStartMessage:    recordTurnStartMessage,
+		recordMessageBatch:        recordMessageBatch,
+		logger:                    logger,
+		toolSetConfig:             toolSetConfig,
+		subpub:                    subpub.New[StreamResponse](),
+		streamPub:                 streamPub,
+		onStateChange:             onStateChange,
+		liveContextElisionEnabled: liveContextElisionEnabled,
 	}
 }
 
@@ -1803,6 +1807,7 @@ func (cm *ConversationManager) partitionMessages(messages []generated.Message) (
 			cm.logger.Warn("Failed to convert message to LLM format", "messageID", msg.MessageID, "error", err)
 			continue
 		}
+		llmMsg.SequenceID = msg.SequenceID
 
 		if msg.Type == string(db.MessageTypeSystem) {
 			for _, content := range llmMsg.Content {
@@ -2028,6 +2033,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		InjectMessages: func(ctx context.Context) []llm.Message {
 			return cm.takeInjectableSubagentDone(ctx, generation)
 		},
+		LiveContextElisionEnabled: cm.liveContextElisionEnabled,
 	})
 
 	cm.mu.Lock()

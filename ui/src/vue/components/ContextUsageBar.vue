@@ -30,11 +30,37 @@
       {{ formatTokenCount(contextWindowSize) }} / {{ formatTokenCount(maxContextTokens) }} ({{
         percentage.toFixed(1)
       }}%) tokens used
+      <div class="usage-graph-switch" role="tablist" aria-label="Usage graph">
+        <button
+          :aria-selected="usageGraph === 'cost'"
+          class="usage-graph-switch-button"
+          :class="{ 'usage-graph-switch-button-active': usageGraph === 'cost' }"
+          role="tab"
+          @click="usageGraph = 'cost'"
+        >
+          cost
+        </button>
+        <button
+          :aria-selected="usageGraph === 'context'"
+          class="usage-graph-switch-button"
+          :class="{ 'usage-graph-switch-button-active': usageGraph === 'context' }"
+          role="tab"
+          @click="usageGraph = 'context'"
+        >
+          context
+        </button>
+      </div>
       <TokenCostGraph
+        v-if="usageGraph === 'cost'"
         :entries="usageEntries || []"
         :other-usage-rows="otherUsageRows || []"
         :conversation-id="conversationId"
         :active="popupOpen"
+      />
+      <ContextCompositionGraph
+        v-else
+        :messages="messages || []"
+        :max-context-tokens="maxContextTokens"
       />
       <div v-if="showLongConversationWarning" class="chat-popup-warning">
         This conversation is getting long.
@@ -85,9 +111,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from "vue";
 import Popover from "primevue/popover";
+import type { Message } from "../../types";
 import { contextUsageLevel, contextUsageLevelLabel } from "../../utils/contextUsage";
 import { formatTokenCount } from "../../utils/tokenCostGraph";
 import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
+import ContextCompositionGraph from "./ContextCompositionGraph.vue";
 import TokenCostGraph from "./TokenCostGraph.vue";
 
 const props = defineProps<{
@@ -96,6 +124,7 @@ const props = defineProps<{
   conversationId?: string | null;
   usageEntries?: UsageEntry[];
   otherUsageRows?: OtherUsageRow[];
+  messages?: Message[];
   onDistillNewGeneration?: () => Promise<void> | void;
   onStartNewGeneration?: () => Promise<void> | void;
   /** Called just before the popup opens. The parent computes usageEntries /
@@ -107,6 +136,7 @@ const props = defineProps<{
 }>();
 
 const distilling = ref(false);
+const usageGraph = ref<"cost" | "context">("cost");
 // Mirrors the Popover's visibility for aria-expanded. PrimeVue owns the state;
 // we only observe its show/hide events (the popover also closes on outside
 // click and Escape, which never route through our click handler).

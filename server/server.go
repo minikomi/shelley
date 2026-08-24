@@ -946,7 +946,11 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 			s.publishConversationState(state)
 		}
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
+		manager := NewConversationManager(
+			conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, recordTurnStart,
+			recordBatch, onStateChange, s.streamPub,
+			func(ctx context.Context) bool { return s.featureFlagBool(ctx, FlagLiveContextElision) },
+		)
 		manager.userEmail = userEmail
 		manager.serverPort = s.listenPort
 		// Hydrate runs DB transactions, which fire OnCommit hooks. Those hooks
@@ -1003,7 +1007,11 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 		subagentConfig := s.toolSetConfig
 		subagentConfig.SubagentDepth = s.toolSetConfig.SubagentDepth + 1
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
+		manager := NewConversationManager(
+			conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart,
+			recordBatch, onStateChange, s.streamPub,
+			func(ctx context.Context) bool { return s.featureFlagBool(ctx, FlagLiveContextElision) },
+		)
 		manager.serverPort = s.listenPort
 		// Wire up done notification: when this subagent finishes, notify the
 		// parent by splicing a synthetic tool_use/result pair into the

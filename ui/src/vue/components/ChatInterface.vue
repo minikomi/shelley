@@ -3118,6 +3118,7 @@ const statusContentProps = computed(() => {
     maxContextTokens: maxContextTokens.value,
     usageEntries: usageEntries.value,
     otherUsageRows: otherUsageRows.value,
+    messages: messages.value,
     hostname,
     models: models.value,
     selectedModel: selectedModel.value,

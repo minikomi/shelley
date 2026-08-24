@@ -77,33 +77,38 @@ type Config struct {
 	// returning them, so the DB sequence order matches the in-memory splice
 	// point.
 	InjectMessages func(ctx context.Context) []llm.Message
+	// LiveContextElisionEnabled controls the request-only tool-output shaper.
+	// It is evaluated immediately before each provider request so a flag
+	// change affects the next round without rebuilding the conversation loop.
+	LiveContextElisionEnabled func(context.Context) bool
 }
 
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
 // Notably, when the turn ends, the "Loop" is over. TODO: maybe rename to Turn?
 type Loop struct {
-	llm              llm.Service
-	tools            []*llm.Tool
-	recordMessage    MessageRecordFunc
-	recordWarning    WarningRecordFunc
-	history          []llm.Message
-	messageQueue     []llm.Message
-	totalUsage       llm.Usage
-	mu               sync.Mutex
-	toolResultMu     sync.Mutex
-	logger           *slog.Logger
-	system           []llm.SystemContent
-	workingDir       string
-	onGitStateChange GitStateChangeFunc
-	getWorkingDir    func() string
-	lastGitState     *gitstate.GitState
-	onToolProgress   llm.ToolProgressFunc
-	onStreamDelta    func(llm.StreamDelta)
-	onStreamDone     func()
-	injectMessages   func(ctx context.Context) []llm.Message
-	thinkingLevel    llm.ThinkingLevel
-	notify           chan struct{} // signaled when a message is queued or retry requested
-	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
+	llm                       llm.Service
+	tools                     []*llm.Tool
+	recordMessage             MessageRecordFunc
+	recordWarning             WarningRecordFunc
+	history                   []llm.Message
+	messageQueue              []llm.Message
+	totalUsage                llm.Usage
+	mu                        sync.Mutex
+	toolResultMu              sync.Mutex
+	logger                    *slog.Logger
+	system                    []llm.SystemContent
+	workingDir                string
+	onGitStateChange          GitStateChangeFunc
+	getWorkingDir             func() string
+	lastGitState              *gitstate.GitState
+	onToolProgress            llm.ToolProgressFunc
+	onStreamDelta             func(llm.StreamDelta)
+	onStreamDone              func()
+	injectMessages            func(ctx context.Context) []llm.Message
+	liveContextElisionEnabled func(context.Context) bool
+	thinkingLevel             llm.ThinkingLevel
+	notify                    chan struct{} // signaled when a message is queued or retry requested
+	retryPending              bool          // set by Retry() to re-run processLLMRequest with current history
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -121,24 +126,25 @@ func NewLoop(config Config) *Loop {
 	initialGitState := gitstate.GetGitState(workingDir)
 
 	return &Loop{
-		llm:              config.LLM,
-		history:          config.History,
-		tools:            config.Tools,
-		recordMessage:    config.RecordMessage,
-		recordWarning:    config.RecordWarning,
-		messageQueue:     make([]llm.Message, 0),
-		logger:           logger,
-		system:           config.System,
-		workingDir:       config.WorkingDir,
-		onGitStateChange: config.OnGitStateChange,
-		getWorkingDir:    config.GetWorkingDir,
-		lastGitState:     initialGitState,
-		onToolProgress:   config.OnToolProgress,
-		onStreamDelta:    config.OnStreamDelta,
-		onStreamDone:     config.OnStreamDone,
-		injectMessages:   config.InjectMessages,
-		thinkingLevel:    config.ThinkingLevel,
-		notify:           make(chan struct{}, 1),
+		llm:                       config.LLM,
+		history:                   config.History,
+		tools:                     config.Tools,
+		recordMessage:             config.RecordMessage,
+		recordWarning:             config.RecordWarning,
+		messageQueue:              make([]llm.Message, 0),
+		logger:                    logger,
+		system:                    config.System,
+		workingDir:                config.WorkingDir,
+		onGitStateChange:          config.OnGitStateChange,
+		getWorkingDir:             config.GetWorkingDir,
+		lastGitState:              initialGitState,
+		onToolProgress:            config.OnToolProgress,
+		onStreamDelta:             config.OnStreamDelta,
+		onStreamDone:              config.OnStreamDone,
+		injectMessages:            config.InjectMessages,
+		liveContextElisionEnabled: config.LiveContextElisionEnabled,
+		thinkingLevel:             config.ThinkingLevel,
+		notify:                    make(chan struct{}, 1),
 	}
 }
 
@@ -226,9 +232,10 @@ func (l *Loop) GetHistory() []llm.Message {
 	for i, msg := range l.history {
 		// Copy the message
 		historyCopy[i] = llm.Message{
-			Role:    msg.Role,
-			ToolUse: msg.ToolUse, // This is a pointer, but we won't modify it in tests
-			Content: make([]llm.Content, len(msg.Content)),
+			SequenceID: msg.SequenceID,
+			Role:       msg.Role,
+			ToolUse:    msg.ToolUse, // This is a pointer, but we won't modify it in tests
+			Content:    make([]llm.Content, len(msg.Content)),
 		}
 		// Copy content slice
 		copy(historyCopy[i].Content, msg.Content)
@@ -411,6 +418,23 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		// there is no successful response to read an id from.
 		var requestTrace *llmhttp.RequestTrace
 		sendWithRetry := func(req *llm.Request) (*llm.Response, error) {
+			outbound := req
+			if l.liveContextElisionEnabled != nil && l.liveContextElisionEnabled(ctx) {
+				var stats LiveContextElisionStats
+				outbound, stats = ShapeLiveContext(req, llmService.TokenContextWindow(), DefaultLiveContextElisionConfig)
+				l.logger.Debug("live context elision",
+					"decision", stats.Decision,
+					"context_before_tokens", stats.BeforeTokens,
+					"context_after_tokens", stats.AfterTokens,
+					"context_window_tokens", llmService.TokenContextWindow(),
+					"protected_tail_tokens", stats.ProtectedTailTokens,
+					"eligible_results", stats.EligibleResults,
+					"elided_results", stats.ElidedResults,
+					"exploration_results_elided", stats.ExplorationResultsElided,
+					"history_results_elided", stats.HistoryResultsElided,
+					"elided_tokens", stats.ElidedTokens,
+				)
+			}
 			llmCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
 			defer cancel()
 			llmCtx, requestTrace = llmhttp.WithRequestTrace(llmCtx)
@@ -418,7 +442,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 			var resp *llm.Response
 			var err error
 			for attempt := 1; attempt <= maxRetries; attempt++ {
-				resp, err = llmService.Do(llmCtx, req)
+				resp, err = llmService.Do(llmCtx, outbound)
 				if err == nil {
 					return resp, nil
 				}

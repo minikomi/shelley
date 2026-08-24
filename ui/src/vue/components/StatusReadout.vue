@@ -41,6 +41,7 @@
       :conversation-id="conversationId"
       :usage-entries="usageEntries"
       :other-usage-rows="otherUsageRows"
+      :messages="messages"
       :on-distill-new-generation="onDistillNewGeneration"
       :on-start-new-generation="onStartNewGeneration"
       :on-usage-needed="onUsageNeeded"
@@ -86,7 +87,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
-import type { Model } from "../../types";
+import type { Message, Model } from "../../types";
 import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
 import { tildifyPath } from "../../utils/tildify";
 import { useI18n } from "../composables/i18n";
@@ -101,6 +102,7 @@ const props = defineProps<{
   maxContextTokens: number;
   usageEntries?: UsageEntry[];
   otherUsageRows?: OtherUsageRow[];
+  messages?: Message[];
   models: Model[];
   selectedModel: string;
   thinkingLevel: ThinkingLevel;

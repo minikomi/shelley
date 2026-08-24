@@ -57,3 +57,12 @@ var FlagPatchOpenAIRaw = featureflags.Register(featureflags.Flag{
 	Description: "Use raw grammar-constrained apply_patch for capable direct OpenAI Responses models, overriding the full or simplified nested patch schema.",
 	Default:     false,
 })
+
+// FlagLiveContextElision replaces old, oversized tool output in outbound LLM
+// requests with recoverable sequence markers. Canonical conversation history
+// remains unchanged.
+var FlagLiveContextElision = featureflags.Register(featureflags.Flag{
+	Name:        "live_context_elision",
+	Description: "Reduce old large tool output in live LLM context while preserving canonical history and the newest context tail.",
+	Default:     false,
+})

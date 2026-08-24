@@ -9593,11 +9593,157 @@ kbd {
   color: var(--warning-text, #f59e0b);
 }
 
-/* Token cost graph in the context usage popup */
-.token-cost-graph {
+/* Cost and context graphs in the context usage popup */
+.usage-graph-switch {
+  display: flex;
+  gap: 4px;
   margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+.usage-graph-switch-button {
+  padding: 1px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.usage-graph-switch-button-active {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.token-cost-graph {
+  margin-top: 0;
   width: 280px;
   max-width: 100%;
+}
+
+.context-composition-graph {
+  width: 280px;
+  max-width: 100%;
+}
+
+.context-composition-graph-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-composition-graph-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+}
+
+.context-composition-zone-quiet {
+  fill: #10b981;
+  opacity: 0.08;
+}
+.context-composition-zone-elide {
+  fill: #f59e0b;
+  opacity: 0.1;
+}
+.context-composition-zone-compact {
+  fill: #ef4444;
+  opacity: 0.1;
+}
+.context-composition-threshold {
+  stroke: #f59e0b;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.7;
+}
+.context-composition-threshold-compact {
+  stroke: #ef4444;
+}
+.context-composition-area-text {
+  fill: #24a579;
+  opacity: 0.82;
+}
+.context-composition-area-toolCalls {
+  fill: #8375e9;
+  opacity: 0.82;
+}
+.context-composition-area-toolOutput {
+  fill: #2997dd;
+  opacity: 0.86;
+}
+.context-composition-area-images {
+  fill: #e879a7;
+  opacity: 0.88;
+}
+.context-composition-total-line {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.context-composition-axis {
+  stroke: var(--border-color);
+  stroke-width: 1;
+}
+.context-composition-hover-line {
+  stroke: var(--text-secondary);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+  pointer-events: none;
+}
+.context-composition-label {
+  font-size: 9px;
+  fill: var(--text-secondary);
+}
+
+.context-composition-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+}
+
+.context-composition-legend span {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.context-composition-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+.context-composition-chip-text {
+  background: #24a579;
+}
+.context-composition-chip-toolCalls {
+  background: #8375e9;
+}
+.context-composition-chip-toolOutput {
+  background: #2997dd;
+}
+.context-composition-chip-images {
+  background: #e879a7;
+}
+
+.context-composition-readout {
+  min-height: 1.35em;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  line-height: 1.35;
 }
 
 .token-cost-controls {

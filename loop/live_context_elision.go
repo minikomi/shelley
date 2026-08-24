@@ -1,0 +1,360 @@
+package loop
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"sort"
+	"strings"
+
+	"shelley.exe.dev/llm"
+)
+
+// LiveContextElisionConfig controls request-only replacement of old tool
+// output. Values are deliberately explicit rather than hidden in the shaper:
+// they are operating limits to tune from request logs, not semantic policy.
+type LiveContextElisionConfig struct {
+	StartPressure       float64
+	ProgressivePressure float64
+	CompactionPressure  float64
+	ProtectedTailTokens int
+	LargeResultTokens   int
+	MinimumResultTokens int
+}
+
+var DefaultLiveContextElisionConfig = LiveContextElisionConfig{
+	StartPressure:       0.40,
+	ProgressivePressure: 0.55,
+	CompactionPressure:  0.70,
+	ProtectedTailTokens: 20_000,
+	LargeResultTokens:   8_000,
+	MinimumResultTokens: 2_000,
+}
+
+// LiveContextElisionStats records a single request-shaping decision. It is
+// logging-only and never becomes conversation content.
+type LiveContextElisionStats struct {
+	Decision                 string
+	BeforeTokens             int
+	AfterTokens              int
+	ProtectedTailTokens      int
+	EligibleResults          int
+	ElidedResults            int
+	ExplorationResultsElided int
+	HistoryResultsElided     int
+	ElidedTokens             int
+}
+
+type toolUseInfo struct {
+	name    string
+	command string
+}
+
+type elisionCandidate struct {
+	messageIndex int
+	contentIndex int
+	sequenceID   int64
+	tool         string
+	command      string
+	failed       bool
+	tokens       int
+	priority     int
+}
+
+const (
+	elisionPriorityHistory = iota
+	elisionPriorityExploration
+	elisionPriorityOther
+)
+
+// ShapeLiveContext returns a cloned outbound request when pressure justifies
+// elision. The request passed in is never mutated; its persisted source history
+// remains byte-for-byte canonical.
+//
+// Only results from messages with stable database sequence IDs are eligible.
+// Messages made during the current in-memory loop deliberately have SequenceID
+// zero and remain verbatim until a future hydration gives them a canonical
+// recovery pointer.
+func ShapeLiveContext(req *llm.Request, contextWindow int, cfg LiveContextElisionConfig) (*llm.Request, LiveContextElisionStats) {
+	stats := LiveContextElisionStats{BeforeTokens: estimateRequestTokens(req)}
+	stats.AfterTokens = stats.BeforeTokens
+	if contextWindow <= 0 {
+		stats.Decision = "unknown_window"
+		return req, stats
+	}
+
+	pressure := float64(stats.BeforeTokens) / float64(contextWindow)
+	switch {
+	case pressure < cfg.StartPressure:
+		stats.Decision = "below_threshold"
+		return req, stats
+	case pressure >= cfg.CompactionPressure:
+		stats.Decision = "defer_to_compaction"
+		return req, stats
+	}
+
+	minimum, target := elisionPolicy(pressure, contextWindow, cfg)
+	tailStart, tailTokens := protectedTailStart(req.Messages, cfg.ProtectedTailTokens)
+	stats.ProtectedTailTokens = tailTokens
+	candidates := collectElisionCandidates(req.Messages[:tailStart], minimum)
+	stats.EligibleResults = len(candidates)
+	if len(candidates) == 0 {
+		stats.Decision = "no_eligible_results"
+		return req, stats
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.priority != right.priority {
+			return left.priority < right.priority
+		}
+		if left.messageIndex != right.messageIndex {
+			return left.messageIndex < right.messageIndex
+		}
+		return left.contentIndex < right.contentIndex
+	})
+
+	outbound := cloneRequestForElision(req)
+	clonedMessages := make(map[int]bool)
+	current := stats.BeforeTokens
+	for _, candidate := range candidates {
+		if current <= target {
+			break
+		}
+		marker := elisionMarker(candidate)
+		markerTokens := estimateTextTokens(marker)
+		if markerTokens >= candidate.tokens {
+			continue
+		}
+
+		if !clonedMessages[candidate.messageIndex] {
+			message := outbound.Messages[candidate.messageIndex]
+			message.Content = append([]llm.Content(nil), message.Content...)
+			outbound.Messages[candidate.messageIndex] = message
+			clonedMessages[candidate.messageIndex] = true
+		}
+		content := outbound.Messages[candidate.messageIndex].Content[candidate.contentIndex]
+		content.ToolResult = llm.TextContent(marker)
+		outbound.Messages[candidate.messageIndex].Content[candidate.contentIndex] = content
+
+		saved := candidate.tokens - markerTokens
+		current -= saved
+		stats.ElidedTokens += saved
+		stats.ElidedResults++
+		switch candidate.priority {
+		case elisionPriorityHistory:
+			stats.HistoryResultsElided++
+		case elisionPriorityExploration:
+			stats.ExplorationResultsElided++
+		}
+	}
+
+	stats.AfterTokens = estimateRequestTokens(outbound)
+	if stats.ElidedResults == 0 {
+		stats.Decision = "no_savings"
+		return req, stats
+	}
+	if pressure >= cfg.ProgressivePressure {
+		stats.Decision = "progressive"
+	} else {
+		stats.Decision = "large_results"
+	}
+	return outbound, stats
+}
+
+func elisionPolicy(pressure float64, window int, cfg LiveContextElisionConfig) (minimum, target int) {
+	if pressure < cfg.ProgressivePressure {
+		return cfg.LargeResultTokens, int(float64(window) * cfg.StartPressure)
+	}
+	progress := (pressure - cfg.ProgressivePressure) / (cfg.CompactionPressure - cfg.ProgressivePressure)
+	minimum = int(math.Round(float64(cfg.LargeResultTokens) - progress*float64(cfg.LargeResultTokens-cfg.MinimumResultTokens)))
+	return minimum, int(float64(window) * cfg.ProgressivePressure)
+}
+
+func protectedTailStart(messages []llm.Message, budget int) (start, tokens int) {
+	start = len(messages)
+	for i := len(messages) - 1; i >= 0 && tokens < budget; i-- {
+		tokens += estimateMessageTokens(messages[i])
+		start = i
+	}
+	return start, tokens
+}
+
+func collectElisionCandidates(messages []llm.Message, minimum int) []elisionCandidate {
+	toolUses := make(map[string]toolUseInfo)
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if content.Type != llm.ContentTypeToolUse {
+				continue
+			}
+			toolUses[content.ID] = toolUseInfo{
+				name:    content.ToolName,
+				command: commandFromToolInput(content.ToolInput),
+			}
+		}
+	}
+
+	var candidates []elisionCandidate
+	for messageIndex, message := range messages {
+		if message.SequenceID <= 0 {
+			continue
+		}
+		for contentIndex, content := range message.Content {
+			if content.Type != llm.ContentTypeToolResult || !textOnlyToolResult(content.ToolResult) {
+				continue
+			}
+			info := toolUses[content.ToolUseID]
+			tool := content.ToolName
+			if tool == "" {
+				tool = info.name
+			}
+			if tool == "" {
+				continue
+			}
+			tokens := estimateContentsTokens(content.ToolResult)
+			if tokens < minimum {
+				continue
+			}
+			command := info.command
+			candidates = append(candidates, elisionCandidate{
+				messageIndex: messageIndex,
+				contentIndex: contentIndex,
+				sequenceID:   message.SequenceID,
+				tool:         tool,
+				command:      command,
+				failed:       content.ToolError,
+				tokens:       tokens,
+				priority:     elisionPriority(tool, command),
+			})
+		}
+	}
+	return candidates
+}
+
+func textOnlyToolResult(contents []llm.Content) bool {
+	for _, content := range contents {
+		if content.Type != llm.ContentTypeText {
+			return false
+		}
+	}
+	return true
+}
+
+func elisionPriority(tool, command string) int {
+	if strings.Contains(command, "shelley-history") {
+		return elisionPriorityHistory
+	}
+	if tool == "bash" && isExplorationCommand(command) {
+		return elisionPriorityExploration
+	}
+	return elisionPriorityOther
+}
+
+// isExplorationCommand intentionally recognizes only plainly observational
+// shell commands. It is a ranking optimization, never an eligibility rule:
+// every elided result remains recoverable by sequence number.
+func isExplorationCommand(command string) bool {
+	first := strings.TrimSpace(strings.Split(command, "&&")[0])
+	words := strings.Fields(first)
+	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.HasPrefix(words[0], "=") {
+		words = words[1:]
+	}
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "cat", "sed", "grep", "rg", "find", "fd", "head", "tail", "ls", "pwd":
+		return true
+	case "git":
+		if len(words) < 2 {
+			return false
+		}
+		switch words[1] {
+		case "diff", "log", "show", "status", "grep":
+			return true
+		}
+	}
+	return false
+}
+
+func commandFromToolInput(input json.RawMessage) string {
+	var decoded struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &decoded); err != nil {
+		return ""
+	}
+	return decoded.Command
+}
+
+func elisionMarker(candidate elisionCandidate) string {
+	var out strings.Builder
+	out.WriteString("[Tool output elided.\n")
+	fmt.Fprintf(&out, "tool: %s\n", candidate.tool)
+	if command := shortCommand(candidate.command); command != "" {
+		fmt.Fprintf(&out, "command: %s\n", command)
+	}
+	if candidate.failed {
+		out.WriteString("status: failed\n")
+	} else {
+		out.WriteString("status: ok\n")
+	}
+	fmt.Fprintf(&out, "seq: %d\n", candidate.sequenceID)
+	fmt.Fprintf(&out, "original_tokens_estimate: %d\n", candidate.tokens)
+	fmt.Fprintf(&out, "recover: shelley-history %d %d]", candidate.sequenceID, candidate.sequenceID)
+	return out.String()
+}
+
+func shortCommand(command string) string {
+	command = strings.Join(strings.Fields(command), " ")
+	if len(command) <= 160 {
+		return command
+	}
+	return command[:157] + "..."
+}
+
+func cloneRequestForElision(req *llm.Request) *llm.Request {
+	outbound := *req
+	outbound.Messages = append([]llm.Message(nil), req.Messages...)
+	return &outbound
+}
+
+func estimateRequestTokens(req *llm.Request) int {
+	total := 0
+	for _, system := range req.System {
+		total += estimateTextTokens(system.Text)
+	}
+	for _, message := range req.Messages {
+		total += estimateMessageTokens(message)
+	}
+	for _, tool := range req.Tools {
+		if tool == nil {
+			continue
+		}
+		total += estimateTextTokens(tool.Name) + estimateTextTokens(tool.Description) + estimateTextTokens(string(tool.InputSchema))
+	}
+	return total
+}
+
+func estimateMessageTokens(message llm.Message) int {
+	return estimateContentsTokens(message.Content)
+}
+
+func estimateContentsTokens(contents []llm.Content) int {
+	total := 0
+	for _, content := range contents {
+		total += estimateTextTokens(content.Text)
+		total += estimateTextTokens(content.Thinking)
+		total += estimateTextTokens(content.ToolName)
+		total += estimateTextTokens(string(content.ToolInput))
+		total += estimateContentsTokens(content.ToolResult)
+	}
+	return total
+}
+
+func estimateTextTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	return (len(text) + 3) / 4
+}
