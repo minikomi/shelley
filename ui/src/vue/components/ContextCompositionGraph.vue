@@ -119,7 +119,35 @@ type Composition = Record<string, number>;
 type Point = { total: number; generation: number; parts: Composition };
 type Category = { key: string; label: string; color: string };
 
-const TOOL_COLORS = ["#8375e9", "#2997dd", "#e879a7", "#d97706", "#0891b2", "#be6a9e"];
+const TOOL_CATEGORIES = [
+  "bash:read/search",
+  "bash:build/test",
+  "bash:git",
+  "bash:other",
+  "tool:browser/web",
+  "tool:edit",
+  "tool:other",
+] as const;
+
+const CATEGORY_LABELS: Record<string, string> = {
+  "bash:read/search": "bash · read/search",
+  "bash:build/test": "bash · build/test",
+  "bash:git": "bash · git",
+  "bash:other": "bash · other",
+  "tool:browser/web": "browser/web",
+  "tool:edit": "edit",
+  "tool:other": "other tools",
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  "bash:read/search": "#2997dd",
+  "bash:build/test": "#8375e9",
+  "bash:git": "#d97706",
+  "bash:other": "#be6a9e",
+  "tool:browser/web": "#0891b2",
+  "tool:edit": "#dc5a7a",
+  "tool:other": "#6b7280",
+};
 
 const points = computed<Point[]>(() => {
   const running: Composition = {};
@@ -160,14 +188,11 @@ const categories = computed<Category[]>(() => {
   }
   return [
     { key: "text", label: "text", color: "#24a579" },
-    ...[...keys]
-      .filter((key) => key.startsWith("tool:"))
-      .sort()
-      .map((key, index) => ({
-        key,
-        label: toolLabel(key),
-        color: TOOL_COLORS[index % TOOL_COLORS.length],
-      })),
+    ...TOOL_CATEGORIES.filter((key) => keys.has(key)).map((key) => ({
+      key,
+      label: CATEGORY_LABELS[key],
+      color: CATEGORY_COLORS[key],
+    })),
     ...(keys.has("images") ? [{ key: "images", label: "images", color: "#e879a7" }] : []),
   ];
 });
@@ -289,14 +314,22 @@ function addTokens(running: Composition, key: string, tokens: number) {
 }
 
 function toolKey(name: string | undefined, input?: unknown) {
-  if (name !== "bash") return `tool:${name || "other"}`;
+  if (name !== "bash") {
+    switch (name) {
+      case "browser":
+      case "web_search":
+      case "keyword_search":
+        return "tool:browser/web";
+      case "apply_patch":
+      case "patch":
+      case "write_file":
+        return "tool:edit";
+      default:
+        return "tool:other";
+    }
+  }
   const command = commandFromInput(input);
-  return `tool:bash:${bashCommandFamily(command)}`;
-}
-
-function toolLabel(key: string) {
-  const name = key.slice("tool:".length);
-  return name.replace("bash:", "bash · ");
+  return `bash:${bashCommandFamily(command)}`;
 }
 
 function commandFromInput(input: unknown) {
@@ -317,8 +350,14 @@ function bashCommandFamily(command: string) {
   const words = first.split(/\s+/).filter(Boolean);
   while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
   if (!words.length) return "other";
-  if (words[0] === "git" && words[1]) return `git ${words[1]}`;
-  return words[0];
+  if (words[0] === "git") return "git";
+  if (["cat", "sed", "rg", "grep", "find", "fd", "head", "tail", "ls", "pwd", "awk"].includes(words[0])) {
+    return "read/search";
+  }
+  if (["go", "pnpm", "npm", "yarn", "make", "cargo", "pytest", "jest", "vitest"].includes(words[0])) {
+    return "build/test";
+  }
+  return "other";
 }
 
 function parseUsage(message: Message): Usage | null {
