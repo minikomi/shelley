@@ -7,7 +7,6 @@
       <div class="context-composition-graph-header">
         <span>estimated composition</span>
         <slot name="mode-controls" />
-        <span>{{ formatTokenCount(points.at(-1)!.total) }} / {{ formatTokenCount(props.maxContextTokens) }} window</span>
       </div>
       <svg
         :viewBox="`0 0 ${W} ${H}`"
@@ -166,7 +165,7 @@ const categories = computed<Category[]>(() => {
       .sort()
       .map((key, index) => ({
         key,
-        label: key.slice("tool:".length),
+        label: toolLabel(key),
         color: TOOL_COLORS[index % TOOL_COLORS.length],
       })),
     ...(keys.has("images") ? [{ key: "images", label: "images", color: "#e879a7" }] : []),
@@ -265,7 +264,7 @@ function addContent(running: Composition, toolKeys: Map<string, string>, content
   }
   switch (content.Type) {
     case TYPE_TOOL_USE: {
-      const key = toolKey(content.ToolName);
+      const key = toolKey(content.ToolName, content.ToolInput);
       toolKeys.set(content.ID, key);
       addTokens(running, key, estimateTokens(content.ToolName || "") + estimateTokens(stringify(content.ToolInput)));
       return;
@@ -289,8 +288,37 @@ function addTokens(running: Composition, key: string, tokens: number) {
   running[key] = (running[key] || 0) + tokens;
 }
 
-function toolKey(name: string | undefined) {
-  return `tool:${name || "other"}`;
+function toolKey(name: string | undefined, input?: unknown) {
+  if (name !== "bash") return `tool:${name || "other"}`;
+  const command = commandFromInput(input);
+  return `tool:bash:${bashCommandFamily(command)}`;
+}
+
+function toolLabel(key: string) {
+  const name = key.slice("tool:".length);
+  return name.replace("bash:", "bash · ");
+}
+
+function commandFromInput(input: unknown) {
+  if (typeof input === "object" && input && "command" in input && typeof input.command === "string") {
+    return input.command;
+  }
+  if (typeof input !== "string") return "other";
+  try {
+    const parsed = JSON.parse(input);
+    return typeof parsed?.command === "string" ? parsed.command : input;
+  } catch {
+    return input;
+  }
+}
+
+function bashCommandFamily(command: string) {
+  const first = command.trim().split(/&&|;|\n/, 1)[0];
+  const words = first.split(/\s+/).filter(Boolean);
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+  if (!words.length) return "other";
+  if (words[0] === "git" && words[1]) return `git ${words[1]}`;
+  return words[0];
 }
 
 function parseUsage(message: Message): Usage | null {
