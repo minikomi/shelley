@@ -124,6 +124,10 @@ const TOOL_CATEGORIES = [
   "bash:directory",
   "bash:build/test",
   "bash:git",
+  "bash:script",
+  "bash:database",
+  "bash:system",
+  "bash:file ops",
   "bash:other",
   "tool:browser/web",
   "tool:edit",
@@ -136,6 +140,10 @@ const CATEGORY_LABELS: Record<string, string> = {
   "bash:directory": "bash · directory",
   "bash:build/test": "bash · build/test",
   "bash:git": "bash · git",
+  "bash:script": "bash · script",
+  "bash:database": "bash · database",
+  "bash:system": "bash · system",
+  "bash:file ops": "bash · file ops",
   "bash:other": "bash · other",
   "tool:browser/web": "browser/web",
   "tool:edit": "edit",
@@ -148,6 +156,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   "bash:directory": "#65a30d",
   "bash:build/test": "#8375e9",
   "bash:git": "#d97706",
+  "bash:script": "#7c3aed",
+  "bash:database": "#0891b2",
+  "bash:system": "#64748b",
+  "bash:file ops": "#b45309",
   "bash:other": "#be6a9e",
   "tool:browser/web": "#0891b2",
   "tool:edit": "#f97316",
@@ -378,6 +390,10 @@ function bashCommandFamily(command: string) {
     if (["go", "pnpm", "npm", "yarn", "make", "cargo", "pytest", "jest", "vitest"].includes(words[0])) {
       return "build/test";
     }
+    if (["python", "python3", "node", "ruby", "perl"].includes(words[0])) return "script";
+    if (["sqlite3", "psql", "mysql"].includes(words[0])) return "database";
+    if (["tmux", "sudo", "curl", "wget", "df", "du", "ss"].includes(words[0])) return "system";
+    if (["rm", "mkdir", "gofmt", "chmod", "mv", "cp"].includes(words[0])) return "file ops";
     return "other";
   }
   return "other";
