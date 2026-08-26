@@ -160,16 +160,16 @@ const CATEGORY_HINTS: Record<string, string> = {
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  // ColorBrewer-style qualitative hue spacing, normalized to the Cost
-  // graph's medium lightness so a dense stack reads as one visual system.
-  "bash:code search": "hsl(204 46% 57%)",
-  "bash:file read": "hsl(110 40% 54%)",
-  "bash:build/test": "hsl(278 40% 58%)",
-  "bash:script/query": "hsl(3 48% 58%)",
-  "bash:system": "hsl(30 50% 59%)",
-  "repo/edit": "hsl(57 48% 55%)",
+  // Cost graph-adjacent blue, purple, teal, and orange hues, with spaced
+  // shades for neighboring context bands.
+  "bash:code search": "hsl(199 92% 60%)",
+  "bash:file read": "hsl(199 68% 70%)",
+  "bash:build/test": "hsl(234 75% 63%)",
+  "bash:script/query": "hsl(350 66% 60%)",
+  "bash:system": "hsl(27 96% 61%)",
+  "repo/edit": "hsl(45 80% 58%)",
   "bash:other": "hsl(0 0% 58%)",
-  "tool:browser/web": "hsl(326 45% 59%)",
+  "tool:browser/web": "hsl(270 58% 60%)",
   "tool:other": "hsl(213 15% 57%)",
 };
 
@@ -229,7 +229,7 @@ const categories = computed<Category[]>(() => {
     for (const key of Object.keys(point.parts)) keys.add(key);
   }
   return [
-    { key: "text", label: "text", color: "hsl(160 45% 51%)", hint: "User and assistant text, including thinking" },
+    { key: "text", label: "text", color: "hsl(160 64% 52%)", hint: "User and assistant text, including thinking" },
     ...TOOL_CATEGORIES.filter((key) => keys.has(key)).map((key) => ({
       key,
       label: CATEGORY_LABELS[key],
@@ -237,7 +237,7 @@ const categories = computed<Category[]>(() => {
       hint: CATEGORY_HINTS[key],
     })),
     ...(keys.has("images")
-      ? [{ key: "images", label: "images", color: "hsl(188 42% 58%)", hint: "Image content in messages or tool results" }]
+      ? [{ key: "images", label: "images", color: "hsl(325 65% 62%)", hint: "Image content in messages or tool results" }]
       : []),
   ];
 });
