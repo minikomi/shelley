@@ -162,14 +162,14 @@ const CATEGORY_HINTS: Record<string, string> = {
 const CATEGORY_COLORS: Record<string, string> = {
   // ColorBrewer-style qualitative hue spacing, normalized to the Cost
   // graph's medium lightness so a dense stack reads as one visual system.
-  "bash:code search": "hsl(204 64% 58%)",
-  "bash:file read": "hsl(110 56% 55%)",
-  "bash:build/test": "hsl(278 55% 59%)",
-  "bash:script/query": "hsl(3 70% 59%)",
-  "bash:system": "hsl(30 75% 60%)",
-  "repo/edit": "hsl(57 74% 56%)",
+  "bash:code search": "hsl(204 46% 57%)",
+  "bash:file read": "hsl(110 40% 54%)",
+  "bash:build/test": "hsl(278 40% 58%)",
+  "bash:script/query": "hsl(3 48% 58%)",
+  "bash:system": "hsl(30 50% 59%)",
+  "repo/edit": "hsl(57 48% 55%)",
   "bash:other": "hsl(0 0% 58%)",
-  "tool:browser/web": "hsl(326 62% 60%)",
+  "tool:browser/web": "hsl(326 45% 59%)",
   "tool:other": "hsl(213 15% 57%)",
 };
 
@@ -229,7 +229,7 @@ const categories = computed<Category[]>(() => {
     for (const key of Object.keys(point.parts)) keys.add(key);
   }
   return [
-    { key: "text", label: "text", color: "hsl(160 64% 52%)", hint: "User and assistant text, including thinking" },
+    { key: "text", label: "text", color: "hsl(160 45% 51%)", hint: "User and assistant text, including thinking" },
     ...TOOL_CATEGORIES.filter((key) => keys.has(key)).map((key) => ({
       key,
       label: CATEGORY_LABELS[key],
@@ -237,7 +237,7 @@ const categories = computed<Category[]>(() => {
       hint: CATEGORY_HINTS[key],
     })),
     ...(keys.has("images")
-      ? [{ key: "images", label: "images", color: "hsl(188 58% 59%)", hint: "Image content in messages or tool results" }]
+      ? [{ key: "images", label: "images", color: "hsl(188 42% 58%)", hint: "Image content in messages or tool results" }]
       : []),
   ];
 });
@@ -438,7 +438,7 @@ function stringify(value: unknown) {
 function niceTokenCeiling(tokens: number) {
   const target = tokens * 1.1;
   const magnitude = 10 ** Math.floor(Math.log10(target));
-  for (const multiple of [1, 2, 5, 10]) {
+  for (const multiple of [1, 1.25, 1.5, 2, 2.5, 5, 10]) {
     const ceiling = multiple * magnitude;
     if (ceiling >= target) return ceiling;
   }
