@@ -32,7 +32,6 @@
           :fill="category.color"
           class="context-composition-area"
         />
-        <polyline :points="totalLine" class="context-composition-total-line" />
         <line
           v-for="index in compactionStarts"
           :key="`compaction-${index}`"
@@ -120,7 +119,9 @@ type Point = { total: number; graphTotal: number; generation: number; parts: Com
 type Category = { key: string; label: string; color: string };
 
 const TOOL_CATEGORIES = [
-  "bash:read/search",
+  "bash:code search",
+  "bash:file read",
+  "bash:directory",
   "bash:build/test",
   "bash:git",
   "bash:other",
@@ -130,7 +131,9 @@ const TOOL_CATEGORIES = [
 ] as const;
 
 const CATEGORY_LABELS: Record<string, string> = {
-  "bash:read/search": "bash · read/search",
+  "bash:code search": "bash · code search",
+  "bash:file read": "bash · file read",
+  "bash:directory": "bash · directory",
   "bash:build/test": "bash · build/test",
   "bash:git": "bash · git",
   "bash:other": "bash · other",
@@ -140,7 +143,9 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  "bash:read/search": "#2997dd",
+  "bash:code search": "#2997dd",
+  "bash:file read": "#0ea5a5",
+  "bash:directory": "#65a30d",
   "bash:build/test": "#8375e9",
   "bash:git": "#d97706",
   "bash:other": "#be6a9e",
@@ -237,8 +242,6 @@ const hoverX = ref<number | null>(null);
 const hoverPoint = computed(() =>
   hoverIndex.value === null ? null : points.value[hoverIndex.value] || null,
 );
-const totalLine = computed(() => points.value.map((point, index) => `${xAt(index)},${yAtTokens(point.graphTotal)}`).join(" "));
-
 function areaPath(categoryIndex: number) {
   if (points.value.length === 0) return "";
   const upper = points.value.map((point, index) => {
@@ -369,8 +372,14 @@ function bashCommandFamily(command: string) {
   while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
   if (!words.length) return "other";
   if (words[0] === "git") return "git";
-  if (["cat", "sed", "rg", "grep", "find", "fd", "head", "tail", "ls", "pwd", "awk"].includes(words[0])) {
-    return "read/search";
+  if (["rg", "grep", "find", "fd"].includes(words[0])) {
+    return "code search";
+  }
+  if (["cat", "sed", "head", "tail", "awk"].includes(words[0])) {
+    return "file read";
+  }
+  if (["ls", "pwd"].includes(words[0])) {
+    return "directory";
   }
   if (["go", "pnpm", "npm", "yarn", "make", "cargo", "pytest", "jest", "vitest"].includes(words[0])) {
     return "build/test";

@@ -9683,13 +9683,6 @@ kbd {
   fill: #e879a7;
   opacity: 0.88;
 }
-.context-composition-total-line {
-  fill: none;
-  stroke: var(--text-primary);
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
 .context-composition-axis {
   stroke: var(--border-color);
   stroke-width: 1;
