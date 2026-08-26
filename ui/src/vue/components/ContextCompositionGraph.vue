@@ -151,19 +151,21 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  "bash:code search": "#2997dd",
-  "bash:file read": "#0ea5a5",
-  "bash:directory": "#65a30d",
-  "bash:build/test": "#8375e9",
-  "bash:git": "#d97706",
-  "bash:script": "#7c3aed",
-  "bash:database": "#0891b2",
-  "bash:system": "#64748b",
-  "bash:file ops": "#b45309",
-  "bash:other": "#be6a9e",
-  "tool:browser/web": "#0891b2",
-  "tool:edit": "#f97316",
-  "tool:other": "#6b7280",
+  // ColorBrewer qualitative palettes (Set1, Dark2): readable when many
+  // context sources occupy adjacent bands.
+  "bash:code search": "#377eb8",
+  "bash:file read": "#66a61e",
+  "bash:directory": "#a6d854",
+  "bash:build/test": "#7570b3",
+  "bash:git": "#e6ab02",
+  "bash:script": "#e41a1c",
+  "bash:database": "#a6761d",
+  "bash:system": "#666666",
+  "bash:file ops": "#d95f02",
+  "bash:other": "#999999",
+  "tool:browser/web": "#f781bf",
+  "tool:edit": "#984ea3",
+  "tool:other": "#bdbdbd",
 };
 
 const points = computed<Point[]>(() => {
@@ -222,13 +224,13 @@ const categories = computed<Category[]>(() => {
     for (const key of Object.keys(point.parts)) keys.add(key);
   }
   return [
-    { key: "text", label: "text", color: "#24a579" },
+    { key: "text", label: "text", color: "#1b9e77" },
     ...TOOL_CATEGORIES.filter((key) => keys.has(key)).map((key) => ({
       key,
       label: CATEGORY_LABELS[key],
       color: CATEGORY_COLORS[key],
     })),
-    ...(keys.has("images") ? [{ key: "images", label: "images", color: "#e879a7" }] : []),
+    ...(keys.has("images") ? [{ key: "images", label: "images", color: "#e7298a" }] : []),
   ];
 });
 
