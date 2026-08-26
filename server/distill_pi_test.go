@@ -15,6 +15,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/ant"
 )
 
 func textMsg(role llm.MessageRole, text string) llm.Message {
@@ -670,6 +671,10 @@ func (r *refusingService) Do(ctx context.Context, req *llm.Request) (*llm.Respon
 		Type:       "message",
 		Role:       llm.MessageRoleAssistant,
 		StopReason: llm.StopReasonRefusal,
+		RefusalDetails: &llm.RefusalDetails{
+			Category:    "cyber",
+			Explanation: "blocked under policy",
+		},
 	}, nil
 }
 
@@ -691,19 +696,18 @@ func (p *refusingModelProvider) GetService(modelID string) (llm.Service, error) 
 	return svc, nil
 }
 
-// TestPiDistillRetriesWithDefaultModelOnRefusal verifies that when the
-// conversation's model refuses the summarization request, compaction retries
-// once with the server's default model and succeeds.
-func TestPiDistillRetriesWithDefaultModelOnRefusal(t *testing.T) {
+// TestPiDistillRetriesFableWithOpusOnRefusal verifies that Fable compaction
+// retries once with the newest Opus model rather than the server default.
+func TestPiDistillRetriesFableWithOpusOnRefusal(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		h := NewTestHarness(t)
 		defer stopActiveConversationLoops(h.server)
 		// Force summarization of the older slice.
 		h.server.piDistillKeepRecentTokens = 1
-		// The conversation's model "refuser" always returns empty content; the
-		// server default ("predictable") works. Compaction should fall back.
-		h.server.llmManager = &refusingModelProvider{LLMProvider: h.server.llmManager, refusingModelID: "refuser"}
+		// Fable always returns empty content; Opus works. Compaction should use
+		// the hard-coded Opus fallback rather than the server default.
+		h.server.llmManager = &refusingModelProvider{LLMProvider: h.server.llmManager, refusingModelID: ant.ClaudeFable5}
 
 		h.NewConversation("echo: alpha", "")
 		h.WaitResponse()
@@ -721,7 +725,7 @@ func TestPiDistillRetriesWithDefaultModelOnRefusal(t *testing.T) {
 
 		reqBody := DistillNewGenerationRequest{
 			SourceConversationID: convID,
-			Model:                "refuser",
+			Model:                ant.ClaudeFable5,
 			Method:               distillMethodCompact,
 		}
 		body, _ := json.Marshal(reqBody)
