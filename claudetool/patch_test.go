@@ -933,6 +933,9 @@ func TestApplyPatchProfileToolAndExecution(t *testing.T) {
 		`Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.`,
 		`up to 3 unchanged lines before and after the edit when available`,
 		`unless fewer lines already include a unique structural anchor`,
+		`An "@@ text" header anchors the hunk after the matching source line`,
+		`Stack multiple "@@ text" headers to narrow nested scopes.`,
+		`use "@@ line N".`,
 		`a parse or match failure rejects the entire patch without changing files`,
 		`For "matched 0 locations," reread the current file and retry with exact current context`,
 	} {
@@ -984,15 +987,104 @@ func TestApplyPatchMatchErrorExplainsMissingContext(t *testing.T) {
 }
 
 func TestApplyPatchMatchErrorIdentifiesAmbiguousLines(t *testing.T) {
-	err := applyPatchMatchError("example.go", "same\nother\nsame\nmore\nsame\n", "same\n")
+	err := applyPatchMatchError("example.go", "func first() {\n\tsame\n}\nfunc second() {\n\tsame\n}\nfunc third() {\n\tsame\n}\n", "\tsame\n")
 	for _, want := range []string{
-		`apply_patch update for "example.go" matched 3 locations at lines 1, 3, 5`,
-		"Include more surrounding unchanged lines so the context identifies one location.",
+		`apply_patch update for "example.go" matched 3 locations at lines 2, 5, 8`,
+		`Choose one reported location by repeating the hunk with an "@@ line N" header`,
+		"Matching locations:",
+		`line 2 (select with "@@ line 2")`,
+		`line 5 (select with "@@ line 5")`,
+		`line 8 (select with "@@ line 8")`,
 		"No files were changed",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+}
+
+func TestApplyPatchSelectsAmbiguousHunkByLine(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.go")
+	content := "func first() {\n\tsame\n}\nfunc second() {\n\tsame\n}\nfunc third() {\n\tsame\n}\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	input := `*** Begin Patch
+*** Update File: edit.go
+@@ line 5
+-	same
++	changed
+*** End Patch`
+	raw, _ := json.Marshal(applyPatchInput{Input: input})
+	if result := patch.Run(context.Background(), raw); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "func first() {\n\tsame\n}\nfunc second() {\n\tchanged\n}\nfunc third() {\n\tsame\n}\n"
+	if string(got) != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
+func TestApplyPatchSelectsAmbiguousHunkBySourceAnchor(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.go")
+	content := "package p\n\nfunc first() {\n\tsame\n}\nfunc second() {\n\tsame\n}\nfunc third() {\n\tsame\n}\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	input := `*** Begin Patch
+*** Update File: edit.go
+@@ func second() {
+-	same
++	changed
+*** End Patch`
+	raw, _ := json.Marshal(applyPatchInput{Input: input})
+	if result := patch.Run(context.Background(), raw); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "package p\n\nfunc first() {\n\tsame\n}\nfunc second() {\n\tchanged\n}\nfunc third() {\n\tsame\n}\n"
+	if string(got) != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
+func TestApplyPatchUsesStackedSourceAnchors(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.py")
+	content := "class First:\n    def method(self):\n        value = 1\n\nclass Second:\n    def method(self):\n        value = 1\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	input := `*** Begin Patch
+*** Update File: edit.py
+@@ class Second:
+@@     def method(self):
+-        value = 1
++        value = 2
+*** End Patch`
+	raw, _ := json.Marshal(applyPatchInput{Input: input})
+	if result := patch.Run(context.Background(), raw); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "class First:\n    def method(self):\n        value = 1\n\nclass Second:\n    def method(self):\n        value = 2\n"
+	if string(got) != want {
+		t.Fatalf("content = %q, want %q", got, want)
 	}
 }
 

@@ -199,7 +199,7 @@ Recipes:
 	ApplyPatchName        = "apply_patch"
 	ApplyPatchDescription = `The apply_patch tool edits files using the Codex patch format. This is a FREEFORM tool: send only an envelope beginning with "*** Begin Patch" and ending with "*** End Patch"; do not wrap it in JSON.
 Use "*** Add File: path" with every content line prefixed "+", "*** Delete File: path", or "*** Update File: path" with hunk lines prefixed by exactly one " " (context), "-" (remove), or "+" (add). Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.
-For every update hunk, include enough unchanged context to identify one location—up to 3 unchanged lines before and after the edit when available, unless fewer lines already include a unique structural anchor such as a function declaration, type name, CSS selector, or test name. Do not patch using only a short repeated fragment.
+For every update hunk, include enough unchanged context to identify one location—up to 3 unchanged lines before and after the edit when available, unless fewer lines already include a unique structural anchor such as a function declaration, type name, CSS selector, or test name. Do not patch using only a short repeated fragment. An "@@ text" header anchors the hunk after the matching source line; copy that line exactly from the file. Stack multiple "@@ text" headers to narrow nested scopes. To select one location reported by an ambiguous-match error, use "@@ line N".
 The patch is validated as a unit: a parse or match failure rejects the entire patch without changing files. For "matched 0 locations," reread the current file and retry with exact current context; do not trim or normalize whitespace.`
 	ApplyPatchGrammar = `start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
@@ -336,6 +336,8 @@ type PatchRequest struct {
 	ToClipboard   string    `json:"toClipboard,omitempty"`
 	FromClipboard string    `json:"fromClipboard,omitempty"`
 	Reindent      *Reindent `json:"reindent,omitempty"`
+	line          int
+	anchors       []string
 }
 
 // Reindent represents indentation adjustment configuration.
@@ -472,6 +474,24 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 			}
 			content := string(old)
 			for _, request := range file.patches {
+				if request.line > 0 {
+					offset, ok := exactMatchOffsetAtLine(content, request.OldText, request.line)
+					if !ok {
+						err = applyPatchMatchError(path, content, request.OldText)
+						break
+					}
+					content = content[:offset] + request.NewText + content[offset+len(request.OldText):]
+					continue
+				}
+				if len(request.anchors) > 0 {
+					offset, selectorErr := exactMatchOffsetAfterAnchors(content, request.OldText, request.anchors)
+					if selectorErr != nil {
+						err = fmt.Errorf("apply_patch update for %q: %w\n\nNo files were changed", path, selectorErr)
+						break
+					}
+					content = content[:offset] + request.NewText + content[offset+len(request.OldText):]
+					continue
+				}
 				spec, count := patchkit.Unique(content, request.OldText, request.NewText)
 				if count != 1 {
 					err = applyPatchMatchError(path, content, request.OldText)
@@ -534,7 +554,26 @@ func applyPatchMatchError(path, content, oldText string) error {
 	for i, line := range lines {
 		lineText[i] = strconv.Itoa(line)
 	}
-	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nInclude more surrounding unchanged lines so the context identifies one location.\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "))
+	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nChoose one reported location by repeating the hunk with an \"@@ line N\" header, or include more surrounding unchanged lines.\n\n%s\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "), applyPatchMatchContexts(content, lines))
+}
+
+func applyPatchMatchContexts(content string, matches []int) string {
+	const contextLines = 3
+	const maxContexts = 5
+
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	var out strings.Builder
+	out.WriteString("Matching locations:")
+	for i, line := range matches {
+		if i == maxContexts {
+			fmt.Fprintf(&out, "\n- %d more omitted", len(matches)-i)
+			break
+		}
+		start := max(0, line-1-contextLines)
+		end := min(len(lines), line+contextLines)
+		fmt.Fprintf(&out, "\n- line %d (select with \"@@ line %d\"):\n%s", line, line, strings.Join(lines[start:end], "\n"))
+	}
+	return out.String()
 }
 
 func exactMatchLines(content, oldText string) []int {
@@ -552,6 +591,62 @@ func exactMatchLines(content, oldText string) []int {
 		lines = append(lines, 1+strings.Count(content[:match], "\n"))
 		offset = match + len(oldText)
 	}
+}
+
+func exactMatchOffsetAtLine(content, oldText string, targetLine int) (int, bool) {
+	if oldText == "" {
+		return 0, false
+	}
+	for offset := 0; ; {
+		match := strings.Index(content[offset:], oldText)
+		if match < 0 {
+			return 0, false
+		}
+		match += offset
+		if 1+strings.Count(content[:match], "\n") == targetLine {
+			return match, true
+		}
+		offset = match + len(oldText)
+	}
+}
+
+func exactMatchOffsetAfterAnchors(content, oldText string, anchors []string) (int, error) {
+	cursor := 0
+	for _, anchor := range anchors {
+		next, ok := sourceLineOffsetAfter(content, anchor, cursor)
+		if !ok {
+			return 0, fmt.Errorf("anchor did not match a source line after offset %d:\n%s", cursor, anchor)
+		}
+		cursor = next
+	}
+	match := strings.Index(content[cursor:], oldText)
+	if match < 0 {
+		return 0, fmt.Errorf("context did not match after anchor:\n%s", oldText)
+	}
+	return cursor + match, nil
+}
+
+func sourceLineOffsetAfter(content, anchor string, cursor int) (int, bool) {
+	for cursor <= len(content) {
+		end := strings.IndexByte(content[cursor:], '\n')
+		if end < 0 {
+			end = len(content)
+		} else {
+			end += cursor
+		}
+		line := content[cursor:end]
+		if line == anchor || strings.TrimSpace(line) == anchor {
+			if end < len(content) {
+				end++
+			}
+			return end, true
+		}
+		if end == len(content) {
+			return 0, false
+		}
+		cursor = end + 1
+	}
+	return 0, false
 }
 
 func applyPatchDisplayPath(mutations []applyPatchMutation) string {
@@ -601,7 +696,18 @@ func parseApplyPatch(text string) ([]applyPatchFile, error) {
 			}
 			var patches []PatchRequest
 			for i < len(lines)-1 && !strings.HasPrefix(lines[i], "*** ") {
-				if strings.HasPrefix(lines[i], "@@") {
+				line := 0
+				var anchors []string
+				for i < len(lines)-1 && strings.HasPrefix(lines[i], "@@") {
+					var err error
+					var anchor string
+					line, anchor, err = applyPatchHunkSelector(lines[i])
+					if err != nil {
+						return nil, err
+					}
+					if anchor != "" {
+						anchors = append(anchors, anchor)
+					}
 					i++
 				}
 				var oldLines, newLines []string
@@ -622,7 +728,7 @@ func parseApplyPatch(text string) ([]applyPatchFile, error) {
 				if len(oldLines) == 0 {
 					return nil, fmt.Errorf("update hunk for %q has no old lines", path)
 				}
-				patches = append(patches, PatchRequest{Operation: "replace", OldText: strings.Join(oldLines, "\n"), NewText: strings.Join(newLines, "\n")})
+				patches = append(patches, PatchRequest{Operation: "replace", OldText: strings.Join(oldLines, "\n"), NewText: strings.Join(newLines, "\n"), line: line, anchors: anchors})
 			}
 			if len(patches) == 0 {
 				return nil, fmt.Errorf("update hunk for %q is empty", path)
@@ -636,6 +742,20 @@ func parseApplyPatch(text string) ([]applyPatchFile, error) {
 		return nil, fmt.Errorf("apply_patch contains no file hunks")
 	}
 	return files, nil
+}
+
+func applyPatchHunkSelector(header string) (int, string, error) {
+	label := strings.TrimSpace(strings.TrimPrefix(header, "@@"))
+	switch {
+	case strings.HasPrefix(label, "line "):
+		line, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(label, "line ")))
+		if err != nil || line < 1 {
+			return 0, "", fmt.Errorf("apply_patch line selector must be \"@@ line N\" with N greater than zero")
+		}
+		return line, "", nil
+	default:
+		return 0, label, nil
+	}
 }
 
 func (p *PatchTool) runInput(ctx context.Context, input PatchInput) llm.ToolOut {
