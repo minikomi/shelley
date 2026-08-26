@@ -199,7 +199,7 @@ Recipes:
 	ApplyPatchName        = "apply_patch"
 	ApplyPatchDescription = `The apply_patch tool edits files using the Codex patch format. This is a FREEFORM tool: send only an envelope beginning with "*** Begin Patch" and ending with "*** End Patch"; do not wrap it in JSON.
 Use "*** Add File: path" with every content line prefixed "+", "*** Delete File: path", or "*** Update File: path" with hunk lines prefixed by exactly one " " (context), "-" (remove), or "+" (add). Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.
-For every update hunk, include enough unchanged context to identify one location—up to 3 unchanged lines before and after the edit when available, unless fewer lines already include a unique structural anchor such as a function declaration, type name, CSS selector, or test name. Do not patch using only a short repeated fragment.
+For every update hunk, include enough unchanged context to identify one location—up to 3 unchanged lines before and after the edit when available, unless fewer lines already include a unique structural anchor such as a function declaration, type name, CSS selector, or test name. Do not patch using only a short repeated fragment. An "@@ ..." line is only a label; it does not constrain where the hunk applies.
 The patch is validated as a unit: a parse or match failure rejects the entire patch without changing files. For "matched 0 locations," reread the current file and retry with exact current context; do not trim or normalize whitespace.`
 	ApplyPatchGrammar = `start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
@@ -534,7 +534,26 @@ func applyPatchMatchError(path, content, oldText string) error {
 	for i, line := range lines {
 		lineText[i] = strconv.Itoa(line)
 	}
-	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nInclude more surrounding unchanged lines so the context identifies one location.\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "))
+	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nInclude more surrounding unchanged lines so the context identifies one location. Use the enclosing declaration or another unique unchanged line; an \"@@ ...\" line does not identify a location.\n\n%s\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "), applyPatchMatchContexts(content, lines))
+}
+
+func applyPatchMatchContexts(content string, matches []int) string {
+	const contextLines = 3
+	const maxContexts = 5
+
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	var out strings.Builder
+	out.WriteString("Matching locations:")
+	for i, line := range matches {
+		if i == maxContexts {
+			fmt.Fprintf(&out, "\n- %d more omitted", len(matches)-i)
+			break
+		}
+		start := max(0, line-1-contextLines)
+		end := min(len(lines), line+contextLines)
+		fmt.Fprintf(&out, "\n- line %d:\n%s", line, strings.Join(lines[start:end], "\n"))
+	}
+	return out.String()
 }
 
 func exactMatchLines(content, oldText string) []int {

@@ -933,6 +933,7 @@ func TestApplyPatchProfileToolAndExecution(t *testing.T) {
 		`Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.`,
 		`up to 3 unchanged lines before and after the edit when available`,
 		`unless fewer lines already include a unique structural anchor`,
+		`An "@@ ..." line is only a label; it does not constrain where the hunk applies.`,
 		`a parse or match failure rejects the entire patch without changing files`,
 		`For "matched 0 locations," reread the current file and retry with exact current context`,
 	} {
@@ -984,10 +985,15 @@ func TestApplyPatchMatchErrorExplainsMissingContext(t *testing.T) {
 }
 
 func TestApplyPatchMatchErrorIdentifiesAmbiguousLines(t *testing.T) {
-	err := applyPatchMatchError("example.go", "same\nother\nsame\nmore\nsame\n", "same\n")
+	err := applyPatchMatchError("example.go", "func first() {\n\tsame\n}\nfunc second() {\n\tsame\n}\nfunc third() {\n\tsame\n}\n", "\tsame\n")
 	for _, want := range []string{
-		`apply_patch update for "example.go" matched 3 locations at lines 1, 3, 5`,
+		`apply_patch update for "example.go" matched 3 locations at lines 2, 5, 8`,
 		"Include more surrounding unchanged lines so the context identifies one location.",
+		`an "@@ ..." line does not identify a location.`,
+		"Matching locations:",
+		"func first() {",
+		"func second() {",
+		"func third() {",
 		"No files were changed",
 	} {
 		if !strings.Contains(err.Error(), want) {
