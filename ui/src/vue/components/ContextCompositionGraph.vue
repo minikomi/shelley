@@ -367,22 +367,18 @@ function commandFromInput(input: unknown) {
 }
 
 function bashCommandFamily(command: string) {
-  const first = command.trim().split(/&&|;|\n/, 1)[0];
-  const words = first.split(/\s+/).filter(Boolean);
-  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
-  if (!words.length) return "other";
-  if (words[0] === "git") return "git";
-  if (["rg", "grep", "find", "fd"].includes(words[0])) {
-    return "code search";
-  }
-  if (["cat", "sed", "head", "tail", "awk"].includes(words[0])) {
-    return "file read";
-  }
-  if (["ls", "pwd"].includes(words[0])) {
-    return "directory";
-  }
-  if (["go", "pnpm", "npm", "yarn", "make", "cargo", "pytest", "jest", "vitest"].includes(words[0])) {
-    return "build/test";
+  for (const segment of command.trim().split(/&&|;|\n/)) {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+    if (!words.length || ["cd", "export", "set", "true"].includes(words[0])) continue;
+    if (words[0] === "git") return "git";
+    if (["rg", "grep", "find", "fd"].includes(words[0])) return "code search";
+    if (["cat", "sed", "head", "tail", "awk"].includes(words[0])) return "file read";
+    if (["ls", "pwd"].includes(words[0])) return "directory";
+    if (["go", "pnpm", "npm", "yarn", "make", "cargo", "pytest", "jest", "vitest"].includes(words[0])) {
+      return "build/test";
+    }
+    return "other";
   }
   return "other";
 }
