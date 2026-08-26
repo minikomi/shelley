@@ -160,16 +160,17 @@ const CATEGORY_HINTS: Record<string, string> = {
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  // Muted qualitative colors keep dense context stacks readable.
-  "bash:code search": "#8da0cb",
-  "bash:file read": "#a6d854",
-  "bash:build/test": "#b3a2c7",
-  "bash:script/query": "#fc8d62",
-  "bash:system": "#e5c494",
-  "repo/edit": "#ffd92f",
-  "bash:other": "#999999",
-  "tool:browser/web": "#e78ac3",
-  "tool:other": "#bdbdbd",
+  // ColorBrewer-style qualitative hue spacing, normalized to the Cost
+  // graph's medium lightness so a dense stack reads as one visual system.
+  "bash:code search": "hsl(204 64% 58%)",
+  "bash:file read": "hsl(110 56% 55%)",
+  "bash:build/test": "hsl(278 55% 59%)",
+  "bash:script/query": "hsl(3 70% 59%)",
+  "bash:system": "hsl(30 75% 60%)",
+  "repo/edit": "hsl(57 74% 56%)",
+  "bash:other": "hsl(0 0% 58%)",
+  "tool:browser/web": "hsl(326 62% 60%)",
+  "tool:other": "hsl(213 15% 57%)",
 };
 
 const points = computed<Point[]>(() => {
@@ -228,7 +229,7 @@ const categories = computed<Category[]>(() => {
     for (const key of Object.keys(point.parts)) keys.add(key);
   }
   return [
-    { key: "text", label: "text", color: "#66c2a5", hint: "User and assistant text, including thinking" },
+    { key: "text", label: "text", color: "hsl(160 64% 52%)", hint: "User and assistant text, including thinking" },
     ...TOOL_CATEGORIES.filter((key) => keys.has(key)).map((key) => ({
       key,
       label: CATEGORY_LABELS[key],
@@ -236,7 +237,7 @@ const categories = computed<Category[]>(() => {
       hint: CATEGORY_HINTS[key],
     })),
     ...(keys.has("images")
-      ? [{ key: "images", label: "images", color: "#c994c7", hint: "Image content in messages or tool results" }]
+      ? [{ key: "images", label: "images", color: "hsl(188 58% 59%)", hint: "Image content in messages or tool results" }]
       : []),
   ];
 });
