@@ -69,7 +69,12 @@
         <text :x="W - PADR" :y="H - 4" text-anchor="end" class="context-composition-label">{{ points.length }}</text>
       </svg>
       <div class="context-composition-legend">
-        <span v-for="category in categories" :key="category.key">
+        <span
+          v-for="category in categories"
+          :key="category.key"
+          v-tooltip.top="category.hint"
+          :aria-label="`${category.label}: ${category.hint}`"
+        >
           <i :style="{ background: category.color }" />{{ category.label }}
         </span>
       </div>
@@ -116,7 +121,7 @@ const plotHeight = H - PADT - PADB;
 
 type Composition = Record<string, number>;
 type Point = { total: number; graphTotal: number; generation: number; parts: Composition };
-type Category = { key: string; label: string; color: string };
+type Category = { key: string; label: string; color: string; hint: string };
 
 const TOOL_CATEGORIES = [
   "bash:code search",
@@ -142,17 +147,29 @@ const CATEGORY_LABELS: Record<string, string> = {
   "tool:other": "other tools",
 };
 
+const CATEGORY_HINTS: Record<string, string> = {
+  "bash:code search": "bash: rg, grep, find, fd",
+  "bash:file read": "bash: cat, sed, head, tail, awk, ls, pwd",
+  "bash:build/test": "bash: go, pnpm, npm, yarn, make, cargo, pytest, jest, vitest",
+  "bash:script/query": "bash: python, python3, node, ruby, perl, sqlite3, psql, mysql",
+  "bash:system": "bash: tmux, sudo, curl, wget, df, du, ss",
+  "repo/edit": "bash: git, rm, mkdir, gofmt, chmod, mv, cp; tools: apply_patch, patch, write_file",
+  "bash:other": "Other bash commands",
+  "tool:browser/web": "browser, web_search, keyword_search",
+  "tool:other": "All other tools",
+};
+
 const CATEGORY_COLORS: Record<string, string> = {
-  // Okabe-Ito: high-contrast, colorblind-safe categorical colors.
-  "bash:code search": "#0072b2",
-  "bash:file read": "#56b4e9",
-  "bash:build/test": "#cc79a7",
-  "bash:script/query": "#e69f00",
-  "bash:system": "#d55e00",
-  "repo/edit": "#f0e442",
+  // Muted qualitative colors keep dense context stacks readable.
+  "bash:code search": "#8da0cb",
+  "bash:file read": "#a6d854",
+  "bash:build/test": "#b3a2c7",
+  "bash:script/query": "#fc8d62",
+  "bash:system": "#e5c494",
+  "repo/edit": "#ffd92f",
   "bash:other": "#999999",
-  "tool:browser/web": "#009e73",
-  "tool:other": "#666666",
+  "tool:browser/web": "#e78ac3",
+  "tool:other": "#bdbdbd",
 };
 
 const points = computed<Point[]>(() => {
@@ -211,13 +228,16 @@ const categories = computed<Category[]>(() => {
     for (const key of Object.keys(point.parts)) keys.add(key);
   }
   return [
-    { key: "text", label: "text", color: "#1b9e77" },
+    { key: "text", label: "text", color: "#66c2a5", hint: "User and assistant text, including thinking" },
     ...TOOL_CATEGORIES.filter((key) => keys.has(key)).map((key) => ({
       key,
       label: CATEGORY_LABELS[key],
       color: CATEGORY_COLORS[key],
+      hint: CATEGORY_HINTS[key],
     })),
-    ...(keys.has("images") ? [{ key: "images", label: "images", color: "#e7298a" }] : []),
+    ...(keys.has("images")
+      ? [{ key: "images", label: "images", color: "#c994c7", hint: "Image content in messages or tool results" }]
+      : []),
   ];
 });
 
