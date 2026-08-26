@@ -121,51 +121,38 @@ type Category = { key: string; label: string; color: string };
 const TOOL_CATEGORIES = [
   "bash:code search",
   "bash:file read",
-  "bash:directory",
   "bash:build/test",
-  "bash:git",
-  "bash:script",
-  "bash:database",
+  "bash:script/query",
   "bash:system",
-  "bash:file ops",
+  "repo/edit",
   "bash:other",
   "tool:browser/web",
-  "tool:edit",
   "tool:other",
 ] as const;
 
 const CATEGORY_LABELS: Record<string, string> = {
   "bash:code search": "bash · code search",
   "bash:file read": "bash · file read",
-  "bash:directory": "bash · directory",
   "bash:build/test": "bash · build/test",
-  "bash:git": "bash · git",
-  "bash:script": "bash · script",
-  "bash:database": "bash · database",
+  "bash:script/query": "bash · script/query",
   "bash:system": "bash · system",
-  "bash:file ops": "bash · file ops",
+  "repo/edit": "repo/edit",
   "bash:other": "bash · other",
   "tool:browser/web": "browser/web",
-  "tool:edit": "edit",
   "tool:other": "other tools",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  // ColorBrewer qualitative palettes (Set1, Dark2): readable when many
-  // context sources occupy adjacent bands.
-  "bash:code search": "#377eb8",
-  "bash:file read": "#66a61e",
-  "bash:directory": "#a6d854",
-  "bash:build/test": "#7570b3",
-  "bash:git": "#e6ab02",
-  "bash:script": "#e41a1c",
-  "bash:database": "#a6761d",
-  "bash:system": "#666666",
-  "bash:file ops": "#d95f02",
+  // Okabe-Ito: high-contrast, colorblind-safe categorical colors.
+  "bash:code search": "#0072b2",
+  "bash:file read": "#56b4e9",
+  "bash:build/test": "#cc79a7",
+  "bash:script/query": "#e69f00",
+  "bash:system": "#d55e00",
+  "repo/edit": "#f0e442",
   "bash:other": "#999999",
-  "tool:browser/web": "#f781bf",
-  "tool:edit": "#984ea3",
-  "tool:other": "#bdbdbd",
+  "tool:browser/web": "#009e73",
+  "tool:other": "#666666",
 };
 
 const points = computed<Point[]>(() => {
@@ -358,7 +345,7 @@ function toolKey(name: string | undefined, input?: unknown) {
       case "apply_patch":
       case "patch":
       case "write_file":
-        return "tool:edit";
+        return "repo/edit";
       default:
         return "tool:other";
     }
@@ -385,17 +372,12 @@ function bashCommandFamily(command: string) {
     const words = segment.trim().split(/\s+/).filter(Boolean);
     while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
     if (!words.length || ["cd", "export", "set", "true"].includes(words[0])) continue;
-    if (words[0] === "git") return "git";
+    if (words[0] === "git" || ["rm", "mkdir", "gofmt", "chmod", "mv", "cp"].includes(words[0])) return "repo/edit";
     if (["rg", "grep", "find", "fd"].includes(words[0])) return "code search";
-    if (["cat", "sed", "head", "tail", "awk"].includes(words[0])) return "file read";
-    if (["ls", "pwd"].includes(words[0])) return "directory";
-    if (["go", "pnpm", "npm", "yarn", "make", "cargo", "pytest", "jest", "vitest"].includes(words[0])) {
-      return "build/test";
-    }
-    if (["python", "python3", "node", "ruby", "perl"].includes(words[0])) return "script";
-    if (["sqlite3", "psql", "mysql"].includes(words[0])) return "database";
+    if (["cat", "sed", "head", "tail", "awk", "ls", "pwd"].includes(words[0])) return "file read";
+    if (["go", "pnpm", "npm", "yarn", "make", "cargo", "pytest", "jest", "vitest"].includes(words[0])) return "build/test";
+    if (["python", "python3", "node", "ruby", "perl", "sqlite3", "psql", "mysql"].includes(words[0])) return "script/query";
     if (["tmux", "sudo", "curl", "wget", "df", "du", "ss"].includes(words[0])) return "system";
-    if (["rm", "mkdir", "gofmt", "chmod", "mv", "cp"].includes(words[0])) return "file ops";
     return "other";
   }
   return "other";
