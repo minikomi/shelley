@@ -30,6 +30,8 @@
         >
           time
         </button>
+        <span class="token-cost-controls-spacer" />
+        <slot name="mode-controls" />
       </div>
       <svg
         :viewBox="`0 0 ${W} ${H}`"

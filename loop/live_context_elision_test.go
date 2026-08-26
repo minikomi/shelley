@@ -50,9 +50,9 @@ func TestShapeLiveContextLeavesLiveAndRecentResultsVerbatim(t *testing.T) {
 	recent.Messages[1].SequenceID = 184
 	before = estimateRequestTokens(recent)
 	outbound, stats = ShapeLiveContext(recent, before*2, LiveContextElisionConfig{
-		StartPressure:       0.4,
-		ProgressivePressure: 0.55,
-		CompactionPressure:  0.7,
+		StartTokens:         100,
+		ProgressiveTokens:   1_000_000,
+		CompactionReserve:   10,
 		ProtectedTailTokens: before,
 		LargeResultTokens:   20,
 		MinimumResultTokens: 10,
@@ -86,7 +86,9 @@ func TestShapeLiveContextPrioritizesHistoryAndPreservesFailures(t *testing.T) {
 		{Role: llm.MessageRoleUser, Content: llm.TextContent(strings.Repeat("recent ", 10))},
 	}}
 	before := estimateRequestTokens(req)
-	outbound, stats := ShapeLiveContext(req, before*2, testElisionConfig())
+	cfg := testElisionConfig()
+	cfg.StartTokens = before - 200
+	outbound, stats := ShapeLiveContext(req, before*2, cfg)
 	if stats.ElidedResults != 1 || stats.HistoryResultsElided != 1 {
 		t.Fatalf("history result was not selected first: %+v", stats)
 	}
@@ -137,7 +139,7 @@ func TestShapeLiveContextDefersAtCompactionPressure(t *testing.T) {
 	t.Parallel()
 	req := elisionRequest("grep -R TODO .", strings.Repeat("result\n", 600), 184, false)
 	before := estimateRequestTokens(req)
-	outbound, stats := ShapeLiveContext(req, int(float64(before)/0.7), testElisionConfig())
+	outbound, stats := ShapeLiveContext(req, before+10, testElisionConfig())
 	if stats.Decision != "defer_to_compaction" || stats.ElidedResults != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
@@ -178,9 +180,9 @@ func quoteJSON(s string) string {
 
 func testElisionConfig() LiveContextElisionConfig {
 	return LiveContextElisionConfig{
-		StartPressure:       0.4,
-		ProgressivePressure: 0.55,
-		CompactionPressure:  0.7,
+		StartTokens:         100,
+		ProgressiveTokens:   1_000_000,
+		CompactionReserve:   10,
 		ProtectedTailTokens: 4,
 		LargeResultTokens:   20,
 		MinimumResultTokens: 10,

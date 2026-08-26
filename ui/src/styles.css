@@ -9597,8 +9597,7 @@ kbd {
 .usage-graph-switch {
   display: flex;
   gap: 4px;
-  margin-top: 8px;
-  margin-bottom: 4px;
+  margin-left: auto;
 }
 
 .usage-graph-switch-button {
@@ -9767,6 +9766,10 @@ kbd {
   display: flex;
   gap: 4px;
   margin-bottom: 4px;
+}
+
+.token-cost-controls-spacer {
+  flex: 1;
 }
 
 .token-cost-toggle {

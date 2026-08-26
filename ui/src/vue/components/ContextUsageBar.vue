@@ -30,38 +30,26 @@
       {{ formatTokenCount(contextWindowSize) }} / {{ formatTokenCount(maxContextTokens) }} ({{
         percentage.toFixed(1)
       }}%) tokens used
-      <div class="usage-graph-switch" role="tablist" aria-label="Usage graph">
-        <button
-          :aria-selected="usageGraph === 'cost'"
-          class="usage-graph-switch-button"
-          :class="{ 'usage-graph-switch-button-active': usageGraph === 'cost' }"
-          role="tab"
-          @click="usageGraph = 'cost'"
-        >
-          cost
-        </button>
-        <button
-          :aria-selected="usageGraph === 'context'"
-          class="usage-graph-switch-button"
-          :class="{ 'usage-graph-switch-button-active': usageGraph === 'context' }"
-          role="tab"
-          @click="usageGraph = 'context'"
-        >
-          context
-        </button>
-      </div>
       <TokenCostGraph
         v-if="usageGraph === 'cost'"
         :entries="usageEntries || []"
         :other-usage-rows="otherUsageRows || []"
         :conversation-id="conversationId"
         :active="popupOpen"
-      />
+      >
+        <template #mode-controls>
+          <UsageGraphSwitch v-model="usageGraph" />
+        </template>
+      </TokenCostGraph>
       <ContextCompositionGraph
         v-else
         :messages="messages || []"
         :max-context-tokens="maxContextTokens"
-      />
+      >
+        <template #mode-controls>
+          <UsageGraphSwitch v-model="usageGraph" />
+        </template>
+      </ContextCompositionGraph>
       <div v-if="showLongConversationWarning" class="chat-popup-warning">
         This conversation is getting long.
         <br />
@@ -117,6 +105,7 @@ import { formatTokenCount } from "../../utils/tokenCostGraph";
 import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
 import ContextCompositionGraph from "./ContextCompositionGraph.vue";
 import TokenCostGraph from "./TokenCostGraph.vue";
+import UsageGraphSwitch from "./UsageGraphSwitch.vue";
 
 const props = defineProps<{
   contextWindowSize: number;

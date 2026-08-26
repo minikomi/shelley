@@ -6,6 +6,7 @@
     <template v-if="points.length > 0 && props.maxContextTokens > 0">
       <div class="context-composition-graph-header">
         <span>estimated composition</span>
+        <slot name="mode-controls" />
         <span>{{ formatTokenCount(points.at(-1)!.total) }} / {{ formatTokenCount(props.maxContextTokens) }} window</span>
       </div>
       <svg
@@ -25,7 +26,13 @@
           :y2="yAtTokens(threshold.tokens)"
           :class="['context-composition-threshold', { 'context-composition-threshold-compact': threshold.fraction >= 0.7 }]"
         />
-        <path v-for="(category, index) in CATEGORIES" :key="category.key" :d="areaPath(index)" :class="`context-composition-area-${category.key}`" />
+        <path
+          v-for="(category, index) in categories"
+          :key="category.key"
+          :d="areaPath(index)"
+          :fill="category.color"
+          class="context-composition-area"
+        />
         <polyline :points="totalLine" class="context-composition-total-line" />
         <line
           v-for="index in compactionStarts"
@@ -64,8 +71,8 @@
         <text :x="W - PADR" :y="H - 4" text-anchor="end" class="context-composition-label">{{ points.length }}</text>
       </svg>
       <div class="context-composition-legend">
-        <span v-for="category in CATEGORIES" :key="category.key">
-          <i :class="`context-composition-chip-${category.key}`" />{{ category.label }}
+        <span v-for="category in categories" :key="category.key">
+          <i :style="{ background: category.color }" />{{ category.label }}
         </span>
       </div>
       <div class="context-composition-readout">
@@ -109,47 +116,61 @@ const PADB = 18;
 const plotWidth = W - PADL - PADR;
 const plotHeight = H - PADT - PADB;
 
-const CATEGORIES = [
-  { key: "text", label: "text" },
-  { key: "toolCalls", label: "tool calls" },
-  { key: "toolOutput", label: "tool output" },
-  { key: "images", label: "images" },
-] as const;
-type Category = (typeof CATEGORIES)[number]["key"];
-type Composition = Record<Category, number>;
-type Point = Composition & { total: number; generation: number };
+type Composition = Record<string, number>;
+type Point = { total: number; generation: number; parts: Composition };
+type Category = { key: string; label: string; color: string };
+
+const TOOL_COLORS = ["#8375e9", "#2997dd", "#e879a7", "#d97706", "#0891b2", "#be6a9e"];
 
 const points = computed<Point[]>(() => {
-  const running: Composition = { text: 0, toolCalls: 0, toolOutput: 0, images: 0 };
+  const running: Composition = {};
+  const toolKeys = new Map<string, string>();
   const out: Point[] = [];
   let generation: number | undefined;
 
   for (const message of props.messages) {
     if (generation !== undefined && message.generation !== generation) {
-      running.text = 0;
-      running.toolCalls = 0;
-      running.toolOutput = 0;
-      running.images = 0;
+      for (const key of Object.keys(running)) delete running[key];
+      toolKeys.clear();
     }
     generation = message.generation;
-    addMessage(running, message);
+    addMessage(running, toolKeys, message);
     if (message.type !== "agent") continue;
     const usage = parseUsage(message);
     const total = usage ? contextWindowUsed(usage) : 0;
     if (total === 0) continue;
 
-    const estimated = CATEGORIES.reduce((sum, category) => sum + running[category.key], 0);
+    const estimated = Object.values(running).reduce((sum, tokens) => sum + tokens, 0);
     const scale = estimated > 0 ? total / estimated : 0;
     out.push({
       total,
       generation: message.generation,
-      text: Math.round(running.text * scale),
-      toolCalls: Math.round(running.toolCalls * scale),
-      toolOutput: Math.round(running.toolOutput * scale),
-      images: Math.round(running.images * scale),
+      parts:
+        estimated > 0
+          ? Object.fromEntries(Object.entries(running).map(([key, tokens]) => [key, Math.round(tokens * scale)]))
+          : { text: total },
     });
   }
   return out;
+});
+
+const categories = computed<Category[]>(() => {
+  const keys = new Set<string>(["text"]);
+  for (const point of points.value) {
+    for (const key of Object.keys(point.parts)) keys.add(key);
+  }
+  return [
+    { key: "text", label: "text", color: "#24a579" },
+    ...[...keys]
+      .filter((key) => key.startsWith("tool:"))
+      .sort()
+      .map((key, index) => ({
+        key,
+        label: key.slice("tool:".length),
+        color: TOOL_COLORS[index % TOOL_COLORS.length],
+      })),
+    ...(keys.has("images") ? [{ key: "images", label: "images", color: "#e879a7" }] : []),
+  ];
 });
 
 const chartMax = computed(() => niceTokenCeiling(Math.max(...points.value.map((point) => point.total), 1)));
@@ -179,12 +200,16 @@ const totalLine = computed(() => points.value.map((point, index) => `${xAt(index
 function areaPath(categoryIndex: number) {
   if (points.value.length === 0) return "";
   const upper = points.value.map((point, index) => {
-    const sum = CATEGORIES.slice(0, categoryIndex + 1).reduce((total, category) => total + point[category.key], 0);
+    const sum = categories.value
+      .slice(0, categoryIndex + 1)
+      .reduce((total, category) => total + (point.parts[category.key] || 0), 0);
     return `${xAt(index)},${yAtTokens(sum)}`;
   });
   const lower = points.value
     .map((point, index) => {
-      const sum = CATEGORIES.slice(0, categoryIndex).reduce((total, category) => total + point[category.key], 0);
+      const sum = categories.value
+        .slice(0, categoryIndex)
+        .reduce((total, category) => total + (point.parts[category.key] || 0), 0);
       return `${xAt(index)},${yAtTokens(sum)}`;
     })
     .reverse();
@@ -222,37 +247,50 @@ function clearHover() {
   hoverIndex.value = null;
 }
 
-function addMessage(running: Composition, message: Message) {
+function addMessage(running: Composition, toolKeys: Map<string, string>, message: Message) {
   if (!message.llm_data) return;
   try {
     const llm = typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
-    for (const content of (llm?.Content || []) as LLMContent[]) addContent(running, content, "text");
+    for (const content of (llm?.Content || []) as LLMContent[]) addContent(running, toolKeys, content, "text");
   } catch {
     // A malformed historic payload stays visible in the conversation but
     // cannot contribute to a reconstructed graph.
   }
 }
 
-function addContent(running: Composition, content: LLMContent, fallback: Category) {
+function addContent(running: Composition, toolKeys: Map<string, string>, content: LLMContent, fallback: string) {
   if (content.MediaType || content.DisplayImageURL || content.Data) {
-    running.images += Math.max(1, estimateTokens(content.Data || ""));
+    addTokens(running, "images", Math.max(1, estimateTokens(content.Data || "")));
     return;
   }
   switch (content.Type) {
-    case TYPE_TOOL_USE:
-      running.toolCalls += estimateTokens(content.ToolName || "") + estimateTokens(stringify(content.ToolInput));
+    case TYPE_TOOL_USE: {
+      const key = toolKey(content.ToolName);
+      toolKeys.set(content.ID, key);
+      addTokens(running, key, estimateTokens(content.ToolName || "") + estimateTokens(stringify(content.ToolInput)));
       return;
+    }
     case TYPE_TOOL_RESULT:
-    case TYPE_WEB_SEARCH_TOOL_RESULT:
-      for (const result of content.ToolResult || []) addContent(running, result, "toolOutput");
+    case TYPE_WEB_SEARCH_TOOL_RESULT: {
+      const key = toolKeys.get(content.ToolUseID || "") || toolKey(content.Type === TYPE_WEB_SEARCH_TOOL_RESULT ? "web_search" : "other");
+      for (const result of content.ToolResult || []) addContent(running, toolKeys, result, key);
       return;
+    }
     case TYPE_TEXT:
     case TYPE_THINKING:
-      running[fallback] += estimateTokens(content.Text || content.Thinking || "");
+      addTokens(running, fallback, estimateTokens(content.Text || content.Thinking || ""));
       return;
     default:
-      running[fallback] += estimateTokens(content.Text || "");
+      addTokens(running, fallback, estimateTokens(content.Text || ""));
   }
+}
+
+function addTokens(running: Composition, key: string, tokens: number) {
+  running[key] = (running[key] || 0) + tokens;
+}
+
+function toolKey(name: string | undefined) {
+  return `tool:${name || "other"}`;
 }
 
 function parseUsage(message: Message): Usage | null {

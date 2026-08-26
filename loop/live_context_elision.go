@@ -14,18 +14,18 @@ import (
 // output. Values are deliberately explicit rather than hidden in the shaper:
 // they are operating limits to tune from request logs, not semantic policy.
 type LiveContextElisionConfig struct {
-	StartPressure       float64
-	ProgressivePressure float64
-	CompactionPressure  float64
+	StartTokens         int
+	ProgressiveTokens   int
+	CompactionReserve   int
 	ProtectedTailTokens int
 	LargeResultTokens   int
 	MinimumResultTokens int
 }
 
 var DefaultLiveContextElisionConfig = LiveContextElisionConfig{
-	StartPressure:       0.40,
-	ProgressivePressure: 0.55,
-	CompactionPressure:  0.70,
+	StartTokens:         200_000,
+	ProgressiveTokens:   220_000,
+	CompactionReserve:   20_000,
 	ProtectedTailTokens: 20_000,
 	LargeResultTokens:   8_000,
 	MinimumResultTokens: 2_000,
@@ -87,17 +87,17 @@ func ShapeLiveContext(req *llm.Request, contextWindow int, cfg LiveContextElisio
 		return req, stats
 	}
 
-	pressure := float64(stats.BeforeTokens) / float64(contextWindow)
+	start, progressive, deferAt := elisionBounds(contextWindow, cfg)
 	switch {
-	case pressure < cfg.StartPressure:
+	case stats.BeforeTokens < start:
 		stats.Decision = "below_threshold"
 		return req, stats
-	case pressure >= cfg.CompactionPressure:
+	case stats.BeforeTokens >= deferAt:
 		stats.Decision = "defer_to_compaction"
 		return req, stats
 	}
 
-	minimum, target := elisionPolicy(pressure, contextWindow, cfg)
+	minimum, target := elisionPolicy(stats.BeforeTokens, start, progressive, deferAt, cfg)
 	tailStart, tailTokens := protectedTailStart(req.Messages, cfg.ProtectedTailTokens)
 	stats.ProtectedTailTokens = tailTokens
 	candidates := collectElisionCandidates(req.Messages[:tailStart], minimum)
@@ -171,7 +171,7 @@ func ShapeLiveContext(req *llm.Request, contextWindow int, cfg LiveContextElisio
 		stats.Decision = "no_savings"
 		return req, stats
 	}
-	if pressure >= cfg.ProgressivePressure {
+	if stats.BeforeTokens >= progressive {
 		stats.Decision = "progressive"
 	} else {
 		stats.Decision = "large_results"
@@ -179,13 +179,26 @@ func ShapeLiveContext(req *llm.Request, contextWindow int, cfg LiveContextElisio
 	return outbound, stats
 }
 
-func elisionPolicy(pressure float64, window int, cfg LiveContextElisionConfig) (minimum, target int) {
-	if pressure < cfg.ProgressivePressure {
-		return cfg.LargeResultTokens, int(float64(window) * cfg.StartPressure)
+func elisionBounds(contextWindow int, cfg LiveContextElisionConfig) (start, progressive, deferAt int) {
+	deferAt = contextWindow - cfg.CompactionReserve
+	start = cfg.StartTokens
+	progressive = cfg.ProgressiveTokens
+	if progressive > deferAt {
+		progressive = deferAt
 	}
-	progress := (pressure - cfg.ProgressivePressure) / (cfg.CompactionPressure - cfg.ProgressivePressure)
+	if start > progressive {
+		start = progressive
+	}
+	return start, progressive, deferAt
+}
+
+func elisionPolicy(tokens, start, progressive, deferAt int, cfg LiveContextElisionConfig) (minimum, target int) {
+	if tokens < progressive {
+		return cfg.LargeResultTokens, start
+	}
+	progress := float64(tokens-progressive) / float64(deferAt-progressive)
 	minimum = int(math.Round(float64(cfg.LargeResultTokens) - progress*float64(cfg.LargeResultTokens-cfg.MinimumResultTokens)))
-	return minimum, int(float64(window) * cfg.ProgressivePressure)
+	return minimum, progressive
 }
 
 func protectedTailStart(messages []llm.Message, budget int) (start, tokens int) {
