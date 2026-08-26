@@ -116,7 +116,7 @@ const plotWidth = W - PADL - PADR;
 const plotHeight = H - PADT - PADB;
 
 type Composition = Record<string, number>;
-type Point = { total: number; generation: number; parts: Composition };
+type Point = { total: number; graphTotal: number; generation: number; parts: Composition };
 type Category = { key: string; label: string; color: string };
 
 const TOOL_CATEGORIES = [
@@ -152,7 +152,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 const points = computed<Point[]>(() => {
   const running: Composition = {};
   const toolKeys = new Map<string, string>();
-  const out: Point[] = [];
+  const raw: { total: number; generation: number; parts: Composition }[] = [];
   let generation: number | undefined;
 
   for (const message of props.messages) {
@@ -168,17 +168,35 @@ const points = computed<Point[]>(() => {
     if (total === 0) continue;
 
     const estimated = Object.values(running).reduce((sum, tokens) => sum + tokens, 0);
-    const scale = estimated > 0 ? total / estimated : 0;
-    out.push({
+    raw.push({
       total,
       generation: message.generation,
-      parts:
-        estimated > 0
-          ? Object.fromEntries(Object.entries(running).map(([key, tokens]) => [key, Math.round(tokens * scale)]))
-          : { text: total },
+      parts: estimated > 0 ? { ...running } : { text: total },
     });
   }
-  return out;
+
+  // A per-call scale made old text appear to shrink whenever a large tool
+  // result changed the estimate/provider ratio. Calibrate once at the last
+  // call in each generation instead: within a generation, reconstructed
+  // context is cumulative and must only grow. A compaction starts a new
+  // generation and is the one legitimate reset.
+  const scaleByGeneration = new Map<number, number>();
+  for (const point of raw) {
+    const estimated = Object.values(point.parts).reduce((sum, tokens) => sum + tokens, 0);
+    scaleByGeneration.set(point.generation, estimated > 0 ? point.total / estimated : 1);
+  }
+  return raw.map((point) => {
+    const scale = scaleByGeneration.get(point.generation) || 1;
+    const parts = Object.fromEntries(
+      Object.entries(point.parts).map(([key, tokens]) => [key, Math.round(tokens * scale)]),
+    );
+    return {
+      total: point.total,
+      graphTotal: Object.values(parts).reduce((sum, tokens) => sum + tokens, 0),
+      generation: point.generation,
+      parts,
+    };
+  });
 });
 
 const categories = computed<Category[]>(() => {
@@ -197,7 +215,7 @@ const categories = computed<Category[]>(() => {
   ];
 });
 
-const chartMax = computed(() => niceTokenCeiling(Math.max(...points.value.map((point) => point.total), 1)));
+const chartMax = computed(() => niceTokenCeiling(Math.max(...points.value.map((point) => point.graphTotal), 1)));
 const yTicks = computed(() => [0, Math.round(chartMax.value / 2), chartMax.value]);
 const compactionStarts = computed(() =>
   points.value.flatMap((point, index) =>
@@ -219,7 +237,7 @@ const hoverX = ref<number | null>(null);
 const hoverPoint = computed(() =>
   hoverIndex.value === null ? null : points.value[hoverIndex.value] || null,
 );
-const totalLine = computed(() => points.value.map((point, index) => `${xAt(index)},${yAtTokens(point.total)}`).join(" "));
+const totalLine = computed(() => points.value.map((point, index) => `${xAt(index)},${yAtTokens(point.graphTotal)}`).join(" "));
 
 function areaPath(categoryIndex: number) {
   if (points.value.length === 0) return "";
