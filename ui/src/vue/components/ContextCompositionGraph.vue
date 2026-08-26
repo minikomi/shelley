@@ -150,7 +150,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   "bash:git": "#d97706",
   "bash:other": "#be6a9e",
   "tool:browser/web": "#0891b2",
-  "tool:edit": "#dc5a7a",
+  "tool:edit": "#f97316",
   "tool:other": "#6b7280",
 };
 
