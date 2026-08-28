@@ -383,18 +383,18 @@ func TestExecuteBash(t *testing.T) {
 		}
 
 		start := time.Now()
-		_, err := bashTool.executeBash(ctx, req, 100*time.Millisecond)
+		_, err := bashTool.executeBash(ctx, req, 200*time.Millisecond)
 		elapsed := time.Since(start)
 
-		// Command should time out after ~100ms, not wait for full 1 second
+		// Command should time out after ~200ms, not wait for the full second.
 		if elapsed >= 1*time.Second {
 			t.Errorf("Command did not respect timeout, took %v", elapsed)
 		}
 
 		if err == nil {
-			t.Errorf("Expected timeout error, got none")
+			t.Errorf("Expected 200ms timeout error after %v, got none", elapsed)
 		} else if !strings.Contains(err.Error(), "timed out") {
-			t.Errorf("Expected timeout error, got: %v", err)
+			t.Errorf("Expected 200ms timeout error after %v, got: %v", elapsed, err)
 		}
 	})
 }
