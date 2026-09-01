@@ -27,6 +27,10 @@ export function hasHorizontalScrollContainer(target: Element | null): boolean {
   return false;
 }
 
+export function eventPathHasHorizontalScrollContainer(path: EventTarget[]): boolean {
+  return path.some((target) => target instanceof Element && hasHorizontalScrollContainer(target));
+}
+
 export function useMobileDrawerSwipe(drawerOpen: Ref<boolean>) {
   let gesture: Gesture | null = null;
 
@@ -40,7 +44,10 @@ export function useMobileDrawerSwipe(drawerOpen: Ref<boolean>) {
     // Code blocks, tables, diffs, and other wide content own horizontal
     // gestures. Starting a drawer swipe there makes ordinary scrolling
     // unexpectedly navigate the app.
-    if (hasHorizontalScrollContainer(target)) return;
+    // @pierre/diffs renders multi-file patch content in Shadow DOM. Document
+    // listeners see its <diffs-container> host as event.target, while the
+    // actual horizontal scroller is only available through the composed path.
+    if (eventPathHasHorizontalScrollContainer(event.composedPath())) return;
 
     if (opening) {
       // Leave the true screen edge to the browser/OS back gesture.

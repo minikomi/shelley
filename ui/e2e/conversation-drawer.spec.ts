@@ -192,6 +192,77 @@ async function swipe(
   );
 }
 
+async function swipePatchDiff(page: Page) {
+  await page.evaluate(() => {
+    const mainContent = document.querySelector(".main-content");
+    if (!(mainContent instanceof HTMLElement)) throw new Error("Missing main content");
+
+    const diffsContainer = document.createElement("diffs-container");
+    const shadowRoot = diffsContainer.shadowRoot ?? diffsContainer.attachShadow({ mode: "open" });
+    const scrollContainer = document.createElement("div");
+    const diffLine = document.createElement("span");
+    diffsContainer.style.cssText = "display:block;width:120px";
+    scrollContainer.style.cssText = "overflow-x:auto;width:120px";
+    diffLine.style.cssText = "display:block;width:320px";
+    scrollContainer.append(diffLine);
+    shadowRoot.append(scrollContainer);
+    mainContent.append(diffsContainer);
+    Object.defineProperties(scrollContainer, {
+      clientWidth: { value: 120 },
+      scrollWidth: { value: 320 },
+    });
+
+    if (scrollContainer.scrollWidth <= scrollContainer.clientWidth) {
+      throw new Error("Patch diff test fixture is not horizontally scrollable");
+    }
+
+    const makeTouch = (x: number, y: number) =>
+      new Touch({
+        identifier: 1,
+        target: diffLine,
+        clientX: x,
+        clientY: y,
+        screenX: x,
+        screenY: y,
+        pageX: x,
+        pageY: y,
+      });
+    const startTouch = makeTouch(160, 300);
+    const endTouch = makeTouch(220, 304);
+
+    diffLine.dispatchEvent(
+      new TouchEvent("touchstart", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        touches: [startTouch],
+        targetTouches: [startTouch],
+        changedTouches: [startTouch],
+      }),
+    );
+    diffLine.dispatchEvent(
+      new TouchEvent("touchmove", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        touches: [endTouch],
+        targetTouches: [endTouch],
+        changedTouches: [endTouch],
+      }),
+    );
+    diffLine.dispatchEvent(
+      new TouchEvent("touchend", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        touches: [],
+        targetTouches: [],
+        changedTouches: [endTouch],
+      }),
+    );
+  });
+}
+
 test.describe("mobile drawer swipe", () => {
   test.use({
     viewport: { width: 393, height: 851 },
@@ -230,5 +301,14 @@ test.describe("mobile drawer swipe", () => {
 
     await swipe(page, ".main-content", { x: 64, y: 200 }, { x: 92, y: 300 });
     await expect(drawer).not.toHaveClass(/open/);
+  });
+
+  test("leaves horizontal patch diff scrolling alone", async ({ page }) => {
+    await stubConversationList(page, [conversation("first")]);
+    await page.goto("/new");
+
+    await swipePatchDiff(page);
+
+    await expect(page.locator(".drawer")).not.toHaveClass(/open/);
   });
 });
