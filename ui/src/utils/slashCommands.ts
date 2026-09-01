@@ -5,6 +5,11 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS = {
+  BTW: {
+    command: "/btw",
+    description: "asks a one-off side question",
+    takesArgs: true,
+  },
   FORK: {
     command: "/fork",
     description: "forks this conversation",
@@ -52,3 +57,9 @@ export const SLASH_COMMANDS = {
     takesArgs: true,
   },
 } as const satisfies Record<string, SlashCommand>;
+
+export function slashCommandsForConversation(isChildConversation: boolean): SlashCommand[] {
+  return Object.values(SLASH_COMMANDS).filter(
+    (item) => !isChildConversation || item.command !== SLASH_COMMANDS.BTW.command,
+  );
+}

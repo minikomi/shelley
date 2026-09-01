@@ -2,14 +2,119 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"shelley.exe.dev/db/generated"
+	"shelley.exe.dev/llm"
 )
+
+func TestCreateBtwReaderConversationIsAtomicAndStoresPointer(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	ctx := context.Background()
+	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: parent.ConversationID, Type: MessageTypeUser,
+		LLMData: llm.UserStringMessage("frozen"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical, err := database.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: parent.ConversationID, Type: MessageTypeAgent,
+		LLMData: llm.Message{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+			Type: llm.ContentTypeText, Text: "historical answer",
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := database.CreateBtwReaderConversation(ctx, CreateBtwReaderConversationParams{
+		SlugBase: "btw-frozen-context", ParentID: parent.ConversationID,
+		ParentPointer: BtwParentPointer{
+			Generation: parent.CurrentGeneration,
+			SequenceID: historical.SequenceID,
+		},
+		ThinkingLevel: "high",
+		SystemMessage: llm.UserStringMessage("reader restriction"),
+		UserMessage:   llm.UserStringMessage("side question"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentConversationID == nil || *child.ParentConversationID != parent.ConversationID {
+		t.Fatalf("child parent = %v", child.ParentConversationID)
+	}
+	childOptions := ParseConversationOptions(child.ConversationOptions)
+	if childOptions.Kind != BtwReaderKind || childOptions.ThinkingLevel != "high" {
+		t.Fatalf("options = %s", child.ConversationOptions)
+	}
+	if childOptions.ParentPointer == nil ||
+		childOptions.ParentPointer.Generation != parent.CurrentGeneration ||
+		childOptions.ParentPointer.SequenceID != historical.SequenceID {
+		t.Fatalf("frozen context pointer = %#v", childOptions)
+	}
+	childMessages, err := database.ListMessages(ctx, child.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(childMessages) != 2 || childMessages[0].Type != string(MessageTypeSystem) ||
+		childMessages[1].Type != string(MessageTypeUser) || !child.AgentWorking {
+		t.Fatalf("atomic child initialization = %#v, working=%t", childMessages, child.AgentWorking)
+	}
+	for _, message := range childMessages {
+		if message.LlmData != nil && (strings.Contains(*message.LlmData, "frozen") ||
+			strings.Contains(*message.LlmData, "historical answer")) {
+			t.Fatalf("child copied parent text: %#v", message)
+		}
+	}
+}
+
+func TestCreateBtwReaderConversationInitializationRollback(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	ctx := context.Background()
+	parent, err := database.CreateConversation(ctx, stringPtr("parent"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationID, err := GenerateConversationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.CreateBtwReaderConversation(ctx, CreateBtwReaderConversationParams{
+		ConversationID: conversationID,
+		SlugBase:       "btw-rollback",
+		ParentID:       parent.ConversationID,
+		ParentPointer: BtwParentPointer{
+			Generation: parent.CurrentGeneration,
+		},
+		SystemMessage: llm.UserStringMessage("restriction"),
+		UserMessage:   llm.UserStringMessage("question"),
+		UserData:      make(chan struct{}),
+	})
+	if err == nil {
+		t.Fatal("expected initialization failure")
+	}
+	if _, err := database.GetConversationByID(ctx, conversationID); err == nil {
+		t.Fatal("failed initialization left child conversation")
+	}
+	if messages, err := database.ListMessages(ctx, conversationID); err != nil || len(messages) != 0 {
+		t.Fatalf("failed initialization left messages: %#v, %v", messages, err)
+	}
+	if children, err := database.GetSubagents(ctx, parent.ConversationID); err != nil || len(children) != 0 {
+		t.Fatalf("failed initialization left child listing: %#v, %v", children, err)
+	}
+}
 
 func TestConversationService_Create(t *testing.T) {
 	db := setupTestDB(t)
@@ -1232,5 +1337,130 @@ func TestDecodeParticipants(t *testing.T) {
 	}
 	if _, err := decodeParticipants("not json"); err == nil {
 		t.Error("decodeParticipants(\"not json\") = nil error, want error")
+	}
+}
+
+func TestListFrozenParentMessagesReturnsExactPointerPrefix(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	ctx := context.Background()
+	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(text string, excluded bool) int64 {
+		t.Helper()
+		message, err := database.CreateMessage(ctx, CreateMessageParams{
+			ConversationID:      parent.ConversationID,
+			Type:                MessageTypeUser,
+			LLMData:             llm.UserStringMessage(text),
+			ExcludedFromContext: excluded,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return message.SequenceID
+	}
+	add("system context", false)
+	var cutoff int64
+	for i := 0; i < 21; i++ {
+		if i == 10 {
+			add("excluded", true)
+		}
+		cutoff = add(fmt.Sprintf("message-%d", i), false)
+	}
+	add("later", false)
+	messages, err := database.ListFrozenParentMessages(ctx, parent.ConversationID, BtwParentPointer{
+		Generation: parent.CurrentGeneration,
+		SequenceID: cutoff,
+	})
+	if err != nil || len(messages) != 22 {
+		t.Fatalf("frozen messages = %d, %v", len(messages), err)
+	}
+	for _, message := range messages {
+		if message.ExcludedFromContext || message.SequenceID > cutoff ||
+			message.Generation != parent.CurrentGeneration {
+			t.Fatalf("message outside exact pointer selection: %#v", message)
+		}
+	}
+	var first llm.Message
+	if err := json.Unmarshal([]byte(*messages[1].LlmData), &first); err != nil || first.Content[0].Text != "message-0" {
+		t.Fatalf("oldest retained message = %#v, %v", first, err)
+	}
+}
+
+func TestManagedBtwIdentityAndUserInitiatedScrubbing(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	ctx := context.Background()
+	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := database.CreateBtwReaderConversation(ctx, CreateBtwReaderConversationParams{
+		SlugBase:      "btw-identity",
+		ParentID:      parent.ConversationID,
+		ParentPointer: BtwParentPointer{Generation: 1, SequenceID: 0},
+		SystemMessage: llm.UserStringMessage("reader"),
+		UserMessage:   llm.UserStringMessage("question"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, ok := ManagedBtwReaderIdentity(*reader)
+	if !ok || identity.ConversationID != reader.ConversationID || identity.ParentConversationID != parent.ConversationID {
+		t.Fatalf("identity=%#v ok=%t", identity, ok)
+	}
+	assertScrubbed := func(name string, conversation *generated.Conversation) {
+		t.Helper()
+		options := ParseConversationOptions(conversation.ConversationOptions)
+		if options.Kind != "" || options.ParentPointer != nil || options.ThinkingLevel != "high" {
+			t.Fatalf("%s retained managed identity: %#v", name, options)
+		}
+		if _, ok := ManagedBtwReaderIdentity(*conversation); ok {
+			t.Fatalf("%s validated as BTW reader", name)
+		}
+	}
+
+	stale, err := database.CreateConversation(ctx, nil, true, nil, nil, ConversationOptions{
+		Kind:          BtwReaderKind,
+		ParentPointer: &BtwParentPointer{Generation: 1, SequenceID: 2},
+		ThinkingLevel: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := database.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: stale.ConversationID,
+		Type:           MessageTypeUser,
+		LLMData:        llm.UserStringMessage("ordinary"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forked, err := database.ForkConversation(ctx, stale.ConversationID, message.SequenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertScrubbed("user-initiated fork", forked)
+
+	draft, err := database.CreateDraftConversation(ctx, nil, nil, ConversationOptions{
+		Kind:          BtwReaderKind,
+		ParentPointer: &BtwParentPointer{Generation: 1, SequenceID: 2},
+		ThinkingLevel: "high",
+	}, "draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := database.PromoteDraft(ctx, draft.ConversationID, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertScrubbed("promoted draft", promoted)
+
+	malformed := *reader
+	malformed.ConversationOptions = `{"kind":"btw_reader","parent_pointer":{"generation":0,"sequence_id":0}}`
+	if _, ok := ManagedBtwReaderIdentity(malformed); ok {
+		t.Fatal("malformed reader identity validated")
 	}
 }

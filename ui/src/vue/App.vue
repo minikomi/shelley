@@ -233,6 +233,7 @@ import {
   type ConversationListPatchEvent,
 } from "../types";
 import { api } from "../services/api";
+import { btwStore } from "../services/btwStore";
 import { messageStore } from "../services/messageStore";
 import {
   reduceConversationListPatch,
@@ -502,7 +503,9 @@ function handleConversationListPatch(event: ConversationListPatchEvent) {
     return;
   }
   for (const removedId of result.removedIds) {
+    const removed = prev.find((conversation) => conversation.conversation_id === removedId);
     void messageStore.delete(removedId);
+    btwStore.clear(removedId, removed?.parent_conversation_id ?? undefined);
   }
   messageStore.seedMaxSequenceIdsKnown(result.state.list);
   for (const conv of result.state.list) {
@@ -621,6 +624,7 @@ function handleConversationArchived(
   nextConversation?: Conversation | null,
 ) {
   void messageStore.delete(conversationId);
+  btwStore.clear(conversationId);
   if (currentConversationId.value === conversationId) {
     if (nextConversation && nextConversation.conversation_id !== conversationId) {
       currentConversationId.value = nextConversation.conversation_id;

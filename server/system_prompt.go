@@ -487,16 +487,16 @@ type SlashCommandHookResult struct {
 // If the message does not start with a slash, or the first token is not a
 // valid hook name, or no matching hook exists, the result has Handled=false.
 func RunSlashCommandHook(input SlashCommandHookInput) SlashCommandHookResult {
-	msg := input.RawMessage
+	msg := strings.TrimLeft(input.RawMessage, " \t\r\n")
 	if !strings.HasPrefix(msg, "/") {
 		return SlashCommandHookResult{}
 	}
 	// Strip leading slash and split into command + args on first whitespace.
 	rest := msg[1:]
 	var cmd, args string
-	if i := strings.IndexAny(rest, " \t\n"); i >= 0 {
+	if i := strings.IndexAny(rest, " \t\r\n"); i >= 0 {
 		cmd = rest[:i]
-		args = strings.TrimLeft(rest[i:], " \t\n")
+		args = strings.TrimLeft(rest[i:], " \t\r\n")
 	} else {
 		cmd = rest
 	}
@@ -602,7 +602,11 @@ func findHookIn(dir, name string) (string, error) {
 // prompt. If the hook doesn't exist, the prompt is returned unchanged. If the
 // hook exists but fails, an error is returned.
 func runHook(name, prompt string) (string, error) {
-	hookPath, err := findHook(name)
+	return runHookIn(defaultHooksDir(), name, prompt)
+}
+
+func runHookIn(hooksDir, name, prompt string) (string, error) {
+	hookPath, err := findHookIn(hooksDir, name)
 	if err != nil {
 		return "", fmt.Errorf("hook %s: %w", name, err)
 	}

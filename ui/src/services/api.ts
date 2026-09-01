@@ -3,6 +3,7 @@ import {
   ConversationWithState,
   StreamResponse,
   ChatRequest,
+  BtwReaderDescriptor,
   GitDiffInfo,
   GitFileInfo,
   GitFileDiff,
@@ -13,7 +14,16 @@ import {
 // Extract a useful error message from a failed fetch response. Prefers the
 // response body (which may contain a server-side detail like a hook error),
 // falls back to statusText, then to the numeric status.
-async function responseError(response: Response, prefix: string): Promise<Error> {
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+async function responseError(response: Response, prefix: string): Promise<ApiError> {
   let detail = "";
   try {
     detail = (await response.text()).trim();
@@ -23,7 +33,7 @@ async function responseError(response: Response, prefix: string): Promise<Error>
   if (!detail) {
     detail = response.statusText || `HTTP ${response.status}`;
   }
-  return new Error(`${prefix}: ${detail}`);
+  return new ApiError(`${prefix}: ${detail}`, response.status);
 }
 
 export interface AvailableModel {
@@ -60,6 +70,17 @@ export interface GitTour {
 export interface GitTourResponse {
   hash: string;
   tour: GitTour;
+}
+
+export interface ChatAcceptedResponse {
+  status?: string;
+  btw?: BtwReaderDescriptor;
+}
+
+export interface BtwSummaryReceipt {
+  status?: string;
+  message_id: string;
+  btw: BtwReaderDescriptor;
 }
 
 class ApiService {
@@ -239,7 +260,7 @@ class ApiService {
   ): Promise<StreamResponse> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}`);
     if (!response.ok) {
-      throw new Error(`Failed to get messages: ${response.statusText}`);
+      throw await responseError(response, "Failed to get messages");
     }
 
     const contentLengthHeader = response.headers.get("Content-Length");
@@ -311,7 +332,7 @@ class ApiService {
     conversationId: string,
     request: ChatRequest,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<ChatAcceptedResponse> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/chat`, {
       method: "POST",
       headers: this.postHeaders,
@@ -321,6 +342,27 @@ class ApiService {
     if (!response.ok) {
       throw await responseError(response, "Failed to send message");
     }
+    const body = await response.text();
+    return body ? (JSON.parse(body) as ChatAcceptedResponse) : {};
+  }
+
+  async listBtwReaders(conversationId: string): Promise<BtwReaderDescriptor[]> {
+    const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/btw`);
+    if (!response.ok) throw await responseError(response, "Failed to load BTW readers");
+    const data = (await response.json()) as { readers?: BtwReaderDescriptor[] };
+    return data.readers ?? [];
+  }
+
+  async summarizeBtwExchange(
+    conversationId: string,
+    exchangeId: string,
+  ): Promise<BtwSummaryReceipt> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${conversationId}/btw/${exchangeId}/summarize`,
+      { method: "POST", headers: this.postHeaders },
+    );
+    if (!response.ok) throw await responseError(response, "Failed to summarize BTW");
+    return response.json();
   }
 
   // createStream opens the unified SSE stream. It delivers per-conversation

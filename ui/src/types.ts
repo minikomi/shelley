@@ -15,6 +15,47 @@ export type ConversationWithState = ConversationWithStateForTS;
 export type Usage = GeneratedUsage;
 export type MessageType = GeneratedMessageType;
 
+export interface BtwReaderDescriptor {
+  readonly conversation_id: string;
+  readonly parent_conversation_id: string;
+  readonly parent_pointer: {
+    readonly generation: number;
+    readonly sequence_id: number;
+  };
+}
+
+export type BtwTurnKind = "question" | "summary";
+export type BtwTurnStatus = "pending" | "active" | "completed" | "cancelled" | "failed";
+
+// Presentation-only view model projected from an ordinary child conversation.
+export interface BtwTurn {
+  id: string;
+  question: string;
+  answer: string;
+  status: BtwTurnStatus;
+  error?: string | null;
+  kind: BtwTurnKind;
+  tool_call_count?: number;
+  tool_calls?: BtwToolCall[];
+  unresolved_tool_call_count?: number;
+}
+
+export interface BtwToolCall {
+  name: string;
+  command?: string;
+}
+
+export interface BtwExchange {
+  exchange_id: string;
+  reader_slug?: string;
+  parent_conversation_id: string;
+  status: BtwTurnStatus;
+  retryable: boolean;
+  parent_pointer: BtwReaderDescriptor["parent_pointer"];
+  created_at: string;
+  turns: BtwTurn[];
+}
+
 // Extend the generated Message type with parsed data
 export interface Message extends Omit<ApiMessageForTS, "type"> {
   type: MessageType;
@@ -25,6 +66,7 @@ export interface LLMMessage {
   Role: number; // 0 = user, 1 = assistant
   Content: LLMContent[];
   ToolUse?: unknown;
+  EndOfTurn?: boolean;
 }
 
 export interface LLMContent {

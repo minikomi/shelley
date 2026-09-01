@@ -1,5 +1,5 @@
 // Shared render-model types for ChatInterface.vue and MessageRenderNode.vue.
-import type { Message } from "../../types";
+import type { BtwExchange, Message } from "../../types";
 import type { CoalescedItem } from "./coalesce";
 
 export type RenderNode =
@@ -9,6 +9,7 @@ export type RenderNode =
   | { kind: "message"; key: string; item: CoalescedItem }
   | { kind: "tool-pills"; key: string; items: CoalescedItem[] }
   | { kind: "tool-call"; key: string; item: CoalescedItem }
+  | { kind: "btw"; key: string; exchanges: BtwExchange[] }
   | { kind: "carried-band"; key: string; count: number; children: RenderNode[] };
 
 // A run of consecutive render nodes wrapped in one content-visibility:auto

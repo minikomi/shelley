@@ -336,7 +336,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
-import { SLASH_COMMANDS } from "../../utils/slashCommands";
+import { SLASH_COMMANDS, slashCommandsForConversation } from "../../utils/slashCommands";
+import {
+  composerDispatch,
+  composerSessionID,
+  guardComposerClear,
+  type ComposerSubmissionIntent,
+} from "./composerDispatch";
 import { isImeComposing } from "../../utils/imeComposing";
 import {
   CONCRETE_THINKING_LEVELS,
@@ -441,6 +447,8 @@ const props = withDefaults(
     /** Currently selected model id; the levels offered for "/model <level>"
      * (no model argument) are the ones this model accepts. */
     currentModelId?: string;
+    /** Child conversations cannot start nested BTW readers. */
+    isChildConversation?: boolean;
   }>(),
   {
     showQueueOption: false,
@@ -449,6 +457,7 @@ const props = withDefaults(
     disabled: false,
     autoFocus: false,
     initialRows: 1,
+    isChildConversation: false,
   },
 );
 
@@ -785,7 +794,7 @@ const slashQuery = computed(() => {
 });
 const slashSuggestions = computed(() => {
   if (slashQuery.value === null) return [];
-  return Object.values(SLASH_COMMANDS).filter((item) =>
+  return slashCommandsForConversation(props.isChildConversation).filter((item) =>
     item.command.slice(1).startsWith(slashQuery.value!),
   );
 });
@@ -923,14 +932,15 @@ async function chooseSlashCommand(index: number) {
   const item = slashSuggestions.value[index];
   if (!item) return;
   if (!item.takesArgs) {
+    const origin = composerOrigin();
     setMessage("");
     slashMenuDismissed.value = true;
     emit("draft-send-started");
     try {
       await props.onSend(item.command);
-      emit("draft-cleared");
+      guardComposerClear(origin, composerOrigin, () => emit("draft-cleared"));
     } catch {
-      setMessage(item.command);
+      guardComposerClear(origin, composerOrigin, () => setMessage(item.command));
     }
     return;
   }
@@ -953,21 +963,37 @@ watch([showSlashMenu, showModelArgMenu], ([a, b]) => {
   else document.removeEventListener("mousedown", onSlashMenuOutside);
 });
 
+function composerSession(): string | null {
+  return composerSessionID(props.conversationId, props.lazyDraftId);
+}
+
+let submissionGeneration = 0;
+function composerOrigin() {
+  return { session: composerSession(), generation: submissionGeneration };
+}
+watch(composerSession, () => {
+  submissionGeneration++;
+  submitting.value = false;
+});
+
 async function handleSubmit(e: Event) {
   e.preventDefault();
   if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
     if (isListening.value) stopListening();
 
-    // Auto-queue when distilling or when explicitly requested
-    if (props.autoQueue && props.onQueue) {
+    // Auto-queue when distilling or when explicitly requested.
+    const intent: ComposerSubmissionIntent = props.autoQueue ? "auto-queue" : "send";
+    const dispatch = composerDispatch(message.value, { intent });
+    if (dispatch.route === "queue" && props.onQueue) {
       const messageToQueue = composeMessageWithAttachments(message.value).trim();
+      const origin = composerOrigin();
       setMessage("");
       clearAttachments();
       emit("draft-cleared");
       try {
         await props.onQueue(messageToQueue);
       } catch {
-        setMessage(messageToQueue);
+        guardComposerClear(origin, composerOrigin, () => setMessage(messageToQueue));
       }
       return;
     }
@@ -976,24 +1002,34 @@ async function handleSubmit(e: Event) {
     // Pause autosave before awaiting onSend so a trailing PUT can't race the
     // chat POST. Don't clear the draft yet — if send fails the textarea stays.
     emit("draft-send-started");
+    const submission = ++submissionGeneration;
+    const origin = composerOrigin();
     submitting.value = true;
     try {
       await props.onSend(messageToSend);
-      setMessage("");
-      clearAttachments();
-      emit("draft-cleared");
+      guardComposerClear(origin, composerOrigin, () => {
+        setMessage("");
+        clearAttachments();
+        emit("draft-cleared");
+      });
     } catch {
       // Keep the message on error so user can retry.
     } finally {
-      submitting.value = false;
+      if (submission === submissionGeneration) submitting.value = false;
     }
   }
 }
 
 async function handleQueueMessage() {
+  const dispatch = composerDispatch(message.value, { intent: "queue" });
+  if (dispatch.route === "btw") {
+    await handleSendNow();
+    return;
+  }
   if (hasContent.value && props.onQueue) {
     if (isListening.value) stopListening();
     const messageToQueue = composeMessageWithAttachments(message.value).trim();
+    const origin = composerOrigin();
     setMessage("");
     clearAttachments();
     emit("draft-cleared");
@@ -1001,7 +1037,7 @@ async function handleQueueMessage() {
     try {
       await props.onQueue(messageToQueue);
     } catch {
-      setMessage(messageToQueue);
+      guardComposerClear(origin, composerOrigin, () => setMessage(messageToQueue));
     }
   }
 }
@@ -1009,9 +1045,15 @@ async function handleQueueMessage() {
 /** Compact the conversation, then queue the composed message so it runs once
  * compaction completes. Kicks off compaction and queues in one gesture. */
 async function handleCompactAndSend() {
+  const dispatch = composerDispatch(message.value, { intent: "compact-and-send" });
+  if (dispatch.route === "btw") {
+    await handleSendNow();
+    return;
+  }
   if (hasContent.value && props.onCompact && props.onQueue) {
     if (isListening.value) stopListening();
     const messageToQueue = composeMessageWithAttachments(message.value).trim();
+    const origin = composerOrigin();
     setMessage("");
     clearAttachments();
     emit("draft-cleared");
@@ -1022,7 +1064,7 @@ async function handleCompactAndSend() {
       await props.onCompact();
       await props.onQueue(messageToQueue);
     } catch {
-      setMessage(messageToQueue);
+      guardComposerClear(origin, composerOrigin, () => setMessage(messageToQueue));
     }
   }
 }
@@ -1030,19 +1072,23 @@ async function handleCompactAndSend() {
 /** Send now (bypass auto-queue) — used from the dropdown during distill mode */
 async function handleSendNow() {
   if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
+    const dispatch = composerDispatch(message.value, { intent: "send-now" });
     if (isListening.value) stopListening();
-    const messageToSend = composeMessageWithAttachments(message.value).trim();
+    const composed = composeMessageWithAttachments(message.value);
+    const messageToSend = dispatch.route === "btw" ? composed : composed.trim();
     setMessage("");
     clearAttachments();
     emit("draft-cleared");
     showQueueMenu.value = false;
+    const submission = ++submissionGeneration;
+    const origin = composerOrigin();
     submitting.value = true;
     try {
       await props.onSend(messageToSend);
     } catch {
-      setMessage(messageToSend);
+      guardComposerClear(origin, composerOrigin, () => setMessage(messageToSend));
     } finally {
-      submitting.value = false;
+      if (submission === submissionGeneration) submitting.value = false;
     }
   }
 }
@@ -1135,14 +1181,6 @@ function handleKeyDown(e: KeyboardEvent) {
     void handleSubmit(e);
   }
 }
-
-// Re-focus textarea after submission completes and it's re-enabled.
-watch(submitting, (now) => {
-  const isMobile = "ontouchstart" in window;
-  if (!now && !isMobile && document.activeElement === document.body) {
-    textareaRef.value?.focus();
-  }
-});
 
 // autoFocus — re-attempt focus when the textarea becomes enabled. Skips when
 // focus is inside an open modal (e.g. the file finder opened right after page

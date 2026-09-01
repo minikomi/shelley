@@ -311,6 +311,7 @@
       :lazy-draft-id="lazyDraftId"
       :model-options="readyModels"
       :current-model-id="selectedModel"
+      :is-child-conversation="!!currentConversation?.parent_conversation_id"
       @clear-injected-text="
         diffCommentText = '';
         terminalInjectedText = null;
@@ -395,6 +396,7 @@ import {
   type Message,
   type Conversation,
   type ChatRequest,
+  type BtwExchange,
   type ToolProgress,
   type Usage,
   type LLMContent,
@@ -404,6 +406,7 @@ import {
   queuedMessageText,
 } from "../../types";
 import { api } from "../../services/api";
+import { btwStore } from "../../services/btwStore";
 import { messageStore } from "../../services/messageStore";
 import { cacheDiag } from "../../services/cacheDiag";
 import {
@@ -442,6 +445,15 @@ import {
   isVisibleConversationMessage,
 } from "../../utils/conversationView";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
+import {
+  btwAnchor,
+  btwExchangesByAnchor,
+  btwGenerationStartAnchorKey,
+  focusBtwFollowUp,
+  latestBtwExchange,
+  scrollToBtwExchange,
+} from "./btwAnchors";
+import { composerDispatch } from "./composerDispatch";
 import {
   perfCount,
   perfRecordConversationLoad,
@@ -574,6 +586,7 @@ const {
 
 // ---- core state ----
 const messages = ref<Message[]>([]);
+const btwExchanges = ref<BtwExchange[]>([]);
 
 // The id of the bottom-most message in the conversation. Provided to
 // descendant Message components (through the recursive MessageRenderNode) so
@@ -975,7 +988,11 @@ function tailFirstTestOverrides(): { tailChunks?: number; sweep?: boolean; chunk
   try {
     const raw = localStorage.getItem("shelley.tailFirstTest");
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as { tailChunks?: unknown; sweep?: unknown; chunkSize?: unknown };
+    const parsed = JSON.parse(raw) as {
+      tailChunks?: unknown;
+      sweep?: unknown;
+      chunkSize?: unknown;
+    };
     const posInt = (v: unknown): number | undefined =>
       typeof v === "number" && Number.isInteger(v) && v >= 1 ? v : undefined;
     return {
@@ -1557,6 +1574,52 @@ const visibleMessages = computed(() =>
   ),
 );
 
+function syncBtwFromStore(conversationId: string) {
+  if (conversationId !== currentConversationId) return;
+  btwExchanges.value = btwStore.list(conversationId);
+}
+
+watch(
+  btwExchanges,
+  (exchanges) => {
+    for (const exchange of exchanges) {
+      if (exchange.parent_conversation_id !== currentConversationId) continue;
+      const summary = btwStore.claimSummary(exchange);
+      if (summary) appendBtwSummaryToComposer(summary.answer);
+    }
+  },
+  { flush: "post" },
+);
+
+async function scrollToBtw(exchange: BtwExchange) {
+  const anchor = btwAnchor(exchange.parent_pointer, coalescedItems.value);
+  if (anchor.item?.message?.message_id) {
+    revealChunkTarget({ messageId: anchor.item.message.message_id });
+  } else if (anchor.item?.toolUseId) {
+    revealChunkTarget({ toolUseId: anchor.item.toolUseId });
+  }
+  await nextTick();
+  // A newly-created inline already in the visible tail does not need a
+  // smooth scroll (which otherwise yanks the reader away from its position).
+  const target = Array.from(document.querySelectorAll<HTMLElement>("[data-btw-exchange-id]")).find(
+    (element) => element.dataset.btwExchangeId === exchange.exchange_id,
+  );
+  const scroller = messagesContainerRef.value;
+  const alreadyAtTail =
+    !!target &&
+    !!scroller &&
+    target.getBoundingClientRect().bottom <= scroller.getBoundingClientRect().bottom &&
+    target.getBoundingClientRect().top >= scroller.getBoundingClientRect().top;
+  if (!alreadyAtTail) scrollToBtwExchange(exchange.exchange_id);
+}
+
+function scrollToLatestBtw(): boolean {
+  const latest = latestBtwExchange(btwExchanges.value);
+  if (!latest) return false;
+  void scrollToBtw(latest).then(() => focusBtwFollowUp(latest.exchange_id));
+  return true;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -1637,6 +1700,7 @@ function buildRenderModel(): GenerationBlock[] {
   const modelsUsedByGeneration = new Map<number, string[]>();
   const itemsByGeneration = new Map<number, CoalescedItem[]>();
   const generationSet = new Set<number>();
+  const btwsByAnchor = btwExchangesByAnchor(btwExchanges.value, coalescedItems.value);
 
   msgs.forEach((message) => {
     generationSet.add(message.generation);
@@ -1669,6 +1733,9 @@ function buildRenderModel(): GenerationBlock[] {
         /* ignore */
       }
     }
+  });
+  btwExchanges.value.forEach((exchange) => {
+    generationSet.add(exchange.parent_pointer.generation);
   });
 
   coalescedItems.value.forEach((item) => {
@@ -1751,6 +1818,14 @@ function buildRenderModel(): GenerationBlock[] {
     tokenState.lastBucket = 0;
 
     const sectionNodes: RenderNode[] = [];
+    const generationStartBtws = btwsByAnchor.get(btwGenerationStartAnchorKey(generation));
+    if (generationStartBtws?.length) {
+      sectionNodes.push({
+        kind: "btw",
+        key: `btw-${btwGenerationStartAnchorKey(generation)}`,
+        exchanges: generationStartBtws,
+      });
+    }
     let pillBuf: CoalescedItem[] = [];
     let pillSink: RenderNode[] = sectionNodes;
 
@@ -1763,6 +1838,16 @@ function buildRenderModel(): GenerationBlock[] {
         key: `tool-pills-${generation}-${buf[0].toolUseId || keySuffix}`,
         items: buf,
       });
+    };
+    const appendBtws = (sink: RenderNode[], item: CoalescedItem) => {
+      const exchanges = btwsByAnchor.get(item.anchorKey);
+      if (exchanges?.length) {
+        sink.push({
+          kind: "btw",
+          key: `btw-${item.anchorKey}`,
+          exchanges,
+        });
+      }
     };
 
     const renderItemInto = (sink: RenderNode[], item: CoalescedItem, index: number) => {
@@ -1782,7 +1867,12 @@ function buildRenderModel(): GenerationBlock[] {
       }
       if (item.type === "message" && item.message) {
         flushPills(index);
-        sink.push({ kind: "message", key: item.message.message_id, item });
+        sink.push({
+          kind: "message",
+          key: item.message.message_id,
+          item,
+        });
+        appendBtws(sink, item);
         const tokNode = maybeTokenMarker(
           item,
           item.message.message_id || `g${generation}-i${index}`,
@@ -1791,6 +1881,13 @@ function buildRenderModel(): GenerationBlock[] {
       } else if (item.type === "tool") {
         if (isPillable) {
           pillBuf.push(item);
+          // A pill row is normally one group, but an inline BTW is a real
+          // transcript boundary. Flush through its anchored tool before
+          // inserting it, then begin a new pill group for later tools.
+          if (btwsByAnchor.has(item.anchorKey)) {
+            flushPills(index);
+            appendBtws(sink, item);
+          }
         } else {
           flushPills(index);
           sink.push({
@@ -1798,6 +1895,7 @@ function buildRenderModel(): GenerationBlock[] {
             key: item.toolUseId || `tool-${generation}-${item.toolName || "unknown"}-${index}`,
             item,
           });
+          appendBtws(sink, item);
         }
       }
     };
@@ -2516,6 +2614,18 @@ const forkHandler = (messageId: string) => {
 async function sendMessage(message: string) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
+  const dispatch = composerDispatch(message, {
+    isChildConversation: !!props.currentConversation?.parent_conversation_id,
+  });
+  if (dispatch.route === "queue") {
+    await queueMessage(trimmedMessage);
+    return;
+  }
+  if (dispatch.route === "btw-blocked") {
+    const err = new Error("/btw is unavailable in child conversations.");
+    error.value = err.message;
+    throw err;
+  }
 
   // Guard every send path on actually having a model. Shelley used to fall
   // back to a hardcoded "claude-sonnet-4.6" here, which the server then
@@ -2532,6 +2642,38 @@ async function sendMessage(message: string) {
     const err = new Error(noModelErrorMessage());
     error.value = err.message;
     throw err;
+  }
+
+  if (dispatch.route === "btw") {
+    if (!props.conversationId || props.currentConversation?.is_draft) {
+      const err = new Error("Start a conversation before asking BTW.");
+      error.value = err.message;
+      throw err;
+    }
+    if (!dispatch.question) {
+      if (!scrollToLatestBtw()) {
+        const err = new Error("Ask a BTW question first.");
+        error.value = err.message;
+        throw err;
+      }
+      return;
+    }
+    try {
+      error.value = null;
+      const originID = props.conversationId;
+      const accepted = await api.sendMessage(originID, {
+        message,
+        model: selectedModel.value,
+      });
+      if (accepted.btw) {
+        btwStore.upsert(accepted.btw);
+        await btwStore.refreshChild(accepted.btw.conversation_id);
+      }
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "Failed to start BTW";
+      throw err;
+    }
+    return;
   }
 
   if (trimmedMessage === SLASH_COMMANDS.FORK.command) {
@@ -2725,10 +2867,9 @@ async function handleCancel() {
     ({ conversationId }) => conversationId === props.conversationId,
   );
   const pendingText = pending.map(({ text }) => text).join("\n");
-  const queuedText = [
-    ...queued.map(queuedMessageText),
-    ...pending.map(({ text }) => text),
-  ].join("\n");
+  const queuedText = [...queued.map(queuedMessageText), ...pending.map(({ text }) => text)].join(
+    "\n",
+  );
   pending.forEach(({ controller }) => controller.abort());
   try {
     cancelling.value = true;
@@ -2914,6 +3055,11 @@ let draftText = "";
 const draftSeed = ref<{ value: string } | null>(null);
 function seedComposer(value: string) {
   draftText = value;
+  draftSeed.value = { value };
+}
+function appendBtwSummaryToComposer(answer: string) {
+  const value = draftText ? `${draftText}\n\n${answer}` : answer;
+  handleDraftChange(value);
   draftSeed.value = { value };
 }
 const lazyDraftId = ref<string | null>(null);
@@ -3346,12 +3492,15 @@ watch(agentWorking, (working) => {
 // ---- conversation switch: hydrate + subscribe ----
 let unsubStore: (() => void) | null = null;
 let unsubTransient: (() => void) | null = null;
+let unsubBtw: (() => void) | null = null;
 
 function teardownSubscriptions() {
   unsubStore?.();
   unsubTransient?.();
+  unsubBtw?.();
   unsubStore = null;
   unsubTransient = null;
+  unsubBtw = null;
 }
 
 watch(
@@ -3408,6 +3557,7 @@ watch(
     resetTailFirst();
     if (!id) {
       messages.value = [];
+      btwExchanges.value = [];
       contextWindowSize.value = 0;
       toolProgress.value = {};
       streamingText.value = "";
@@ -3424,6 +3574,11 @@ watch(
       return;
     }
     const focusedId = id;
+    unsubBtw = btwStore.subscribe(focusedId, () => syncBtwFromStore(focusedId));
+    syncBtwFromStore(focusedId);
+    void btwStore.hydrate(focusedId).catch((err) => {
+      console.error("Failed to load BTW exchanges:", err);
+    });
     messageStore.resetTransient(focusedId);
     const initialTransient = messageStore.getTransient(focusedId);
     agentWorking.value = initialTransient.agentWorking;
@@ -3561,6 +3716,9 @@ watch(
     if (nonce === 0) return;
     if (!props.conversationId) return;
     void loadMessages(props.conversationId);
+    void btwStore.hydrate(props.conversationId).catch((err) => {
+      console.error("Failed to refresh BTW exchanges:", err);
+    });
   },
 );
 

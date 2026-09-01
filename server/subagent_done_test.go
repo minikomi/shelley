@@ -210,6 +210,43 @@ func TestSubagentDone(t *testing.T) {
 	t.Run("EvictedParentManagerStillNotified", testSubagentDone_EvictedParentManagerStillNotified)
 }
 
+func TestManualSubagentTurnDoesNotNotifyParent(t *testing.T) {
+	server, database, held, parent := newBtwTest(t)
+	ctx := context.Background()
+	parentManager, err := server.getOrCreateConversationManager(ctx, parent.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := database.CreateSubagentConversation(ctx, "manual-child", parent.ConversationID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(listMessages(t, database, parent.ConversationID))
+
+	response := postBtwChat(t, server, child.ConversationID,
+		ChatRequest{Message: "echo: manual child turn", Model: "predictable"})
+	if response.Code != 202 {
+		t.Fatalf("manual child turn status=%d body=%s", response.Code, response.Body.String())
+	}
+	server.mu.Lock()
+	childManager := server.activeConversations[child.ConversationID]
+	server.mu.Unlock()
+	if childManager == nil {
+		t.Fatal("manual child turn did not create a manager")
+	}
+	if childManager.onDone != nil {
+		t.Fatal("generic child manager wired parent completion notification")
+	}
+
+	releaseAndWaitIdle(t, server, child.ConversationID, held.waitCall(t, "echo: manual child turn"))
+	if got := len(listMessages(t, database, parent.ConversationID)); got != before {
+		t.Fatalf("manual child turn injected %d parent messages", got-before)
+	}
+	if parentManager.IsAgentWorking() {
+		t.Fatal("manual child turn started a parent turn")
+	}
+}
+
 // Regression: the parent was blocked inside the subagent tool call (its
 // lastActivity going stale because tool execution doesn't Touch the parent
 // manager), the periodic Cleanup() evicted the parent's ConversationManager

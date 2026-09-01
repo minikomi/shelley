@@ -19,13 +19,21 @@
   >
     <span>{{ node.label }}</span>
   </div>
-  <MessageComponent
-    v-else-if="node.kind === 'message' && node.item.message"
-    :message="node.item.message"
-    :on-open-diff-viewer="onOpenDiffViewer"
-    :on-comment-text-change="onCommentTextChange"
-    :on-fork="conversationId ? onFork : undefined"
-  />
+  <template v-else-if="node.kind === 'message' && node.item.message">
+    <MessageComponent
+      :message="node.item.message"
+      :on-open-diff-viewer="onOpenDiffViewer"
+      :on-comment-text-change="onCommentTextChange"
+      :on-fork="conversationId ? onFork : undefined"
+    />
+  </template>
+  <template v-else-if="node.kind === 'btw'">
+    <BtwInline
+      v-for="exchange in node.exchanges"
+      :key="exchange.exchange_id"
+      :exchange="exchange"
+    />
+  </template>
   <ToolPillsRow
     v-else-if="node.kind === 'tool-pills'"
     :items="node.items"
@@ -64,6 +72,7 @@ import MessageTimestamp from "./MessageTimestamp.vue";
 import ToolPillsRow from "./ToolPillsRow.vue";
 import CoalescedToolCall from "./CoalescedToolCall.vue";
 import CarriedBand from "./CarriedBand.vue";
+import BtwInline from "./BtwInline.vue";
 
 defineProps<{
   node: RenderNode;

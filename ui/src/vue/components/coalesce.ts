@@ -12,6 +12,10 @@ import {
 export interface CoalescedItem {
   type: "message" | "tool";
   generation: number;
+  /** Sequence position represented by this visible transcript item. */
+  sourceSequenceID: number;
+  /** Stable identity for inserting transcript-adjacent UI. */
+  anchorKey: string;
   // carried marks an item copied verbatim from the previous generation by a
   // compaction. The UI collapses these behind a single band.
   carried?: boolean;
@@ -110,12 +114,12 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
     if (message.type === "slug") return;
     if (message.type === "system") {
       if (!isDistillStatusMessage(message)) return;
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
       return;
     }
 
     if (message.type === "error" || message.type === "warning" || message.type === "modelchange") {
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
       return;
     }
 
@@ -133,7 +137,7 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
     }
 
     if (message.type === "user" && !hasToolResult) {
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
       return;
     }
     if (message.type === "user" && hasToolResult) {
@@ -172,7 +176,7 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
           // A turn with only thinking + tool calls (no text) still needs a
           // message item, or the thinking block would never render.
           if (textString || hasThinking) {
-            items.push({ type: "message", generation: message.generation, carried, message });
+            items.push(messageItem(message, carried));
           }
 
           const wasTruncated = llmData.ExcludedFromContext === true;
@@ -186,6 +190,10 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
               type: "tool",
               generation: message.generation,
               carried,
+              // Keep anchor placement stable when the later tool-result row
+              // arrives; the tool begins at its assistant invocation.
+              sourceSequenceID: message.sequence_id,
+              anchorKey: `tool:${toolUse.ID || `${message.message_id}-${toolUse.ToolName || "unknown"}`}`,
               toolUseId: toolUse.ID,
               toolName: toolUse.ToolName,
               toolInput: toolUse.ToolInput,
@@ -200,12 +208,23 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
         }
       } catch (err) {
         console.error("Failed to parse message LLM data:", err);
-        items.push({ type: "message", generation: message.generation, carried, message });
+        items.push(messageItem(message, carried));
       }
     } else {
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
     }
   });
 
   return items;
+}
+
+function messageItem(message: Message, carried: boolean): CoalescedItem {
+  return {
+    type: "message",
+    generation: message.generation,
+    carried,
+    message,
+    sourceSequenceID: message.sequence_id,
+    anchorKey: `message:${message.message_id}`,
+  };
 }

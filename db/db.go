@@ -30,9 +30,9 @@ import (
 //go:embed schema/*.sql
 var schemaFS embed.FS
 
-// generateConversationID generates a conversation ID in the format "cXXXXXX"
+// GenerateConversationID generates a conversation ID in the format "cXXXXXX"
 // where X are random alphanumeric characters
-func generateConversationID() (string, error) {
+func GenerateConversationID() (string, error) {
 	text := rand.Text()
 	if len(text) < 6 {
 		return "", fmt.Errorf("rand.Text() returned insufficient characters: %d", len(text))
@@ -247,7 +247,15 @@ type ConversationHook struct {
 	URL string `json:"url"`
 }
 
+type BtwParentPointer struct {
+	Generation int64 `json:"generation"`
+	SequenceID int64 `json:"sequence_id"`
+}
+
 type ConversationOptions struct {
+	// Kind identifies specialized child conversations. Empty is a normal chat.
+	Kind          string            `json:"kind,omitempty"`
+	ParentPointer *BtwParentPointer `json:"parent_pointer,omitempty"`
 	// ToolOverrides maps tool name to "on" or "off". Tools not listed use their default.
 	ToolOverrides map[string]string `json:"tool_overrides,omitempty"`
 	// DisableAllTools disables every tool by default; ToolOverrides with "on" re-enable individual tools.
@@ -349,7 +357,7 @@ func (db *DB) SetConversationThinkingLevel(ctx context.Context, conversationID, 
 
 // CreateConversation creates a new conversation with an optional slug.
 func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiated bool, cwd, model *string, opts ConversationOptions) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}
@@ -378,7 +386,7 @@ func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiate
 // the chat handler. They appear in the normal conversation list and can
 // be deleted like any other conversation.
 func (db *DB) CreateDraftConversation(ctx context.Context, cwd, model *string, opts ConversationOptions, draft string) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}
@@ -436,13 +444,17 @@ func (db *DB) UpdateDraft(ctx context.Context, conversationID string, draft, mod
 // no longer a draft — a concurrent send won the promote race — so the
 // caller can decide whether to retry or fail.
 func (db *DB) PromoteDraft(ctx context.Context, conversationID string, cwd, model *string, opts *ConversationOptions) (*generated.Conversation, error) {
-	var optsJSON []byte
+	var requestedOptions *string
 	if opts != nil {
-		var err error
-		optsJSON, err = json.Marshal(*opts)
+		effective := *opts
+		effective.Kind = ""
+		effective.ParentPointer = nil
+		optsJSON, err := json.Marshal(effective)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal conversation options: %w", err)
 		}
+		value := string(optsJSON)
+		requestedOptions = &value
 	}
 	var conv generated.Conversation
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
@@ -460,19 +472,33 @@ func (db *DB) PromoteDraft(ctx context.Context, conversationID string, cwd, mode
 			}
 			return err
 		}
-		if opts != nil {
+		optionsJSON := requestedOptions
+		if optionsJSON == nil {
+			stored, err := q.GetConversationOptions(ctx, conversationID)
+			if err != nil {
+				return err
+			}
+			scrubbed, changed, err := scrubManagedBtwOptions(stored)
+			if err != nil {
+				return err
+			}
+			if changed {
+				optionsJSON = &scrubbed
+			}
+		}
+		if optionsJSON != nil {
 			if err := q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
 				ConversationID:      conversationID,
-				ConversationOptions: string(optsJSON),
+				ConversationOptions: *optionsJSON,
 			}); err != nil {
 				return err
 			}
 		}
-		var err error
-		conv, err = q.PromoteDraftConversation(ctx, conversationID)
+		promoted, err := q.PromoteDraftConversation(ctx, conversationID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrConversationNotDraft
 		}
+		conv = promoted
 		return err
 	})
 	if err != nil {
@@ -1776,9 +1802,10 @@ func (db *DB) DeleteConversation(ctx context.Context, conversationID string) err
 // ErrInvalidForkPoint is returned by ForkConversation when no message exists
 // at or before the requested cutoff sequence.
 var ErrInvalidForkPoint = errors.New("no message at or before fork point")
+var ErrCannotForkBtwReader = errors.New("BTW readers cannot be forked")
 
 func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string, cutoffSequenceID int64) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}
@@ -1789,13 +1816,20 @@ func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string,
 		if err != nil {
 			return fmt.Errorf("failed to load source conversation: %w", err)
 		}
+		if _, ok := ManagedBtwReaderIdentity(source); ok {
+			return ErrCannotForkBtwReader
+		}
+		optionsJSON, _, err := scrubManagedBtwOptions(source.ConversationOptions)
+		if err != nil {
+			return fmt.Errorf("failed to scrub fork options: %w", err)
+		}
 		conversation, err = q.CreateConversation(ctx, generated.CreateConversationParams{
 			ConversationID:      conversationID,
 			Slug:                nil,
 			UserInitiated:       true,
 			Cwd:                 source.Cwd,
 			Model:               source.Model,
-			ConversationOptions: source.ConversationOptions,
+			ConversationOptions: optionsJSON,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create forked conversation: %w", err)
@@ -1828,7 +1862,7 @@ func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string,
 
 // CreateSubagentConversation creates a new subagent conversation with a parent
 func (db *DB) CreateSubagentConversation(ctx context.Context, slug, parentID string, cwd *string) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}

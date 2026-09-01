@@ -30,6 +30,12 @@ func NewSubagentRunner(s *Server) *SubagentRunner {
 // RunSubagent implements claudetool.SubagentRunner.
 func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt string, wait bool, timeout time.Duration, modelID, reasoning string) (string, error) {
 	s := r.server
+	conv, convErr := s.db.GetConversationByID(ctx, conversationID)
+	if convErr == nil {
+		if _, ok := db.ManagedBtwReaderIdentity(*conv); ok {
+			return "", fmt.Errorf("BTW reader %s cannot be used as delegated subagent work", conversationID)
+		}
+	}
 
 	// Notify the UI about the subagent conversation.
 	// This ensures the sidebar shows the subagent even if it's a newly created conversation.
@@ -41,10 +47,9 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 	_, alreadyActive := s.activeConversations[conversationID]
 	s.mu.Unlock()
 	if !alreadyActive {
-		conv, convErr := s.db.GetConversationByID(ctx, conversationID)
 		if convErr != nil {
 			s.logger.Error("Failed to get conversation for new-conversation hook", "error", convErr, "conversationID", conversationID)
-		} else if conv.ParentConversationID != nil {
+		} else if isManagedChild(*conv) {
 			hookResult, hookErr := RunNewConversationHookIn(s.hooksDir, NewConversationHookInput{
 				Prompt: prompt,
 				Model:  modelID,
@@ -365,7 +370,7 @@ func (r *SubagentRunner) dropStaleParentNotification(ctx context.Context, subage
 			"subagent", subagentConversationID, "error", err)
 		return
 	}
-	if conv.ParentConversationID == nil {
+	if !isManagedChild(*conv) {
 		return
 	}
 	s.mu.Lock()
@@ -602,8 +607,8 @@ func (r *SubagentRunner) notifySubagentConversation(ctx context.Context, convers
 		return
 	}
 
-	// Only notify if this is actually a subagent (has parent)
-	if conv.ParentConversationID == nil {
+	// Only notify if this is actually a managed child.
+	if !isManagedChild(conv) {
 		return
 	}
 
@@ -694,7 +699,11 @@ func (s *Server) notifyParentSubagentDone(subagentConversationID, response strin
 		conv, err = q.GetConversation(ctx, subagentConversationID)
 		return err
 	})
-	if err != nil || conv.ParentConversationID == nil {
+	if err != nil || !isManagedChild(conv) {
+		return
+	}
+	if isBtwReader(conv) {
+		// Detached BTW readers never inject completion into parent history.
 		return
 	}
 
@@ -892,6 +901,14 @@ func (s *Server) cancelSubagentTree(ctx context.Context, parentID string) {
 			continue
 		}
 		for _, child := range children {
+			if !isManagedChild(child) {
+				continue
+			}
+			if isBtwReader(child) {
+				// A BTW is detached from parent-turn cancellation. Do not
+				// cancel it or traverse through it.
+				continue
+			}
 			if visited[child.ConversationID] {
 				continue
 			}

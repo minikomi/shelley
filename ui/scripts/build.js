@@ -180,7 +180,15 @@ async function build() {
 
     // Copy static files
     fs.copyFileSync("src/index.html", "dist/index.html");
-    fs.copyFileSync("src/styles.css", "dist/styles.css");
+    const btwStylesImport = '@import "./btw.css";';
+    const styles = fs.readFileSync("src/styles.css", "utf8");
+    if (styles.split(btwStylesImport).length !== 2) {
+      throw new Error("styles.css must import btw.css exactly once");
+    }
+    fs.writeFileSync(
+      "dist/styles.css",
+      styles.replace(btwStylesImport, fs.readFileSync("src/btw.css", "utf8").trimEnd()),
+    );
 
     // Copy assets (icons, manifest, etc.)
     const assetsDir = "src/assets";
