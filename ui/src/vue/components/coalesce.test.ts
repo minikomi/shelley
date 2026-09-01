@@ -37,6 +37,9 @@ function thinking(t: string): LLMContent {
 function toolUse(id: string): LLMContent {
   return { ID: id, Type: 5, ToolName: "bash", ToolInput: { command: "true" } } as LLMContent;
 }
+function serverToolUse(id: string): LLMContent {
+  return { ID: id, Type: 7, ToolName: "web_search", ToolInput: {} } as LLMContent;
+}
 
 // --- Text + tool use: one message item and one tool item ---
 {
@@ -78,6 +81,63 @@ function toolUse(id: string): LLMContent {
 {
   const items = coalesceMessages([agentMessage([toolUse("t4")])]);
   check("tool only -> tool item only", items.length === 1 && items[0].type === "tool", items);
+}
+
+// --- Text written after the tool calls renders after them ---
+{
+  // A provider running server-side web_search returns ONE assistant message
+  // whose blocks interleave thinking, searches, and the final answer. The
+  // answer is authored last, so rendering it above the searches makes the
+  // agent look like it answered before doing the research.
+  const items = coalesceMessages([
+    agentMessage([
+      thinking("planning searches"),
+      serverToolUse("ws1"),
+      thinking("more"),
+      serverToolUse("ws2"),
+      text("## Findings"),
+    ]),
+  ]);
+  check(
+    "trailing text -> tools first, message last",
+    items.length === 3 &&
+      items[0].type === "tool" &&
+      items[1].type === "tool" &&
+      items[2].type === "message",
+    items.map((i) => i.type),
+  );
+}
+
+// --- Preamble text still renders before the tool it introduces ---
+{
+  const items = coalesceMessages([agentMessage([text("I'll check"), toolUse("t5")])]);
+  check(
+    "leading text -> message first, tool last",
+    items.length === 2 && items[0].type === "message" && items[1].type === "tool",
+    items.map((i) => i.type),
+  );
+}
+
+// --- Text on both sides keeps the historical (text-first) placement ---
+{
+  const items = coalesceMessages([
+    agentMessage([text("first I'll look"), toolUse("t6"), text("and here's what I found")]),
+  ]);
+  check(
+    "text before and after -> message first",
+    items.length === 2 && items[0].type === "message" && items[1].type === "tool",
+    items.map((i) => i.type),
+  );
+}
+
+// --- Thinking-only turns are unaffected by the trailing-text rule ---
+{
+  const items = coalesceMessages([agentMessage([thinking("pondering"), toolUse("t7")])]);
+  check(
+    "thinking + tool -> message first",
+    items.length === 2 && items[0].type === "message" && items[1].type === "tool",
+    items.map((i) => i.type),
+  );
 }
 
 // --- Slug markers are dropped entirely ---
