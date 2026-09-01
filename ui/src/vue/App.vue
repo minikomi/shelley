@@ -76,6 +76,7 @@
           :on-terminal-close="handleTerminalClose"
           :navigate-user-message-trigger="navigateUserMessageTrigger"
           :scroll-to-bottom-trigger="conversationSelectionTrigger"
+          :new-conversation-trigger="newConversationTrigger"
           :on-conversation-unarchived="handleConversationUnarchived"
           :external-comment-text="editorCommentText"
         />
@@ -343,6 +344,7 @@ const modelsRefreshTrigger = ref(0);
 const cwdSyncTrigger = ref(0);
 const navigateUserMessageTrigger = ref(0);
 const conversationSelectionTrigger = ref(0);
+const newConversationTrigger = ref(0);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const ephemeralTerminals = ref<EphemeralTerminal[]>([]);
@@ -571,6 +573,7 @@ function startNewConversation() {
   if (currentConversation.value?.cwd) {
     localStorage.setItem("shelley_selected_cwd", currentConversation.value.cwd);
   }
+  newConversationTrigger.value++;
   currentConversationId.value = null;
   viewedConversation.value = null;
   window.history.replaceState({}, "", "/new");
@@ -579,6 +582,7 @@ function startNewConversation() {
 
 function startNewConversationWithCwd(cwd: string) {
   localStorage.setItem("shelley_selected_cwd", cwd);
+  newConversationTrigger.value++;
   currentConversationId.value = null;
   viewedConversation.value = null;
   window.history.replaceState({}, "", "/new");

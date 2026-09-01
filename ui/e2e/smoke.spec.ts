@@ -119,4 +119,50 @@ test.describe('Shelley Smoke Tests', () => {
     // Button should now be enabled
     await expect(sendButton).toBeEnabled();
   });
+
+  test('new conversation button starts a fresh composer generation on /new', async ({ page }) => {
+    let draftRequests = 0;
+    let releaseFirst!: () => void;
+    let firstFinished!: () => void;
+    const firstRelease = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstDone = new Promise<void>((resolve) => {
+      firstFinished = resolve;
+    });
+    await page.route('**/api/conversations/draft', async (route) => {
+      const requestNumber = ++draftRequests;
+      if (requestNumber === 1) await firstRelease;
+      const response = await route.fetch();
+      await route.fulfill({ response });
+      if (requestNumber === 1) firstFinished();
+    });
+
+    await page.goto('/new');
+    const messageInput = page.getByTestId('message-input');
+
+    await messageInput.fill('repeat this draft');
+    await expect.poll(() => draftRequests).toBe(1);
+    await expect(page).toHaveURL(/\/new$/);
+    await page.locator('.btn-new').click();
+
+    await expect(page).toHaveURL(/\/new$/);
+    await expect(messageInput).toHaveValue('');
+    expect(await page.evaluate(() => localStorage.getItem('shelley-draft:new'))).toBeNull();
+
+    await messageInput.fill('repeat this draft');
+    await expect.poll(() => draftRequests).toBe(2);
+    await expect(page).toHaveURL(/\/c\/[^/]+$/);
+    const freshPath = new URL(page.url()).pathname;
+
+    releaseFirst();
+    await firstDone;
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    expect(new URL(page.url()).pathname).toBe(freshPath);
+  });
 });

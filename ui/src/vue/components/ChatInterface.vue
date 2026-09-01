@@ -309,6 +309,7 @@
       :initial-rows="messageInputInitialRows"
       :conversation-id="conversationId"
       :lazy-draft-id="lazyDraftId"
+      :fresh-session-trigger="newConversationTrigger"
       :model-options="readyModels"
       :current-model-id="selectedModel"
       :is-child-conversation="!!currentConversation?.parent_conversation_id"
@@ -548,6 +549,9 @@ const props = withDefaults(
     navigateUserMessageTrigger?: number;
     /** Incremented when app navigation explicitly selects a conversation. */
     scrollToBottomTrigger?: number;
+    /** Incremented for every explicit new-conversation action, including
+     *  null→null while the app is already on /new. */
+    newConversationTrigger?: number;
     onConversationUnarchived?: (conversation: Conversation) => void;
     onDraftCreated?: (conversation: Conversation) => void;
     /** Comment block from the standalone file editor (App-level modal) to
@@ -3065,6 +3069,7 @@ function appendBtwSummaryToComposer(answer: string) {
 const lazyDraftId = ref<string | null>(null);
 let draftConvId: string | null = props.conversationId;
 let inflightCreate: Promise<string> | null = null;
+let draftGeneration = 0;
 // The server `updated_at` of the draft row we last successfully synced to.
 // Keystrokes stamp the localStorage mirror with this so a reload can tell
 // whether the cached text is ahead of what the server acknowledged. "" before
@@ -3072,10 +3077,12 @@ let inflightCreate: Promise<string> | null = null;
 let draftSyncedAt = "";
 
 async function saveDraft(value: string) {
+  const generation = draftGeneration;
   const id = draftConvId;
   if (id) {
     if (props.currentConversation?.is_draft) {
       const conv = await api.updateDraft(id, { draft: value });
+      if (generation !== draftGeneration) return;
       // The server advanced updated_at to acknowledge this text. Re-base the
       // live cache entry onto it so keystrokes typed while this PUT was
       // outstanding (stamped with the older time) stay ahead of the server.
@@ -3104,6 +3111,7 @@ async function saveDraft(value: string) {
       cwd: selectedCwd.value || undefined,
     })
     .then((conv) => {
+      if (generation !== draftGeneration) return conv.conversation_id;
       draftConvId = conv.conversation_id;
       draftSyncedAt = conv.updated_at;
       // A model picked while this createDraft was in flight had no draft id
@@ -3165,6 +3173,19 @@ function handleDraftCleared() {
   clearCachedDraft(draftConvId);
   clearCachedDraft(null);
   draftSyncedAt = "";
+}
+
+function resetDraftSession() {
+  draftGeneration++;
+  draftAutosave.reset();
+  inflightCreate = null;
+  lazyDraftId.value = null;
+  draftConvId = null;
+  draftSyncedAt = "";
+  clearCachedDraft(null);
+  seedComposer("");
+  lastSeededSession = null;
+  lastSeededValue = "";
 }
 
 const messageInputInjectedText = computed(
@@ -3675,6 +3696,18 @@ let lastSeededSession: string | null | undefined = undefined;
 // reconcile watch tell an untouched seeded composer (safe to re-seed on a
 // server echo) from one the user has since edited (must not clobber).
 let lastSeededValue = "";
+
+// A route/id watch cannot observe an explicit /new action while already on
+// /new (null→null). App provides a monotonic trigger so that action still
+// abandons the old composer session and invalidates any lazy draft request
+// already in flight.
+watch(
+  () => props.newConversationTrigger,
+  (trigger, previous) => {
+    if (trigger === previous) return;
+    resetDraftSession();
+  },
+);
 
 // Initialize the composer from the conversation row when switching
 // conversations. Drafts and the new-conversation view reconcile the server

@@ -1,6 +1,5 @@
-// Vue port of hooks/useDraftAutosave.ts. The original used only refs (no React
-// rendering), so the logic is identical; we just replace useRef/useCallback
-// with closure variables and register an onUnmounted trailing save.
+// Vue port of hooks/useDraftAutosave.ts. The state lives in a closure; the Vue
+// wrapper only adds an onUnmounted trailing save.
 import { onUnmounted } from "vue";
 
 export interface DraftAutosaveOptions {
@@ -12,9 +11,10 @@ export interface DraftAutosaveControls {
   schedule(value: string): void;
   cancel(): void;
   flush(): void;
+  reset(): void;
 }
 
-export function useDraftAutosave(
+export function createDraftAutosave(
   save: (value: string) => Promise<void>,
   options: DraftAutosaveOptions = {},
 ): DraftAutosaveControls {
@@ -24,7 +24,8 @@ export function useDraftAutosave(
   // (Vue callers typically pass a stable closure, but keep parity with React.)
 
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let inFlight = false;
+  let generation = 0;
+  let inFlightGeneration: number | null = null;
   let pendingValue: string | null = null;
   let lastSaved: string | null = null;
   let failureCount = 0;
@@ -35,27 +36,32 @@ export function useDraftAutosave(
   };
 
   const run = async () => {
-    if (inFlight) return;
+    const runGeneration = generation;
+    if (inFlightGeneration === runGeneration) return;
     const value = pendingValue;
     if (value === null) return;
     if (value === lastSaved) {
       pendingValue = null;
       return;
     }
-    inFlight = true;
+    inFlightGeneration = runGeneration;
     try {
       await saveFn(value);
+      if (generation !== runGeneration) return;
       lastSaved = value;
       failureCount = 0;
       if (pendingValue === value) pendingValue = null;
     } catch (err) {
+      if (generation !== runGeneration) return;
       failureCount += 1;
       console.warn("Draft autosave failed; will retry", err);
     } finally {
-      inFlight = false;
-      if (pendingValue !== null) {
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(run, computeDelay());
+      if (generation === runGeneration) {
+        if (inFlightGeneration === runGeneration) inFlightGeneration = null;
+        if (pendingValue !== null) {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(run, computeDelay());
+        }
       }
     }
   };
@@ -82,12 +88,25 @@ export function useDraftAutosave(
     void run();
   };
 
-  onUnmounted(() => {
-    if (timer) clearTimeout(timer);
-    void run();
-  });
+  const reset = () => {
+    generation++;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    pendingValue = null;
+    lastSaved = null;
+    failureCount = 0;
+  };
 
-  // Keep a setter parity hook (no-op for most callers).
-  void saveFn;
-  return { schedule, cancel, flush };
+  return { schedule, cancel, flush, reset };
+}
+
+export function useDraftAutosave(
+  save: (value: string) => Promise<void>,
+  options: DraftAutosaveOptions = {},
+): DraftAutosaveControls {
+  const controls = createDraftAutosave(save, options);
+  onUnmounted(controls.flush);
+  return controls;
 }

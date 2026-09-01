@@ -441,6 +441,9 @@ const props = withDefaults(
      * attachments. React encodes this exact carve-out in its key:
      * `(conversationId === lazyDraftId ? null : conversationId) || "new"`. */
     lazyDraftId?: string | null;
+    /** Monotonic trigger for an explicit fresh composer session. Unlike the
+     * conversation id, this changes for /new→/new and resets transient state. */
+    freshSessionTrigger?: number;
     /** Ready models (id + reasoning capabilities), used to autocomplete the
      * /model command arguments with only the levels the target model accepts. */
     modelOptions?: ({ id: string } & ReasoningModelCapabilities)[];
@@ -693,6 +696,16 @@ watch(
   () => props.conversationId,
   (newId) => {
     if (newId != null && newId === props.lazyDraftId) return;
+    if (attachments.value.length > 0) clearAttachments();
+  },
+);
+
+watch(
+  () => props.freshSessionTrigger,
+  (trigger, previous) => {
+    if (trigger === previous) return;
+    submissionGeneration++;
+    submitting.value = false;
     if (attachments.value.length > 0) clearAttachments();
   },
 );
