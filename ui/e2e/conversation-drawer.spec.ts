@@ -280,7 +280,7 @@ test.describe("mobile drawer swipe", () => {
     await input.focus();
     await expect(input).toBeFocused();
 
-    await swipe(page, ".main-content", { x: 180, y: 300 }, { x: 232, y: 304 });
+    await swipe(page, ".main-content", { x: 180, y: 300 }, { x: 256, y: 304 });
     await expect(drawer).toHaveClass(/open/);
     await expect(input).not.toBeFocused();
 
@@ -296,7 +296,7 @@ test.describe("mobile drawer swipe", () => {
     await swipe(page, ".main-content", { x: 12, y: 300 }, { x: 112, y: 304 });
     await expect(drawer).not.toHaveClass(/open/);
 
-    await swipe(page, ".main-content", { x: 160, y: 300 }, { x: 196, y: 304 });
+    await swipe(page, ".main-content", { x: 160, y: 300 }, { x: 224, y: 304 });
     await expect(drawer).not.toHaveClass(/open/);
 
     await swipe(page, ".main-content", { x: 64, y: 200 }, { x: 92, y: 300 });

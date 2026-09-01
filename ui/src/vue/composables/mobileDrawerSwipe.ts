@@ -1,9 +1,10 @@
 import { onMounted, onUnmounted, type Ref } from "vue";
 
 const SYSTEM_EDGE_WIDTH = 32;
-const SWIPE_DISTANCE = 48;
+const OPEN_SWIPE_DISTANCE = 72;
+const CLOSE_SWIPE_DISTANCE = 48;
 const DIRECTION_LOCK_DISTANCE = 10;
-const HORIZONTAL_BIAS = 1.25;
+const HORIZONTAL_BIAS = 1.5;
 
 type Gesture = {
   startX: number;
@@ -83,7 +84,7 @@ export function useMobileDrawerSwipe(drawerOpen: Ref<boolean>) {
     const absY = Math.abs(dy);
 
     if (Math.max(absX, absY) < DIRECTION_LOCK_DISTANCE) return;
-    if (absY > absX) {
+    if (absX <= absY * HORIZONTAL_BIAS) {
       gesture.cancelled = true;
       return;
     }
@@ -103,8 +104,9 @@ export function useMobileDrawerSwipe(drawerOpen: Ref<boolean>) {
 
     const dx = gesture.lastX - gesture.startX;
     const dy = gesture.lastY - gesture.startY;
+    const swipeDistance = gesture.opening ? OPEN_SWIPE_DISTANCE : CLOSE_SWIPE_DISTANCE;
     const horizontal =
-      Math.abs(dx) >= SWIPE_DISTANCE && Math.abs(dx) > Math.abs(dy) * HORIZONTAL_BIAS;
+      Math.abs(dx) >= swipeDistance && Math.abs(dx) > Math.abs(dy) * HORIZONTAL_BIAS;
 
     if (!gesture.cancelled && horizontal) {
       if (gesture.opening && dx > 0) drawerOpen.value = true;
