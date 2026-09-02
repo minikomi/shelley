@@ -311,4 +311,18 @@ test.describe("mobile drawer swipe", () => {
 
     await expect(page.locator(".drawer")).not.toHaveClass(/open/);
   });
+
+  test("does not open while a diff viewer modal is shown", async ({ page }) => {
+    const first = conversation("first");
+    first.cwd = "/tmp";
+    await stubConversationList(page, [first]);
+    await page.goto("/new");
+
+    await page.keyboard.press("Control+Shift+D");
+    await expect(page.locator(".diff-viewer-overlay")).toBeVisible();
+
+    await swipe(page, ".diff-viewer-header", { x: 180, y: 100 }, { x: 256, y: 104 });
+
+    await expect(page.locator(".drawer")).not.toHaveClass(/open/);
+  });
 });

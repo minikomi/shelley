@@ -5,6 +5,12 @@ const OPEN_SWIPE_DISTANCE = 72;
 const CLOSE_SWIPE_DISTANCE = 48;
 const DIRECTION_LOCK_DISTANCE = 10;
 const HORIZONTAL_BIAS = 1.5;
+const MODAL_OVERLAY_SELECTOR = [
+  '[aria-modal="true"]',
+  ".diff-viewer-overlay",
+  ".image-comment-overlay",
+  ".command-palette-overlay",
+].join(",");
 
 type Gesture = {
   startX: number;
@@ -32,11 +38,17 @@ export function eventPathHasHorizontalScrollContainer(path: EventTarget[]): bool
   return path.some((target) => target instanceof Element && hasHorizontalScrollContainer(target));
 }
 
+export function hasOpenModalOverlay(root: ParentNode): boolean {
+  return root.querySelector(MODAL_OVERLAY_SELECTOR) !== null;
+}
+
 export function useMobileDrawerSwipe(drawerOpen: Ref<boolean>) {
   let gesture: Gesture | null = null;
 
   function onTouchStart(event: TouchEvent) {
+    gesture = null;
     if (!window.matchMedia("(max-width: 767px)").matches || event.touches.length !== 1) return;
+    if (hasOpenModalOverlay(document)) return;
 
     const touch = event.touches[0];
     const target = event.target instanceof Element ? event.target : null;
@@ -69,6 +81,10 @@ export function useMobileDrawerSwipe(drawerOpen: Ref<boolean>) {
 
   function onTouchMove(event: TouchEvent) {
     if (!gesture) return;
+    if (hasOpenModalOverlay(document)) {
+      gesture = null;
+      return;
+    }
     if (event.touches.length !== 1) {
       gesture = null;
       return;
@@ -95,6 +111,10 @@ export function useMobileDrawerSwipe(drawerOpen: Ref<boolean>) {
 
   function finishGesture(event: TouchEvent) {
     if (!gesture) return;
+    if (hasOpenModalOverlay(document)) {
+      gesture = null;
+      return;
+    }
 
     const touch = event.changedTouches[0];
     if (touch) {

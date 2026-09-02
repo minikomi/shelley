@@ -2,6 +2,7 @@ import { JSDOM } from "jsdom";
 import {
   eventPathHasHorizontalScrollContainer,
   hasHorizontalScrollContainer,
+  hasOpenModalOverlay,
 } from "./mobileDrawerSwipe";
 
 function assert(cond: boolean, msg: string): void {
@@ -82,5 +83,29 @@ run("detects a horizontal scroller inside a patch diff shadow tree", () => {
     "the composed event path should preserve patch diff scrolling",
   );
 });
+
+run("detects accessible modal dialogs", () => {
+  const root = document.createElement("div");
+  root.innerHTML = '<div aria-modal="true"></div>';
+  assert(hasOpenModalOverlay(root), "aria-modal dialogs should block drawer swipes");
+});
+
+run("ignores non-modal dialogs", () => {
+  const root = document.createElement("div");
+  root.innerHTML = '<div role="dialog" aria-modal="false"></div>';
+  assert(!hasOpenModalOverlay(root), "non-modal dialogs should not block drawer swipes");
+});
+
+for (const className of [
+  "diff-viewer-overlay",
+  "image-comment-overlay",
+  "command-palette-overlay",
+]) {
+  run(`detects the ${className} fullscreen overlay`, () => {
+    const root = document.createElement("div");
+    root.innerHTML = `<div class="${className}"></div>`;
+    assert(hasOpenModalOverlay(root), `${className} should block drawer swipes`);
+  });
+}
 
 console.log("\nmobileDrawerSwipe tests passed");
