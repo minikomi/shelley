@@ -7,6 +7,14 @@
 // rows.
 import type { Conversation } from "../types";
 import { parseTags } from "../vue/components/conversationDrawerShared";
+import {
+  decodeTagQueryValue,
+  scanConversationQuery,
+  UNATTRIBUTED_TERM,
+  UNTAGGED_TERM,
+} from "./conversationQuery";
+
+export { UNATTRIBUTED_TERM, UNTAGGED_TERM } from "./conversationQuery";
 
 // The comparison key for a tag. Empty string means "not a tag".
 export function foldTag(tag: string): string {
@@ -155,8 +163,6 @@ export function tagMatchesQuery(tag: string, query: string): boolean {
 
 const TAG_PREFIX = "tag:";
 const USER_PREFIX = "user:";
-export const UNTAGGED_TERM = "is:untagged";
-export const UNATTRIBUTED_TERM = "is:unattributed";
 
 export interface ParsedQuery {
   // Committed tags (followed by a space or another term), in the order typed.
@@ -186,66 +192,8 @@ export interface ParsedQuery {
 // runs to the end of the string, which is the still-being-typed case, and
 // also means the caret is mid-term regardless of a trailing space.
 function tokenize(raw: string): { terms: string[]; endsMidTerm: boolean } {
-  const terms: string[] = [];
-  let current = "";
-  let inQuote = false;
-  let escaped = false;
-  for (const ch of raw) {
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-    if (inQuote && ch === "\\") {
-      escaped = true;
-      current += ch;
-      continue;
-    }
-    if (ch === '"') {
-      inQuote = !inQuote;
-      current += ch;
-      continue;
-    }
-    if (!inQuote && /\s/.test(ch)) {
-      if (current !== "") {
-        terms.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += ch;
-  }
-  if (current !== "") terms.push(current);
-  return { terms, endsMidTerm: current !== "" };
-}
-
-// The drawer stores committed tag terms in the raw query, but renders them as
-// filter-tray tokens. The input only shows free text and a trailing partial
-// `tag:` term that is still driving autocomplete.
-export function projectVisibleSearchQuery(raw: string): string {
-  const { terms, endsMidTerm } = tokenize(raw);
-  return terms
-    .filter((term, i) => {
-      const lower = term.toLowerCase();
-      if (lower === UNTAGGED_TERM || lower === UNATTRIBUTED_TERM) return false;
-      if (lower.startsWith(TAG_PREFIX)) return i === terms.length - 1 && endsMidTerm;
-      if (!lower.startsWith(USER_PREFIX)) return true;
-      const committed = i !== terms.length - 1 || !endsMidTerm;
-      return !committed || foldEmail(term.slice(USER_PREFIX.length)) === "";
-    })
-    .join(" ");
-}
-
-// Replaces the input-visible portion of a raw query while retaining committed
-// tag/state terms. This lets ordinary input editing coexist with tray tokens.
-export function rebuildRawSearchQuery(raw: string, visible: string): string {
-  const parsed = parseSearchQuery(raw);
-  const structured = parsed.tags.map(formatTagTerm);
-  structured.push(...parsed.users.map(formatUserTerm));
-  if (parsed.untaggedOnly) structured.push(UNTAGGED_TERM);
-  if (parsed.includeUnattributed) structured.push(UNATTRIBUTED_TERM);
-  const prefix = structured.length > 0 ? structured.join(" ") + " " : "";
-  return prefix + visible;
+  const scanned = scanConversationQuery(raw);
+  return { terms: scanned.terms.map((term) => term.raw), endsMidTerm: scanned.endsMidTerm };
 }
 
 function foldEmail(email: string): string {
@@ -260,23 +208,7 @@ export function formatUserTerm(email: string): string {
 // Tolerates an unterminated quote (`"in prog`) so mid-typing still yields a
 // usable prefix, including a trailing lone backslash (an escape being typed).
 function unquoteTagValue(value: string): string {
-  if (!value.startsWith('"')) return value;
-  let out = "";
-  let escaped = false;
-  for (const ch of value.slice(1)) {
-    if (escaped) {
-      out += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') break;
-    out += ch;
-  }
-  return out;
+  return decodeTagQueryValue(value);
 }
 
 // The token for one tag, quoted only when it has to be: tags can contain
@@ -362,23 +294,29 @@ export function parseSearchQuery(raw: string): ParsedQuery {
 // chosen — `term` is a full token (`tag:infra`, `tag:"in progress"`, or
 // `is:untagged`).
 export function completeTermInQuery(raw: string, term: string): string {
-  const { terms, endsMidTerm } = tokenize(raw);
+  const { terms, endsMidTerm } = scanConversationQuery(raw);
   const last = terms[terms.length - 1];
   const replacing =
     last !== undefined &&
-    (last.toLowerCase().startsWith(TAG_PREFIX) || last.toLowerCase().startsWith(USER_PREFIX)) &&
+    (last.raw.toLowerCase().startsWith(TAG_PREFIX) ||
+      last.raw.toLowerCase().startsWith(USER_PREFIX)) &&
     endsMidTerm;
-  const kept = replacing ? terms.slice(0, -1) : terms;
-  return [...kept, term].join(" ") + " ";
+  if (replacing && last) return raw.slice(0, last.start) + term + " ";
+  const separator = raw === "" || /\s$/.test(raw) ? "" : " ";
+  return raw + separator + term + " ";
 }
 
 // Starts one structured filter term, replacing any other half-typed trailing
-// tag/user term so repeated tray-action clicks cannot accumulate prefixes.
+// tag/user term so repeated action clicks cannot accumulate prefixes.
 export function startFilterTermInQuery(raw: string, term: "tag:" | "user:"): string {
-  const { terms, endsMidTerm } = tokenize(raw);
-  const last = terms[terms.length - 1]?.toLowerCase() ?? "";
-  const replacing = endsMidTerm && (last.startsWith(TAG_PREFIX) || last.startsWith(USER_PREFIX));
-  return [...(replacing ? terms.slice(0, -1) : terms), term].join(" ");
+  const { terms, endsMidTerm } = scanConversationQuery(raw);
+  const last = terms[terms.length - 1];
+  const lower = last?.raw.toLowerCase() ?? "";
+  if (endsMidTerm && last && (lower.startsWith(TAG_PREFIX) || lower.startsWith(USER_PREFIX))) {
+    return raw.slice(0, last.start) + term;
+  }
+  const separator = raw === "" || /\s$/.test(raw) ? "" : " ";
+  return raw + separator + term;
 }
 
 // Removes every `tag:` term matching `tag`, leaving the rest of the query

@@ -226,17 +226,29 @@
           @mouseenter="showParticipantTooltipOnHover"
           @mouseleave="hideParticipantTooltipOnHover"
         >
-          <span
-            v-if="currentUserParticipates"
-            class="conversation-participant-dot"
+          <svg
+            class="conversation-participant-badge-icon"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
             aria-hidden="true"
-          />
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          >
+            <path
+              v-if="!currentUserParticipates"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              :stroke-width="2"
+              d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8"
+            />
+            <g v-else class="conversation-participant-badge-front-filled">
+              <circle cx="9" cy="7" r="4" />
+              <path d="M2 21v-2a7 7 0 0114 0v2z" />
+            </g>
             <path
               stroke-linecap="round"
               stroke-linejoin="round"
               :stroke-width="2"
-              d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8m13 10v-2a4 4 0 00-3-3.87m-2-11.96a4 4 0 010 7.75"
+              d="M22 21v-2a4 4 0 00-3-3.87m-2-11.96a4 4 0 010 7.75"
             />
           </svg>
           {{ participantEmails.length }}
@@ -453,6 +465,15 @@ function escapeHTML(value: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+function participantIdentityIcon(current: boolean): string {
+  const className = current
+    ? "conversation-participant-tooltip-identity conversation-participant-tooltip-identity-current"
+    : "conversation-participant-tooltip-identity";
+  const shapes = current
+    ? '<circle cx="12" cy="7" r="4"></circle><path d="M4 22v-2a8 8 0 0116 0v2z"></path>'
+    : '<circle cx="12" cy="7" r="4"></circle><path d="M4 22v-2a8 8 0 0116 0v2"></path>';
+  return `<span class="${className}"><svg viewBox="0 0 24 24" aria-hidden="true">${shapes}</svg></span>`;
+}
 const participantTooltipHtml = computed(() => {
   const current = window.__SHELLEY_INIT__?.user_email?.trim().toLowerCase();
   const selected = new Set(ctx.selectedUsers.value.map((email) => email.trim().toLowerCase()));
@@ -461,10 +482,7 @@ const participantTooltipHtml = computed(() => {
       const folded = email.toLowerCase();
       const escaped = escapeHTML(email);
       const label = selected.has(folded) ? `<strong>${escaped}</strong>` : escaped;
-      const marker =
-        current && folded === current
-          ? '<span class="conversation-participant-tooltip-dot"></span>'
-          : '<span class="conversation-participant-tooltip-dot-placeholder"></span>';
+      const marker = participantIdentityIcon(!!current && folded === current);
       return `<span class="conversation-participant-tooltip-row">${marker}<span>${label}</span><span class="conversation-participant-tooltip-count">${message_count}</span></span>`;
     })
     .join("");

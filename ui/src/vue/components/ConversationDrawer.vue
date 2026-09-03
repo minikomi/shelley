@@ -166,8 +166,8 @@
       </div>
     </div>
 
-    <!-- Search/filter shell. Committed filters live in the tray; the input
-         keeps free text and a currently typed partial `tag:` term. -->
+    <!-- Search/filter shell. Text and committed filter pills share one
+         wrapping editor; the filter actions stay directly underneath it. -->
     <div v-if="searchOpen" ref="searchWrapRef" class="drawer-search">
       <div class="drawer-search-shell">
         <div class="drawer-search-row">
@@ -186,110 +186,49 @@
               d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
             />
           </svg>
-          <input
-            ref="searchInputRef"
-            type="text"
-            class="drawer-search-input"
+          <ConversationQueryEditor
+            ref="queryEditorRef"
+            v-model="searchQuery"
             :placeholder="t('searchOrTagPlaceholder')"
-            :value="visibleSearchQuery"
-            :aria-label="t('searchConversations')"
-            @input="updateVisibleSearchQuery(($event.target as HTMLInputElement).value)"
+            :ariaLabelText="t('searchConversations')"
             @keydown="onSearchKeyDown"
           />
           <button
-            v-if="visibleSearchQuery"
+            v-if="searchQuery.trim()"
             type="button"
             class="drawer-search-clear"
             :aria-label="t('clearSearch')"
             v-tooltip.top="t('clearSearch')"
-            @click="clearSearchText"
+            @click="clearSearch"
           >
             ✕
           </button>
         </div>
-        <div class="drawer-filter-tray">
-          <span
-            v-for="user in selectedUsers"
-            :key="user"
-            class="drawer-filter-token drawer-filter-token-participant"
-            data-testid="user-filter-token"
-          >
-            user:{{ user }}
-            <button
-              type="button"
-              :aria-label="`Remove user:${user} filter`"
-              @click="searchQuery = removeUserFromQuery(searchQuery, user)"
-            >
-              ×
-            </button>
-          </span>
-          <span
-            v-if="parsedQuery.includeUnattributed"
-            class="drawer-filter-token drawer-filter-token-unattributed"
-            data-testid="unattributed-filter-token"
-          >
-            is:unattributed
-            <button
-              type="button"
-              aria-label="Remove is:unattributed filter"
-              @click="searchQuery = removeUnattributedFromQuery(searchQuery)"
-            >
-              ×
-            </button>
-          </span>
-          <span
-            v-for="tag in selectedTags"
-            :key="tag"
-            class="drawer-filter-token drawer-filter-token-tag"
-            data-testid="selected-tag-filter"
-          >
-            #{{ tag }}
-            <button
-              type="button"
-              :aria-label="`${t('removeTag')} ${tag}`"
-              @click="searchQuery = removeTagFromQuery(searchQuery, tag)"
-            >
-              ×
-            </button>
-          </span>
-          <span
-            v-if="parsedQuery.untaggedOnly"
-            class="drawer-filter-token drawer-filter-token-tag"
-            data-testid="untagged-filter-token"
-          >
-            {{ t("untagged") }}
-            <button
-              type="button"
-              :aria-label="t('clearTagFilter')"
-              @click="searchQuery = removeUntaggedFromQuery(searchQuery)"
-            >
-              ×
-            </button>
-          </span>
-          <button
-            v-if="multipleParticipantsAvailable"
-            type="button"
-            class="drawer-filter-action"
-            aria-label="Add user filter"
-            @click="startUserFilter"
-          >
-            @ User
-          </button>
-          <button
-            type="button"
-            class="drawer-filter-action"
-            aria-label="Add tag filter"
-            @click="startTagFilter"
-          >
-            # Tag
-          </button>
-          <span
-            class="drawer-filter-result-count"
-            :aria-label="`${displayedConversations.length} results`"
-          >
-            {{ displayedConversations.length }}
-          </span>
-        </div>
+      </div>
+      <div class="drawer-filter-actions">
+        <button
+          v-if="multipleParticipantsAvailable"
+          type="button"
+          class="drawer-filter-action"
+          aria-label="Add user filter"
+          @click="startUserFilter"
+        >
+          @ User
+        </button>
+        <button
+          type="button"
+          class="drawer-filter-action"
+          aria-label="Add tag filter"
+          @click="startTagFilter"
+        >
+          # Tag
+        </button>
+        <span
+          class="drawer-filter-result-count"
+          :aria-label="`${displayedConversations.length} results`"
+        >
+          {{ displayedConversations.length }}
+        </span>
       </div>
       <!-- Tag dropdown. Opens on a `tag:` term, listing only tags carried by
            conversations still on screen, each with the count it would leave —
@@ -516,8 +455,10 @@ import {
   filterConversationsByParticipantQuery,
   hasOtherParticipant,
 } from "../../utils/conversationParticipantFilter";
+import { clearConversationQueryText } from "../../utils/conversationQuery";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
 import ConversationRow from "./ConversationDrawerRow.vue";
+import ConversationQueryEditor from "./ConversationQueryEditor.vue";
 import Button from "primevue/button";
 import { DrawerCtxKey, type GroupBy, parseTags } from "./conversationDrawerShared";
 import type { EphemeralTerminal } from "./terminalTypes";
@@ -531,9 +472,7 @@ import {
   matchTags,
   offeredTags,
   parseSearchQuery,
-  projectVisibleSearchQuery,
   queryHasTagFilter,
-  rebuildRawSearchQuery,
   removeTagFromQuery,
   removeUnattributedFromQuery,
   removeUntaggedFromQuery,
@@ -600,7 +539,7 @@ const archivedConversations = ref<ConversationWithParticipants[]>([]);
 const loadingArchived = ref(false);
 const searchQuery = ref("");
 const searchOpen = ref(false);
-const searchInputRef = ref<HTMLInputElement | null>(null);
+const queryEditorRef = ref<InstanceType<typeof ConversationQueryEditor> | null>(null);
 const searchResults = ref<ConversationWithState[] | null>(null);
 const searching = ref(false);
 let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -635,7 +574,6 @@ const selectedUsers = computed(() => parsedQuery.value.users);
 const searchText = computed(() => parsedQuery.value.text);
 const activeTagPrefix = computed(() => parsedQuery.value.activeTagPrefix);
 const activeUserPrefix = computed(() => parsedQuery.value.activeUserPrefix);
-const visibleSearchQuery = computed(() => projectVisibleSearchQuery(searchQuery.value));
 const currentUserEmail = window.__SHELLEY_INIT__?.user_email;
 const participantUniverse = computed(() => [
   ...props.conversations,
@@ -1083,28 +1021,29 @@ function toggleSearch() {
     searchOpen.value = false;
   } else {
     searchOpen.value = true;
-    void nextTick(() => searchInputRef.value?.focus());
+    void nextTick(() => queryEditorRef.value?.focusEnd());
   }
 }
 
-function updateVisibleSearchQuery(value: string) {
-  searchQuery.value = rebuildRawSearchQuery(searchQuery.value, value);
+function clearSearchText() {
+  searchQuery.value = clearConversationQueryText(searchQuery.value);
 }
 
-function clearSearchText() {
-  updateVisibleSearchQuery("");
+function clearSearch() {
+  searchQuery.value = "";
+  void nextTick(() => queryEditorRef.value?.focusEnd());
 }
 
 function startTagFilter() {
   filterMenuDismissed.value = false;
   searchQuery.value = startFilterTermInQuery(searchQuery.value, "tag:");
-  void nextTick(() => searchInputRef.value?.focus());
+  void nextTick(() => queryEditorRef.value?.focusEnd());
 }
 
 function startUserFilter() {
   filterMenuDismissed.value = false;
   searchQuery.value = startFilterTermInQuery(searchQuery.value, "user:");
-  void nextTick(() => searchInputRef.value?.focus());
+  void nextTick(() => queryEditorRef.value?.focusEnd());
 }
 
 function onSearchKeyDown(e: KeyboardEvent) {
@@ -1141,7 +1080,11 @@ function onSearchKeyDown(e: KeyboardEvent) {
     // Escape peels one layer at a time: dropdown, visible input, then box.
     if (filterMenuOpen.value) {
       filterMenuDismissed.value = true;
-    } else if (visibleSearchQuery.value) {
+    } else if (
+      searchText.value ||
+      activeTagPrefix.value !== null ||
+      activeUserPrefix.value !== null
+    ) {
       clearSearchText();
     } else {
       searchOpen.value = false;
@@ -1409,13 +1352,13 @@ watch(visibleOfferedUsers, () => {
 function chooseTerm(term: string) {
   searchQuery.value = completeTermInQuery(searchQuery.value, term);
   highlightIndex.value = 0;
-  void nextTick(() => searchInputRef.value?.focus());
+  void nextTick(() => queryEditorRef.value?.focusEnd());
 }
 
 function chooseUser(term: string) {
   searchQuery.value = completeTermInQuery(removeUnattributedFromQuery(searchQuery.value), term);
   highlightIndex.value = 0;
-  void nextTick(() => searchInputRef.value?.focus());
+  void nextTick(() => queryEditorRef.value?.focusEnd());
 }
 
 // Row chips and the filter share one path: both edit the query.

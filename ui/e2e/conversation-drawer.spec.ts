@@ -44,6 +44,9 @@ async function stubConversationList(page: Page, conversations: ConversationWithS
   await page.route("**/api/conversations/snapshot", (route) =>
     route.fulfill({ json: { conversations, hash: `test-${conversations.length}` } }),
   );
+  await page.route("**/api/conversations/search**", (route) =>
+    route.fulfill({ json: conversations }),
+  );
   await page.route("**/api/stream2**", (route) => route.abort());
 }
 
@@ -92,10 +95,16 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(page.locator('[data-conversation-id="other"]')).not.toBeVisible();
     const mineBadge = page.locator('[data-conversation-id="mine"] .conversation-participant-badge');
     await expect(mineBadge).toContainText("2");
+    await expect(mineBadge.locator(".conversation-participant-badge-front-filled")).toHaveCount(1);
     await mineBadge.click();
     await expect(page.locator(".p-tooltip")).toContainText("collaborator@example.com");
     await expect(page.locator(".p-tooltip strong")).toHaveText("me@example.com");
-    await expect(page.locator(".p-tooltip .conversation-participant-tooltip-dot")).toHaveCount(1);
+    await expect(
+      page.locator(".p-tooltip .conversation-participant-tooltip-identity-current"),
+    ).toHaveCount(1);
+    await expect(page.locator(".p-tooltip .conversation-participant-tooltip-identity")).toHaveCount(
+      2,
+    );
     await expect(
       page
         .locator(".p-tooltip .conversation-participant-tooltip-row")
@@ -172,6 +181,101 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(searchToggle).not.toHaveClass(/search-toggle-active/);
     await searchToggle.click();
     await expect(userToken).toHaveCount(0);
+  });
+
+  test("tokenized search interleaves text, removes pills atomically, and wraps", async ({
+    page,
+  }) => {
+    await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
+    await stubConversationList(page, [
+      conversation("mine", false, ["me@example.com", "other@example.com"]),
+      conversation("other", false, ["other@example.com"]),
+    ]);
+
+    await page.goto("/new");
+    await page.getByRole("button", { name: "Search conversations..." }).click();
+    await page.locator(".drawer-search-clear").click();
+
+    const editor = page.getByTestId("conversation-query-editor");
+    const activeInput = page.locator(".drawer-search-input");
+    await activeInput.fill("test user:aaa@x.com tag:aaa big");
+    await expect(page.getByTestId("user-filter-token")).toHaveText(/user:aaa@x\.com/);
+    await expect(page.getByTestId("selected-tag-filter")).toHaveText(/tag:aaa/);
+    await expect
+      .poll(() =>
+        editor.evaluate((element) =>
+          Array.from(element.children).map((child) =>
+            child instanceof HTMLInputElement
+              ? `text:${child.value}`
+              : `pill:${child.querySelector(".drawer-filter-token-label")?.textContent}`,
+          ),
+        ),
+      )
+      .toEqual(["text:test", "pill:user:aaa@x.com", "text:", "pill:tag:aaa", "text:big"]);
+
+    // At the start of the text after a pill, one Backspace removes the whole
+    // pill rather than exposing/deleting its query syntax character by character.
+    await activeInput.evaluate((input: HTMLInputElement) => input.setSelectionRange(0, 0));
+    await activeInput.press("Backspace");
+    await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
+    await expect(page.getByTestId("user-filter-token")).toHaveCount(1);
+    await expect(activeInput).toHaveValue("big");
+
+    // Delete at the end of the text before a pill is the symmetric operation.
+    await page.locator(".drawer-search-clear").click();
+    await activeInput.fill("left tag:aaa right");
+    const firstText = page.getByTestId("conversation-query-text").first();
+    await firstText.focus();
+    await firstText.evaluate((input: HTMLInputElement) => {
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    await page.keyboard.press("Delete");
+    await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
+    await expect(activeInput).toHaveValue("left right");
+
+    // A trailing partial stays ordinary editable text. Repeated action clicks
+    // replace that partial rather than accumulating `user: user: tag:`.
+    await page.locator(".drawer-search-clear").click();
+    const addUser = page.getByRole("button", { name: "Add user filter" });
+    const addTag = page.getByRole("button", { name: "Add tag filter" });
+    await addUser.click();
+    await addUser.click();
+    await addTag.click();
+    await addTag.click();
+    await expect(activeInput).toHaveValue("tag:");
+    await activeInput.press("Backspace");
+    await expect(activeInput).toHaveValue("tag");
+    await expect(page.getByTestId("tag-filter-panel")).toHaveCount(0);
+
+    // Narrow fields wrap downward. Neither the bordered editor nor the drawer
+    // gains horizontal overflow, and the action buttons remain underneath.
+    await page.locator(".drawer-search-clear").click();
+    await page.locator(".drawer").evaluate((element: HTMLElement) => {
+      element.style.width = "250px";
+    });
+    await activeInput.fill(
+      "tag:one tag:two user:a@example.com tag:three user:b@example.com tag:four tail",
+    );
+    const layout = await page.evaluate(() => {
+      const shell = document.querySelector<HTMLElement>(".drawer-search-shell");
+      const editorElement = document.querySelector<HTMLElement>(".conversation-query-editor");
+      const actions = document.querySelector<HTMLElement>(".drawer-filter-actions");
+      const drawer = document.querySelector<HTMLElement>(".drawer");
+      if (!shell || !editorElement || !actions || !drawer) throw new Error("search UI missing");
+      return {
+        shellHeight: shell.getBoundingClientRect().height,
+        shellOverflow: shell.scrollWidth - shell.clientWidth,
+        editorOverflow: editorElement.scrollWidth - editorElement.clientWidth,
+        drawerOverflow: drawer.scrollWidth - drawer.clientWidth,
+        actionsTop: actions.getBoundingClientRect().top,
+        shellBottom: shell.getBoundingClientRect().bottom,
+      };
+    });
+    expect(layout.shellHeight).toBeGreaterThan(34);
+    expect(layout.shellOverflow).toBeLessThanOrEqual(0);
+    expect(layout.editorOverflow).toBeLessThanOrEqual(0);
+    expect(layout.drawerOverflow).toBeLessThanOrEqual(0);
+    expect(layout.actionsTop).toBeGreaterThanOrEqual(layout.shellBottom);
   });
 
   test("starts expanded even when the only item is a draft", async ({ page }) => {
