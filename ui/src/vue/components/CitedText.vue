@@ -6,7 +6,7 @@
      click-to-comment works here too. -->
 <template>
   <div v-if="!renderMarkdown" class="whitespace-pre-wrap break-words">
-    <InlineText :text="text" />
+    <InlineText :text="text" :rewrite-localhost-links="rewriteLocalhostLinks" />
   </div>
   <template v-else>
     <MarkdownContent
@@ -14,6 +14,7 @@
       :message-id="messageId"
       :cache-owner="cacheOwner"
       :run-key="runKey"
+      :rewrite-localhost-links="rewriteLocalhostLinks"
       commentable
     />
     <ol v-if="citations.length > 0" class="citation-sources">
@@ -47,5 +48,6 @@ defineProps<{
   // Message, distinguished from other runs in the same message by runKey.
   cacheOwner?: object;
   runKey?: string;
+  rewriteLocalhostLinks?: boolean;
 }>();
 </script>

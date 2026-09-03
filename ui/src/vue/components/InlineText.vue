@@ -11,7 +11,7 @@
     ><code>{{ seg.content }}</code></pre>
     <code v-else-if="seg.type === 'code'" class="inline-code">{{ seg.content }}</code>
     <template v-else>
-      <template v-for="(p, j) in parseLinks(seg.content)" :key="j">
+      <template v-for="(p, j) in links(seg.content)" :key="j">
         <a
           v-if="p.type === 'link'"
           :href="p.href"
@@ -29,8 +29,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { parseInlineSegments } from "../../utils/inlineText";
-import { parseLinks } from "../../utils/linkify";
+import { localhostLinkOptionsFromInit, parseLinks } from "../../utils/linkify";
 
-const props = defineProps<{ text: string }>();
+const props = defineProps<{ text: string; rewriteLocalhostLinks?: boolean }>();
 const segments = computed(() => parseInlineSegments(props.text));
+
+function links(text: string) {
+  return parseLinks(text, props.rewriteLocalhostLinks ? localhostLinkOptionsFromInit() : undefined);
+}
 </script>

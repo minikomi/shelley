@@ -82,6 +82,58 @@ assert(
 const withoutId = renderMarkdownToSafeHTML("![alt](out/plot.png)");
 assert(!withoutId.includes("<img"), "local image dropped with no messageId to authorize it");
 
+const exeDevLinks = { isExeDev: true, hostname: "demo.exe.xyz" };
+const rewrittenMarkdownLink = renderMarkdownToSafeHTML(
+  "[Open app](http://localhost:3000/path?q=one#two)",
+  undefined,
+  undefined,
+  exeDevLinks,
+);
+assert(
+  rewrittenMarkdownLink.includes('href="https://demo.exe.xyz:3000/path?q=one#two"') &&
+    rewrittenMarkdownLink.includes(">Open app</a>"),
+  "opted-in markdown links use the public exe.dev URL",
+);
+const rewrittenAutolink = renderMarkdownToSafeHTML(
+  "http://127.0.0.1:4321/live",
+  undefined,
+  undefined,
+  exeDevLinks,
+);
+assert(
+  rewrittenAutolink.includes('href="https://demo.exe.xyz:4321/live"') &&
+    rewrittenAutolink.includes(">https://demo.exe.xyz:4321/live</a>"),
+  "opted-in markdown autolinks rewrite both href and visible URL",
+);
+const unrewrittenMarkdownLink = renderMarkdownToSafeHTML("[Open app](http://localhost:3000/path)");
+assert(
+  unrewrittenMarkdownLink.includes('href="http://localhost:3000/path"') &&
+    unrewrittenMarkdownLink.includes(">Open app</a>"),
+  "markdown links are unchanged without the opt-in",
+);
+const localURLCode = renderMarkdownToSafeHTML(
+  "`http://localhost:3000/inline`\n\n```\nhttp://localhost:3000/fenced\n```",
+  undefined,
+  undefined,
+  exeDevLinks,
+);
+assert(
+  localURLCode.includes("<code>http://localhost:3000/inline</code>") &&
+    localURLCode.includes("<pre><code>http://localhost:3000/fenced\n</code></pre>") &&
+    !localURLCode.includes("demo.exe.xyz"),
+  "inline and fenced code URLs are never rewritten",
+);
+const remoteLocalhostImage = renderMarkdownToSafeHTML(
+  "![plot](http://localhost:3000/plot.png)",
+  undefined,
+  undefined,
+  exeDevLinks,
+);
+assert(
+  !remoteLocalhostImage.includes("demo.exe.xyz") && !remoteLocalhostImage.includes("<img"),
+  "image sources are not rewritten into user-facing links",
+);
+
 // ---- Same owner + same runKey: a cache hit, no re-parse ----
 
 {

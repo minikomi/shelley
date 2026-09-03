@@ -198,6 +198,7 @@
                 :message-id="message.message_id"
                 :cache-owner="message"
                 :run-key="`${entity.key}-${index}`"
+                :rewrite-localhost-links="message.type === 'agent'"
               />
               <MessageContentBlock v-else :content="item.content!" />
             </div>

@@ -5,6 +5,7 @@
 // existing test (components/MarkdownContent.test.ts) keeps passing.
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
+import { rewriteLocalhostLink, type LocalhostLinkOptions } from "./linkify";
 
 // Maximum size (in characters of the data: URI) we are willing to inline.
 // Keeps the DOM and persisted payloads from ballooning when a model emits a
@@ -44,17 +45,33 @@ export function fileEndpointURL(messageId: string, path: string): string {
 // buildMarked returns a Marked instance that rewrites local-path image tokens
 // to the per-message file endpoint. Remote images are left with their original
 // href (and later stripped by the sanitizer); data images are passed through.
-function buildMarked(messageId?: string): Marked {
+function buildMarked(messageId?: string, localhostLinks?: LocalhostLinkOptions): Marked {
   const instance = new Marked({ gfm: true, breaks: true });
   instance.use({
     walkTokens(token) {
-      if (token.type !== "image") return;
-      const kind = classifyImageSrc(token.href ?? "");
-      if (kind === "local") {
-        // Only rewrite (and thus render) when we know the owning message.
-        token.href = messageId ? fileEndpointURL(messageId, token.href) : "";
+      if (token.type === "image") {
+        const kind = classifyImageSrc(token.href ?? "");
+        if (kind === "local") {
+          // Only rewrite (and thus render) when we know the owning message.
+          token.href = messageId ? fileEndpointURL(messageId, token.href) : "";
+        }
+        // data: kept as-is; remote/invalid left untouched and dropped by sanitize.
+        return;
       }
-      // data: kept as-is; remote/invalid left untouched and dropped by sanitize.
+      if (token.type === "link" && localhostLinks) {
+        const original = token.href;
+        const rewritten = rewriteLocalhostLink(original, localhostLinks);
+        token.href = rewritten;
+        // Bare URLs and <autolinks> use the URL as their visible label.
+        if (rewritten !== original && token.text === original) {
+          token.text = rewritten;
+          const labelToken = token.tokens?.length === 1 ? token.tokens[0] : undefined;
+          if (labelToken?.type === "text") {
+            labelToken.text = rewritten;
+            labelToken.raw = rewritten;
+          }
+        }
+      }
     },
   });
   return instance;
@@ -171,12 +188,13 @@ export function renderMarkdownToSafeHTML(
   text: string,
   messageId?: string,
   cacheKey?: MarkdownCacheKey,
+  localhostLinks?: LocalhostLinkOptions,
 ): string {
   let runs = cacheKey ? cache.get(cacheKey.owner) : undefined;
   const cached = cacheKey ? runs?.get(cacheKey.runKey) : undefined;
   if (cached !== undefined) return cached;
 
-  const raw = buildMarked(messageId).parse(text, { async: false }) as string;
+  const raw = buildMarked(messageId, localhostLinks).parse(text, { async: false }) as string;
   const html = DOMPurify.sanitize(raw, SANITIZE_OPTS);
 
   if (cacheKey) {

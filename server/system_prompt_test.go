@@ -13,6 +13,15 @@ import (
 	"shelley.exe.dev/exeenv"
 )
 
+func TestSystemPromptRequiresPublicVMServiceLinks(t *testing.T) {
+	if !strings.Contains(
+		systemPromptTemplate,
+		"Use localhost addresses for tools running on the VM; when giving the user a link to a VM-hosted service, use the shown exe.dev URL with the exact port and path.",
+	) {
+		t.Error("system prompt must direct VM-hosted service links to the shown exe.dev URL")
+	}
+}
+
 // TestSystemPromptIncludesCwdGuidanceFiles verifies that AGENTS.md from the working directory
 // is included in the generated system prompt.
 func TestSystemPromptIncludesCwdGuidanceFiles(t *testing.T) {

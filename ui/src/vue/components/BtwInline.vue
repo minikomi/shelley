@@ -47,7 +47,7 @@
             v-if="actionBarVisible(`answer:${turn.id}`)"
             :on-copy="() => copyText(turn.answer)"
           />
-          <MarkdownContent :text="turn.answer" />
+          <MarkdownContent :text="turn.answer" rewrite-localhost-links />
           <span v-if="turnIsActive(turn)" class="streaming-cursor" aria-label="Streaming">▊</span>
         </div>
         <button

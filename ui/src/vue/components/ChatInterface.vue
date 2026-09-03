@@ -189,10 +189,13 @@
                 v-if="showStreamingPreview && markdownMode === 'off'"
                 class="whitespace-pre-wrap break-words"
               >
-                {{ streamingText }}<span class="streaming-cursor">▊</span>
+                <InlineText :text="streamingText" rewrite-localhost-links /><span
+                  class="streaming-cursor"
+                  >▊</span
+                >
               </div>
               <div v-else-if="showStreamingPreview" class="streaming-markdown">
-                <MarkdownContent :text="streamingText" />
+                <MarkdownContent :text="streamingText" rewrite-localhost-links />
                 <span class="streaming-cursor">▊</span>
               </div>
             </div>
@@ -497,6 +500,7 @@ import { chunkMountKey } from "./chunkMount";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import InlineText from "./InlineText.vue";
 import ThinkingContent from "./tools/ThinkingContent.vue";
 
 // Props mirror ChatInterfaceProps in the React source. Callbacks that

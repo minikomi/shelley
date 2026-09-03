@@ -1,10 +1,18 @@
-import { parseLinks, LinkifyResult } from "./linkify";
+import {
+  parseLinks,
+  rewriteLocalhostLink,
+  type LinkifyResult,
+  type LocalhostLinkOptions,
+} from "./linkify";
 
 interface TestCase {
   name: string;
   input: string;
   expected: LinkifyResult[];
+  options?: LocalhostLinkOptions;
 }
+
+const exeDev = { isExeDev: true, hostname: "demo.exe.xyz" };
 
 const testCases: TestCase[] = [
   {
@@ -246,6 +254,120 @@ const testCases: TestCase[] = [
       { type: "text", content: "**" },
     ],
   },
+  {
+    name: "rewrites a plain-text localhost link when opted in",
+    input: "Open http://localhost:3000/app?q=one#result",
+    options: exeDev,
+    expected: [
+      { type: "text", content: "Open " },
+      {
+        type: "link",
+        content: "https://demo.exe.xyz:3000/app?q=one#result",
+        href: "https://demo.exe.xyz:3000/app?q=one#result",
+      },
+    ],
+  },
+  {
+    name: "does not duplicate a malformed URL when rewriting is enabled",
+    input: "Broken http://localhost:bad/path once",
+    options: exeDev,
+    expected: [
+      { type: "text", content: "Broken " },
+      {
+        type: "link",
+        content: "http://localhost:bad/path",
+        href: "http://localhost:bad/path",
+      },
+      { type: "text", content: " once" },
+    ],
+  },
+];
+
+const rewriteTestCases: Array<{
+  name: string;
+  input: string;
+  options: LocalhostLinkOptions;
+  expected: string;
+}> = [
+  {
+    name: "rewrites localhost with path, query, and hash",
+    input: "http://localhost:3000/a/b?q=one#two",
+    options: exeDev,
+    expected: "https://demo.exe.xyz:3000/a/b?q=one#two",
+  },
+  {
+    name: "rewrites the upper port boundary",
+    input: "https://0.0.0.0:9999/",
+    options: exeDev,
+    expected: "https://demo.exe.xyz:9999/",
+  },
+  {
+    name: "rewrites loopback IPv4",
+    input: "http://127.0.0.1:4321/path",
+    options: exeDev,
+    expected: "https://demo.exe.xyz:4321/path",
+  },
+  {
+    name: "matches localhost case-insensitively",
+    input: "http://LOCALHOST:3000/path",
+    options: exeDev,
+    expected: "https://demo.exe.xyz:3000/path",
+  },
+  {
+    name: "does nothing outside exe.dev",
+    input: "http://localhost:3000/path",
+    options: { ...exeDev, isExeDev: false },
+    expected: "http://localhost:3000/path",
+  },
+  {
+    name: "does nothing without an injected hostname",
+    input: "http://localhost:3000/path",
+    options: { ...exeDev, hostname: "" },
+    expected: "http://localhost:3000/path",
+  },
+  {
+    name: "does nothing without an explicit port",
+    input: "http://localhost/path",
+    options: exeDev,
+    expected: "http://localhost/path",
+  },
+  {
+    name: "does nothing below the proxy port range",
+    input: "http://localhost:2999/path",
+    options: exeDev,
+    expected: "http://localhost:2999/path",
+  },
+  {
+    name: "does nothing above the proxy port range",
+    input: "http://localhost:10000/path",
+    options: exeDev,
+    expected: "http://localhost:10000/path",
+  },
+  {
+    name: "does nothing for credentials",
+    input: "http://user:pass@localhost:3000/path",
+    options: exeDev,
+    expected: "http://user:pass@localhost:3000/path",
+  },
+  {
+    name: "does nothing for a localhost subdomain",
+    input: "http://app.localhost:3000/path",
+    options: exeDev,
+    expected: "http://app.localhost:3000/path",
+  },
+
+  {
+    name: "does nothing for another protocol",
+    input: "ftp://localhost:3000/path",
+    options: exeDev,
+    expected: "ftp://localhost:3000/path",
+  },
+  {
+    name: "does nothing for malformed URLs",
+    input: "http://localhost:bad/path",
+    options: exeDev,
+    expected: "http://localhost:bad/path",
+  },
 ];
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -276,8 +398,20 @@ export function runTests(): { passed: number; failed: number; failures: string[]
   const failures: string[] = [];
 
   for (const tc of testCases) {
-    const result = parseLinks(tc.input);
+    const result = parseLinks(tc.input, tc.options);
     if (deepEqual(result, tc.expected)) {
+      passed++;
+    } else {
+      failed++;
+      failures.push(
+        `FAIL: ${tc.name}\n  Input: ${JSON.stringify(tc.input)}\n  Expected: ${JSON.stringify(tc.expected)}\n  Got: ${JSON.stringify(result)}`,
+      );
+    }
+  }
+
+  for (const tc of rewriteTestCases) {
+    const result = rewriteLocalhostLink(tc.input, tc.options);
+    if (result === tc.expected) {
       passed++;
     } else {
       failed++;

@@ -5,7 +5,7 @@
     <div class="tool-header" @click="isExpanded = !isExpanded">
       <div class="tool-summary">
         <span class="tool-emoji" :class="{ running: isRunning }">🌐</span>
-        <span class="tool-command" :title="url">{{ displayUrl }}</span>
+        <span class="tool-command" :title="externalUrl">{{ displayUrl }}</span>
         <ToolStatusIcon v-if="isComplete && hasError" state="error" class="tool-error" />
         <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="tool-success" />
       </div>
@@ -22,7 +22,7 @@
       <div class="tool-section">
         <div class="tool-label">URL:</div>
         <div class="tool-code">
-          <a :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a>
+          <a :href="externalUrl" target="_blank" rel="noopener noreferrer">{{ externalUrl }}</a>
         </div>
       </div>
 
@@ -40,6 +40,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { LLMContent } from "../../../types";
+import { localhostLinkOptionsFromInit, rewriteLocalhostLink } from "../../../utils/linkify";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolChevron from "./ToolChevron.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
@@ -73,8 +74,10 @@ const output = computed(() =>
     : "",
 );
 
+const externalUrl = computed(() => rewriteLocalhostLink(url.value, localhostLinkOptionsFromInit()));
+
 const displayUrl = computed(() => {
-  const u = url.value;
+  const u = externalUrl.value;
   const maxLen = 300;
   return u.length <= maxLen ? u : u.substring(0, maxLen) + "...";
 });
