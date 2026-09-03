@@ -100,7 +100,7 @@ test.describe('Queue Messages', () => {
     await expect(cancelButton).toBeVisible();
   });
 
-  test('can cancel a queued message', async ({ page, request }) => {
+  test('cancelling a queued message restores it to an empty composer', async ({ page, request }) => {
     await openConversation(page, request);
     await sendAndWaitForWorking(page, 'delay: 60');
 
@@ -114,6 +114,8 @@ test.describe('Queue Messages', () => {
     await expect(cancelButton).toBeVisible();
     const [cancelResp] = await Promise.all([page.waitForResponse((resp) => resp.url().includes('/cancel-queued') && resp.status() === 200, { timeout: 10000 }), cancelButton.tap()]);
 
+    await expect(page.getByTestId('message-input')).toHaveValue('echo: to be cancelled');
+
     // The server deleted the message from the DB.
     // Reload the page to pick up the new state (the SSE stream sends
     // a metadata-only update which doesn't trigger a message list refresh).
@@ -124,6 +126,39 @@ test.describe('Queue Messages', () => {
     // After reload, the cancelled message and its badge should be gone
     await expect(page.getByTestId('queued-badge')).toHaveCount(0, { timeout: 10000 });
     await expect(page.locator('text=to be cancelled')).toHaveCount(0, { timeout: 10000 });
+  });
+
+  test('cancelling a queued message preserves text typed while the request is in flight', async ({ page, request }) => {
+    await openConversation(page, request);
+    await sendAndWaitForWorking(page, 'delay: 60');
+
+    await queueMessage(page, 'echo: queued message');
+    await expect(page.getByTestId('queued-badge')).toHaveCount(1, { timeout: 10000 });
+
+    let releaseCancel: (() => void) | undefined;
+    let markCancelStarted: (() => void) | undefined;
+    const cancelBlocked = new Promise<void>((resolve) => {
+      releaseCancel = resolve;
+    });
+    const cancelStarted = new Promise<void>((resolve) => {
+      markCancelStarted = resolve;
+    });
+    await page.route('**/api/conversation/*/cancel-queued?queued_id=*', async (route) => {
+      markCancelStarted?.();
+      await cancelBlocked;
+      await route.continue();
+    });
+
+    const cancelResponse = page.waitForResponse((resp) => resp.url().includes('/cancel-queued') && resp.status() === 200, { timeout: 10000 });
+    await page.getByTestId('cancel-queued').tap();
+    await cancelStarted;
+
+    const messageInput = page.getByTestId('message-input');
+    await messageInput.fill('keep this draft');
+    releaseCancel?.();
+    await cancelResponse;
+
+    await expect(messageInput).toHaveValue('keep this draft');
   });
 
   test('cancelling restores all queued messages to the composer', async ({ page, request }) => {
