@@ -50,6 +50,13 @@ async function stubConversationList(page: Page, conversations: ConversationWithS
   await page.route("**/api/stream2**", (route) => route.abort());
 }
 
+function editableFilter(page: Page, kind: "tag" | "user") {
+  const testId = kind === "tag" ? "selected-tag-filter" : "user-filter-token";
+  return page
+    .getByTestId(testId)
+    .filter({ has: page.locator(`input[data-structured-edit-kind="${kind}"]`) });
+}
+
 test.describe("conversation drawer startup and app bar", () => {
   test("single-user lists have no participant filter", async ({ page }) => {
     await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
@@ -131,12 +138,21 @@ test.describe("conversation drawer startup and app bar", () => {
     const addUserFilter = page.getByRole("button", { name: "Add user filter" });
     const addTagFilter = page.getByRole("button", { name: "Add tag filter" });
     await addUserFilter.click();
-    await expect(page.locator(".drawer-search-input")).toHaveValue("user:");
+    await expect(page.locator(".drawer-search-input")).toHaveValue("");
+    await expect(editableFilter(page, "user").getByTestId("conversation-query-keyword")).toHaveText(
+      "user:",
+    );
     await addTagFilter.click();
-    await expect(page.locator(".drawer-search-input")).toHaveValue("tag:");
+    await expect(page.locator(".drawer-search-input")).toHaveValue("");
+    await expect(editableFilter(page, "tag").getByTestId("conversation-query-keyword")).toHaveText(
+      "tag:",
+    );
     await addUserFilter.click();
     await addUserFilter.click();
-    await expect(page.locator(".drawer-search-input")).toHaveValue("user:");
+    await expect(page.locator(".drawer-search-input")).toHaveValue("");
+    await expect(editableFilter(page, "user").getByTestId("conversation-query-keyword")).toHaveText(
+      "user:",
+    );
     await page.locator(".drawer-search-input").press("Escape");
 
     const visibleIds = () =>
@@ -170,7 +186,10 @@ test.describe("conversation drawer startup and app bar", () => {
     ).toContainText("1");
     await expect(userToken).toHaveCount(0);
     await addUserFilter.click();
-    await expect(page.locator(".drawer-search-input")).toHaveValue("user:");
+    await expect(page.locator(".drawer-search-input")).toHaveValue("");
+    await expect(editableFilter(page, "user").getByTestId("conversation-query-keyword")).toHaveText(
+      "user:",
+    );
     await expect(userPanel).toBeVisible();
     await page.locator(".drawer-title").click();
     await expect(userPanel).toHaveCount(0);
@@ -208,34 +227,58 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect
       .poll(() =>
         editor.evaluate((element) =>
-          Array.from(element.children).map((child) =>
-            child instanceof HTMLInputElement
-              ? `text:${child.value}`
-              : `pill:${child.querySelector(".drawer-filter-token-label")?.textContent}`,
-          ),
+          Array.from(element.children).map((child) => {
+            if (child instanceof HTMLInputElement) return `text:${child.value}`;
+            const keyword = child.querySelector(".conversation-query-filter-keyword");
+            const valueInput = child.querySelector<HTMLInputElement>(
+              ".conversation-query-filter-value-input",
+            );
+            const value = child.querySelector(".conversation-query-filter-value");
+            if (keyword)
+              return `filter:${keyword.textContent?.trim()}${valueInput?.value ?? value?.textContent}`;
+            return `pill:${child.querySelector(".drawer-filter-token-label")?.textContent}`;
+          }),
         ),
       )
-      .toEqual(["text:test", "pill:user:aaa@x.com", "text:", "pill:tag:aaa", "text:big"]);
+      .toEqual(["text:test", "filter:user:aaa@x.com", "text:", "filter:tag:aaa", "text:big"]);
 
-    // Backspace next to a tag/user pill unwraps it in place so its value can
-    // be edited without moving the term to the end of the query.
+    // Backspace next to a tag/user filter replaces only its value region with
+    // an input. The keyword segment is the same DOM node through committed,
+    // editing, and bare states.
+    const tagToken = page.getByTestId("selected-tag-filter");
+    const tagKeyword = tagToken.getByTestId("conversation-query-keyword");
+    await expect(tagKeyword).toHaveText("tag:");
+    await tagKeyword.evaluate((element) => {
+      (window as Window & { __queryKeyword?: Element }).__queryKeyword = element;
+    });
     await activeInput.evaluate((input: HTMLInputElement) => input.setSelectionRange(0, 0));
     await activeInput.press("Backspace");
-    await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
+    await expect(tagToken).toHaveCount(1);
     await expect(page.getByTestId("user-filter-token")).toHaveCount(1);
-    const tagEdit = editor.locator('[data-structured-edit-kind="tag"]');
-    await expect(tagEdit).toHaveValue("tag:aaa");
+    const tagEdit = tagToken.getByTestId("conversation-query-value");
+    await expect(tagEdit).toHaveValue("aaa");
+    expect(
+      await tagKeyword.evaluate(
+        (element) => (window as Window & { __queryKeyword?: Element }).__queryKeyword === element,
+      ),
+    ).toBe(true);
     await expect
       .poll(() => tagEdit.evaluate((input: HTMLInputElement) => input.selectionStart))
-      .toBe("tag:aaa".length);
+      .toBe("aaa".length);
     await expect(activeInput).toHaveValue("big");
     await tagEdit.press("Backspace");
     await tagEdit.press("Backspace");
     await tagEdit.press("Backspace");
-    await expect(tagEdit).toHaveValue("tag:");
+    await expect(tagEdit).toHaveValue("");
+    await expect(tagKeyword).toHaveText("tag:");
+    expect(
+      await tagKeyword.evaluate(
+        (element) => (window as Window & { __queryKeyword?: Element }).__queryKeyword === element,
+      ),
+    ).toBe(true);
     await tagEdit.press("Backspace");
     await expect(tagEdit).toHaveCount(0);
-    await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
+    await expect(tagToken).toHaveCount(0);
     await expect(activeInput).toHaveValue("big");
 
     // Delete is symmetric, placing the caret at the start. A bare modifier
@@ -249,17 +292,19 @@ test.describe("conversation drawer startup and app bar", () => {
       input.setSelectionRange(input.value.length, input.value.length);
     });
     await page.keyboard.press("Delete");
-    await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
-    const forwardTagEdit = editor.locator('[data-structured-edit-kind="tag"]');
-    await expect(forwardTagEdit).toHaveValue("tag:aaa");
+    await expect(page.getByTestId("selected-tag-filter")).toHaveCount(1);
+    const forwardTagEdit = page
+      .getByTestId("selected-tag-filter")
+      .getByTestId("conversation-query-value");
+    await expect(forwardTagEdit).toHaveValue("aaa");
     await expect
       .poll(() => forwardTagEdit.evaluate((input: HTMLInputElement) => input.selectionStart))
       .toBe(0);
     await forwardTagEdit.evaluate((input: HTMLInputElement) => {
-      input.setSelectionRange("tag:".length, input.value.length);
+      input.setSelectionRange(0, input.value.length);
     });
     await page.keyboard.press("Delete");
-    await expect(forwardTagEdit).toHaveValue("tag:");
+    await expect(forwardTagEdit).toHaveValue("");
     await page.keyboard.press("Delete");
     await expect(forwardTagEdit).toHaveCount(0);
     await expect(activeInput).toHaveValue("left right");
@@ -269,9 +314,11 @@ test.describe("conversation drawer startup and app bar", () => {
     await activeInput.fill("left tag:alpha right");
     await activeInput.evaluate((input: HTMLInputElement) => input.setSelectionRange(0, 0));
     await activeInput.press("Backspace");
-    const middleTagEdit = editor.locator('[data-structured-edit-kind="tag"]');
+    const middleTagEdit = page
+      .getByTestId("selected-tag-filter")
+      .getByTestId("conversation-query-value");
     await middleTagEdit.evaluate((input: HTMLInputElement) => {
-      input.setSelectionRange("tag:".length, input.value.length);
+      input.setSelectionRange(0, input.value.length);
     });
     await page.keyboard.type("alpi");
     const tagPanel = page.getByTestId("tag-filter-panel");
@@ -283,40 +330,72 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect
       .poll(() =>
         editor.evaluate((element) =>
-          Array.from(element.children).map((child) =>
-            child instanceof HTMLInputElement
-              ? `text:${child.value}`
-              : `pill:${child.querySelector(".drawer-filter-token-label")?.textContent}`,
-          ),
+          Array.from(element.children).map((child) => {
+            if (child instanceof HTMLInputElement) return `text:${child.value}`;
+            const keyword = child.querySelector(".conversation-query-filter-keyword");
+            const value = child.querySelector(".conversation-query-filter-value");
+            if (keyword) return `filter:${keyword.textContent?.trim()}${value?.textContent}`;
+            return `pill:${child.querySelector(".drawer-filter-token-label")?.textContent}`;
+          }),
         ),
       )
-      .toEqual(["text:left", "pill:tag:alpine", "text:right"]);
+      .toEqual(["text:left", "filter:tag:alpine", "text:right"]);
 
     // Moving focus away commits a still-valid edited term back to a pill.
     await activeInput.evaluate((input: HTMLInputElement) => input.setSelectionRange(0, 0));
     await activeInput.press("Backspace");
-    const blurTagEdit = editor.locator('[data-structured-edit-kind="tag"]');
+    const blurTagEdit = page
+      .getByTestId("selected-tag-filter")
+      .getByTestId("conversation-query-value");
     await blurTagEdit.press("Backspace");
     await page.getByTestId("conversation-query-text").first().focus();
     await expect(blurTagEdit).toHaveCount(0);
     await expect(page.getByTestId("selected-tag-filter")).toHaveText(/tag:alpin/);
 
-    // A trailing partial stays ordinary editable text. Repeated action clicks
-    // replace that partial rather than accumulating `user: user: tag:`.
+    // A trailing action partial is split immediately, including after free
+    // text. Repeated action clicks replace only the keyword, and bare
+    // Backspace removes the whole modifier rather than one punctuation mark.
     await page.locator(".drawer-search-clear").click();
     const addUser = page.getByRole("button", { name: "Add user filter" });
     const addTag = page.getByRole("button", { name: "Add tag filter" });
+    await activeInput.fill("find");
     await addUser.click();
     await addUser.click();
     await addTag.click();
     await addTag.click();
-    await expect(activeInput).toHaveValue("tag:");
-    await expect(activeInput).toHaveClass(/conversation-query-text-bare-tag/);
+    const trailingTag = editableFilter(page, "tag");
+    const trailingKeyword = trailingTag.getByTestId("conversation-query-keyword");
+    await expect(activeInput).toHaveValue("");
+    await expect(trailingKeyword).toHaveText("tag:");
+    await expect(activeInput).toHaveAttribute("autocapitalize", "none");
+    await expect(page.getByTestId("conversation-query-text").first()).toHaveValue("find");
     await expect(addUser).toHaveText("@ user");
     await expect(addTag).toHaveText("# tag");
     await activeInput.press("Backspace");
-    await expect(activeInput).toHaveValue("");
+    await expect(trailingTag).toHaveCount(0);
+    await expect(activeInput).toHaveValue("find");
     await expect(page.getByTestId("tag-filter-panel")).toHaveCount(0);
+
+    // Typing edits only the value region, keeps the keyword unchanged, and
+    // autocomplete commits the partial in place after the preceding text.
+    await addTag.click();
+    await trailingKeyword.evaluate((element) => {
+      (window as Window & { __trailingKeyword?: Element }).__trailingKeyword = element;
+    });
+    await activeInput.pressSequentially("alpi");
+    await expect(activeInput).toHaveValue("alpi");
+    expect(
+      await trailingKeyword.evaluate(
+        (element) =>
+          (window as Window & { __trailingKeyword?: Element }).__trailingKeyword === element,
+      ),
+    ).toBe(true);
+    const trailingTagPanel = page.getByTestId("tag-filter-panel");
+    await expect(trailingTagPanel.locator('[data-tag="alpine"]')).toBeVisible();
+    await trailingTagPanel.locator('[data-tag="alpine"]').click();
+    await expect(activeInput).toHaveValue("");
+    await expect(page.getByTestId("selected-tag-filter")).toHaveText(/tag:alpine/);
+    await expect(page.getByTestId("conversation-query-text").first()).toHaveValue("find");
 
     // Narrow fields wrap downward. Neither the bordered editor nor the drawer
     // gains horizontal overflow, and the action buttons remain underneath.
@@ -594,6 +673,22 @@ test.describe("mobile drawer swipe", () => {
 
     await swipe(page, ".backdrop", { x: 380, y: 300 }, { x: 328, y: 304 });
     await expect(drawer).not.toHaveClass(/open/);
+  });
+
+  test("keeps structured filter values lowercase-ready", async ({ page }) => {
+    await stubConversationList(page, [conversation("first")]);
+    await page.goto("/new");
+
+    await swipe(page, ".main-content", { x: 180, y: 300 }, { x: 256, y: 304 });
+    await page.getByRole("button", { name: "Search conversations..." }).click();
+    await page.getByRole("button", { name: "Add tag filter" }).click();
+
+    const tagFilter = editableFilter(page, "tag");
+    await expect(tagFilter.getByTestId("conversation-query-keyword")).toHaveText("tag:");
+    await expect(tagFilter.getByTestId("conversation-query-value")).toHaveAttribute(
+      "autocapitalize",
+      "none",
+    );
   });
 
   test("leaves the system edge, short movement, and vertical scrolling alone", async ({ page }) => {

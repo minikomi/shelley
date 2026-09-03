@@ -57,6 +57,10 @@ const option = (page: Page, tag: string) =>
 const searchBox = (page: Page) => page.locator(".drawer-search-input");
 const selectedTag = (page: Page, tag: string) =>
   page.getByTestId("selected-tag-filter").filter({ hasText: `tag:${tag}` });
+const editableTag = (page: Page) =>
+  page
+    .getByTestId("selected-tag-filter")
+    .filter({ has: page.locator('input[data-structured-edit-kind="tag"]') });
 
 async function openSearch(page: Page) {
   if ((await searchBox(page).count()) === 0) {
@@ -100,14 +104,15 @@ test.describe("Tag filter", () => {
     // No dropdown until the `tag:` cue is typed.
     await expect(panel(page)).toHaveCount(0);
     await page.getByRole("button", { name: "Add tag filter" }).click();
-    await expect(search).toHaveValue("tag:");
+    await expect(search).toHaveValue("");
+    await expect(editableTag(page).getByTestId("conversation-query-keyword")).toHaveText("tag:");
     await expect(panel(page)).toBeVisible();
     // Counts are the size of the result set each tag would produce.
     await expect(option(page, "tf-shared")).toContainText("2");
     await expect(option(page, "tf-alpha")).toContainText("1");
 
     // Typing after the prefix narrows the dropdown by substring...
-    await search.fill("tag:sha");
+    await search.fill("sha");
     await expect(option(page, "tf-shared")).toBeVisible();
     await expect(option(page, "tf-alpha")).toHaveCount(0);
 
@@ -174,7 +179,8 @@ test.describe("Tag filter", () => {
     await expect(panel(page)).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(panel(page)).toHaveCount(0);
-    await expect(search).toHaveValue("tag:");
+    await expect(search).toHaveValue("");
+    await expect(editableTag(page).getByTestId("conversation-query-keyword")).toHaveText("tag:");
     // ...and the dropdown does not spring back until the term changes.
     await expect(panel(page)).toHaveCount(0);
 
@@ -182,6 +188,7 @@ test.describe("Tag filter", () => {
     // while retaining the committed pill.
     await page.keyboard.press("Escape");
     await expect(search).toHaveValue("");
+    await expect(page.locator('[data-structured-edit-kind="tag"]')).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(searchBox(page)).toHaveCount(0);
   });

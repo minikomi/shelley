@@ -14,32 +14,75 @@
           { 'drawer-search-input': view.primary },
           { 'conversation-query-text-primary': view.primary },
           { 'conversation-query-text-collapsed': view.collapsed },
-          { 'conversation-query-text-bare-modifier': view.bareModifierKind },
-          { 'conversation-query-text-bare-tag': view.bareModifierKind === 'tag' },
-          { 'conversation-query-text-bare-user': view.bareModifierKind === 'user' },
         ]"
         :style="{ width: view.width }"
         :value="view.display"
         :placeholder="views.length === 1 ? placeholder : ''"
         :aria-label="view.primary ? ariaLabelText : `${ariaLabelText} text segment`"
         data-testid="conversation-query-text"
-        :data-structured-edit-kind="view.editingKind"
         autocomplete="off"
         autocapitalize="none"
         spellcheck="false"
         @input="updateText(view, $event)"
         @keydown="onTextKeyDown(view, $event)"
-        @blur="onTextBlur(view)"
       />
+      <span
+        v-else-if="view.kind === 'tag' || view.kind === 'user'"
+        :class="[
+          'drawer-filter-token',
+          'conversation-query-filter',
+          `drawer-filter-token-${view.kind}`,
+          { 'drawer-filter-token-participant': view.kind === 'user' },
+          { 'drawer-filter-token-tag': view.kind === 'tag' },
+          { 'conversation-query-filter-primary': view.primary },
+        ]"
+        :data-testid="view.testId"
+        :data-query-token-start="view.start"
+      >
+        <span
+          class="conversation-query-filter-keyword"
+          data-testid="conversation-query-keyword"
+          @mousedown="onKeywordMouseDown(view, $event)"
+        >
+          {{ view.keyword }}
+        </span>
+        <input
+          v-if="view.editable"
+          :ref="(element) => setInputRef(view.index, element)"
+          type="text"
+          :class="[
+            'conversation-query-filter-value-input',
+            { 'drawer-search-input': view.primary },
+          ]"
+          :style="{ width: view.width }"
+          :value="view.value"
+          :aria-label="view.primary ? ariaLabelText : `${view.keyword} filter value`"
+          data-testid="conversation-query-value"
+          :data-structured-edit-kind="view.kind"
+          autocomplete="off"
+          autocapitalize="none"
+          spellcheck="false"
+          @focus="onStructuredFocus(view)"
+          @input="updateStructuredValue(view, $event)"
+          @keydown="onStructuredKeyDown(view, $event)"
+          @blur="onStructuredBlur(view)"
+        />
+        <span v-else class="conversation-query-filter-value">{{ view.value }}</span>
+        <button
+          type="button"
+          :aria-label="`Remove ${view.label} filter`"
+          @mousedown.prevent
+          @click.stop="removeStructuredView(view)"
+        >
+          ×
+        </button>
+      </span>
       <span
         v-else
         :class="[
           'drawer-filter-token',
           `drawer-filter-token-${view.kind}`,
-          { 'drawer-filter-token-participant': view.kind === 'user' },
-          {
-            'drawer-filter-token-tag': view.kind === 'tag' || view.kind === 'untagged',
-          },
+          { 'drawer-filter-token-tag': view.kind === 'untagged' },
           { 'drawer-filter-token-unattributed': view.kind === 'unattributed' },
         ]"
         :data-testid="view.testId"
@@ -49,7 +92,7 @@
         <button
           type="button"
           :aria-label="`Remove ${view.label} filter`"
-          @click="removeToken(view.start)"
+          @click="removeTerm(view.start, view.end)"
         >
           ×
         </button>
@@ -59,22 +102,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUpdate, ref } from "vue";
+import { computed, nextTick, onBeforeUpdate, ref, watch } from "vue";
 import {
   activeStructuredQueryEdit,
   bareStructuredModifierAtCaret,
-  isBareStructuredQueryEdit,
   removeConversationQueryTerm,
-  removeConversationQueryToken,
   replaceStructuredQueryEdit,
   scanConversationQuery,
   tokenizeConversationQuery,
   type ActiveStructuredQueryEdit,
-  type ConversationQueryToken,
   type EditableStructuredQueryKind,
   type QueryTextToken,
   type StructuredQueryEdit,
   type StructuredQueryKind,
+  type StructuredQueryToken,
 } from "../../utils/conversationQuery";
 
 const props = defineProps<{
@@ -103,12 +144,27 @@ interface TextView {
   primary: boolean;
   collapsed: boolean;
   width: string;
-  editingKind?: EditableStructuredQueryKind;
-  bareModifierKind?: EditableStructuredQueryKind;
 }
 
-interface StructuredView {
-  kind: StructuredQueryKind;
+interface FilterView {
+  kind: EditableStructuredQueryKind;
+  key: string;
+  index: number;
+  start: number;
+  end: number;
+  keyword: string;
+  value: string;
+  label: string;
+  testId: string;
+  editable: boolean;
+  activeEdit: boolean;
+  trailingPartial: boolean;
+  primary: boolean;
+  width: string;
+}
+
+interface StateView {
+  kind: Exclude<StructuredQueryKind, EditableStructuredQueryKind>;
   key: string;
   index: number;
   start: number;
@@ -117,17 +173,21 @@ interface StructuredView {
   testId: string;
 }
 
-type EditorView = TextView | StructuredView;
+type EditorView = TextView | FilterView | StateView;
 
-interface EditingTextToken extends QueryTextToken {
-  editingKind: EditableStructuredQueryKind;
+interface ViewStructuredToken {
+  kind: StructuredQueryKind;
+  raw: string;
+  start: number;
+  end: number;
+  label: string;
+  value: string;
+  editable: boolean;
+  activeEdit: boolean;
+  trailingPartial: boolean;
 }
 
-interface BareModifierTextToken extends QueryTextToken {
-  bareModifierKind: EditableStructuredQueryKind;
-}
-
-type ViewToken = ConversationQueryToken | EditingTextToken | BareModifierTextToken;
+type ViewToken = QueryTextToken | ViewStructuredToken;
 
 const editingTerm = ref<StructuredQueryEdit | null>(null);
 let restoringEditingCaret = false;
@@ -158,120 +218,155 @@ function splitTextToken(
   };
 }
 
-function offsetToken(token: ConversationQueryToken, offset: number): ConversationQueryToken {
-  return { ...token, start: token.start + offset, end: token.end + offset };
+function editableKind(raw: string): EditableStructuredQueryKind | null {
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("tag:")) return "tag";
+  if (lower.startsWith("user:")) return "user";
+  return null;
+}
+
+function keywordForKind(kind: EditableStructuredQueryKind): string {
+  return `${kind}:`;
+}
+
+function isValidEdit(edit: StructuredQueryEdit | null): edit is StructuredQueryEdit {
+  if (
+    edit === null ||
+    edit.start < 0 ||
+    edit.end < edit.start ||
+    edit.end > props.modelValue.length
+  ) {
+    return false;
+  }
+  const keyword = keywordForKind(edit.kind);
+  return props.modelValue.slice(edit.start, edit.start + keyword.length).toLowerCase() === keyword;
 }
 
 function viewTokens(): ViewToken[] {
+  const raw = props.modelValue;
   const edit = editingTerm.value;
-  if (!edit || edit.start < 0 || edit.end < edit.start || edit.end > props.modelValue.length) {
-    const tokens: ViewToken[] = tokenizeConversationQuery(props.modelValue);
-    const scanned = scanConversationQuery(props.modelValue);
-    const term = scanned.endsMidTerm ? scanned.terms[scanned.terms.length - 1] : undefined;
-    const lower = term?.raw.toLowerCase();
-    const kind: EditableStructuredQueryKind | null =
-      lower === "tag:" ? "tag" : lower === "user:" ? "user" : null;
-    if (!term || !kind) return tokens;
-    const index = tokens.findIndex(
-      (token) => token.kind === "text" && term.start >= token.start && term.end <= token.end,
-    );
-    if (index < 0) return tokens;
-    const token = tokens[index] as QueryTextToken;
-    return [
-      ...tokens.slice(0, index),
-      {
-        kind: "text",
-        raw: props.modelValue.slice(token.start, term.start),
-        start: token.start,
-        end: term.start,
-      },
-      {
-        kind: "text",
-        raw: term.raw,
-        start: term.start,
-        end: term.end,
-        bareModifierKind: kind,
-      },
-      ...tokens.slice(index + 1),
-    ];
+  const validEdit = isValidEdit(edit) ? edit : null;
+  const structured: ViewStructuredToken[] = tokenizeConversationQuery(raw)
+    .filter((token): token is StructuredQueryToken => token.kind !== "text")
+    .filter((token) => !validEdit || token.end <= validEdit.start || token.start >= validEdit.end)
+    .map((token) => ({
+      ...token,
+      editable: false,
+      activeEdit: false,
+      trailingPartial: false,
+    }));
+
+  const scanned = scanConversationQuery(raw);
+  scanned.terms.forEach((term, index) => {
+    if (validEdit && term.start < validEdit.end && term.end > validEdit.start) {
+      return;
+    }
+    const kind = editableKind(term.raw);
+    if (!kind) return;
+    const bare = term.raw.toLowerCase() === keywordForKind(kind);
+    const trailingPartial = scanned.endsMidTerm && index === scanned.terms.length - 1;
+    if (!bare && !trailingPartial) return;
+    if (structured.some((token) => token.start === term.start)) return;
+    structured.push({
+      kind,
+      raw: term.raw,
+      start: term.start,
+      end: term.end,
+      label: `${keywordForKind(kind)}${term.raw.slice(keywordForKind(kind).length)}`,
+      value: term.raw.slice(keywordForKind(kind).length),
+      editable: true,
+      activeEdit: false,
+      trailingPartial,
+    });
+  });
+
+  if (validEdit) {
+    const rawTerm = raw.slice(validEdit.start, validEdit.end);
+    const keyword = keywordForKind(validEdit.kind);
+    structured.push({
+      kind: validEdit.kind,
+      raw: rawTerm,
+      start: validEdit.start,
+      end: validEdit.end,
+      label: `${keyword}${rawTerm.slice(keyword.length)}`,
+      value: rawTerm.slice(keyword.length),
+      editable: true,
+      activeEdit: true,
+      trailingPartial: false,
+    });
   }
-  return [
-    ...tokenizeConversationQuery(props.modelValue.slice(0, edit.start)),
-    {
+
+  structured.sort((left, right) => left.start - right.start);
+  const tokens: ViewToken[] = [];
+  let textStart = 0;
+  for (const token of structured) {
+    if (token.start < textStart) continue;
+    tokens.push({
       kind: "text",
-      raw: props.modelValue.slice(edit.start, edit.end),
-      start: edit.start,
-      end: edit.end,
-      editingKind: edit.kind,
-    },
-    ...tokenizeConversationQuery(props.modelValue.slice(edit.end)).map((token) =>
-      offsetToken(token, edit.end),
-    ),
-  ];
+      raw: raw.slice(textStart, token.start),
+      start: textStart,
+      end: token.start,
+    });
+    tokens.push(token);
+    textStart = token.end;
+  }
+  tokens.push({
+    kind: "text",
+    raw: raw.slice(textStart),
+    start: textStart,
+    end: raw.length,
+  });
+  return tokens;
 }
 
 function isStructuredBoundary(token: ViewToken | undefined): boolean {
-  return token !== undefined && (token.kind !== "text" || "editingKind" in token);
+  return token !== undefined && token.kind !== "text";
 }
 
 const views = computed<EditorView[]>(() => {
   const tokens = viewTokens();
+  const trailingPartialIndex = tokens.findIndex(
+    (token) => token.kind !== "text" && token.trailingPartial,
+  );
   let primaryIndex = -1;
-  for (let index = tokens.length - 1; index >= 0; index -= 1) {
-    if (tokens[index].kind === "text" && !("editingKind" in tokens[index])) {
-      primaryIndex = index;
-      break;
+  if (trailingPartialIndex < 0) {
+    for (let index = tokens.length - 1; index >= 0; index -= 1) {
+      if (tokens[index].kind === "text") {
+        primaryIndex = index;
+        break;
+      }
     }
   }
   return tokens.map((token, index) => {
     if (token.kind !== "text") {
+      if (token.kind === "tag" || token.kind === "user") {
+        const keyword = keywordForKind(token.kind);
+        const value = token.editable ? token.raw.slice(keyword.length) : token.value;
+        return {
+          kind: token.kind,
+          key: `filter:${token.start}:${token.kind}`,
+          index,
+          start: token.start,
+          end: token.end,
+          keyword,
+          value,
+          label: token.editable ? `${keyword}${value}` : token.label,
+          testId: tokenTestId(token.kind),
+          editable: token.editable,
+          activeEdit: token.activeEdit,
+          trailingPartial: token.trailingPartial,
+          primary: index === trailingPartialIndex,
+          width: `${Math.max(value.length + 0.75, 0.75)}ch`,
+        };
+      }
       return {
         kind: token.kind,
-        key: `structured:${token.start}:${token.raw}`,
+        key: `state:${token.start}:${token.kind}`,
         index,
         start: token.start,
         end: token.end,
         label: token.label,
         testId: tokenTestId(token.kind),
-      };
-    }
-    if ("editingKind" in token) {
-      const bareModifierKind =
-        token.raw.toLowerCase() === `${token.editingKind}:` ? token.editingKind : undefined;
-      return {
-        kind: "text",
-        key: `editing:${token.start}`,
-        index,
-        start: token.start,
-        end: token.end,
-        display: token.raw,
-        leading: "",
-        trailing: "",
-        previousStructured: false,
-        nextStructured: false,
-        primary: false,
-        collapsed: false,
-        width: `${Math.max(token.raw.length + (bareModifierKind ? 2 : 0.75), 0.75)}ch`,
-        editingKind: token.editingKind,
-        bareModifierKind,
-      };
-    }
-    if ("bareModifierKind" in token) {
-      return {
-        kind: "text",
-        key: `bare:${token.start}`,
-        index,
-        start: token.start,
-        end: token.end,
-        display: token.raw,
-        leading: "",
-        trailing: "",
-        previousStructured: false,
-        nextStructured: false,
-        primary: index === primaryIndex,
-        collapsed: false,
-        width: `${token.raw.length + 2}ch`,
-        bareModifierKind: token.bareModifierKind,
       };
     }
     const previousStructured = isStructuredBoundary(tokens[index - 1]);
@@ -318,33 +413,6 @@ function rebuildText(
 
 function updateText(view: TextView, event: Event) {
   const input = event.target as HTMLInputElement;
-  if (view.editingKind) {
-    const edit = editingTerm.value;
-    if (!edit || edit.start !== view.start || edit.end !== view.end) return;
-    const query =
-      props.modelValue.slice(0, edit.start) + input.value + props.modelValue.slice(edit.end);
-    const nextEdit = { kind: edit.kind, start: edit.start, end: edit.start + input.value.length };
-    const displayCaret = input.selectionStart ?? input.value.length;
-    editingTerm.value = nextEdit;
-    restoringEditingCaret = true;
-    emit("update:modelValue", query);
-    emit("structured-edit-change", activeStructuredQueryEdit(query, nextEdit));
-    void nextTick(() => {
-      const target = views.value.find(
-        (candidate): candidate is TextView =>
-          candidate.kind === "text" &&
-          candidate.editingKind !== undefined &&
-          candidate.start === nextEdit.start,
-      );
-      const element = target ? inputRefs.get(target.index) : undefined;
-      if (element) {
-        element.focus();
-        element.setSelectionRange(displayCaret, displayCaret);
-      }
-      restoringEditingCaret = false;
-    });
-    return;
-  }
   const rebuilt = rebuildText(view, input.value);
   const query =
     props.modelValue.slice(0, view.start) + rebuilt.raw + props.modelValue.slice(view.end);
@@ -353,44 +421,79 @@ function updateText(view: TextView, event: Event) {
   restoreCaret(rawCaret);
 }
 
-function restoreCaret(rawOffset: number) {
+function updateStructuredValue(view: FilterView, event: Event) {
+  const input = event.target as HTMLInputElement;
+  const keywordLength = view.keyword.length;
+  const rawKeyword = props.modelValue.slice(view.start, view.start + keywordLength);
+  const replacement = rawKeyword + input.value;
+  const query =
+    props.modelValue.slice(0, view.start) + replacement + props.modelValue.slice(view.end);
+  const valueCaret = input.selectionStart ?? input.value.length;
+  const rawCaret = view.start + keywordLength + valueCaret;
+  const edit = editingTerm.value;
+  if (edit && edit.start === view.start && edit.kind === view.kind) {
+    const nextEdit = {
+      kind: edit.kind,
+      start: edit.start,
+      end: edit.start + replacement.length,
+    };
+    editingTerm.value = nextEdit;
+    emit("structured-edit-change", activeStructuredQueryEdit(query, nextEdit));
+  }
+  restoringEditingCaret = true;
+  emit("update:modelValue", query);
   void nextTick(() => {
-    const textViews = views.value.filter((view): view is TextView => view.kind === "text");
-    let target = textViews.find(
-      (view) => view.editingKind && rawOffset >= view.start && rawOffset <= view.end,
-    );
-    target ??=
-      textViews.find((view) => rawOffset >= view.start && rawOffset <= view.end) ??
-      textViews[textViews.length - 1];
-    if (!target) return;
-
-    // At a shared boundary, prefer the segment after a pill.
-    const following = textViews.find((view) => view.start === rawOffset && view.previousStructured);
-    if (following) target = following;
-
-    const input = inputRefs.get(target.index);
-    if (!input) return;
-    const displayOffset = Math.max(
-      0,
-      Math.min(target.display.length, rawOffset - target.start - target.leading.length),
-    );
-    input.focus();
-    input.setSelectionRange(displayOffset, displayOffset);
+    focusRawOffset(rawCaret);
+    restoringEditingCaret = false;
   });
 }
 
-function focusText(index: number, atEnd: boolean) {
+function focusRawOffset(rawOffset: number) {
+  const inputViews = views.value.filter(
+    (view): view is TextView | FilterView =>
+      view.kind === "text" || ((view.kind === "tag" || view.kind === "user") && view.editable),
+  );
+  let target = inputViews.find(
+    (view) =>
+      view.kind !== "text" && view.editable && rawOffset >= view.start && rawOffset <= view.end,
+  );
+  target ??=
+    inputViews.find((view) => rawOffset >= view.start && rawOffset <= view.end) ??
+    inputViews[inputViews.length - 1];
+  if (!target) return;
+
+  // At a shared boundary, prefer the text segment after a filter.
+  const following = inputViews.find(
+    (view) => view.kind === "text" && view.start === rawOffset && view.previousStructured,
+  );
+  if (following && target.kind === "text") target = following;
+
+  const input = inputRefs.get(target.index);
+  if (!input) return;
+  const displayOffset =
+    target.kind === "text"
+      ? Math.max(
+          0,
+          Math.min(target.display.length, rawOffset - target.start - target.leading.length),
+        )
+      : Math.max(
+          0,
+          Math.min(target.value.length, rawOffset - target.start - target.keyword.length),
+        );
+  input.focus();
+  input.setSelectionRange(displayOffset, displayOffset);
+}
+
+function restoreCaret(rawOffset: number) {
+  void nextTick(() => focusRawOffset(rawOffset));
+}
+
+function focusInput(index: number, atEnd: boolean) {
   const input = inputRefs.get(index);
   if (!input) return;
   const offset = atEnd ? input.value.length : 0;
   input.focus();
   input.setSelectionRange(offset, offset);
-}
-
-function removeToken(start: number) {
-  const removed = removeConversationQueryToken(props.modelValue, start);
-  emit("update:modelValue", removed.query);
-  restoreCaret(removed.caret);
 }
 
 function finishStructuredEdit() {
@@ -400,34 +503,43 @@ function finishStructuredEdit() {
 }
 
 function removeTerm(start: number, end: number) {
-  const edit = editingTerm.value;
-  if (edit && start <= edit.end && end >= edit.start) finishStructuredEdit();
+  finishStructuredEdit();
   const removed = removeConversationQueryTerm(props.modelValue, start, end);
   emit("update:modelValue", removed.query);
   restoreCaret(removed.caret);
 }
 
-function startEditingToken(view: StructuredView, atEnd: boolean) {
+function removeStructuredView(view: FilterView) {
+  removeTerm(view.start, view.end);
+}
+
+function startEditingToken(view: FilterView | StateView, atEnd: boolean) {
   if (view.kind !== "tag" && view.kind !== "user") {
-    removeToken(view.start);
+    removeTerm(view.start, view.end);
     return;
   }
-  const edit = { kind: view.kind, start: view.start, end: view.end };
-  editingTerm.value = edit;
-  emit("structured-edit-change", activeStructuredQueryEdit(props.modelValue, edit));
+  if (!view.editable) {
+    const edit = { kind: view.kind, start: view.start, end: view.end };
+    editingTerm.value = edit;
+    emit("structured-edit-change", activeStructuredQueryEdit(props.modelValue, edit));
+  }
   void nextTick(() => {
     const target = views.value.find(
-      (candidate): candidate is TextView =>
-        candidate.kind === "text" &&
-        candidate.editingKind !== undefined &&
-        candidate.start === edit.start,
+      (candidate): candidate is FilterView =>
+        (candidate.kind === "tag" || candidate.kind === "user") &&
+        candidate.editable &&
+        candidate.start === view.start,
     );
-    if (target) focusText(target.index, atEnd);
+    if (target) focusInput(target.index, atEnd);
   });
 }
 
 function rawDisplayOffset(view: TextView, displayOffset: number): number {
   return view.start + view.leading.length + displayOffset;
+}
+
+function isEditableFilter(view: EditorView | undefined): view is FilterView {
+  return view !== undefined && (view.kind === "tag" || view.kind === "user") && view.editable;
 }
 
 function onTextKeyDown(view: TextView, event: KeyboardEvent) {
@@ -439,17 +551,6 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
   const beforeIsBoundary = input.value.slice(0, start).trim() === "";
   const afterIsBoundary = input.value.slice(end).trim() === "";
 
-  if (
-    start === end &&
-    view.editingKind &&
-    editingTerm.value &&
-    isBareStructuredQueryEdit(props.modelValue, editingTerm.value) &&
-    (event.key === "Backspace" || event.key === "Delete")
-  ) {
-    event.preventDefault();
-    removeTerm(editingTerm.value.start, editingTerm.value.end);
-    return;
-  }
   if (start === end && (event.key === "Backspace" || event.key === "Delete")) {
     const direction = event.key === "Backspace" ? "backward" : "forward";
     const modifier = bareStructuredModifierAtCaret(
@@ -485,25 +586,6 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
     startEditingToken(next, false);
     return;
   }
-  if (view.editingKind && event.key === "ArrowLeft" && start === end && start === 0) {
-    event.preventDefault();
-    const rawOffset = view.start;
-    finishStructuredEdit();
-    restoreCaret(rawOffset);
-    return;
-  }
-  if (
-    view.editingKind &&
-    event.key === "ArrowRight" &&
-    start === end &&
-    end === input.value.length
-  ) {
-    event.preventDefault();
-    const rawOffset = view.end;
-    finishStructuredEdit();
-    restoreCaret(rawOffset);
-    return;
-  }
   if (
     event.key === "ArrowLeft" &&
     start === end &&
@@ -512,7 +594,7 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
     previous.kind !== "text"
   ) {
     event.preventDefault();
-    focusText(view.index - 2, true);
+    focusInput(isEditableFilter(previous) ? view.index - 1 : view.index - 2, true);
     return;
   }
   if (
@@ -523,26 +605,77 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
     next.kind !== "text"
   ) {
     event.preventDefault();
-    focusText(view.index + 2, false);
+    focusInput(isEditableFilter(next) ? view.index + 1 : view.index + 2, false);
     return;
   }
   emit("keydown", event);
 }
 
-function onTextBlur(view: TextView) {
-  if (!view.editingKind) return;
-  if (restoringEditingCaret) return;
+function onStructuredFocus(view: FilterView) {
+  if (view.activeEdit || view.trailingPartial) return;
+  const edit = { kind: view.kind, start: view.start, end: view.end };
+  editingTerm.value = edit;
+  emit("structured-edit-change", activeStructuredQueryEdit(props.modelValue, edit));
+}
+
+function onKeywordMouseDown(view: FilterView, event: MouseEvent) {
+  if (!view.editable) return;
+  event.preventDefault();
+  focusInput(view.index, true);
+}
+
+function onStructuredKeyDown(view: FilterView, event: KeyboardEvent) {
+  const input = event.currentTarget as HTMLInputElement;
+  const start = input.selectionStart ?? 0;
+  const end = input.selectionEnd ?? start;
+  if (start === end && view.value === "" && (event.key === "Backspace" || event.key === "Delete")) {
+    event.preventDefault();
+    removeTerm(view.start, view.end);
+    return;
+  }
+  if (event.key === "ArrowLeft" && start === end && start === 0) {
+    event.preventDefault();
+    finishStructuredEdit();
+    void nextTick(() => focusInput(view.index - 1, true));
+    return;
+  }
+  if (
+    event.key === "ArrowRight" &&
+    start === end &&
+    end === input.value.length &&
+    view.end < props.modelValue.length
+  ) {
+    event.preventDefault();
+    finishStructuredEdit();
+    void nextTick(() => focusInput(view.index + 1, false));
+    return;
+  }
+  emit("keydown", event);
+}
+
+function onStructuredBlur(view: FilterView) {
+  const ownsEdit = (edit: StructuredQueryEdit | null) =>
+    edit?.kind === view.kind && edit.start === view.start;
+  if (!ownsEdit(editingTerm.value) || restoringEditingCaret) return;
   void nextTick(() => {
+    if (!ownsEdit(editingTerm.value)) return;
     const current = views.value.find(
-      (candidate): candidate is TextView =>
-        candidate.kind === "text" &&
-        candidate.editingKind !== undefined &&
+      (candidate): candidate is FilterView =>
+        (candidate.kind === "tag" || candidate.kind === "user") &&
+        candidate.editable &&
         candidate.start === view.start,
     );
     if (current && document.activeElement === inputRefs.get(current.index)) return;
     finishStructuredEdit();
   });
 }
+
+watch(
+  () => props.modelValue,
+  () => {
+    if (editingTerm.value && !isValidEdit(editingTerm.value)) finishStructuredEdit();
+  },
+);
 
 function completeStructuredTerm(term: string): boolean {
   const edit = editingTerm.value;
@@ -555,8 +688,20 @@ function completeStructuredTerm(term: string): boolean {
 }
 
 function focusEnd() {
-  const target = [...views.value].reverse().find((view): view is TextView => view.kind === "text");
-  if (target) focusText(target.index, true);
+  const target =
+    views.value.find(
+      (view): view is TextView | FilterView =>
+        (view.kind === "text" ||
+          ((view.kind === "tag" || view.kind === "user") && view.editable)) &&
+        view.primary,
+    ) ??
+    [...views.value]
+      .reverse()
+      .find(
+        (view): view is TextView | FilterView =>
+          view.kind === "text" || ((view.kind === "tag" || view.kind === "user") && view.editable),
+      );
+  if (target) focusInput(target.index, true);
 }
 
 function focusEditorBackground(event: MouseEvent) {
