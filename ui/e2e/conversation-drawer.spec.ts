@@ -183,14 +183,14 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(userToken).toHaveCount(0);
   });
 
-  test("tokenized search interleaves text, removes pills atomically, and wraps", async ({
-    page,
-  }) => {
+  test("tokenized search edits pills in place and wraps", async ({ page }) => {
     await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
-    await stubConversationList(page, [
-      conversation("mine", false, ["me@example.com", "other@example.com"]),
-      conversation("other", false, ["other@example.com"]),
-    ]);
+    const mine = conversation("mine", false, ["me@example.com", "other@example.com"]);
+    const other = conversation("other", false, ["other@example.com"]);
+    const alpine = conversation("alpine", false, ["third@example.com"]);
+    mine.tags = JSON.stringify(["alpha"]);
+    alpine.tags = JSON.stringify(["alpine"]);
+    await stubConversationList(page, [mine, other, alpine]);
 
     await page.goto("/new");
     await page.getByRole("button", { name: "Search conversations..." }).click();
@@ -213,15 +213,30 @@ test.describe("conversation drawer startup and app bar", () => {
       )
       .toEqual(["text:test", "pill:user:aaa@x.com", "text:", "pill:tag:aaa", "text:big"]);
 
-    // At the start of the text after a pill, one Backspace removes the whole
-    // pill rather than exposing/deleting its query syntax character by character.
+    // Backspace next to a tag/user pill unwraps it in place so its value can
+    // be edited without moving the term to the end of the query.
     await activeInput.evaluate((input: HTMLInputElement) => input.setSelectionRange(0, 0));
     await activeInput.press("Backspace");
     await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
     await expect(page.getByTestId("user-filter-token")).toHaveCount(1);
+    const tagEdit = editor.locator('[data-structured-edit-kind="tag"]');
+    await expect(tagEdit).toHaveValue("tag:aaa");
+    await expect
+      .poll(() => tagEdit.evaluate((input: HTMLInputElement) => input.selectionStart))
+      .toBe("tag:aaa".length);
+    await expect(activeInput).toHaveValue("big");
+    await tagEdit.press("Backspace");
+    await tagEdit.press("Backspace");
+    await tagEdit.press("Backspace");
+    await expect(tagEdit).toHaveValue("tag:");
+    await tagEdit.press("Backspace");
+    await expect(tagEdit).toHaveCount(0);
+    await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
     await expect(activeInput).toHaveValue("big");
 
-    // Delete at the end of the text before a pill is the symmetric operation.
+    // Delete is symmetric, placing the caret at the start. A bare modifier
+    // is also removed in one keypress rather than one punctuation character
+    // at a time.
     await page.locator(".drawer-search-clear").click();
     await activeInput.fill("left tag:aaa right");
     const firstText = page.getByTestId("conversation-query-text").first();
@@ -231,7 +246,56 @@ test.describe("conversation drawer startup and app bar", () => {
     });
     await page.keyboard.press("Delete");
     await expect(page.getByTestId("selected-tag-filter")).toHaveCount(0);
+    const forwardTagEdit = editor.locator('[data-structured-edit-kind="tag"]');
+    await expect(forwardTagEdit).toHaveValue("tag:aaa");
+    await expect
+      .poll(() => forwardTagEdit.evaluate((input: HTMLInputElement) => input.selectionStart))
+      .toBe(0);
+    await forwardTagEdit.evaluate((input: HTMLInputElement) => {
+      input.setSelectionRange("tag:".length, input.value.length);
+    });
+    await page.keyboard.press("Delete");
+    await expect(forwardTagEdit).toHaveValue("tag:");
+    await page.keyboard.press("Delete");
+    await expect(forwardTagEdit).toHaveCount(0);
     await expect(activeInput).toHaveValue("left right");
+
+    // Autocomplete follows an unwrapped middle term and replaces that exact
+    // range, preserving both surrounding text segments.
+    await activeInput.fill("left tag:alpha right");
+    await activeInput.evaluate((input: HTMLInputElement) => input.setSelectionRange(0, 0));
+    await activeInput.press("Backspace");
+    const middleTagEdit = editor.locator('[data-structured-edit-kind="tag"]');
+    await middleTagEdit.evaluate((input: HTMLInputElement) => {
+      input.setSelectionRange("tag:".length, input.value.length);
+    });
+    await page.keyboard.type("alpi");
+    const tagPanel = page.getByTestId("tag-filter-panel");
+    await expect(tagPanel).toBeVisible();
+    await expect(tagPanel.locator('[data-tag="alpine"]')).toBeVisible();
+    await expect(tagPanel.locator('[data-tag="alpha"]')).toHaveCount(0);
+    await tagPanel.locator('[data-tag="alpine"]').click();
+    await expect(middleTagEdit).toHaveCount(0);
+    await expect
+      .poll(() =>
+        editor.evaluate((element) =>
+          Array.from(element.children).map((child) =>
+            child instanceof HTMLInputElement
+              ? `text:${child.value}`
+              : `pill:${child.querySelector(".drawer-filter-token-label")?.textContent}`,
+          ),
+        ),
+      )
+      .toEqual(["text:left", "pill:tag:alpine", "text:right"]);
+
+    // Moving focus away commits a still-valid edited term back to a pill.
+    await activeInput.evaluate((input: HTMLInputElement) => input.setSelectionRange(0, 0));
+    await activeInput.press("Backspace");
+    const blurTagEdit = editor.locator('[data-structured-edit-kind="tag"]');
+    await blurTagEdit.press("Backspace");
+    await page.getByTestId("conversation-query-text").first().focus();
+    await expect(blurTagEdit).toHaveCount(0);
+    await expect(page.getByTestId("selected-tag-filter")).toHaveText(/tag:alpin/);
 
     // A trailing partial stays ordinary editable text. Repeated action clicks
     // replace that partial rather than accumulating `user: user: tag:`.
@@ -244,12 +308,11 @@ test.describe("conversation drawer startup and app bar", () => {
     await addTag.click();
     await expect(activeInput).toHaveValue("tag:");
     await activeInput.press("Backspace");
-    await expect(activeInput).toHaveValue("tag");
+    await expect(activeInput).toHaveValue("");
     await expect(page.getByTestId("tag-filter-panel")).toHaveCount(0);
 
     // Narrow fields wrap downward. Neither the bordered editor nor the drawer
     // gains horizontal overflow, and the action buttons remain underneath.
-    await page.locator(".drawer-search-clear").click();
     await page.locator(".drawer").evaluate((element: HTMLElement) => {
       element.style.width = "250px";
     });

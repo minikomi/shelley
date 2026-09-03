@@ -1,5 +1,11 @@
 import {
+  activeStructuredQueryEdit,
+  bareStructuredModifierAtCaret,
+  isBareStructuredQueryEdit,
+  omitStructuredQueryEdit,
   removeConversationQueryToken,
+  removeConversationQueryTerm,
+  replaceStructuredQueryEdit,
   serializeConversationQuery,
   tokenizeConversationQuery,
 } from "./conversationQuery";
@@ -111,6 +117,59 @@ run("atomic removal handles edge pills", () => {
   assert(
     removeConversationQueryToken(last, user.start).query === "text ",
     "trailing pill and separator",
+  );
+});
+
+run("tracks and completes an unwrapped structured term at its lexical range", () => {
+  const raw = "left tag:alpha right user:kept@example.com ";
+  const edit = { kind: "tag" as const, start: 5, end: 14 };
+  assertEqual(
+    activeStructuredQueryEdit(raw, edit),
+    { ...edit, prefix: "alpha" },
+    "active tag prefix",
+  );
+  assert(
+    omitStructuredQueryEdit(raw, edit) === "left  right user:kept@example.com ",
+    "parsing can omit only the active term",
+  );
+  assertEqual(
+    replaceStructuredQueryEdit(raw, edit, "tag:alpine"),
+    {
+      query: "left tag:alpine right user:kept@example.com ",
+      caret: 15,
+    },
+    "completion replaces the exact middle range",
+  );
+  const userEdit = { kind: "user" as const, start: 21, end: 42 };
+  assertEqual(
+    activeStructuredQueryEdit(raw, userEdit),
+    { ...userEdit, prefix: "kept@example.com" },
+    "active user prefix",
+  );
+});
+
+run("recognizes and removes a bare modifier atomically", () => {
+  const raw = "left tag: right";
+  const edit = { kind: "tag" as const, start: 5, end: 9 };
+  assert(isBareStructuredQueryEdit(raw, edit), "bare active modifier");
+  assertEqual(
+    bareStructuredModifierAtCaret(raw, edit.end, "backward"),
+    { raw: "tag:", start: 5, end: 9 },
+    "backward caret finds bare modifier",
+  );
+  assertEqual(
+    bareStructuredModifierAtCaret(raw, edit.start, "forward"),
+    { raw: "tag:", start: 5, end: 9 },
+    "forward caret finds bare modifier",
+  );
+  assertEqual(
+    removeConversationQueryTerm(raw, edit.start, edit.end),
+    { query: "left right", caret: 5 },
+    "bare modifier and one separator are removed",
+  );
+  assert(
+    isBareStructuredQueryEdit("user:", { kind: "user", start: 0, end: 5 }),
+    "bare user modifier",
   );
 });
 

@@ -15,6 +15,17 @@ export interface ScannedConversationQuery {
 }
 
 export type StructuredQueryKind = "tag" | "user" | "untagged" | "unattributed";
+export type EditableStructuredQueryKind = Extract<StructuredQueryKind, "tag" | "user">;
+
+export interface StructuredQueryEdit {
+  kind: EditableStructuredQueryKind;
+  start: number;
+  end: number;
+}
+
+export interface ActiveStructuredQueryEdit extends StructuredQueryEdit {
+  prefix: string | null;
+}
 
 export interface QueryTextToken {
   kind: "text";
@@ -33,6 +44,12 @@ export interface StructuredQueryToken {
 }
 
 export type ConversationQueryToken = QueryTextToken | StructuredQueryToken;
+
+function assertQueryRange(raw: string, start: number, end: number): void {
+  if (start < 0 || end < start || end > raw.length) {
+    throw new Error(`Invalid conversation query range ${start}:${end}`);
+  }
+}
 
 // Finds whitespace-delimited query terms while treating a quoted span as one
 // term. Ranges refer to the original query so editor operations never have to
@@ -154,14 +171,83 @@ export function serializeConversationQuery(tokens: readonly ConversationQueryTok
   return tokens.map((token) => token.raw).join("");
 }
 
+export function activeStructuredQueryEdit(
+  raw: string,
+  edit: StructuredQueryEdit,
+): ActiveStructuredQueryEdit {
+  assertQueryRange(raw, edit.start, edit.end);
+  const term = raw.slice(edit.start, edit.end);
+  const expectedPrefix = edit.kind === "tag" ? TAG_PREFIX : USER_PREFIX;
+  const prefix = term.toLowerCase().startsWith(expectedPrefix)
+    ? edit.kind === "tag"
+      ? decodeTagQueryValue(term.slice(expectedPrefix.length))
+      : term.slice(expectedPrefix.length)
+    : null;
+  return { ...edit, prefix };
+}
+
+export function isBareStructuredQueryEdit(raw: string, edit: StructuredQueryEdit): boolean {
+  assertQueryRange(raw, edit.start, edit.end);
+  const expected = edit.kind === "tag" ? TAG_PREFIX : USER_PREFIX;
+  return raw.slice(edit.start, edit.end).toLowerCase() === expected;
+}
+
+export function omitStructuredQueryEdit(raw: string, edit: StructuredQueryEdit): string {
+  assertQueryRange(raw, edit.start, edit.end);
+  return raw.slice(0, edit.start) + raw.slice(edit.end);
+}
+
+export function replaceStructuredQueryEdit(
+  raw: string,
+  edit: StructuredQueryEdit,
+  term: string,
+): { query: string; caret: number } {
+  assertQueryRange(raw, edit.start, edit.end);
+  return {
+    query: raw.slice(0, edit.start) + term + raw.slice(edit.end),
+    caret: edit.start + term.length,
+  };
+}
+
+export function bareStructuredModifierAtCaret(
+  raw: string,
+  rawOffset: number,
+  direction: "backward" | "forward",
+): QueryTermSpan | null {
+  const expectedOffset = direction === "backward" ? "end" : "start";
+  return (
+    scanConversationQuery(raw).terms.find((term) => {
+      const lower = term.raw.toLowerCase();
+      return (lower === TAG_PREFIX || lower === USER_PREFIX) && term[expectedOffset] === rawOffset;
+    }) ?? null
+  );
+}
+
 export interface RemovedConversationQueryToken {
   query: string;
   caret: number;
 }
 
-// Removes one exact atomic term and one adjoining separator. Prefer the
-// following separator so text before and after the removed pill keep a single
-// natural boundary.
+// Removes one exact term and one adjoining separator. Prefer the following
+// separator so text before and after the removed term keep a single natural
+// boundary.
+export function removeConversationQueryTerm(
+  raw: string,
+  termStart: number,
+  termEnd: number,
+): RemovedConversationQueryToken {
+  assertQueryRange(raw, termStart, termEnd);
+  let start = termStart;
+  let end = termEnd;
+  if (end < raw.length && /\s/.test(raw[end])) {
+    while (end < raw.length && /\s/.test(raw[end])) end += 1;
+  } else {
+    while (start > 0 && /\s/.test(raw[start - 1])) start -= 1;
+  }
+  return { query: raw.slice(0, start) + raw.slice(end), caret: start };
+}
+
+// Removes one exact atomic structured token.
 export function removeConversationQueryToken(
   raw: string,
   tokenStart: number,
@@ -170,15 +256,7 @@ export function removeConversationQueryToken(
     (candidate) => candidate.kind !== "text" && candidate.start === tokenStart,
   );
   if (!token) throw new Error(`No structured query token starts at ${tokenStart}`);
-
-  let start = token.start;
-  let end = token.end;
-  if (end < raw.length && /\s/.test(raw[end])) {
-    while (end < raw.length && /\s/.test(raw[end])) end += 1;
-  } else {
-    while (start > 0 && /\s/.test(raw[start - 1])) start -= 1;
-  }
-  return { query: raw.slice(0, start) + raw.slice(end), caret: start };
+  return removeConversationQueryTerm(raw, token.start, token.end);
 }
 
 // Escape clears editable text/partials while retaining committed pills in

@@ -192,6 +192,7 @@
             :placeholder="t('searchOrTagPlaceholder')"
             :ariaLabelText="t('searchConversations')"
             @keydown="onSearchKeyDown"
+            @structured-edit-change="activeStructuredEdit = $event"
           />
           <button
             v-if="searchQuery.trim()"
@@ -455,7 +456,12 @@ import {
   filterConversationsByParticipantQuery,
   hasOtherParticipant,
 } from "../../utils/conversationParticipantFilter";
-import { clearConversationQueryText } from "../../utils/conversationQuery";
+import {
+  clearConversationQueryText,
+  omitStructuredQueryEdit,
+  removeConversationQueryTerm,
+  type ActiveStructuredQueryEdit,
+} from "../../utils/conversationQuery";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
 import ConversationRow from "./ConversationDrawerRow.vue";
 import ConversationQueryEditor from "./ConversationQueryEditor.vue";
@@ -540,6 +546,7 @@ const loadingArchived = ref(false);
 const searchQuery = ref("");
 const searchOpen = ref(false);
 const queryEditorRef = ref<InstanceType<typeof ConversationQueryEditor> | null>(null);
+const activeStructuredEdit = ref<ActiveStructuredQueryEdit | null>(null);
 const searchResults = ref<ConversationWithState[] | null>(null);
 const searching = ref(false);
 let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -568,12 +575,30 @@ const pendingDeleteRef = ref<HTMLElement | null>(null);
 const groupMenuRef = ref<HTMLElement | null>(null);
 // Tag filter (see utils/tagFilter.ts). The selection is parsed out of the
 // search query, which is the single source of truth.
-const parsedQuery = computed(() => parseSearchQuery(searchQuery.value));
+const parsedQuery = computed(() =>
+  parseSearchQuery(
+    activeStructuredEdit.value
+      ? omitStructuredQueryEdit(searchQuery.value, activeStructuredEdit.value)
+      : searchQuery.value,
+  ),
+);
 const selectedTags = computed(() => parsedQuery.value.tags);
 const selectedUsers = computed(() => parsedQuery.value.users);
 const searchText = computed(() => parsedQuery.value.text);
-const activeTagPrefix = computed(() => parsedQuery.value.activeTagPrefix);
-const activeUserPrefix = computed(() => parsedQuery.value.activeUserPrefix);
+const activeTagPrefix = computed(() =>
+  activeStructuredEdit.value
+    ? activeStructuredEdit.value.kind === "tag"
+      ? activeStructuredEdit.value.prefix
+      : null
+    : parsedQuery.value.activeTagPrefix,
+);
+const activeUserPrefix = computed(() =>
+  activeStructuredEdit.value
+    ? activeStructuredEdit.value.kind === "user"
+      ? activeStructuredEdit.value.prefix
+      : null
+    : parsedQuery.value.activeUserPrefix,
+);
 const currentUserEmail = window.__SHELLEY_INIT__?.user_email;
 const participantUniverse = computed(() => [
   ...props.conversations,
@@ -1018,6 +1043,7 @@ function toggleGroup(groupKey: string) {
 
 function toggleSearch() {
   if (searchOpen.value) {
+    queryEditorRef.value?.finishStructuredEdit();
     searchOpen.value = false;
   } else {
     searchOpen.value = true;
@@ -1026,10 +1052,17 @@ function toggleSearch() {
 }
 
 function clearSearchText() {
-  searchQuery.value = clearConversationQueryText(searchQuery.value);
+  const edit = activeStructuredEdit.value;
+  queryEditorRef.value?.finishStructuredEdit();
+  const query = edit
+    ? removeConversationQueryTerm(searchQuery.value, edit.start, edit.end).query
+    : searchQuery.value;
+  searchQuery.value = clearConversationQueryText(query);
+  void nextTick(() => queryEditorRef.value?.focusEnd());
 }
 
 function clearSearch() {
+  queryEditorRef.value?.finishStructuredEdit();
   searchQuery.value = "";
   void nextTick(() => queryEditorRef.value?.focusEnd());
 }
@@ -1347,15 +1380,27 @@ watch(visibleOfferedUsers, () => {
   if (highlightIndex.value >= visibleOfferedUsers.value.length) highlightIndex.value = 0;
 });
 
-// Completing a filter from a dropdown rewrites the active term in place and
-// leaves a trailing space, so the next keystroke starts a fresh term.
+// Completing a middle edit rewrites its exact range. A trailing partial keeps
+// the existing behavior of adding a space for the next term.
 function chooseTerm(term: string) {
+  if (queryEditorRef.value?.completeStructuredTerm(term)) {
+    highlightIndex.value = 0;
+    return;
+  }
   searchQuery.value = completeTermInQuery(searchQuery.value, term);
   highlightIndex.value = 0;
   void nextTick(() => queryEditorRef.value?.focusEnd());
 }
 
 function chooseUser(term: string) {
+  if (queryEditorRef.value?.completeStructuredTerm(term)) {
+    const withoutUnattributed = removeUnattributedFromQuery(searchQuery.value);
+    const removedUnattributed = withoutUnattributed !== searchQuery.value;
+    searchQuery.value = withoutUnattributed;
+    highlightIndex.value = 0;
+    if (removedUnattributed) void nextTick(() => queryEditorRef.value?.focusEnd());
+    return;
+  }
   searchQuery.value = completeTermInQuery(removeUnattributedFromQuery(searchQuery.value), term);
   highlightIndex.value = 0;
   void nextTick(() => queryEditorRef.value?.focusEnd());

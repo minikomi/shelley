@@ -20,10 +20,12 @@
         :placeholder="views.length === 1 ? placeholder : ''"
         :aria-label="view.primary ? ariaLabelText : `${ariaLabelText} text segment`"
         data-testid="conversation-query-text"
+        :data-structured-edit-kind="view.editingKind"
         autocomplete="off"
         spellcheck="false"
         @input="updateText(view, $event)"
         @keydown="onTextKeyDown(view, $event)"
+        @blur="onTextBlur(view)"
       />
       <span
         v-else
@@ -53,11 +55,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUpdate } from "vue";
+import { computed, nextTick, onBeforeUpdate, ref } from "vue";
 import {
+  activeStructuredQueryEdit,
+  bareStructuredModifierAtCaret,
+  isBareStructuredQueryEdit,
+  removeConversationQueryTerm,
   removeConversationQueryToken,
+  replaceStructuredQueryEdit,
   tokenizeConversationQuery,
+  type ActiveStructuredQueryEdit,
+  type ConversationQueryToken,
+  type EditableStructuredQueryKind,
   type QueryTextToken,
+  type StructuredQueryEdit,
   type StructuredQueryKind,
 } from "../../utils/conversationQuery";
 
@@ -70,6 +81,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "update:modelValue", value: string): void;
   (event: "keydown", value: KeyboardEvent): void;
+  (event: "structured-edit-change", value: ActiveStructuredQueryEdit | null): void;
 }>();
 
 interface TextView {
@@ -86,6 +98,7 @@ interface TextView {
   primary: boolean;
   collapsed: boolean;
   width: string;
+  editingKind?: EditableStructuredQueryKind;
 }
 
 interface StructuredView {
@@ -99,6 +112,15 @@ interface StructuredView {
 }
 
 type EditorView = TextView | StructuredView;
+
+interface EditingTextToken extends QueryTextToken {
+  editingKind: EditableStructuredQueryKind;
+}
+
+type ViewToken = ConversationQueryToken | EditingTextToken;
+
+const editingTerm = ref<StructuredQueryEdit | null>(null);
+let restoringEditingCaret = false;
 
 function tokenTestId(kind: StructuredQueryKind): string {
   if (kind === "user") return "user-filter-token";
@@ -126,11 +148,39 @@ function splitTextToken(
   };
 }
 
+function offsetToken(token: ConversationQueryToken, offset: number): ConversationQueryToken {
+  return { ...token, start: token.start + offset, end: token.end + offset };
+}
+
+function viewTokens(): ViewToken[] {
+  const edit = editingTerm.value;
+  if (!edit || edit.start < 0 || edit.end < edit.start || edit.end > props.modelValue.length) {
+    return tokenizeConversationQuery(props.modelValue);
+  }
+  return [
+    ...tokenizeConversationQuery(props.modelValue.slice(0, edit.start)),
+    {
+      kind: "text",
+      raw: props.modelValue.slice(edit.start, edit.end),
+      start: edit.start,
+      end: edit.end,
+      editingKind: edit.kind,
+    },
+    ...tokenizeConversationQuery(props.modelValue.slice(edit.end)).map((token) =>
+      offsetToken(token, edit.end),
+    ),
+  ];
+}
+
+function isStructuredBoundary(token: ViewToken | undefined): boolean {
+  return token !== undefined && (token.kind !== "text" || "editingKind" in token);
+}
+
 const views = computed<EditorView[]>(() => {
-  const tokens = tokenizeConversationQuery(props.modelValue);
+  const tokens = viewTokens();
   let primaryIndex = -1;
   for (let index = tokens.length - 1; index >= 0; index -= 1) {
-    if (tokens[index].kind === "text") {
+    if (tokens[index].kind === "text" && !("editingKind" in tokens[index])) {
       primaryIndex = index;
       break;
     }
@@ -147,8 +197,26 @@ const views = computed<EditorView[]>(() => {
         testId: tokenTestId(token.kind),
       };
     }
-    const previousStructured = index > 0 && tokens[index - 1].kind !== "text";
-    const nextStructured = index + 1 < tokens.length && tokens[index + 1].kind !== "text";
+    if ("editingKind" in token) {
+      return {
+        kind: "text",
+        key: `editing:${token.start}`,
+        index,
+        start: token.start,
+        end: token.end,
+        display: token.raw,
+        leading: "",
+        trailing: "",
+        previousStructured: false,
+        nextStructured: false,
+        primary: false,
+        collapsed: false,
+        width: `${Math.max(token.raw.length + 0.75, 0.75)}ch`,
+        editingKind: token.editingKind,
+      };
+    }
+    const previousStructured = isStructuredBoundary(tokens[index - 1]);
+    const nextStructured = isStructuredBoundary(tokens[index + 1]);
     const split = splitTextToken(token, previousStructured, nextStructured);
     return {
       kind: "text",
@@ -191,6 +259,33 @@ function rebuildText(
 
 function updateText(view: TextView, event: Event) {
   const input = event.target as HTMLInputElement;
+  if (view.editingKind) {
+    const edit = editingTerm.value;
+    if (!edit || edit.start !== view.start || edit.end !== view.end) return;
+    const query =
+      props.modelValue.slice(0, edit.start) + input.value + props.modelValue.slice(edit.end);
+    const nextEdit = { kind: edit.kind, start: edit.start, end: edit.start + input.value.length };
+    const displayCaret = input.selectionStart ?? input.value.length;
+    editingTerm.value = nextEdit;
+    restoringEditingCaret = true;
+    emit("update:modelValue", query);
+    emit("structured-edit-change", activeStructuredQueryEdit(query, nextEdit));
+    void nextTick(() => {
+      const target = views.value.find(
+        (candidate): candidate is TextView =>
+          candidate.kind === "text" &&
+          candidate.editingKind !== undefined &&
+          candidate.start === nextEdit.start,
+      );
+      const element = target ? inputRefs.get(target.index) : undefined;
+      if (element) {
+        element.focus();
+        element.setSelectionRange(displayCaret, displayCaret);
+      }
+      restoringEditingCaret = false;
+    });
+    return;
+  }
   const rebuilt = rebuildText(view, input.value);
   const query =
     props.modelValue.slice(0, view.start) + rebuilt.raw + props.modelValue.slice(view.end);
@@ -202,7 +297,10 @@ function updateText(view: TextView, event: Event) {
 function restoreCaret(rawOffset: number) {
   void nextTick(() => {
     const textViews = views.value.filter((view): view is TextView => view.kind === "text");
-    let target =
+    let target = textViews.find(
+      (view) => view.editingKind && rawOffset >= view.start && rawOffset <= view.end,
+    );
+    target ??=
       textViews.find((view) => rawOffset >= view.start && rawOffset <= view.end) ??
       textViews[textViews.length - 1];
     if (!target) return;
@@ -236,6 +334,43 @@ function removeToken(start: number) {
   restoreCaret(removed.caret);
 }
 
+function finishStructuredEdit() {
+  if (!editingTerm.value) return;
+  editingTerm.value = null;
+  emit("structured-edit-change", null);
+}
+
+function removeTerm(start: number, end: number) {
+  const edit = editingTerm.value;
+  if (edit && start <= edit.end && end >= edit.start) finishStructuredEdit();
+  const removed = removeConversationQueryTerm(props.modelValue, start, end);
+  emit("update:modelValue", removed.query);
+  restoreCaret(removed.caret);
+}
+
+function startEditingToken(view: StructuredView, atEnd: boolean) {
+  if (view.kind !== "tag" && view.kind !== "user") {
+    removeToken(view.start);
+    return;
+  }
+  const edit = { kind: view.kind, start: view.start, end: view.end };
+  editingTerm.value = edit;
+  emit("structured-edit-change", activeStructuredQueryEdit(props.modelValue, edit));
+  void nextTick(() => {
+    const target = views.value.find(
+      (candidate): candidate is TextView =>
+        candidate.kind === "text" &&
+        candidate.editingKind !== undefined &&
+        candidate.start === edit.start,
+    );
+    if (target) focusText(target.index, atEnd);
+  });
+}
+
+function rawDisplayOffset(view: TextView, displayOffset: number): number {
+  return view.start + view.leading.length + displayOffset;
+}
+
 function onTextKeyDown(view: TextView, event: KeyboardEvent) {
   const input = event.currentTarget as HTMLInputElement;
   const start = input.selectionStart ?? 0;
@@ -246,6 +381,30 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
   const afterIsBoundary = input.value.slice(end).trim() === "";
 
   if (
+    start === end &&
+    view.editingKind &&
+    editingTerm.value &&
+    isBareStructuredQueryEdit(props.modelValue, editingTerm.value) &&
+    (event.key === "Backspace" || event.key === "Delete")
+  ) {
+    event.preventDefault();
+    removeTerm(editingTerm.value.start, editingTerm.value.end);
+    return;
+  }
+  if (start === end && (event.key === "Backspace" || event.key === "Delete")) {
+    const direction = event.key === "Backspace" ? "backward" : "forward";
+    const modifier = bareStructuredModifierAtCaret(
+      props.modelValue,
+      rawDisplayOffset(view, start),
+      direction,
+    );
+    if (modifier) {
+      event.preventDefault();
+      removeTerm(modifier.start, modifier.end);
+      return;
+    }
+  }
+  if (
     event.key === "Backspace" &&
     start === end &&
     beforeIsBoundary &&
@@ -253,7 +412,7 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
     previous.kind !== "text"
   ) {
     event.preventDefault();
-    removeToken(previous.start);
+    startEditingToken(previous, true);
     return;
   }
   if (
@@ -264,7 +423,26 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
     next.kind !== "text"
   ) {
     event.preventDefault();
-    removeToken(next.start);
+    startEditingToken(next, false);
+    return;
+  }
+  if (view.editingKind && event.key === "ArrowLeft" && start === end && start === 0) {
+    event.preventDefault();
+    const rawOffset = view.start;
+    finishStructuredEdit();
+    restoreCaret(rawOffset);
+    return;
+  }
+  if (
+    view.editingKind &&
+    event.key === "ArrowRight" &&
+    start === end &&
+    end === input.value.length
+  ) {
+    event.preventDefault();
+    const rawOffset = view.end;
+    finishStructuredEdit();
+    restoreCaret(rawOffset);
     return;
   }
   if (
@@ -292,6 +470,31 @@ function onTextKeyDown(view: TextView, event: KeyboardEvent) {
   emit("keydown", event);
 }
 
+function onTextBlur(view: TextView) {
+  if (!view.editingKind) return;
+  if (restoringEditingCaret) return;
+  void nextTick(() => {
+    const current = views.value.find(
+      (candidate): candidate is TextView =>
+        candidate.kind === "text" &&
+        candidate.editingKind !== undefined &&
+        candidate.start === view.start,
+    );
+    if (current && document.activeElement === inputRefs.get(current.index)) return;
+    finishStructuredEdit();
+  });
+}
+
+function completeStructuredTerm(term: string): boolean {
+  const edit = editingTerm.value;
+  if (!edit) return false;
+  const completed = replaceStructuredQueryEdit(props.modelValue, edit, term);
+  finishStructuredEdit();
+  emit("update:modelValue", completed.query);
+  restoreCaret(completed.caret);
+  return true;
+}
+
 function focusEnd() {
   const target = [...views.value].reverse().find((view): view is TextView => view.kind === "text");
   if (target) focusText(target.index, true);
@@ -301,5 +504,5 @@ function focusEditorBackground(event: MouseEvent) {
   if (event.target === event.currentTarget) focusEnd();
 }
 
-defineExpose({ focusEnd });
+defineExpose({ completeStructuredTerm, finishStructuredEdit, focusEnd });
 </script>
