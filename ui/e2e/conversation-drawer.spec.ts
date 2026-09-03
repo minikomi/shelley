@@ -7,7 +7,11 @@ test.use({
   hasTouch: false,
 });
 
-function conversation(id: string, isDraft = false): ConversationWithState {
+function conversation(
+  id: string,
+  isDraft = false,
+  participants?: Array<string | [string, number]>,
+): ConversationWithState {
   return {
     conversation_id: id,
     slug: isDraft ? null : id,
@@ -29,6 +33,10 @@ function conversation(id: string, isDraft = false): ConversationWithState {
     subagent_count: 0,
     preview: "Preview",
     max_sequence_id: 0,
+    participants: participants?.map((participant) => ({
+      email: typeof participant === "string" ? participant : participant[0],
+      message_count: typeof participant === "string" ? 1 : participant[1],
+    })),
   };
 }
 
@@ -40,6 +48,132 @@ async function stubConversationList(page: Page, conversations: ConversationWithS
 }
 
 test.describe("conversation drawer startup and app bar", () => {
+  test("single-user lists have no participant filter", async ({ page }) => {
+    await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
+    await stubConversationList(page, [
+      conversation("mine", false, ["me@example.com"]),
+      conversation("draft", true),
+    ]);
+
+    await page.goto("/new");
+
+    await expect(page.getByTestId("user-filter-token")).toHaveCount(0);
+    await expect(page.getByTestId("unattributed-filter-token")).toHaveCount(0);
+    await expect(page.locator(".drawer-search-input")).toHaveCount(0);
+    await expect(page.locator(".conversation-participant-badge")).toHaveCount(0);
+    await expect(page.locator('[data-conversation-id="mine"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="draft"]')).toBeVisible();
+  });
+
+  test("multi-user lists seed the current-user query once", async ({ page }) => {
+    await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
+    await stubConversationList(page, [
+      conversation("mine", false, [
+        ["me@example.com", 3],
+        ["collaborator@example.com", 2],
+      ]),
+      conversation("triple", false, [
+        "me@example.com",
+        "collaborator@example.com",
+        "third@example.com",
+      ]),
+      conversation("other", false, ["other@example.com"]),
+      conversation("draft", true),
+    ]);
+
+    await page.goto("/new");
+
+    const userToken = page.getByTestId("user-filter-token");
+    const searchToggle = page.getByRole("button", { name: "Search conversations..." });
+    await expect(page.locator(".drawer-search-input")).toHaveCount(0);
+    await expect(searchToggle).toHaveClass(/search-toggle-active/);
+    await expect(page.locator('[data-conversation-id="mine"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="draft"]')).not.toBeVisible();
+    await expect(page.locator('[data-conversation-id="other"]')).not.toBeVisible();
+    const mineBadge = page.locator('[data-conversation-id="mine"] .conversation-participant-badge');
+    await expect(mineBadge).toContainText("2");
+    await mineBadge.click();
+    await expect(page.locator(".p-tooltip")).toContainText("collaborator@example.com");
+    await expect(page.locator(".p-tooltip strong")).toHaveText("me@example.com");
+    await expect(page.locator(".p-tooltip .conversation-participant-tooltip-dot")).toHaveCount(1);
+    await expect(
+      page
+        .locator(".p-tooltip .conversation-participant-tooltip-row")
+        .filter({ hasText: "collaborator@example.com" })
+        .locator("strong"),
+    ).toHaveCount(0);
+    await expect(
+      page
+        .locator(".p-tooltip .conversation-participant-tooltip-row")
+        .filter({ hasText: "me@example.com" })
+        .locator(".conversation-participant-tooltip-count"),
+    ).toHaveText("3");
+
+    await searchToggle.click();
+    await expect(userToken).toHaveText(/user:me@example\.com/);
+    await expect(page.getByTestId("unattributed-filter-token")).toHaveCount(0);
+    await expect(page.locator(".drawer-search-input")).toHaveValue("");
+    await expect(page.getByText("@ Participating", { exact: true })).toHaveCount(0);
+
+    const addUserFilter = page.getByRole("button", { name: "Add user filter" });
+    const addTagFilter = page.getByRole("button", { name: "Add tag filter" });
+    await addUserFilter.click();
+    await expect(page.locator(".drawer-search-input")).toHaveValue("user:");
+    await addTagFilter.click();
+    await expect(page.locator(".drawer-search-input")).toHaveValue("tag:");
+    await addUserFilter.click();
+    await addUserFilter.click();
+    await expect(page.locator(".drawer-search-input")).toHaveValue("user:");
+    await page.locator(".drawer-search-input").press("Escape");
+
+    const visibleIds = () =>
+      page
+        .locator("[data-conversation-id]:visible")
+        .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-conversation-id")));
+    const defaultOrder = await visibleIds();
+    await addUserFilter.click();
+    const userPanel = page.getByTestId("user-filter-panel");
+    await expect(userPanel.getByRole("option", { name: /other@example\.com/ })).toHaveCount(0);
+    await userPanel.getByRole("option", { name: /third@example\.com/ }).click();
+    await expect(userToken).toHaveCount(2);
+    await userToken
+      .filter({ hasText: "user:third@example.com" })
+      .getByRole("button", { name: "Remove user:third@example.com filter" })
+      .click();
+    expect(await visibleIds()).toEqual(defaultOrder);
+
+    await searchToggle.click();
+    await expect(page.locator(".drawer-search-input")).toHaveCount(0);
+    await expect(searchToggle).toHaveClass(/search-toggle-active/);
+    await searchToggle.click();
+
+    await userToken.getByRole("button", { name: "Remove user:me@example.com filter" }).click();
+    await expect(page.locator('[data-conversation-id="other"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="draft"]')).toBeVisible();
+    await expect(
+      page
+        .locator('[data-conversation-id="other"]')
+        .getByRole("button", { name: "other@example.com" }),
+    ).toContainText("1");
+    await expect(userToken).toHaveCount(0);
+    await addUserFilter.click();
+    await expect(page.locator(".drawer-search-input")).toHaveValue("user:");
+    await expect(userPanel).toBeVisible();
+    await page.locator(".drawer-title").click();
+    await expect(userPanel).toHaveCount(0);
+    await addUserFilter.click();
+    await expect(userPanel).toBeVisible();
+    await userPanel.getByRole("option", { name: /me@example\.com/ }).click();
+    await expect(userToken).toHaveText(/user:me@example\.com/);
+    await expect(page.locator('[data-conversation-id="other"]')).not.toBeVisible();
+    await userToken.getByRole("button", { name: "Remove user:me@example.com filter" }).click();
+    await searchToggle.click();
+    await expect(page.locator(".drawer-search-input")).toHaveCount(0);
+    await expect(searchToggle).not.toHaveClass(/search-toggle-active/);
+    await searchToggle.click();
+    await expect(userToken).toHaveCount(0);
+  });
+
   test("starts expanded even when the only item is a draft", async ({ page }) => {
     await stubConversationList(page, [conversation("draft", true)]);
 

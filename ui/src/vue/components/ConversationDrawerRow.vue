@@ -217,6 +217,31 @@
           {{ terminalCount }}
         </span>
         <button
+          v-if="showParticipantBadge"
+          type="button"
+          class="conversation-participant-badge"
+          v-tooltip.focus.top="{ value: participantTooltipHtml, escape: false }"
+          :aria-label="participantEmails.join(', ')"
+          @click.stop="showParticipantTooltipOnTouch"
+          @mouseenter="showParticipantTooltipOnHover"
+          @mouseleave="hideParticipantTooltipOnHover"
+        >
+          <span
+            v-if="currentUserParticipates"
+            class="conversation-participant-dot"
+            aria-hidden="true"
+          />
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              :stroke-width="2"
+              d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8m13 10v-2a4 4 0 00-3-3.87m-2-11.96a4 4 0 010 7.75"
+            />
+          </svg>
+          {{ participantEmails.length }}
+        </button>
+        <button
           v-if="!isDraft && !itemArchived && hasSubagents"
           class="subagent-count-badge"
           v-tooltip.top="subagentBadgeTooltip"
@@ -393,6 +418,58 @@ const actionsMenuItems = computed<MenuItem[]>(() => [
 ]);
 
 const convState = computed(() => props.conversation as ConversationWithState);
+const participantSummaries = computed(() => {
+  const values =
+    (
+      props.conversation as Conversation & {
+        participants?: { email: string; message_count: number }[] | null;
+      }
+    ).participants ?? [];
+  const byFolded = new Map<string, { email: string; message_count: number }>();
+  for (const value of values) {
+    const email = value.email.trim();
+    if (email && !byFolded.has(email.toLowerCase())) {
+      byFolded.set(email.toLowerCase(), { email, message_count: value.message_count });
+    }
+  }
+  return [...byFolded.values()];
+});
+const participantEmails = computed(() => participantSummaries.value.map(({ email }) => email));
+const currentUserParticipates = computed(() => {
+  const current = window.__SHELLEY_INIT__?.user_email?.trim().toLowerCase();
+  return !!current && participantEmails.value.some((email) => email.toLowerCase() === current);
+});
+const showParticipantBadge = computed(
+  () =>
+    ctx.showParticipantBadges.value &&
+    participantEmails.value.length > 0 &&
+    (participantEmails.value.length > 1 || !currentUserParticipates.value),
+);
+function escapeHTML(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+const participantTooltipHtml = computed(() => {
+  const current = window.__SHELLEY_INIT__?.user_email?.trim().toLowerCase();
+  const selected = new Set(ctx.selectedUsers.value.map((email) => email.trim().toLowerCase()));
+  const rows = participantSummaries.value
+    .map(({ email, message_count }) => {
+      const folded = email.toLowerCase();
+      const escaped = escapeHTML(email);
+      const label = selected.has(folded) ? `<strong>${escaped}</strong>` : escaped;
+      const marker =
+        current && folded === current
+          ? '<span class="conversation-participant-tooltip-dot"></span>'
+          : '<span class="conversation-participant-tooltip-dot-placeholder"></span>';
+      return `<span class="conversation-participant-tooltip-row">${marker}<span>${label}</span><span class="conversation-participant-tooltip-count">${message_count}</span></span>`;
+    })
+    .join("");
+  return `<span class="conversation-participant-tooltip-list">${rows}</span>`;
+});
 const isDraft = computed(() => !!props.conversation.is_draft);
 const isActive = computed(
   () => props.conversation.conversation_id === ctx.currentConversationId.value,
@@ -461,6 +538,19 @@ function onSubClick(e: MouseEvent, sub: Conversation) {
 
 function toggleActionsMenu(e: MouseEvent) {
   actionsMenuRef.value?.toggle(e);
+}
+
+function dispatchParticipantTooltipFocus(target: EventTarget | null, type: "focus" | "blur") {
+  if (target instanceof HTMLElement) target.dispatchEvent(new FocusEvent(type));
+}
+function showParticipantTooltipOnHover(event: MouseEvent) {
+  dispatchParticipantTooltipFocus(event.currentTarget, "focus");
+}
+function showParticipantTooltipOnTouch(event: MouseEvent) {
+  if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
+}
+function hideParticipantTooltipOnHover(event: MouseEvent) {
+  dispatchParticipantTooltipFocus(event.currentTarget, "blur");
 }
 
 // --- Tag editor dropdown ---------------------------------------------------

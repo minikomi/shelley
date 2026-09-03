@@ -6,10 +6,17 @@ import {
   completeTermInQuery,
   filterConversationsByQuery,
   formatTagTerm,
+  formatUserTerm,
   matchTags,
   offeredTags,
   parseSearchQuery,
+  projectVisibleSearchQuery,
+  rebuildRawSearchQuery,
   removeTagFromQuery,
+  removeUnattributedFromQuery,
+  removeUntaggedFromQuery,
+  removeUserFromQuery,
+  startFilterTermInQuery,
   tagGroupKey,
   tagGroupLabel,
   tagMatchesQuery,
@@ -216,10 +223,90 @@ run("parseSearchQuery splits tag terms from free text", () => {
   assert(q.activeTagPrefix === null, "a tag followed by more words is committed");
 });
 
+run("visible search query hides committed filters but keeps text and partial terms", () => {
+  assert(
+    projectVisibleSearchQuery("tag:infra user:me@example.com is:unattributed auth bug user:oth") ===
+      "auth bug user:oth",
+    "committed filters hidden and partial user retained",
+  );
+  assert(
+    projectVisibleSearchQuery('tag:"in progress" is:untagged deploy ') === "deploy",
+    "quoted tags and state terms hidden",
+  );
+});
+
+run("rebuilding a raw query preserves committed filters", () => {
+  assert(
+    rebuildRawSearchQuery("tag:infra user:me@example.com is:unattributed auth", "new words") ===
+      "tag:infra user:me@example.com is:unattributed new words",
+    "replaces free text",
+  );
+  assert(
+    rebuildRawSearchQuery('tag:"in progress" is:untagged old', "tag:next") ===
+      'tag:"in progress" is:untagged tag:next',
+    "retains structured terms and accepts a new partial",
+  );
+  assert(
+    rebuildRawSearchQuery("tag:infra auth", "") === "tag:infra ",
+    "clear search retains filters",
+  );
+});
+
 run("free text alone parses as no tags", () => {
   const q = parseSearchQuery("just searching");
   assertEqual(q.tags, [], "no tags");
+  assertEqual(q.users, [], "no users");
   assert(q.text === "just searching", "text");
+});
+
+run("participant terms parse as a case-folded AND facet", () => {
+  const q = parseSearchQuery(
+    "user:Me@example.com user:other@example.com USER:me@example.com is:unattributed ",
+  );
+  assertEqual(q.users, ["Me@example.com", "other@example.com"], "users dedupe by folded email");
+  assert(q.includeUnattributed, "unattributed included");
+  assert(q.text === "", "structured terms do not leak into FTS");
+});
+
+run("a trailing user term stays visible and drives autocomplete until committed", () => {
+  const partial = parseSearchQuery("deploy user:me@example.com");
+  assertEqual(partial.users, [], "trailing user is not committed");
+  assert(partial.text === "deploy", "partial stays out of FTS text");
+  assert(partial.activeUserPrefix === "me@example.com", "partial drives user autocomplete");
+  assert(
+    projectVisibleSearchQuery("tag:infra deploy user:me@example.com") ===
+      "deploy user:me@example.com",
+    "partial stays visible",
+  );
+
+  const committed = parseSearchQuery("deploy user:me@example.com ");
+  assertEqual(committed.users, ["me@example.com"], "space commits the user");
+  assert(committed.text === "deploy", "committed user leaves FTS text");
+  assert(committed.activeUserPrefix === null, "committed user closes autocomplete");
+});
+
+run("formatUserTerm emits the literal query syntax", () => {
+  assert(formatUserTerm(" me@example.com ") === "user:me@example.com", "trimmed");
+  assert(
+    completeTermInQuery("tag:infra user:me", "user:me@example.com") ===
+      "tag:infra user:me@example.com ",
+    "user completion replaces the active term",
+  );
+});
+
+run("filter actions replace a trailing structured prefix", () => {
+  assert(
+    startFilterTermInQuery("user:me@example.com user:", "tag:") === "user:me@example.com tag:",
+    "tag replaces user",
+  );
+  assert(
+    startFilterTermInQuery("user:me@example.com tag:", "user:") === "user:me@example.com user:",
+    "user replaces tag",
+  );
+  assert(
+    startFilterTermInQuery("user:me@example.com user:", "user:") === "user:me@example.com user:",
+    "repeated click is idempotent",
+  );
 });
 
 run("a bare trailing tag: opens the dropdown and filters nothing", () => {
@@ -361,6 +448,40 @@ run("removeTagFromQuery removes only that tag", () => {
   assert(
     removeTagFromQuery('tag:"in progress" x', "in progress") === "x ",
     "quoted term removed whole",
+  );
+  assert(
+    removeTagFromQuery("tag:infra tag:urg", "infra") === "tag:urg",
+    "does not commit a trailing partial tag",
+  );
+});
+
+run("removeUntaggedFromQuery preserves a trailing partial tag", () => {
+  assert(
+    removeUntaggedFromQuery("is:untagged tag:urg") === "tag:urg",
+    "partial remains uncommitted",
+  );
+  assert(
+    removeUntaggedFromQuery("is:untagged search") === "search ",
+    "normal free text keeps the existing trailing-space behavior",
+  );
+});
+
+run("participant token removal preserves trailing partial terms", () => {
+  assert(
+    removeUserFromQuery(
+      "user:me@example.com is:unattributed tag:infra user:oth",
+      "ME@example.com",
+    ) === "is:unattributed tag:infra user:oth",
+    "removes one user without committing a partial user",
+  );
+  assert(
+    removeUnattributedFromQuery("is:unattributed tag:urg") === "tag:urg",
+    "unattributed removal does not commit a partial tag",
+  );
+  assert(
+    removeUnattributedFromQuery("user:me@example.com is:unattributed search") ===
+      "user:me@example.com search ",
+    "other participant and text terms remain",
   );
 });
 

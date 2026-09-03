@@ -192,6 +192,14 @@ func TestIndexInitDataCarriesExeDevFlag(t *testing.T) {
 	}
 }
 
+func TestIndexInitDataCarriesUserEmail(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	init := indexInitDataWithEmail(t, srv, " alice@example.com ")
+	if got := init["user_email"]; got != "alice@example.com" {
+		t.Fatalf("user_email = %#v, want alice@example.com", got)
+	}
+}
+
 // TestIndexInitDataOmitsHintWithModels: a healthy server must not ship setup
 // advice (and must not pay for a reflection probe on every page load).
 func TestIndexInitDataOmitsHintWithModels(t *testing.T) {
@@ -207,10 +215,15 @@ func TestIndexInitDataOmitsHintWithModels(t *testing.T) {
 
 // indexInitData fetches "/" and parses the injected window.__SHELLEY_INIT__.
 func indexInitData(t *testing.T, srv *Server) map[string]any {
+	return indexInitDataWithEmail(t, srv, "")
+}
+
+func indexInitDataWithEmail(t *testing.T, srv *Server, email string) map[string]any {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-ExeDev-Email", email)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

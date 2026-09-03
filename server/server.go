@@ -97,7 +97,7 @@ type ConversationWithState struct {
 	// it to filter the list down to their own conversations. Empty for
 	// conversations whose messages all arrived without the header (direct or
 	// local access) or predate the user_email column.
-	Participants []string `json:"participants,omitempty"`
+	Participants []db.ConversationParticipant `json:"participants,omitempty"`
 	// SearchSnippet is set on hits from /api/conversations/search. Matched
 	// terms are wrapped in \x02..\x03 sentinels (see db.SnippetMarkStart /
 	// SnippetMarkEnd) so the UI can substitute spans without HTML injection.

@@ -684,6 +684,7 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 		"default_cwd":         defaultCwd,
 		"home_dir":            homeDir,
 		"user_agents_md_path": userAgentsMdPath,
+		"user_email":          strings.TrimSpace(r.Header.Get("X-ExeDev-Email")),
 		// is_exe_dev lets the UI pick exe.dev-specific setup advice even when
 		// model_setup_hint is absent (the catalog can empty AFTER page load, via
 		// a detached integration plus Refresh).
@@ -3063,8 +3064,30 @@ func (s *Server) handleArchivedConversations(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	ids := make([]string, len(conversations))
+	for i := range conversations {
+		ids[i] = conversations[i].ConversationID
+	}
+	participants, err := s.db.ConversationParticipants(ctx, ids)
+	if err != nil {
+		s.logger.Error("Failed to get archived conversation participants", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	type archivedConversationResponse struct {
+		generated.Conversation
+		Participants []db.ConversationParticipant `json:"participants,omitempty"`
+	}
+	decorated := make([]archivedConversationResponse, len(conversations))
+	for i, conversation := range conversations {
+		decorated[i] = archivedConversationResponse{
+			Conversation: conversation,
+			Participants: participants[conversation.ConversationID],
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(conversations)
+	json.NewEncoder(w).Encode(decorated)
 }
 
 // handleArchiveConversation handles POST /conversation/<id>/archive

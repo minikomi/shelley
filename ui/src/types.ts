@@ -12,6 +12,10 @@ import {
 // Re-export generated types
 export type Conversation = GeneratedConversation;
 export type ConversationWithState = ConversationWithStateForTS;
+export type { ConversationParticipant } from "./generated-types";
+export type ConversationWithParticipants = Conversation & {
+  participants?: import("./generated-types").ConversationParticipant[] | null;
+};
 export type Usage = GeneratedUsage;
 export type MessageType = GeneratedMessageType;
 
@@ -196,6 +200,7 @@ export interface InitData {
   // is_exe_dev picks exe.dev-specific setup advice when model_setup_hint is
   // absent because the catalog emptied after page load.
   is_exe_dev?: boolean;
+  user_email?: string;
   banner?: string; // If set, shown as a top-of-page banner (e.g. to mark demo instances)
 }
 

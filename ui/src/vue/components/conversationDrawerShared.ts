@@ -61,6 +61,7 @@ export function renderSnippetSegments(snippet: string): SnippetSegment[] {
 export interface DrawerCtx {
   t: (key: keyof TranslationKeys) => string;
   currentConversationId: ComputedRef<string | null>;
+  showParticipantBadges: ComputedRef<boolean>;
   // Number of live terminals pinned to each conversation. Rows show a badge
   // when a conversation has more than one.
   terminalCounts: ComputedRef<Record<string, number>>;
@@ -82,6 +83,7 @@ export interface DrawerCtx {
   // Tag filter: the selection is derived from the search query (`tag:foo`),
   // so toggling a chip edits that query.
   selectedTags: Ref<string[]>;
+  selectedUsers: Ref<string[]>;
   toggleTagFilter: (tag: string) => void;
   formatDate: (timestamp: string) => string;
   formatCwdForDisplay: (p: string | null | undefined) => string | null;

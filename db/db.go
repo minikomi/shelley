@@ -713,27 +713,65 @@ type ConversationListItem struct {
 	Preview          string
 	PreviewUpdatedAt string // RFC 3339 (trailing Z), empty if there's no preview message
 	MaxSequenceID    int64
-	// Participants are the distinct exe.dev accounts that authored messages in
-	// this conversation, sorted. Nil for conversations whose messages all
-	// predate user_email or arrived without the X-ExeDev-Email header.
-	Participants []string
+	// Participants are the exe.dev accounts that authored messages in this
+	// conversation, with authored-message counts, sorted by email.
+	Participants []ConversationParticipant
 }
 
-// decodeParticipants decodes the participants_json column (a JSON array of
-// emails built by json_group_array) into a sorted slice. Sorting here rather
-// than in SQL keeps the value stable regardless of the order SQLite happens to
-// aggregate in: the conversation-list patch stream hashes the marshalled list,
-// so an unstable order would emit spurious diffs. An empty array decodes to nil
-// so callers can omit it from their JSON.
-func decodeParticipants(raw string) ([]string, error) {
-	var participants []string
+type ConversationParticipant struct {
+	Email        string `json:"email"`
+	MessageCount int64  `json:"message_count"`
+}
+
+// ConversationParticipants returns known authenticated message authors and
+// authored-message counts for the requested conversations.
+func (db *DB) ConversationParticipants(ctx context.Context, conversationIDs []string) (map[string][]ConversationParticipant, error) {
+	out := make(map[string][]ConversationParticipant)
+	if len(conversationIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(conversationIDs)), ",")
+	args := make([]any, len(conversationIDs))
+	for i, id := range conversationIDs {
+		args[i] = id
+	}
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		rows, err := rx.Conn().QueryContext(ctx, `
+			SELECT conversation_id, user_email, COUNT(*)
+			FROM messages
+			WHERE user_email IS NOT NULL AND user_email <> ''
+			  AND conversation_id IN (`+placeholders+`)
+			GROUP BY conversation_id, user_email
+			ORDER BY conversation_id, user_email`, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var participant ConversationParticipant
+			if err := rows.Scan(&id, &participant.Email, &participant.MessageCount); err != nil {
+				return err
+			}
+			out[id] = append(out[id], participant)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// decodeParticipants decodes and stably sorts participant summaries.
+func decodeParticipants(raw string) ([]ConversationParticipant, error) {
+	var participants []ConversationParticipant
 	if err := json.Unmarshal([]byte(raw), &participants); err != nil {
 		return nil, fmt.Errorf("decoding participants %q: %w", raw, err)
 	}
 	if len(participants) == 0 {
 		return nil, nil
 	}
-	sort.Strings(participants)
+	sort.Slice(participants, func(i, j int) bool {
+		return participants[i].Email < participants[j].Email
+	})
 	return participants, nil
 }
 

@@ -38,7 +38,7 @@
       <div class="drawer-header-actions">
         <!-- Search toggle button -->
         <Button
-          :class="`btn-icon${searchOpen ? ' search-toggle-active' : ''}`"
+          :class="`btn-icon${searchToolbarActive ? ' search-toggle-active' : ''}`"
           text
           severity="secondary"
           :aria-label="t('searchConversations')"
@@ -166,45 +166,131 @@
       </div>
     </div>
 
-    <!-- Search bar (hidden until the header search toggle is clicked). Doubles
-         as the tag filter: `tag:` opens a dropdown of the tags currently on
-         screen. -->
+    <!-- Search/filter shell. Committed filters live in the tray; the input
+         keeps free text and a currently typed partial `tag:` term. -->
     <div v-if="searchOpen" ref="searchWrapRef" class="drawer-search">
-      <svg
-        class="drawer-search-icon"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-        width="16"
-        height="16"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          :stroke-width="2"
-          d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-        />
-      </svg>
-      <input
-        ref="searchInputRef"
-        type="text"
-        class="drawer-search-input"
-        :placeholder="t('searchOrTagPlaceholder')"
-        :value="searchQuery"
-        :aria-label="t('searchConversations')"
-        @input="searchQuery = ($event.target as HTMLInputElement).value"
-        @keydown="onSearchKeyDown"
-      />
-      <button
-        v-if="searchQuery"
-        type="button"
-        class="drawer-search-clear"
-        :aria-label="t('clearSearch')"
-        v-tooltip.top="t('clearSearch')"
-        @click="searchQuery = ''"
-      >
-        ✕
-      </button>
+      <div class="drawer-search-shell">
+        <div class="drawer-search-row">
+          <svg
+            class="drawer-search-icon"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              :stroke-width="2"
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
+          </svg>
+          <input
+            ref="searchInputRef"
+            type="text"
+            class="drawer-search-input"
+            :placeholder="t('searchOrTagPlaceholder')"
+            :value="visibleSearchQuery"
+            :aria-label="t('searchConversations')"
+            @input="updateVisibleSearchQuery(($event.target as HTMLInputElement).value)"
+            @keydown="onSearchKeyDown"
+          />
+          <button
+            v-if="visibleSearchQuery"
+            type="button"
+            class="drawer-search-clear"
+            :aria-label="t('clearSearch')"
+            v-tooltip.top="t('clearSearch')"
+            @click="clearSearchText"
+          >
+            ✕
+          </button>
+        </div>
+        <div class="drawer-filter-tray">
+          <span
+            v-for="user in selectedUsers"
+            :key="user"
+            class="drawer-filter-token drawer-filter-token-participant"
+            data-testid="user-filter-token"
+          >
+            user:{{ user }}
+            <button
+              type="button"
+              :aria-label="`Remove user:${user} filter`"
+              @click="searchQuery = removeUserFromQuery(searchQuery, user)"
+            >
+              ×
+            </button>
+          </span>
+          <span
+            v-if="parsedQuery.includeUnattributed"
+            class="drawer-filter-token drawer-filter-token-unattributed"
+            data-testid="unattributed-filter-token"
+          >
+            is:unattributed
+            <button
+              type="button"
+              aria-label="Remove is:unattributed filter"
+              @click="searchQuery = removeUnattributedFromQuery(searchQuery)"
+            >
+              ×
+            </button>
+          </span>
+          <span
+            v-for="tag in selectedTags"
+            :key="tag"
+            class="drawer-filter-token drawer-filter-token-tag"
+            data-testid="selected-tag-filter"
+          >
+            #{{ tag }}
+            <button
+              type="button"
+              :aria-label="`${t('removeTag')} ${tag}`"
+              @click="searchQuery = removeTagFromQuery(searchQuery, tag)"
+            >
+              ×
+            </button>
+          </span>
+          <span
+            v-if="parsedQuery.untaggedOnly"
+            class="drawer-filter-token drawer-filter-token-tag"
+            data-testid="untagged-filter-token"
+          >
+            {{ t("untagged") }}
+            <button
+              type="button"
+              :aria-label="t('clearTagFilter')"
+              @click="searchQuery = removeUntaggedFromQuery(searchQuery)"
+            >
+              ×
+            </button>
+          </span>
+          <button
+            v-if="multipleParticipantsAvailable"
+            type="button"
+            class="drawer-filter-action"
+            aria-label="Add user filter"
+            @click="startUserFilter"
+          >
+            @ User
+          </button>
+          <button
+            type="button"
+            class="drawer-filter-action"
+            aria-label="Add tag filter"
+            @click="startTagFilter"
+          >
+            # Tag
+          </button>
+          <span
+            class="drawer-filter-result-count"
+            :aria-label="`${displayedConversations.length} results`"
+          >
+            {{ displayedConversations.length }}
+          </span>
+        </div>
+      </div>
       <!-- Tag dropdown. Opens on a `tag:` term, listing only tags carried by
            conversations still on screen, each with the count it would leave —
            so a suggestion can never lead to an empty list. -->
@@ -240,6 +326,31 @@
           {{ activeTagPrefix ? t("noMatchingTags") : t("noTagsToNarrow") }}
         </div>
       </div>
+      <div
+        v-else-if="userMenuOpen"
+        class="tag-filter-menu"
+        data-testid="user-filter-panel"
+        role="listbox"
+        @mousedown.prevent
+      >
+        <div v-if="visibleOfferedUsers.length > 0" class="tag-filter-options scrollable">
+          <button
+            v-for="(offer, i) in visibleOfferedUsers"
+            :key="offer.email"
+            type="button"
+            role="option"
+            :aria-selected="i === highlightIndex"
+            :class="`tag-filter-option${i === highlightIndex ? ' highlighted' : ''}`"
+            data-testid="user-filter-option"
+            @mousemove="highlightIndex = i"
+            @click="chooseUser(offer.term)"
+          >
+            <span class="tag-filter-option-name">{{ offer.email }}</span>
+            <span class="tag-filter-option-count">{{ offer.count }}</span>
+          </button>
+        </div>
+        <div v-else class="tag-filter-menu-empty">No matching users</div>
+      </div>
     </div>
 
     <!-- Conversations list -->
@@ -270,6 +381,21 @@
           @click="clearTagFilter"
         >
           {{ t("clearTagFilter") }}
+        </Button>
+      </div>
+      <div
+        v-else-if="emptiedByParticipantFilter"
+        class="text-secondary drawer-empty-state"
+        data-testid="participant-filter-empty"
+      >
+        <p>{{ t("noSearchResults") }}</p>
+        <Button
+          class="drawer-empty-state-action"
+          severity="secondary"
+          size="small"
+          @click="clearParticipantFilter"
+        >
+          Show all conversations
         </Button>
       </div>
       <div
@@ -306,10 +432,7 @@
                 d="M19 9l-7 7-7-7"
               />
             </svg>
-            <span
-              class="conversation-group-label"
-              :title="groupTitle(key, group)"
-            >
+            <span class="conversation-group-label" :title="groupTitle(key, group)">
               {{ group.label }}
             </span>
             <span class="conversation-group-count">{{ group.conversations.length }}</span>
@@ -321,6 +444,16 @@
               :conversation="conv"
             />
           </template>
+        </div>
+      </div>
+      <div v-else-if="cacheActiveTopLevelRows" class="conversation-list">
+        <div
+          v-for="conv in stableTopLevelConversations"
+          v-show="displayedConversationIds.has(conv.conversation_id)"
+          :key="conv.conversation_id"
+          class="conversation-row-cache"
+        >
+          <ConversationRow :conversation="conv" />
         </div>
       </div>
       <div v-else class="conversation-list">
@@ -362,8 +495,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, provide, ref, watch } from "vue";
-import type { Conversation, ConversationWithState } from "../../types";
+import { computed, nextTick, onUnmounted, provide, ref, shallowRef, watch } from "vue";
+import type {
+  Conversation,
+  ConversationWithParticipants,
+  ConversationWithState,
+} from "../../types";
 import { api } from "../../services/api";
 import { useI18n } from "../composables/i18n";
 import {
@@ -375,6 +512,10 @@ import {
 } from "../../utils/conversationSort";
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
+import {
+  filterConversationsByParticipantQuery,
+  hasOtherParticipant,
+} from "../../utils/conversationParticipantFilter";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
 import ConversationRow from "./ConversationDrawerRow.vue";
 import Button from "primevue/button";
@@ -386,12 +527,18 @@ import {
   completeTermInQuery,
   filterConversationsByQuery,
   formatTagTerm,
+  formatUserTerm,
   matchTags,
   offeredTags,
   parseSearchQuery,
+  projectVisibleSearchQuery,
   queryHasTagFilter,
+  rebuildRawSearchQuery,
   removeTagFromQuery,
+  removeUnattributedFromQuery,
   removeUntaggedFromQuery,
+  removeUserFromQuery,
+  startFilterTermInQuery,
   tagGroupKey,
   tagGroupLabel,
   tagMatchesQuery,
@@ -449,7 +596,7 @@ function handleAuxClick(e: MouseEvent, conversation: Conversation) {
 
 // --- State ---
 const showArchived = ref(false);
-const archivedConversations = ref<Conversation[]>([]);
+const archivedConversations = ref<ConversationWithParticipants[]>([]);
 const loadingArchived = ref(false);
 const searchQuery = ref("");
 const searchOpen = ref(false);
@@ -458,6 +605,7 @@ const searchResults = ref<ConversationWithState[] | null>(null);
 const searching = ref(false);
 let searchTimeout: ReturnType<typeof setTimeout> | null = null;
 let searchSeq = 0;
+const SEARCH_DEBOUNCE_MS = 250;
 const editingId = ref<string | null>(null);
 const editingSlug = ref("");
 const tagEditorId = ref<string | null>(null);
@@ -483,8 +631,39 @@ const groupMenuRef = ref<HTMLElement | null>(null);
 // search query, which is the single source of truth.
 const parsedQuery = computed(() => parseSearchQuery(searchQuery.value));
 const selectedTags = computed(() => parsedQuery.value.tags);
+const selectedUsers = computed(() => parsedQuery.value.users);
 const searchText = computed(() => parsedQuery.value.text);
 const activeTagPrefix = computed(() => parsedQuery.value.activeTagPrefix);
+const activeUserPrefix = computed(() => parsedQuery.value.activeUserPrefix);
+const visibleSearchQuery = computed(() => projectVisibleSearchQuery(searchQuery.value));
+const currentUserEmail = window.__SHELLEY_INIT__?.user_email;
+const participantUniverse = computed(() => [
+  ...props.conversations,
+  ...archivedConversations.value,
+  ...(searchResults.value ?? []),
+]);
+const multipleParticipantsAvailable = computed(() =>
+  hasOtherParticipant(participantUniverse.value, currentUserEmail),
+);
+let participantDefaultsSeeded = false;
+watch(
+  multipleParticipantsAvailable,
+  (available) => {
+    if (!available || participantDefaultsSeeded || !currentUserEmail?.trim()) return;
+    participantDefaultsSeeded = true;
+    searchQuery.value = `${formatUserTerm(currentUserEmail)} `;
+  },
+  { immediate: true },
+);
+const structuredFiltersActive = computed(
+  () =>
+    selectedUsers.value.length > 0 ||
+    parsedQuery.value.includeUnattributed ||
+    queryHasTagFilter(parsedQuery.value),
+);
+const searchToolbarActive = computed(
+  () => searchOpen.value || structuredFiltersActive.value || searchText.value.trim() !== "",
+);
 const highlightIndex = ref(0);
 const searchWrapRef = ref<HTMLElement | null>(null);
 const renameInputRef = ref<HTMLInputElement | null>(null);
@@ -494,7 +673,6 @@ let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 let topOrder: string[] = [];
 let archivedOrder: string[] = [];
 let subagentOrder: Record<string, string[]> = {};
-let groupOrder: Record<string, string[]> = {};
 let groupKeysOrder: string[] = [];
 let flatVisualOrder: Conversation[] = [];
 let lastResortKey = 0;
@@ -505,7 +683,6 @@ function resetOrderRefsForResort() {
     topOrder = [];
     archivedOrder = [];
     subagentOrder = {};
-    groupOrder = {};
     groupKeysOrder = [];
     lastResortKey = resortKey.value;
   }
@@ -583,7 +760,7 @@ watch(searchText, () => {
     return;
   }
   searching.value = true;
-  searchTimeout = setTimeout(() => void fetchSearchResults(query, seq), 150);
+  searchTimeout = setTimeout(() => void fetchSearchResults(query, seq), SEARCH_DEBOUNCE_MS);
 });
 
 async function refreshSearchResults() {
@@ -620,7 +797,11 @@ const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() =
   for (const key of Object.keys(out)) {
     const sorted = sortConversationsByBucket(out[key]);
     const { items, order } = applyStableOrder(sorted, subagentOrder[key] || []);
-    out[key] = items;
+    out[key] = filterConversationsByParticipantQuery(
+      items,
+      selectedUsers.value,
+      parsedQuery.value.includeUnattributed,
+    );
     nextOrder[key] = order;
   }
   subagentOrder = nextOrder;
@@ -900,44 +1081,68 @@ function toggleGroup(groupKey: string) {
 function toggleSearch() {
   if (searchOpen.value) {
     searchOpen.value = false;
-    searchQuery.value = "";
   } else {
     searchOpen.value = true;
     void nextTick(() => searchInputRef.value?.focus());
   }
 }
 
+function updateVisibleSearchQuery(value: string) {
+  searchQuery.value = rebuildRawSearchQuery(searchQuery.value, value);
+}
+
+function clearSearchText() {
+  updateVisibleSearchQuery("");
+}
+
+function startTagFilter() {
+  filterMenuDismissed.value = false;
+  searchQuery.value = startFilterTermInQuery(searchQuery.value, "tag:");
+  void nextTick(() => searchInputRef.value?.focus());
+}
+
+function startUserFilter() {
+  filterMenuDismissed.value = false;
+  searchQuery.value = startFilterTermInQuery(searchQuery.value, "user:");
+  void nextTick(() => searchInputRef.value?.focus());
+}
+
 function onSearchKeyDown(e: KeyboardEvent) {
   if (isImeComposing(e)) return;
-  // While the tag dropdown is up it owns the arrows and Enter; the search box
-  // has no other use for them, and this makes `tag:` feel like an autocomplete.
-  if (tagMenuOpen.value && visibleOfferedTags.value.length > 0) {
+  const offers = tagMenuOpen.value
+    ? visibleOfferedTags.value
+    : userMenuOpen.value
+      ? visibleOfferedUsers.value
+      : [];
+  // While a filter dropdown is up it owns the arrows and Enter.
+  if (filterMenuOpen.value && offers.length > 0) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      highlightIndex.value = (highlightIndex.value + 1) % visibleOfferedTags.value.length;
+      highlightIndex.value = (highlightIndex.value + 1) % offers.length;
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      highlightIndex.value =
-        (highlightIndex.value - 1 + visibleOfferedTags.value.length) %
-        visibleOfferedTags.value.length;
+      highlightIndex.value = (highlightIndex.value - 1 + offers.length) % offers.length;
       return;
     }
     if (e.key === "Enter" || e.key === "Tab") {
       e.preventDefault();
-      const pick = visibleOfferedTags.value[highlightIndex.value];
-      if (pick) chooseTerm(pick.term);
+      const pick = offers[highlightIndex.value];
+      if (pick) {
+        if (userMenuOpen.value) chooseUser(pick.term);
+        else chooseTerm(pick.term);
+      }
       return;
     }
   }
   if (e.key === "Escape") {
     e.preventDefault();
-    // Escape peels one layer at a time: dropdown, then query, then the box.
-    if (tagMenuOpen.value) {
-      tagMenuDismissed.value = true;
-    } else if (searchQuery.value) {
-      searchQuery.value = "";
+    // Escape peels one layer at a time: dropdown, visible input, then box.
+    if (filterMenuOpen.value) {
+      filterMenuDismissed.value = true;
+    } else if (visibleSearchQuery.value) {
+      clearSearchText();
     } else {
       searchOpen.value = false;
     }
@@ -950,20 +1155,27 @@ function onNewConversationClick(e: MouseEvent) {
 }
 
 // --- Derived lists ---
-const topLevelConversations = computed(() => {
+const stableTopLevelConversations = computed(() => {
   perfCount("drawer.topLevel");
   resetOrderRefsForResort();
   void resortKey.value;
   const sorted = sortConversationsByBucket(
-    filterConversationsByQuery(
-      props.conversations.filter((c) => !c.parent_conversation_id),
-      parsedQuery.value,
-    ),
+    props.conversations.filter((c) => !c.parent_conversation_id),
   );
   const { items, order } = applyStableOrder(sorted, topOrder);
   topOrder = order;
   return items;
 });
+const topLevelConversations = computed(() =>
+  filterConversationsByQuery(
+    filterConversationsByParticipantQuery(
+      stableTopLevelConversations.value,
+      selectedUsers.value,
+      parsedQuery.value.includeUnattributed,
+    ),
+    parsedQuery.value,
+  ),
+);
 
 const draftLabels = computed<Record<string, string>>(() => {
   const drafts = props.conversations.filter((c) => c.is_draft);
@@ -997,12 +1209,17 @@ const draftLabels = computed<Record<string, string>>(() => {
 const stableArchivedConversations = computed(() => {
   resetOrderRefsForResort();
   void resortKey.value;
-  const sorted = sortConversationsByBucket(
-    filterConversationsByQuery(archivedConversations.value, parsedQuery.value),
-  );
+  const sorted = sortConversationsByBucket(archivedConversations.value);
   const { items, order } = applyStableOrder(sorted, archivedOrder);
   archivedOrder = order;
-  return items;
+  return filterConversationsByQuery(
+    filterConversationsByParticipantQuery(
+      items,
+      selectedUsers.value,
+      parsedQuery.value.includeUnattributed,
+    ),
+    parsedQuery.value,
+  );
 });
 
 // "Searching" means the FTS query is non-empty. A query of only `tag:` terms
@@ -1010,18 +1227,61 @@ const stableArchivedConversations = computed(() => {
 // grouping and ordering instead of collapsing into flat search results.
 const isSearching = computed(() => searchText.value.trim().length > 0);
 
+// Keep the rows behind an open tag picker stable. Removing a selected tag can
+// broaden a tiny result set into hundreds of conversations; mounting those
+// rows while the picker is still open makes the chip click visibly stall.
+// The picker options still recompute immediately, while the conversation list
+// applies the broader filter once the picker closes or a replacement is chosen.
+const tagMenuConversationSnapshot = shallowRef<(Conversation | ConversationWithState)[] | null>(
+  null,
+);
 const displayedConversations = computed<(Conversation | ConversationWithState)[]>(() => {
-  // The tag filter is one predicate upstream of all three lists; the active
-  // and archived lists apply it in their own computeds above (before the
-  // stable-order pass), search results apply it here.
+  if (filterMenuOpen.value && tagMenuConversationSnapshot.value) {
+    return tagMenuConversationSnapshot.value;
+  }
+  // Search results apply the same predicate stack as active and archived
+  // rows. Those lists establish stable order before filtering.
   if (isSearching.value)
-    return filterConversationsByQuery(searchResults.value ?? [], parsedQuery.value);
+    return filterConversationsByQuery(
+      filterConversationsByParticipantQuery(
+        searchResults.value ?? [],
+        selectedUsers.value,
+        parsedQuery.value.includeUnattributed,
+      ),
+      parsedQuery.value,
+    );
   return showArchived.value ? stableArchivedConversations.value : topLevelConversations.value;
 });
+const displayedConversationIds = computed(
+  () => new Set(displayedConversations.value.map((conversation) => conversation.conversation_id)),
+);
+const cacheActiveTopLevelRows = computed(
+  () => !showArchived.value && !isSearching.value && groupBy.value === "none",
+);
 
 // The list the tag dropdown describes: whichever list is on screen,
-// unfiltered, so counts mean "conversations you would see here".
-const tagFilterPool = computed<Conversation[]>(() => {
+// participant-scoped but unfiltered by tags, so counts match the visible
+// participant scope.
+const tagFilterPool = computed<ConversationWithParticipants[]>(() => {
+  if (isSearching.value)
+    return filterConversationsByParticipantQuery(
+      searchResults.value ?? [],
+      selectedUsers.value,
+      parsedQuery.value.includeUnattributed,
+    );
+  const pool = showArchived.value
+    ? archivedConversations.value
+    : props.conversations.filter((c) => !c.parent_conversation_id);
+  return filterConversationsByParticipantQuery(
+    pool,
+    selectedUsers.value,
+    parsedQuery.value.includeUnattributed,
+  );
+});
+
+// The same on-screen source before participant scoping. Used only to identify
+// when that filter, rather than a text/tag miss, caused an empty state.
+const participantFilterPool = computed<ConversationWithParticipants[]>(() => {
   if (isSearching.value) return searchResults.value ?? [];
   if (showArchived.value) return archivedConversations.value;
   return props.conversations.filter((c) => !c.parent_conversation_id);
@@ -1058,25 +1318,66 @@ const visibleOfferedTags = computed(() =>
   currentOfferedTags.value.filter((o) => tagMatchesQuery(o.tag, activeTagPrefix.value ?? "")),
 );
 
-// The dropdown is open whenever the caret sits in a `tag:` term. Dismissing it
-// (Escape, or a click outside) latches until the term changes, so it does not
-// immediately reopen on the next keystroke.
-const tagMenuDismissed = ref(false);
+interface UserOffer {
+  email: string;
+  count: number;
+  term: string;
+}
+const currentOfferedUsers = computed<UserOffer[]>(() => {
+  const selected = new Set(selectedUsers.value.map((email) => email.trim().toLowerCase()));
+  const candidates = new Map<string, string>();
+  const pool = filterConversationsByQuery(participantFilterPool.value, parsedQuery.value);
+  for (const conversation of pool) {
+    for (const participant of conversation.participants ?? []) {
+      const email = participant.email.trim();
+      const folded = email.toLowerCase();
+      if (!folded || selected.has(folded) || candidates.has(folded)) continue;
+      candidates.set(folded, email);
+    }
+  }
+  const offers: UserOffer[] = [];
+  for (const email of candidates.values()) {
+    const count = filterConversationsByParticipantQuery(
+      pool,
+      [...selectedUsers.value, email],
+      false,
+    ).length;
+    if (count > 0) offers.push({ email, count, term: formatUserTerm(email) });
+  }
+  return offers.sort((a, b) => b.count - a.count || a.email.localeCompare(b.email));
+});
+const visibleOfferedUsers = computed(() => {
+  const needle = activeUserPrefix.value?.trim().toLowerCase() ?? "";
+  return currentOfferedUsers.value.filter((offer) => offer.email.toLowerCase().includes(needle));
+});
+
+// A dropdown is open whenever the caret sits in a `tag:` or `user:` term.
+// Dismissing it latches until the active term changes.
+const filterMenuDismissed = ref(false);
 const tagMenuOpen = computed(
-  () => searchOpen.value && activeTagPrefix.value !== null && !tagMenuDismissed.value,
+  () => searchOpen.value && activeTagPrefix.value !== null && !filterMenuDismissed.value,
 );
-watch(activeTagPrefix, () => {
-  tagMenuDismissed.value = false;
+const userMenuOpen = computed(
+  () => searchOpen.value && activeUserPrefix.value !== null && !filterMenuDismissed.value,
+);
+const filterMenuOpen = computed(() => tagMenuOpen.value || userMenuOpen.value);
+watch([activeTagPrefix, activeUserPrefix], () => {
+  filterMenuDismissed.value = false;
   highlightIndex.value = 0;
 });
 function onTagMenuOutside(e: MouseEvent) {
   if (searchWrapRef.value && !searchWrapRef.value.contains(e.target as Node)) {
-    tagMenuDismissed.value = true;
+    filterMenuDismissed.value = true;
   }
 }
-watch(tagMenuOpen, (open) => {
-  if (open) document.addEventListener("mousedown", onTagMenuOutside);
-  else document.removeEventListener("mousedown", onTagMenuOutside);
+watch(filterMenuOpen, (open) => {
+  if (open) {
+    tagMenuConversationSnapshot.value = [...displayedConversations.value];
+    document.addEventListener("mousedown", onTagMenuOutside);
+  } else {
+    tagMenuConversationSnapshot.value = null;
+    document.removeEventListener("mousedown", onTagMenuOutside);
+  }
 });
 
 // True only when the tag filter is what emptied the list, i.e. removing it
@@ -1088,16 +1389,31 @@ const emptiedByTagFilter = computed(
     displayedConversations.value.length === 0 &&
     tagFilterPool.value.length > 0,
 );
+const emptiedByParticipantFilter = computed(
+  () =>
+    (selectedUsers.value.length > 0 || parsedQuery.value.includeUnattributed) &&
+    displayedConversations.value.length === 0 &&
+    filterConversationsByQuery(participantFilterPool.value, parsedQuery.value).length > 0,
+);
 
 // Keep the keyboard highlight in range as the offered set narrows.
 watch(visibleOfferedTags, () => {
   if (highlightIndex.value >= visibleOfferedTags.value.length) highlightIndex.value = 0;
 });
+watch(visibleOfferedUsers, () => {
+  if (highlightIndex.value >= visibleOfferedUsers.value.length) highlightIndex.value = 0;
+});
 
-// Completing a tag from the dropdown rewrites the `tag:` term in place and
+// Completing a filter from a dropdown rewrites the active term in place and
 // leaves a trailing space, so the next keystroke starts a fresh term.
 function chooseTerm(term: string) {
   searchQuery.value = completeTermInQuery(searchQuery.value, term);
+  highlightIndex.value = 0;
+  void nextTick(() => searchInputRef.value?.focus());
+}
+
+function chooseUser(term: string) {
+  searchQuery.value = completeTermInQuery(removeUnattributedFromQuery(searchQuery.value), term);
   highlightIndex.value = 0;
   void nextTick(() => searchInputRef.value?.focus());
 }
@@ -1114,6 +1430,13 @@ function clearTagFilter() {
   let next = searchQuery.value;
   for (const tag of selectedTags.value) next = removeTagFromQuery(next, tag);
   next = removeUntaggedFromQuery(next);
+  searchQuery.value = next.trim() === "" ? "" : next;
+}
+
+function clearParticipantFilter() {
+  let next = searchQuery.value;
+  for (const user of selectedUsers.value) next = removeUserFromQuery(next, user);
+  next = removeUnattributedFromQuery(next);
   searchQuery.value = next.trim() === "" ? "" : next;
 }
 
@@ -1152,14 +1475,6 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
     group.conversations.push(conv);
   }
 
-  const nextGroupOrder: Record<string, string[]> = {};
-  for (const [key, group] of groups) {
-    const sorted = sortConversationsByBucket(group.conversations);
-    const { items, order } = applyStableOrder(sorted, groupOrder[key] || []);
-    group.conversations = items;
-    nextGroupOrder[key] = order;
-  }
-
   // Tag groups sort alphabetically by their tags, so a group's position is
   // predictable from its name. The recency-ordered modes route through
   // applyStableKeyOrder instead; that pass is skipped here because it pins
@@ -1170,23 +1485,32 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
     sorted = [...groups.entries()].sort(([a], [b]) => compareTagGroupKeys(a, b));
     groupKeysOrder = sorted.map(([k]) => k);
   } else {
-    const desiredKeys = [...groups.entries()]
-      .sort((a, b) => maxBucket(b[1].conversations) - maxBucket(a[1].conversations))
+    const allGroups = new Map<string, ConversationWithState[]>();
+    for (const conv of stableTopLevelConversations.value) {
+      const key =
+        groupBy.value === "cwd"
+          ? conv.cwd || null
+          : conv.git_worktree_root || conv.git_repo_root || null;
+      if (!key) continue;
+      let group = allGroups.get(key);
+      if (!group) {
+        group = [];
+        allGroups.set(key, group);
+      }
+      group.push(conv);
+    }
+    const desiredKeys = [...allGroups.entries()]
+      .sort((a, b) => maxBucket(b[1]) - maxBucket(a[1]))
       .map(([k]) => k);
     const stableKeys = applyStableKeyOrder(desiredKeys, groupKeysOrder);
     groupKeysOrder = stableKeys;
-    sorted = stableKeys.map((k) => [k, groups.get(k)!]);
+    sorted = stableKeys.filter((k) => groups.has(k)).map((k) => [k, groups.get(k)!]);
   }
 
   if (ungrouped.length > 0) {
-    const ungroupedSorted = sortConversationsByBucket(ungrouped);
-    const { items, order } = applyStableOrder(ungroupedSorted, groupOrder["__ungrouped__"] || []);
-    nextGroupOrder["__ungrouped__"] = order;
     const ungroupedLabel = groupBy.value === "tag" ? t("untagged") : t("other");
-    sorted.push(["__ungrouped__", { label: ungroupedLabel, conversations: items }]);
+    sorted.push(["__ungrouped__", { label: ungroupedLabel, conversations: ungrouped }]);
   }
-
-  groupOrder = nextGroupOrder;
   return sorted;
 });
 
@@ -1219,6 +1543,7 @@ onUnmounted(() => {
 provide(DrawerCtxKey, {
   t,
   currentConversationId: computed(() => props.currentConversationId),
+  showParticipantBadges: multipleParticipantsAvailable,
   terminalCounts: computed(() => {
     const counts: Record<string, number> = {};
     for (const tm of props.ephemeralTerminals) {
@@ -1244,6 +1569,7 @@ provide(DrawerCtxKey, {
   draftLabels,
   groupBy,
   selectedTags,
+  selectedUsers,
   toggleTagFilter,
   formatDate,
   formatCwdForDisplay,

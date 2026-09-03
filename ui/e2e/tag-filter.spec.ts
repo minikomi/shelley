@@ -55,6 +55,8 @@ const panel = (page: Page) => page.getByTestId("tag-filter-panel");
 const option = (page: Page, tag: string) =>
   page.locator(`[data-testid="tag-filter-option"][data-tag="${tag}"]`);
 const searchBox = (page: Page) => page.locator(".drawer-search-input");
+const selectedTag = (page: Page, tag: string) =>
+  page.getByTestId("selected-tag-filter").filter({ hasText: `#${tag}` });
 
 async function openSearch(page: Page) {
   if ((await searchBox(page).count()) === 0) {
@@ -97,7 +99,8 @@ test.describe("Tag filter", () => {
 
     // No dropdown until the `tag:` cue is typed.
     await expect(panel(page)).toHaveCount(0);
-    await search.fill("tag:");
+    await page.getByRole("button", { name: "Add tag filter" }).click();
+    await expect(search).toHaveValue("tag:");
     await expect(panel(page)).toBeVisible();
     // Counts are the size of the result set each tag would produce.
     await expect(option(page, "tf-shared")).toContainText("2");
@@ -111,7 +114,8 @@ test.describe("Tag filter", () => {
     // ...and clicking one completes the term in place, leaving a trailing
     // space so the next keystroke starts fresh.
     await option(page, "tf-shared").click();
-    await expect(search).toHaveValue("tag:tf-shared ");
+    await expect(search).toHaveValue("");
+    await expect(selectedTag(page, "tf-shared")).toBeVisible();
 
     // The list is filtered.
     await expect(row(page, alpha.conversationId)).toBeVisible();
@@ -120,18 +124,24 @@ test.describe("Tag filter", () => {
 
     // A second tag ANDs, and the offers narrow: tf-gamma never co-occurs with
     // tf-shared, so it is not on offer.
-    await search.fill("tag:tf-shared tag:");
+    await search.fill("tag:");
     await expect(panel(page)).toBeVisible();
     await expect(option(page, "tf-gamma")).toHaveCount(0);
     await expect(option(page, "tf-shared")).toHaveCount(0); // already selected
     await expect(option(page, "tf-alpha")).toBeVisible();
 
     await option(page, "tf-alpha").click();
+    await expect(selectedTag(page, "tf-alpha")).toBeVisible();
     await expect(row(page, alpha.conversationId)).toBeVisible();
     await expect(row(page, beta.conversationId)).toHaveCount(0);
 
-    // Clearing the search clears the filter with it: one input, one state.
+    // Clearing the input only clears free text; committed tags remain visible
+    // in the tray until their own x buttons are used.
+    await search.fill("temporary text");
     await search.fill("");
+    await expect(row(page, beta.conversationId)).toHaveCount(0);
+    await selectedTag(page, "tf-alpha").getByRole("button").click();
+    await selectedTag(page, "tf-shared").getByRole("button").click();
     await expect(row(page, alpha.conversationId)).toBeVisible();
     await expect(row(page, beta.conversationId)).toBeVisible();
     await expect(row(page, gamma.conversationId)).toBeVisible();
@@ -155,19 +165,21 @@ test.describe("Tag filter", () => {
     await expect(option(page, "kb-only")).toBeVisible();
     // Enter takes the highlighted entry.
     await page.keyboard.press("Enter");
-    await expect(search).toHaveValue("tag:kb-only ");
+    await expect(search).toHaveValue("");
+    await expect(selectedTag(page, "kb-only")).toBeVisible();
     await expect(panel(page)).toHaveCount(0);
 
     // Escape closes the dropdown first, keeping the query intact...
-    await search.fill("tag:kb-only tag:");
+    await search.fill("tag:");
     await expect(panel(page)).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(panel(page)).toHaveCount(0);
-    await expect(search).toHaveValue("tag:kb-only tag:");
+    await expect(search).toHaveValue("tag:");
     // ...and the dropdown does not spring back until the term changes.
     await expect(panel(page)).toHaveCount(0);
 
-    // A second Escape clears the query, a third closes the search box.
+    // A second Escape clears the partial term, a third closes the search box
+    // while retaining the committed tray filter.
     await page.keyboard.press("Escape");
     await expect(search).toHaveValue("");
     await page.keyboard.press("Escape");
@@ -211,7 +223,7 @@ test.describe("Tag filter", () => {
     await expect(page.getByTestId("tag-filter-empty")).toBeVisible();
     await page.getByTestId("tag-filter-empty-clear").click();
     // The free text survives; only the tag terms are dropped.
-    await expect(search).toHaveValue("kumquat marker ");
+    await expect(search).toHaveValue("kumquat marker");
     await expect(row(page, hit.conversationId)).toBeVisible();
   });
 
@@ -369,7 +381,8 @@ test.describe("Tag filter", () => {
     await expect(chip).toBeVisible();
     await chip.click();
 
-    await expect(searchBox(page)).toHaveValue("tag:chip-tag ");
+    await expect(searchBox(page)).toHaveValue("");
+    await expect(selectedTag(page, "chip-tag")).toBeVisible();
     await expect(row(page, inRepo.conversationId)).toBeVisible();
     await expect(row(page, outOfRepo.conversationId)).toHaveCount(0);
     // Clicking a chip must not also navigate away from the current chat.
@@ -412,7 +425,8 @@ test.describe("Tag filter", () => {
       .getByTestId("conversation-tag-chip")
       .filter({ hasText: "sp tag" });
     await chip.click();
-    await expect(searchBox(page)).toHaveValue('tag:"sp tag" ');
+    await expect(searchBox(page)).toHaveValue("");
+    await expect(selectedTag(page, "sp tag")).toBeVisible();
     await expect(row(page, spaced.conversationId)).toBeVisible();
     await expect(row(page, plain.conversationId)).toHaveCount(0);
 
@@ -426,7 +440,8 @@ test.describe("Tag filter", () => {
     await search.fill('tag:"sp t');
     await expect(option(page, "sp tag")).toBeVisible();
     await page.keyboard.press("Enter");
-    await expect(search).toHaveValue('tag:"sp tag" ');
+    await expect(search).toHaveValue("");
+    await expect(selectedTag(page, "sp tag")).toBeVisible();
     await expect(row(page, spaced.conversationId)).toBeVisible();
     await expect(row(page, plain.conversationId)).toHaveCount(0);
 
@@ -434,12 +449,13 @@ test.describe("Tag filter", () => {
     // through its chip the same way.
     const quoted = 'sp" quote';
     await setTags(request, spaced.conversationId, ["sp tag", quoted]);
-    await search.fill("");
+    await selectedTag(page, "sp tag").getByRole("button").click();
     const quoteChip = row(page, spaced.conversationId).locator(
       `[data-testid="conversation-tag-chip"][data-tag='${quoted}']`,
     );
     await quoteChip.click();
-    await expect(searchBox(page)).toHaveValue('tag:"sp\\" quote" ');
+    await expect(searchBox(page)).toHaveValue("");
+    await expect(selectedTag(page, quoted)).toBeVisible();
     await expect(row(page, spaced.conversationId)).toBeVisible();
     await expect(row(page, plain.conversationId)).toHaveCount(0);
     await quoteChip.click();
@@ -473,7 +489,8 @@ test.describe("Tag filter", () => {
     // Matched by test id, not by text: this very test creates a tag named
     // "untagged", so "the option reading Untagged" is genuinely ambiguous.
     await page.getByTestId("tag-filter-untagged-option").click();
-    await expect(search).toHaveValue("is:untagged ");
+    await expect(search).toHaveValue("");
+    await expect(page.getByTestId("untagged-filter-token")).toBeVisible();
 
     await expect(row(page, bare.conversationId)).toBeVisible();
     await expect(row(page, tagged.conversationId)).toHaveCount(0);
@@ -482,6 +499,7 @@ test.describe("Tag filter", () => {
 
     // ...and that tag stays addressable on its own terms, meaning the
     // opposite: only the conversation carrying it.
+    await page.getByTestId("untagged-filter-token").getByRole("button").click();
     await search.fill("tag:untagged ");
     await expect(row(page, literal.conversationId)).toBeVisible();
     await expect(row(page, bare.conversationId)).toHaveCount(0);
