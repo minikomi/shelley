@@ -214,7 +214,7 @@
           aria-label="Add user filter"
           @click="startUserFilter"
         >
-          @ User
+          @ user
         </button>
         <button
           type="button"
@@ -222,7 +222,7 @@
           aria-label="Add tag filter"
           @click="startTagFilter"
         >
-          # Tag
+          # tag
         </button>
         <span
           class="drawer-filter-result-count"

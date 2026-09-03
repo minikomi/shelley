@@ -14,6 +14,9 @@
           { 'drawer-search-input': view.primary },
           { 'conversation-query-text-primary': view.primary },
           { 'conversation-query-text-collapsed': view.collapsed },
+          { 'conversation-query-text-bare-modifier': view.bareModifierKind },
+          { 'conversation-query-text-bare-tag': view.bareModifierKind === 'tag' },
+          { 'conversation-query-text-bare-user': view.bareModifierKind === 'user' },
         ]"
         :style="{ width: view.width }"
         :value="view.display"
@@ -22,6 +25,7 @@
         data-testid="conversation-query-text"
         :data-structured-edit-kind="view.editingKind"
         autocomplete="off"
+        autocapitalize="none"
         spellcheck="false"
         @input="updateText(view, $event)"
         @keydown="onTextKeyDown(view, $event)"
@@ -63,6 +67,7 @@ import {
   removeConversationQueryTerm,
   removeConversationQueryToken,
   replaceStructuredQueryEdit,
+  scanConversationQuery,
   tokenizeConversationQuery,
   type ActiveStructuredQueryEdit,
   type ConversationQueryToken,
@@ -99,6 +104,7 @@ interface TextView {
   collapsed: boolean;
   width: string;
   editingKind?: EditableStructuredQueryKind;
+  bareModifierKind?: EditableStructuredQueryKind;
 }
 
 interface StructuredView {
@@ -117,7 +123,11 @@ interface EditingTextToken extends QueryTextToken {
   editingKind: EditableStructuredQueryKind;
 }
 
-type ViewToken = ConversationQueryToken | EditingTextToken;
+interface BareModifierTextToken extends QueryTextToken {
+  bareModifierKind: EditableStructuredQueryKind;
+}
+
+type ViewToken = ConversationQueryToken | EditingTextToken | BareModifierTextToken;
 
 const editingTerm = ref<StructuredQueryEdit | null>(null);
 let restoringEditingCaret = false;
@@ -155,7 +165,35 @@ function offsetToken(token: ConversationQueryToken, offset: number): Conversatio
 function viewTokens(): ViewToken[] {
   const edit = editingTerm.value;
   if (!edit || edit.start < 0 || edit.end < edit.start || edit.end > props.modelValue.length) {
-    return tokenizeConversationQuery(props.modelValue);
+    const tokens: ViewToken[] = tokenizeConversationQuery(props.modelValue);
+    const scanned = scanConversationQuery(props.modelValue);
+    const term = scanned.endsMidTerm ? scanned.terms[scanned.terms.length - 1] : undefined;
+    const lower = term?.raw.toLowerCase();
+    const kind: EditableStructuredQueryKind | null =
+      lower === "tag:" ? "tag" : lower === "user:" ? "user" : null;
+    if (!term || !kind) return tokens;
+    const index = tokens.findIndex(
+      (token) => token.kind === "text" && term.start >= token.start && term.end <= token.end,
+    );
+    if (index < 0) return tokens;
+    const token = tokens[index] as QueryTextToken;
+    return [
+      ...tokens.slice(0, index),
+      {
+        kind: "text",
+        raw: props.modelValue.slice(token.start, term.start),
+        start: token.start,
+        end: term.start,
+      },
+      {
+        kind: "text",
+        raw: term.raw,
+        start: term.start,
+        end: term.end,
+        bareModifierKind: kind,
+      },
+      ...tokens.slice(index + 1),
+    ];
   }
   return [
     ...tokenizeConversationQuery(props.modelValue.slice(0, edit.start)),
@@ -198,6 +236,8 @@ const views = computed<EditorView[]>(() => {
       };
     }
     if ("editingKind" in token) {
+      const bareModifierKind =
+        token.raw.toLowerCase() === `${token.editingKind}:` ? token.editingKind : undefined;
       return {
         kind: "text",
         key: `editing:${token.start}`,
@@ -211,8 +251,27 @@ const views = computed<EditorView[]>(() => {
         nextStructured: false,
         primary: false,
         collapsed: false,
-        width: `${Math.max(token.raw.length + 0.75, 0.75)}ch`,
+        width: `${Math.max(token.raw.length + (bareModifierKind ? 2 : 0.75), 0.75)}ch`,
         editingKind: token.editingKind,
+        bareModifierKind,
+      };
+    }
+    if ("bareModifierKind" in token) {
+      return {
+        kind: "text",
+        key: `bare:${token.start}`,
+        index,
+        start: token.start,
+        end: token.end,
+        display: token.raw,
+        leading: "",
+        trailing: "",
+        previousStructured: false,
+        nextStructured: false,
+        primary: index === primaryIndex,
+        collapsed: false,
+        width: `${token.raw.length + 2}ch`,
+        bareModifierKind: token.bareModifierKind,
       };
     }
     const previousStructured = isStructuredBoundary(tokens[index - 1]);

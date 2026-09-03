@@ -646,6 +646,22 @@ body {
   padding: 0;
 }
 
+.conversation-query-text-bare-modifier {
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.45rem;
+  font-weight: 600;
+}
+
+.conversation-query-text-bare-tag {
+  background: color-mix(in srgb, var(--purple-100) 72%, transparent);
+  color: var(--purple-700);
+}
+
+.conversation-query-text-bare-user {
+  background: color-mix(in srgb, var(--blue-100) 72%, transparent);
+  color: var(--blue-700);
+}
+
 .drawer-search-clear {
   flex: 0 0 auto;
   margin: 0.45rem 0.3rem 0 0;

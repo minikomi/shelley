@@ -120,6 +120,10 @@ test.describe("conversation drawer startup and app bar", () => {
 
     await searchToggle.click();
     await expect(userToken).toHaveText(/user:me@example\.com/);
+    await expect(page.getByTestId("conversation-query-text").last()).toHaveAttribute(
+      "autocapitalize",
+      "none",
+    );
     await expect(page.getByTestId("unattributed-filter-token")).toHaveCount(0);
     await expect(page.locator(".drawer-search-input")).toHaveValue("");
     await expect(page.getByText("@ Participating", { exact: true })).toHaveCount(0);
@@ -307,6 +311,9 @@ test.describe("conversation drawer startup and app bar", () => {
     await addTag.click();
     await addTag.click();
     await expect(activeInput).toHaveValue("tag:");
+    await expect(activeInput).toHaveClass(/conversation-query-text-bare-tag/);
+    await expect(addUser).toHaveText("@ user");
+    await expect(addTag).toHaveText("# tag");
     await activeInput.press("Backspace");
     await expect(activeInput).toHaveValue("");
     await expect(page.getByTestId("tag-filter-panel")).toHaveCount(0);
