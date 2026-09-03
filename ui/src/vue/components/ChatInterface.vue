@@ -2545,8 +2545,11 @@ async function cancelQueuedMessages() {
 
 async function cancelQueuedMessage(queuedId: string) {
   if (!props.conversationId) return;
+  const queued = queuedGhosts.value.find(({ id }) => id === queuedId);
+  const text = queued ? queuedMessageText(queued) : "";
   try {
     await api.cancelQueuedMessage(props.conversationId, queuedId);
+    if (!draftText && text) seedComposer(text);
   } catch (err) {
     console.error("Failed to cancel queued message:", err);
   }
