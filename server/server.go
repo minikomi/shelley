@@ -27,6 +27,7 @@ import (
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
 	"shelley.exe.dev/subpub"
 	"shelley.exe.dev/ui"
@@ -124,6 +125,8 @@ type StreamResponse struct {
 	Heartbeat bool `json:"heartbeat,omitempty"`
 	// NotificationEvent is set when a notification-worthy event occurs (e.g. agent finished).
 	NotificationEvent *notifications.Event `json:"notification_event,omitempty"`
+	// DiskSpaceStatus is global, including an immediate snapshot on reconnect.
+	DiskSpaceStatus *diskspace.DiskSpaceStatus `json:"disk_space_status,omitempty"`
 	// ToolProgress is set when a running tool reports partial output.
 	ToolProgress *llm.ToolProgress `json:"tool_progress,omitempty"`
 	// StreamDelta is set when the LLM streams partial text content.
@@ -374,6 +377,7 @@ type Server struct {
 	// events to every /api/stream2 subscriber. Events are tagged with their
 	// ConversationID so clients can route them.
 	streamPub   *subpub.SubPub[StreamResponse]
+	diskSpace   *diskSpaceMonitor
 	shutdownCh  chan struct{} // Signals background routines to stop
 	listenPort  int           // TCP port the server is listening on
 	terminals   *TerminalSessions
@@ -480,6 +484,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/conversations/snapshot", compressionHandler(http.HandlerFunc(s.handleConversationsSnapshot)))
 	mux.Handle("GET /api/conversations/search", compressionHandler(http.HandlerFunc(s.handleSearchConversations)))
 	mux.Handle("GET /api/stream2", http.HandlerFunc(s.handleStream))
+	mux.HandleFunc("POST /api/disk-space/dismiss", s.handleDismissDiskSpace)
 	mux.Handle("/api/conversations/archived", compressionHandler(http.HandlerFunc(s.handleArchivedConversations)))
 	mux.Handle("/api/conversations/new", http.HandlerFunc(s.handleNewConversation))                         // Small response
 	mux.Handle("POST /api/conversations/draft", http.HandlerFunc(s.handleCreateDraft))                      // Small response
@@ -1713,6 +1718,7 @@ func (s *Server) publishConversationState(state ConversationState) {
 			Timestamp:      time.Now(),
 			Payload:        payload,
 		}
+		s.refreshDiskSpace(context.Background())
 		if !suppressNotify {
 			s.notifDispatcher.Dispatch(context.Background(), event)
 			for _, hook := range hooks {
@@ -1875,6 +1881,10 @@ func (s *Server) StartWithListener(listener net.Listener) error {
 // The Unix socket listener gets only the logger middleware (no CSRF, no requireHeader)
 // since it is local and trusted.
 func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string) error {
+	if err := s.initDiskSpace(context.Background(), diskAvailableBytes); err != nil {
+		return fmt.Errorf("initialize disk space monitor: %w", err)
+	}
+
 	// agent_working is runtime-only state. Decide what to do with the values the
 	// previous process left behind BEFORE serving: an ordinary restart or crash
 	// clears them, while an upgrade-with-restart hands back the conversations

@@ -2,6 +2,7 @@ import {
   Conversation,
   ConversationWithParticipants,
   ConversationWithState,
+  DiskSpaceStatus,
   StreamResponse,
   ChatRequest,
   BtwReaderDescriptor,
@@ -836,6 +837,22 @@ class ApiService {
         "X-Shelley-Request": "1",
       },
       body: JSON.stringify({ key, value }),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || response.statusText);
+    }
+    return response.json();
+  }
+
+  async dismissDiskSpaceNotice(episodeId: number): Promise<DiskSpaceStatus> {
+    const response = await fetch("/api/disk-space/dismiss", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shelley-Request": "1",
+      },
+      body: JSON.stringify({ episode_id: episodeId }),
     });
     if (!response.ok) {
       const text = await response.text();

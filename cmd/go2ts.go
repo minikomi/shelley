@@ -16,6 +16,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
 )
 
@@ -72,6 +73,7 @@ func TS() *go2ts.Go2TS {
 		streamResponseForTS{},
 		conversationWithStateForTS{},
 		notificationEventForTS{},
+		diskspace.DiskSpaceStatus{},
 	)
 
 	// Generate clean nominal types
@@ -137,13 +139,14 @@ type conversationWithStateForTS struct {
 }
 
 type streamResponseForTS struct {
-	ConversationID    string                  `json:"conversation_id,omitempty"`
-	Messages          []apiMessageForTS       `json:"messages,omitempty"`
-	Conversation      *generated.Conversation `json:"conversation,omitempty"`
-	ConversationState *conversationStateForTS `json:"conversation_state,omitempty"`
-	Heartbeat         bool                    `json:"heartbeat,omitempty"`
-	NotificationEvent *notificationEventForTS `json:"notification_event,omitempty"`
-	MaxSequenceID     int64                   `json:"max_sequence_id,omitempty"`
+	ConversationID    string                     `json:"conversation_id,omitempty"`
+	Messages          []apiMessageForTS          `json:"messages,omitempty"`
+	Conversation      *generated.Conversation    `json:"conversation,omitempty"`
+	ConversationState *conversationStateForTS    `json:"conversation_state,omitempty"`
+	Heartbeat         bool                       `json:"heartbeat,omitempty"`
+	NotificationEvent *notificationEventForTS    `json:"notification_event,omitempty"`
+	DiskSpaceStatus   *diskspace.DiskSpaceStatus `json:"disk_space_status,omitempty"`
+	MaxSequenceID     int64                      `json:"max_sequence_id,omitempty"`
 }
 
 type notificationEventForTS struct {

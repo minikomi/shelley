@@ -282,6 +282,33 @@
       @active-terminal-exited="focusMessageInputIfUnfocused"
     />
 
+    <!-- Low disk space notice: server-wide, shown once per episode until dismissed. -->
+    <div
+      v-if="diskSpaceStatus?.active && !diskSpaceStatus.dismissed"
+      class="disk-space-notice"
+      :class="{ 'disk-space-notice-critical': diskSpaceStatus.critical }"
+      :role="diskSpaceStatus.critical ? 'alert' : 'status'"
+      data-testid="disk-space-notice"
+    >
+      <span class="disk-space-notice-icon" aria-hidden="true">!</span>
+      <span class="disk-space-notice-text">
+        <strong>{{ t(diskSpaceStatus.critical ? "diskSpaceCritical" : "diskSpaceLow") }}</strong>
+        <span class="disk-space-notice-detail"
+          >{{ formatDiskBytes(diskSpaceStatus.available_bytes) }}
+          {{ t("diskSpaceRemaining") }}</span
+        >
+      </span>
+      <button
+        type="button"
+        class="btn-icon disk-space-notice-dismiss"
+        :aria-label="t('dismiss')"
+        data-testid="disk-space-notice-dismiss"
+        @click="dismissDiskSpaceNotice"
+      >
+        ×
+      </button>
+    </div>
+
     <!-- Status bar -->
     <div :class="statusBarClass">
       <div class="status-bar-content">
@@ -405,6 +432,7 @@ import {
   type ToolProgress,
   type Usage,
   type LLMContent,
+  type DiskSpaceStatus,
   isDistillStatusMessage,
   distillStatus,
   parseQueuedMessages,
@@ -513,6 +541,8 @@ const props = withDefaults(
     conversationId: string | null;
     streamStatus?: "connected" | "reconnecting" | "disconnected";
     reconnectNonce?: number;
+    diskSpaceStatus?: DiskSpaceStatus | null;
+    onDiskSpaceStatus?: (status: DiskSpaceStatus) => void;
     onOpenDrawer: () => void;
     onNewConversation: () => void;
     onSelectConversation?: (conversation: Conversation) => void;
@@ -635,6 +665,21 @@ const loadingProgress = ref<{
 } | null>(null);
 const sending = ref(false);
 const error = ref<string | null>(null);
+
+function formatDiskBytes(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1e6)} MB`;
+}
+
+async function dismissDiskSpaceNotice() {
+  const status = props.diskSpaceStatus;
+  if (!status) return;
+  try {
+    props.onDiskSpaceStatus?.(await api.dismissDiskSpaceNotice(status.episode_id));
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
 const models = ref<
   Array<{
     id: string;

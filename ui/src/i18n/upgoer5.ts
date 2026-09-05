@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const upgoer5: TranslationKeys = {
   // App-level
   loading: "Getting ready...",
+  diskSpaceLow: "Not much room left on the computer",
+  diskSpaceCritical: "Almost no room left on the computer",
+  diskSpaceRemaining: "left",
+  dismiss: "Go away",
   retry: "Try again",
   failedToLoadConversations: "Could not get your talks. Please open this again.",
 
