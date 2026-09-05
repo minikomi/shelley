@@ -56,6 +56,10 @@ const option = (page: Page, tag: string) =>
   page.locator(`[data-testid="tag-filter-option"][data-tag="${tag}"]`);
 const searchBox = (page: Page) => page.locator(".drawer-search-input");
 
+async function expectQuery(search: Locator, raw: string): Promise<void> {
+  await expect(search).toHaveAttribute("data-query-value", raw);
+}
+
 async function openSearch(page: Page) {
   if ((await searchBox(page).count()) === 0) {
     await page.locator('button[aria-label="Search conversations..."]').click();
@@ -97,7 +101,9 @@ test.describe("Tag filter", () => {
 
     // No dropdown until the `tag:` cue is typed.
     await expect(panel(page)).toHaveCount(0);
-    await search.fill("tag:");
+    await page.getByRole("button", { name: "Add tag filter" }).click();
+    await expectQuery(search, "tag:");
+    await expect(search.locator('[data-conversation-query-token="tag"]')).toHaveCount(0);
     await expect(panel(page)).toBeVisible();
     // Counts are the size of the result set each tag would produce.
     await expect(option(page, "tf-shared")).toContainText("2");
@@ -108,29 +114,40 @@ test.describe("Tag filter", () => {
     await expect(option(page, "tf-shared")).toBeVisible();
     await expect(option(page, "tf-alpha")).toHaveCount(0);
 
-    // ...and clicking one completes the term in place, leaving a trailing
-    // space so the next keystroke starts fresh.
-    await option(page, "tf-shared").click();
-    await expect(search).toHaveValue("tag:tf-shared ");
+    // ...and Space accepts the highlighted match, leaving a trailing space so
+    // the next keystroke starts fresh.
+    await search.press("Space");
+    await expectQuery(search, "tag:tf-shared ");
+    await expect(
+      search.locator('[data-conversation-query-token="tag"][data-query-raw="tag:tf-shared"]'),
+    ).toBeVisible();
 
     // The list is filtered.
     await expect(row(page, alpha.conversationId)).toBeVisible();
     await expect(row(page, beta.conversationId)).toBeVisible();
-    await expect(row(page, gamma.conversationId)).toHaveCount(0);
+    await expect(row(page, gamma.conversationId)).not.toBeVisible();
 
     // A second tag ANDs, and the offers narrow: tf-gamma never co-occurs with
     // tf-shared, so it is not on offer.
-    await search.fill("tag:tf-shared tag:");
+    await page.getByRole("button", { name: "Add tag filter" }).click();
+    await expectQuery(search, "tag:tf-shared tag:");
     await expect(panel(page)).toBeVisible();
     await expect(option(page, "tf-gamma")).toHaveCount(0);
     await expect(option(page, "tf-shared")).toHaveCount(0); // already selected
     await expect(option(page, "tf-alpha")).toBeVisible();
 
     await option(page, "tf-alpha").click();
+    await expectQuery(search, "tag:tf-shared tag:tf-alpha ");
+    await expect(search.locator('[data-conversation-query-token="tag"]')).toHaveCount(2);
     await expect(row(page, alpha.conversationId)).toBeVisible();
-    await expect(row(page, beta.conversationId)).toHaveCount(0);
+    await expect(row(page, beta.conversationId)).not.toBeVisible();
 
-    // Clearing the search clears the filter with it: one input, one state.
+    // Escape clears free text while retaining structured terms.
+    await search.pressSequentially("temporary text");
+    await expectQuery(search, "tag:tf-shared tag:tf-alpha temporary text");
+    await search.press("Escape");
+    await expectQuery(search, "tag:tf-shared tag:tf-alpha ");
+    await expect(row(page, beta.conversationId)).not.toBeVisible();
     await search.fill("");
     await expect(row(page, alpha.conversationId)).toBeVisible();
     await expect(row(page, beta.conversationId)).toBeVisible();
@@ -155,21 +172,23 @@ test.describe("Tag filter", () => {
     await expect(option(page, "kb-only")).toBeVisible();
     // Enter takes the highlighted entry.
     await page.keyboard.press("Enter");
-    await expect(search).toHaveValue("tag:kb-only ");
+    await expectQuery(search, "tag:kb-only ");
     await expect(panel(page)).toHaveCount(0);
 
     // Escape closes the dropdown first, keeping the query intact...
-    await search.fill("tag:kb-only tag:");
+    await page.getByRole("button", { name: "Add tag filter" }).click();
+    await expectQuery(search, "tag:kb-only tag:");
     await expect(panel(page)).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(panel(page)).toHaveCount(0);
-    await expect(search).toHaveValue("tag:kb-only tag:");
+    await expectQuery(search, "tag:kb-only tag:");
     // ...and the dropdown does not spring back until the term changes.
     await expect(panel(page)).toHaveCount(0);
 
-    // A second Escape clears the query, a third closes the search box.
+    // A second Escape clears the partial term, a third closes the search box
+    // while retaining the committed pill.
     await page.keyboard.press("Escape");
-    await expect(search).toHaveValue("");
+    await expectQuery(search, "tag:kb-only ");
     await page.keyboard.press("Escape");
     await expect(searchBox(page)).toHaveCount(0);
   });
@@ -192,26 +211,29 @@ test.describe("Tag filter", () => {
     // Text and tag in one query: both must hold.
     await search.fill("kumquat tag:sf-keep ");
     await expect(row(page, hit.conversationId)).toBeVisible();
-    await expect(row(page, other.conversationId)).toHaveCount(0);
+    await expect(row(page, other.conversationId)).not.toBeVisible();
 
     // Order does not matter -- they are ANDed predicates, not a pipeline.
+    await page.locator(".drawer-search-clear").click();
     await search.fill("tag:sf-keep kumquat");
     await expect(row(page, hit.conversationId)).toBeVisible();
-    await expect(row(page, other.conversationId)).toHaveCount(0);
+    await expect(row(page, other.conversationId)).not.toBeVisible();
 
     // A search that matches nothing is a search miss, NOT a filter miss: the
     // filter is only to blame when clearing it would bring rows back.
+    await page.locator(".drawer-search-clear").click();
     await search.fill("zzz-no-such-conversation-zzz tag:sf-keep ");
     await expect(page.getByTestId("tag-filter-empty")).toHaveCount(0);
     await expect(page.locator(".drawer-empty-state")).toContainText("No matching conversations");
 
     // A search that DOES match, whose hits the tag then removes, IS a filter
     // miss -- and its clear action keeps the text but drops the tags.
+    await page.locator(".drawer-search-clear").click();
     await search.fill("kumquat marker tag:sf-drop ");
     await expect(page.getByTestId("tag-filter-empty")).toBeVisible();
     await page.getByTestId("tag-filter-empty-clear").click();
     // The free text survives; only the tag terms are dropped.
-    await expect(search).toHaveValue("kumquat marker ");
+    await expectQuery(search, "kumquat marker ");
     await expect(row(page, hit.conversationId)).toBeVisible();
   });
 
@@ -369,9 +391,9 @@ test.describe("Tag filter", () => {
     await expect(chip).toBeVisible();
     await chip.click();
 
-    await expect(searchBox(page)).toHaveValue("tag:chip-tag ");
+    await expectQuery(searchBox(page), "tag:chip-tag ");
     await expect(row(page, inRepo.conversationId)).toBeVisible();
-    await expect(row(page, outOfRepo.conversationId)).toHaveCount(0);
+    await expect(row(page, outOfRepo.conversationId)).not.toBeVisible();
     // Clicking a chip must not also navigate away from the current chat.
     await expect(page).toHaveURL(new RegExp(`/c/${inRepo.slug}$`));
     await expect(chip).toHaveAttribute("aria-pressed", "true");
@@ -387,7 +409,7 @@ test.describe("Tag filter", () => {
 
     // Clicking the same chip again removes its term.
     await chip.click();
-    await expect(searchBox(page)).toHaveValue("");
+    await expectQuery(searchBox(page), "");
     await expect(row(page, outOfRepo.conversationId)).toBeVisible();
   });
 
@@ -412,13 +434,13 @@ test.describe("Tag filter", () => {
       .getByTestId("conversation-tag-chip")
       .filter({ hasText: "sp tag" });
     await chip.click();
-    await expect(searchBox(page)).toHaveValue('tag:"sp tag" ');
+    await expectQuery(searchBox(page), 'tag:"sp tag" ');
     await expect(row(page, spaced.conversationId)).toBeVisible();
-    await expect(row(page, plain.conversationId)).toHaveCount(0);
+    await expect(row(page, plain.conversationId)).not.toBeVisible();
 
     // …and clicking it again removes the whole quoted term.
     await chip.click();
-    await expect(searchBox(page)).toHaveValue("");
+    await expectQuery(searchBox(page), "");
 
     // Completing from the dropdown quotes too, and typing inside an open
     // quote — space included — keeps narrowing instead of committing.
@@ -426,9 +448,9 @@ test.describe("Tag filter", () => {
     await search.fill('tag:"sp t');
     await expect(option(page, "sp tag")).toBeVisible();
     await page.keyboard.press("Enter");
-    await expect(search).toHaveValue('tag:"sp tag" ');
+    await expectQuery(search, 'tag:"sp tag" ');
     await expect(row(page, spaced.conversationId)).toBeVisible();
-    await expect(row(page, plain.conversationId)).toHaveCount(0);
+    await expect(row(page, plain.conversationId)).not.toBeVisible();
 
     // A tag containing a quote mark is backslash-escaped, and round-trips
     // through its chip the same way.
@@ -439,11 +461,11 @@ test.describe("Tag filter", () => {
       `[data-testid="conversation-tag-chip"][data-tag='${quoted}']`,
     );
     await quoteChip.click();
-    await expect(searchBox(page)).toHaveValue('tag:"sp\\" quote" ');
+    await expectQuery(searchBox(page), 'tag:"sp\\" quote" ');
     await expect(row(page, spaced.conversationId)).toBeVisible();
-    await expect(row(page, plain.conversationId)).toHaveCount(0);
+    await expect(row(page, plain.conversationId)).not.toBeVisible();
     await quoteChip.click();
-    await expect(searchBox(page)).toHaveValue("");
+    await expectQuery(searchBox(page), "");
   });
 
   test("is:untagged filters to untagged, in its own namespace", async ({ page, request }) => {
@@ -473,25 +495,25 @@ test.describe("Tag filter", () => {
     // Matched by test id, not by text: this very test creates a tag named
     // "untagged", so "the option reading Untagged" is genuinely ambiguous.
     await page.getByTestId("tag-filter-untagged-option").click();
-    await expect(search).toHaveValue("is:untagged ");
+    await expectQuery(search, "is:untagged ");
 
     await expect(row(page, bare.conversationId)).toBeVisible();
-    await expect(row(page, tagged.conversationId)).toHaveCount(0);
+    await expect(row(page, tagged.conversationId)).not.toBeVisible();
     // The conversation tagged #untagged HAS a tag, so it is excluded.
-    await expect(row(page, literal.conversationId)).toHaveCount(0);
+    await expect(row(page, literal.conversationId)).not.toBeVisible();
 
     // ...and that tag stays addressable on its own terms, meaning the
     // opposite: only the conversation carrying it.
     await search.fill("tag:untagged ");
     await expect(row(page, literal.conversationId)).toBeVisible();
-    await expect(row(page, bare.conversationId)).toHaveCount(0);
+    await expect(row(page, bare.conversationId)).not.toBeVisible();
 
     // Contradictory query: nothing has a tag and no tags.
     await search.fill("is:untagged tag:ut-real ");
     await expect(page.getByTestId("tag-filter-empty")).toBeVisible();
     // Its clear action drops both terms.
     await page.getByTestId("tag-filter-empty-clear").click();
-    await expect(search).toHaveValue("");
+    await expectQuery(search, "");
   });
 
   test("tag groups are ordered by first tag, then second", async ({ page, request }) => {
@@ -589,8 +611,8 @@ test.describe("Tag filter", () => {
     const search = await openSearch(page);
     await search.fill("tag:gt-blue ");
     await expect(row(page, both.conversationId)).toBeVisible();
-    await expect(row(page, single.conversationId)).toHaveCount(0);
-    await expect(row(page, none.conversationId)).toHaveCount(0);
+    await expect(row(page, single.conversationId)).not.toBeVisible();
+    await expect(row(page, none.conversationId)).not.toBeVisible();
     await expect(pairGroup.locator(".conversation-group-label")).toHaveText("#gt-blue #gt-red");
   });
 

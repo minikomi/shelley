@@ -38,3 +38,22 @@ function participantEmails(conversation: ConversationWithParticipantList): strin
   );
   return [...folded].sort();
 }
+
+export function filterConversationsByParticipantQuery<T extends ConversationWithParticipantList>(
+  conversations: T[],
+  selectedUsers: readonly string[],
+  includeUnattributed: boolean,
+): T[] {
+  const users = new Set(selectedUsers.map(foldEmail).filter(Boolean));
+  if (users.size === 0 && !includeUnattributed) return conversations;
+  return conversations.filter((conversation) => {
+    // Subagents ride with their parent; a draft has no messages yet, so no
+    // participants, and must not vanish under the default current-user filter.
+    if (conversation.parent_conversation_id || conversation.is_draft) return true;
+    const participants =
+      conversation.participants?.map(({ email }) => foldEmail(email)).filter(Boolean) ?? [];
+    if (includeUnattributed) return users.size === 0 && participants.length === 0;
+    const participantSet = new Set(participants);
+    return [...users].every((email) => participantSet.has(email));
+  });
+}

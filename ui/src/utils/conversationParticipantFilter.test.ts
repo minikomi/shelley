@@ -1,5 +1,6 @@
 import type { ConversationWithState } from "../types";
 import {
+  filterConversationsByParticipantQuery,
   hasMultiParticipantConversation,
   hasOtherParticipant,
 } from "./conversationParticipantFilter";
@@ -40,10 +41,44 @@ assert(
 );
 assert(!hasOtherParticipant(corpus, ""), "an unauthenticated request cannot enable the filter");
 
+const filtered = filterConversationsByParticipantQuery(corpus, ["me@example.com"], false);
+assert(
+  filtered.map((item) => item.conversation_id).join(",") === "current,shared,subagent,draft",
+  "matches a selected user without filtering subagents or drafts",
+);
+assert(
+  filterConversationsByParticipantQuery(corpus, ["OTHER@example.com"], false)
+    .map((item) => item.conversation_id)
+    .join(",") === "shared,other,subagent,draft",
+  "matches selected users case-insensitively",
+);
+assert(
+  filterConversationsByParticipantQuery(corpus, ["me@example.com", "other@example.com"], false)
+    .map((item) => item.conversation_id)
+    .join(",") === "shared,subagent,draft",
+  "multiple users use AND semantics",
+);
+assert(
+  filterConversationsByParticipantQuery(corpus, [], true)
+    .map((item) => item.conversation_id)
+    .join(",") === "unattributed,empty,subagent,draft",
+  "unattributed can stand alone",
+);
+assert(
+  filterConversationsByParticipantQuery(corpus, ["me@example.com"], true)
+    .map((item) => item.conversation_id)
+    .join(",") === "subagent,draft",
+  "unattributed is mutually exclusive with user constraints",
+);
+assert(
+  filterConversationsByParticipantQuery(corpus, [], false) === corpus,
+  "an empty participant facet is a no-op",
+);
+
 assert(hasMultiParticipantConversation(corpus), "detects a multi-participant conversation");
 assert(
   !hasMultiParticipantConversation([current, other, unattributed, empty]),
   "disjoint single-user conversations are not multi-participant",
 );
 
-console.log("✓ conversation participant detection");
+console.log("✓ conversation participant detection and filtering");

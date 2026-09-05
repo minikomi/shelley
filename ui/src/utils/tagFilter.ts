@@ -7,6 +7,14 @@
 // rows.
 import type { Conversation } from "../types";
 import { parseTags } from "../vue/components/conversationDrawerShared";
+import {
+  decodeTagQueryValue,
+  scanConversationQuery,
+  UNATTRIBUTED_TERM,
+  UNTAGGED_TERM,
+} from "./conversationQuery";
+
+export { UNATTRIBUTED_TERM, UNTAGGED_TERM } from "./conversationQuery";
 
 // The comparison key for a tag. Empty string means "not a tag".
 export function foldTag(tag: string): string {
@@ -46,6 +54,7 @@ export function filterConversationsByTags<T extends Conversation>(
   const wanted = foldedSelection(selected);
   if (wanted.length === 0) return conversations;
   return conversations.filter((conversation) => {
+    if (conversation.parent_conversation_id) return true;
     const has = foldedTagSet(conversation);
     return wanted.every((tag) => has.has(tag));
   });
@@ -59,7 +68,10 @@ export function filterConversationsByQuery<T extends Conversation>(
 ): T[] {
   const byTag = filterConversationsByTags(conversations, query.tags);
   if (!query.untaggedOnly) return byTag;
-  return byTag.filter((conversation) => foldedTagSet(conversation).size === 0);
+  return byTag.filter(
+    (conversation) =>
+      !!conversation.parent_conversation_id || foldedTagSet(conversation).size === 0,
+  );
 }
 
 // Whether the query narrows by tag at all. Drives "is the tag filter to blame
@@ -71,7 +83,7 @@ export function queryHasTagFilter(query: TagQuery): boolean {
 // Removes `is:untagged` from a query, leaving everything else alone.
 export function removeUntaggedFromQuery(raw: string): string {
   const kept = tokenize(raw).terms.filter((term) => term.toLowerCase() !== UNTAGGED_TERM);
-  return kept.length === 0 ? "" : kept.join(" ") + " ";
+  return joinTermsAfterRemoval(raw, kept);
 }
 
 export type TagQuery = Pick<ParsedQuery, "tags" | "untaggedOnly">;
@@ -144,6 +156,22 @@ export function tagMatchesQuery(tag: string, query: string): boolean {
   return foldTag(tag).includes(needle);
 }
 
+// The picker's ranking: an entry whose value is exactly what was typed moves
+// to the front regardless of count, so Space/Enter commits the typed value
+// rather than a more popular tag or email that merely starts with it.
+export function rankExactMatchFirst<T>(
+  offers: T[],
+  value: (offer: T) => string,
+  typed: string,
+): T[] {
+  const needle = typed.trim().toLowerCase();
+  const exact = needle
+    ? offers.findIndex((offer) => value(offer).trim().toLowerCase() === needle)
+    : -1;
+  if (exact <= 0) return offers;
+  return [offers[exact], ...offers.slice(0, exact), ...offers.slice(exact + 1)];
+}
+
 // --- The `tag:` search-query syntax ---
 //
 // Tags are typed into the ordinary search box: `tag:infra auth bug` means
@@ -154,20 +182,27 @@ export function tagMatchesQuery(tag: string, query: string): boolean {
 // `tag:untagged` would collide with a tag actually named "untagged".
 
 const TAG_PREFIX = "tag:";
-export const UNTAGGED_TERM = "is:untagged";
+const USER_PREFIX = "user:";
 
 export interface ParsedQuery {
   // Committed tags (followed by a space or another term), in the order typed.
   tags: string[];
+  // Committed participant emails. Participant terms form one AND facet.
+  users: string[];
   // Everything that was not a `tag:` term, for the full-text search.
   text: string;
   // True when `is:untagged` is present: keep only conversations with no tags.
   untaggedOnly: boolean;
+  // True when unattributed conversations are included in the participant facet.
+  includeUnattributed: boolean;
   // The half-typed trailing `tag:` term — a bare `tag:`, or a partial
   // `tag:inf`. Deliberately NOT part of `tags`: a half-typed tag matches no
   // conversation, so filtering on it would empty the list and starve the
   // dropdown computed from what survives. It queries the vocabulary instead.
   activeTagPrefix: string | null;
+  // The equivalent half-typed trailing `user:` term, used by participant
+  // autocomplete.
+  activeUserPrefix: string | null;
 }
 
 // Splits a raw query into whitespace-separated terms, except that a double
@@ -177,60 +212,23 @@ export interface ParsedQuery {
 // runs to the end of the string, which is the still-being-typed case, and
 // also means the caret is mid-term regardless of a trailing space.
 function tokenize(raw: string): { terms: string[]; endsMidTerm: boolean } {
-  const terms: string[] = [];
-  let current = "";
-  let inQuote = false;
-  let escaped = false;
-  for (const ch of raw) {
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-    if (inQuote && ch === "\\") {
-      escaped = true;
-      current += ch;
-      continue;
-    }
-    if (ch === '"') {
-      inQuote = !inQuote;
-      current += ch;
-      continue;
-    }
-    if (!inQuote && /\s/.test(ch)) {
-      if (current !== "") {
-        terms.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += ch;
-  }
-  if (current !== "") terms.push(current);
-  return { terms, endsMidTerm: current !== "" };
+  const scanned = scanConversationQuery(raw);
+  return { terms: scanned.terms.map((term) => term.raw), endsMidTerm: scanned.endsMidTerm };
+}
+
+function foldEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export function formatUserTerm(email: string): string {
+  return `${USER_PREFIX}${email.trim()}`;
 }
 
 // Strips the quotes and backslash escapes from a `tag:` term's value.
 // Tolerates an unterminated quote (`"in prog`) so mid-typing still yields a
 // usable prefix, including a trailing lone backslash (an escape being typed).
 function unquoteTagValue(value: string): string {
-  if (!value.startsWith('"')) return value;
-  let out = "";
-  let escaped = false;
-  for (const ch of value.slice(1)) {
-    if (escaped) {
-      out += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') break;
-    out += ch;
-  }
-  return out;
+  return decodeTagQueryValue(value);
 }
 
 // The token for one tag, quoted only when it has to be: tags can contain
@@ -246,16 +244,38 @@ export function formatTagTerm(tag: string): string {
 // Splits a raw search query into tag terms and free text.
 export function parseSearchQuery(raw: string): ParsedQuery {
   const tags: string[] = [];
-  const seen = new Set<string>();
+  const seenTags = new Set<string>();
+  const users: string[] = [];
+  const seenUsers = new Set<string>();
   const words: string[] = [];
   const { terms, endsMidTerm } = tokenize(raw);
   let untaggedOnly = false;
+  let includeUnattributed = false;
   terms.forEach((term, i) => {
-    if (term.toLowerCase() === UNTAGGED_TERM) {
+    const lower = term.toLowerCase();
+    if (lower === UNTAGGED_TERM) {
       untaggedOnly = true;
       return;
     }
-    if (!term.toLowerCase().startsWith(TAG_PREFIX)) {
+    if (lower === UNATTRIBUTED_TERM) {
+      includeUnattributed = true;
+      return;
+    }
+    if (lower.startsWith(USER_PREFIX)) {
+      if (i === terms.length - 1 && endsMidTerm) return;
+      const value = term.slice(USER_PREFIX.length).trim();
+      const folded = foldEmail(value);
+      if (!folded) {
+        words.push(term);
+        return;
+      }
+      if (!seenUsers.has(folded)) {
+        seenUsers.add(folded);
+        users.push(value);
+      }
+      return;
+    }
+    if (!lower.startsWith(TAG_PREFIX)) {
       words.push(term);
       return;
     }
@@ -263,8 +283,8 @@ export function parseSearchQuery(raw: string): ParsedQuery {
     const folded = foldTag(value);
     // The final term keeps its own line below; everything else is committed.
     if (i === terms.length - 1 && endsMidTerm) return;
-    if (!folded || seen.has(folded)) return;
-    seen.add(folded);
+    if (!folded || seenTags.has(folded)) return;
+    seenTags.add(folded);
     tags.push(value.trim());
   });
 
@@ -273,8 +293,20 @@ export function parseSearchQuery(raw: string): ParsedQuery {
   if (endsMidTerm && last && last.toLowerCase().startsWith(TAG_PREFIX)) {
     activeTagPrefix = unquoteTagValue(last.slice(TAG_PREFIX.length));
   }
+  let activeUserPrefix: string | null = null;
+  if (endsMidTerm && last && last.toLowerCase().startsWith(USER_PREFIX)) {
+    activeUserPrefix = last.slice(USER_PREFIX.length);
+  }
 
-  return { tags, text: words.join(" "), untaggedOnly, activeTagPrefix };
+  return {
+    tags,
+    users,
+    text: words.join(" "),
+    untaggedOnly,
+    includeUnattributed,
+    activeTagPrefix,
+    activeUserPrefix,
+  };
 }
 
 // Replaces the `tag:` term the caret sits in with `term`, followed by a space
@@ -282,11 +314,29 @@ export function parseSearchQuery(raw: string): ParsedQuery {
 // chosen — `term` is a full token (`tag:infra`, `tag:"in progress"`, or
 // `is:untagged`).
 export function completeTermInQuery(raw: string, term: string): string {
-  const { terms, endsMidTerm } = tokenize(raw);
+  const { terms, endsMidTerm } = scanConversationQuery(raw);
   const last = terms[terms.length - 1];
-  const replacing = last !== undefined && last.toLowerCase().startsWith(TAG_PREFIX) && endsMidTerm;
-  const kept = replacing ? terms.slice(0, -1) : terms;
-  return [...kept, term].join(" ") + " ";
+  const replacing =
+    last !== undefined &&
+    (last.raw.toLowerCase().startsWith(TAG_PREFIX) ||
+      last.raw.toLowerCase().startsWith(USER_PREFIX)) &&
+    endsMidTerm;
+  if (replacing && last) return raw.slice(0, last.start) + term + " ";
+  const separator = raw === "" || /\s$/.test(raw) ? "" : " ";
+  return raw + separator + term + " ";
+}
+
+// Starts one structured filter term, replacing any other half-typed trailing
+// tag/user term so repeated action clicks cannot accumulate prefixes.
+export function startFilterTermInQuery(raw: string, term: "tag:" | "user:"): string {
+  const { terms, endsMidTerm } = scanConversationQuery(raw);
+  const last = terms[terms.length - 1];
+  const lower = last?.raw.toLowerCase() ?? "";
+  if (endsMidTerm && last && (lower.startsWith(TAG_PREFIX) || lower.startsWith(USER_PREFIX))) {
+    return raw.slice(0, last.start) + term;
+  }
+  const separator = raw === "" || /\s$/.test(raw) ? "" : " ";
+  return raw + separator + term;
 }
 
 // Removes every `tag:` term matching `tag`, leaving the rest of the query
@@ -297,7 +347,33 @@ export function removeTagFromQuery(raw: string, tag: string): string {
     if (!term.toLowerCase().startsWith(TAG_PREFIX)) return true;
     return foldTag(unquoteTagValue(term.slice(TAG_PREFIX.length))) !== target;
   });
-  return kept.length === 0 ? "" : kept.join(" ") + " ";
+  return joinTermsAfterRemoval(raw, kept);
+}
+
+export function removeUserFromQuery(raw: string, email: string): string {
+  const target = foldEmail(email);
+  const { terms, endsMidTerm } = tokenize(raw);
+  const kept = terms.filter((term, i) => {
+    if (!term.toLowerCase().startsWith(USER_PREFIX)) return true;
+    if (i === terms.length - 1 && endsMidTerm) return true;
+    return foldEmail(term.slice(USER_PREFIX.length)) !== target;
+  });
+  return joinTermsAfterRemoval(raw, kept);
+}
+
+export function removeUnattributedFromQuery(raw: string): string {
+  const kept = tokenize(raw).terms.filter((term) => term.toLowerCase() !== UNATTRIBUTED_TERM);
+  return joinTermsAfterRemoval(raw, kept);
+}
+
+function joinTermsAfterRemoval(raw: string, kept: string[]): string {
+  if (kept.length === 0) return "";
+  // Keep the existing trailing-space behavior for ordinary completed queries,
+  // but do not let chip removal commit a half-typed trailing structured term.
+  const { terms, endsMidTerm } = tokenize(raw);
+  const last = terms[terms.length - 1]?.toLowerCase() ?? "";
+  const active = endsMidTerm && (last.startsWith(TAG_PREFIX) || last.startsWith(USER_PREFIX));
+  return kept.join(" ") + (active ? "" : " ");
 }
 
 // Adds `tag:<tag>` to a query, or removes it if already present. Used by the

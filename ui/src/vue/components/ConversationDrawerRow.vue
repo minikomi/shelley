@@ -476,6 +476,7 @@ function participantIdentityIcon(current: boolean): string {
 }
 const participantTooltipHtml = computed(() => {
   const current = window.__SHELLEY_INIT__?.user_email?.trim().toLowerCase();
+  const selected = new Set(ctx.selectedUsers.value.map((email) => email.trim().toLowerCase()));
   const rows = participantSummaries.value
     .slice()
     .sort(
@@ -485,7 +486,8 @@ const participantTooltipHtml = computed(() => {
     )
     .map(({ email, message_count }) => {
       const folded = email.toLowerCase();
-      const label = escapeHTML(email);
+      const escaped = escapeHTML(email);
+      const label = selected.has(folded) ? `<strong>${escaped}</strong>` : escaped;
       const marker = participantIdentityIcon(!!current && folded === current);
       return `<span class="conversation-participant-tooltip-row">${marker}<span>${label}</span><span class="conversation-participant-tooltip-count">${message_count}</span></span>`;
     })

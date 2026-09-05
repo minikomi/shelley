@@ -6,10 +6,16 @@ import {
   completeTermInQuery,
   filterConversationsByQuery,
   formatTagTerm,
+  formatUserTerm,
   matchTags,
   offeredTags,
   parseSearchQuery,
+  rankExactMatchFirst,
   removeTagFromQuery,
+  removeUnattributedFromQuery,
+  removeUntaggedFromQuery,
+  removeUserFromQuery,
+  startFilterTermInQuery,
   tagGroupKey,
   tagGroupLabel,
   tagMatchesQuery,
@@ -88,6 +94,24 @@ run("AND semantics across one, two and three tags", () => {
 run("untagged conversations drop out as soon as any tag is selected", () => {
   assert(!ids(filterConversationsByTags(corpus, ["docs"])).includes("e"), "untagged excluded");
   assert(ids(filterConversationsByTags(corpus, [])).includes("e"), "untagged kept when unfiltered");
+});
+
+run("tag filters never remove subagents", () => {
+  const subagent = conv("subagent", ["other"]);
+  subagent.parent_conversation_id = "a";
+  assert(
+    ids(filterConversationsByTags([...corpus, subagent], ["infra"])) === "a,b,subagent",
+    "selected tags retain subagents",
+  );
+  assert(
+    ids(
+      filterConversationsByQuery([...corpus, subagent], {
+        tags: [],
+        untaggedOnly: true,
+      }),
+    ) === "e,subagent",
+    "untagged retains subagents",
+  );
 });
 
 run("a non-co-occurring combination yields nothing", () => {
@@ -204,6 +228,35 @@ run("tagMatchesQuery does folded substring matching", () => {
   assert(!tagMatchesQuery("docs", "infra"), "no match");
 });
 
+run("rankExactMatchFirst puts the typed value ahead of more popular superstrings", () => {
+  // `alpha` is used once, `alpha-more` three times: count order would commit
+  // the wrong tag on Space/Enter after typing exactly `alpha`.
+  const pool = [
+    conv("1", ["alpha-more"]),
+    conv("2", ["alpha-more"]),
+    conv("3", ["alpha-more", "alpha"]),
+  ];
+  const byCount = offeredTags(pool, []);
+  assertEqual(
+    byCount.map((o) => o.tag),
+    ["alpha-more", "alpha"],
+    "count order alone ranks the superstring first",
+  );
+  const rank = (typed: string) =>
+    rankExactMatchFirst(byCount, (o) => o.tag, typed).map((o) => o.tag);
+  assertEqual(rank("alpha"), ["alpha", "alpha-more"], "exact typed value first");
+  assertEqual(rank(" ALPHA "), ["alpha", "alpha-more"], "exactness folds case and whitespace");
+  assertEqual(rank("alph"), ["alpha-more", "alpha"], "a mere prefix keeps count order");
+  assertEqual(rank(""), ["alpha-more", "alpha"], "nothing typed keeps count order");
+  assert(rankExactMatchFirst(byCount, (o) => o.tag, "alph") === byCount, "no-op keeps reference");
+  const users = [{ email: "me@x.com.au" }, { email: "Me@x.com" }];
+  assertEqual(
+    rankExactMatchFirst(users, (u) => u.email, "me@x.com").map((u) => u.email),
+    ["Me@x.com", "me@x.com.au"],
+    "emails rank the same way",
+  );
+});
+
 run("foldTag trims and lowercases", () => {
   assert(foldTag("  Infra ") === "infra", "fold");
   assert(foldTag("   ") === "", "blank folds to empty");
@@ -219,7 +272,58 @@ run("parseSearchQuery splits tag terms from free text", () => {
 run("free text alone parses as no tags", () => {
   const q = parseSearchQuery("just searching");
   assertEqual(q.tags, [], "no tags");
+  assertEqual(q.users, [], "no users");
   assert(q.text === "just searching", "text");
+});
+
+run("participant terms parse as a case-folded AND facet", () => {
+  const q = parseSearchQuery(
+    "user:Me@example.com user:other@example.com USER:me@example.com is:unattributed ",
+  );
+  assertEqual(q.users, ["Me@example.com", "other@example.com"], "users dedupe by folded email");
+  assert(q.includeUnattributed, "unattributed included");
+  assert(q.text === "", "structured terms do not leak into FTS");
+});
+
+run("a trailing user term stays visible and drives autocomplete until committed", () => {
+  const partial = parseSearchQuery("deploy user:me@example.com");
+  assertEqual(partial.users, [], "trailing user is not committed");
+  assert(partial.text === "deploy", "partial stays out of FTS text");
+  assert(partial.activeUserPrefix === "me@example.com", "partial drives user autocomplete");
+
+  const committed = parseSearchQuery("deploy user:me@example.com ");
+  assertEqual(committed.users, ["me@example.com"], "space commits the user");
+  assert(committed.text === "deploy", "committed user leaves FTS text");
+  assert(committed.activeUserPrefix === null, "committed user closes autocomplete");
+});
+
+run("formatUserTerm emits the literal query syntax", () => {
+  assert(formatUserTerm(" me@example.com ") === "user:me@example.com", "trimmed");
+  assert(
+    completeTermInQuery("tag:infra user:me", "user:me@example.com") ===
+      "tag:infra user:me@example.com ",
+    "user completion replaces the active term",
+  );
+});
+
+run("filter actions replace a trailing structured prefix", () => {
+  assert(
+    startFilterTermInQuery("user:me@example.com user:", "tag:") === "user:me@example.com tag:",
+    "tag replaces user",
+  );
+  assert(
+    startFilterTermInQuery("user:me@example.com tag:", "user:") === "user:me@example.com user:",
+    "user replaces tag",
+  );
+  assert(
+    startFilterTermInQuery("user:me@example.com user:", "user:") === "user:me@example.com user:",
+    "repeated click is idempotent",
+  );
+  assert(
+    startFilterTermInQuery('find  tag:"in progress"  user:par', "tag:") ===
+      'find  tag:"in progress"  tag:',
+    "replacement preserves preceding text, spacing, and quotes",
+  );
 });
 
 run("a bare trailing tag: opens the dropdown and filters nothing", () => {
@@ -361,6 +465,40 @@ run("removeTagFromQuery removes only that tag", () => {
   assert(
     removeTagFromQuery('tag:"in progress" x', "in progress") === "x ",
     "quoted term removed whole",
+  );
+  assert(
+    removeTagFromQuery("tag:infra tag:urg", "infra") === "tag:urg",
+    "does not commit a trailing partial tag",
+  );
+});
+
+run("removeUntaggedFromQuery preserves a trailing partial tag", () => {
+  assert(
+    removeUntaggedFromQuery("is:untagged tag:urg") === "tag:urg",
+    "partial remains uncommitted",
+  );
+  assert(
+    removeUntaggedFromQuery("is:untagged search") === "search ",
+    "normal free text keeps the existing trailing-space behavior",
+  );
+});
+
+run("participant token removal preserves trailing partial terms", () => {
+  assert(
+    removeUserFromQuery(
+      "user:me@example.com is:unattributed tag:infra user:oth",
+      "ME@example.com",
+    ) === "is:unattributed tag:infra user:oth",
+    "removes one user without committing a partial user",
+  );
+  assert(
+    removeUnattributedFromQuery("is:unattributed tag:urg") === "tag:urg",
+    "unattributed removal does not commit a partial tag",
+  );
+  assert(
+    removeUnattributedFromQuery("user:me@example.com is:unattributed search") ===
+      "user:me@example.com search ",
+    "other participant and text terms remain",
   );
 });
 
