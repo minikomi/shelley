@@ -363,7 +363,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, provide, ref, watch } from "vue";
-import type { Conversation, ConversationWithState } from "../../types";
+import type {
+  Conversation,
+  ConversationWithParticipants,
+  ConversationWithState,
+} from "../../types";
 import { api } from "../../services/api";
 import { useI18n } from "../composables/i18n";
 import {
@@ -375,6 +379,10 @@ import {
 } from "../../utils/conversationSort";
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
+import {
+  hasMultiParticipantConversation,
+  hasOtherParticipant,
+} from "../../utils/conversationParticipantFilter";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
 import ConversationRow from "./ConversationDrawerRow.vue";
 import Button from "primevue/button";
@@ -449,7 +457,7 @@ function handleAuxClick(e: MouseEvent, conversation: Conversation) {
 
 // --- State ---
 const showArchived = ref(false);
-const archivedConversations = ref<Conversation[]>([]);
+const archivedConversations = ref<ConversationWithParticipants[]>([]);
 const loadingArchived = ref(false);
 const searchQuery = ref("");
 const searchOpen = ref(false);
@@ -485,6 +493,19 @@ const parsedQuery = computed(() => parseSearchQuery(searchQuery.value));
 const selectedTags = computed(() => parsedQuery.value.tags);
 const searchText = computed(() => parsedQuery.value.text);
 const activeTagPrefix = computed(() => parsedQuery.value.activeTagPrefix);
+const currentUserEmail = window.__SHELLEY_INIT__?.user_email;
+const activeParticipantConversations = computed(() =>
+  props.conversations.filter((conversation) => !conversation.parent_conversation_id),
+);
+// Participant badges are driven by the active list alone: archived rows and
+// search hits arrive asynchronously and would otherwise flip the badges on and
+// off as the user browses. Without a current email, a conversation that itself
+// has several participants is evidence enough to show badges.
+const multipleParticipantsAvailable = computed(
+  () =>
+    hasOtherParticipant(activeParticipantConversations.value, currentUserEmail) ||
+    hasMultiParticipantConversation(activeParticipantConversations.value),
+);
 const highlightIndex = ref(0);
 const searchWrapRef = ref<HTMLElement | null>(null);
 const renameInputRef = ref<HTMLInputElement | null>(null);
@@ -1219,6 +1240,7 @@ onUnmounted(() => {
 provide(DrawerCtxKey, {
   t,
   currentConversationId: computed(() => props.currentConversationId),
+  showParticipantBadges: multipleParticipantsAvailable,
   terminalCounts: computed(() => {
     const counts: Record<string, number> = {};
     for (const tm of props.ephemeralTerminals) {

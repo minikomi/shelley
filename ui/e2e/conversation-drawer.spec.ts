@@ -7,7 +7,11 @@ test.use({
   hasTouch: false,
 });
 
-function conversation(id: string, isDraft = false): ConversationWithState {
+function conversation(
+  id: string,
+  isDraft = false,
+  participants?: Array<string | [string, number]>,
+): ConversationWithState {
   return {
     conversation_id: id,
     slug: isDraft ? null : id,
@@ -29,6 +33,10 @@ function conversation(id: string, isDraft = false): ConversationWithState {
     subagent_count: 0,
     preview: "Preview",
     max_sequence_id: 0,
+    participants: participants?.map((participant) => ({
+      email: typeof participant === "string" ? participant : participant[0],
+      message_count: typeof participant === "string" ? 1 : participant[1],
+    })),
   };
 }
 
@@ -36,10 +44,85 @@ async function stubConversationList(page: Page, conversations: ConversationWithS
   await page.route("**/api/conversations/snapshot", (route) =>
     route.fulfill({ json: { conversations, hash: `test-${conversations.length}` } }),
   );
+  await page.route("**/api/conversations/search**", (route) =>
+    route.fulfill({ json: conversations }),
+  );
   await page.route("**/api/stream2**", (route) => route.abort());
 }
 
 test.describe("conversation drawer startup and app bar", () => {
+  test("single-user lists have no participant filter", async ({ page }) => {
+    await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
+    const mine = conversation("mine", false, ["me@example.com"]);
+    mine.subagent_count = 1;
+    const subagent = conversation("subagent", false, ["other@example.com"]);
+    subagent.parent_conversation_id = mine.conversation_id;
+    await stubConversationList(page, [mine, subagent, conversation("draft", true)]);
+
+    await page.goto("/new");
+
+    await expect(page.locator(".drawer-search-input")).toHaveCount(0);
+    const searchToggle = page.getByRole("button", { name: "Search conversations..." });
+    await expect(searchToggle).not.toHaveClass(/search-toggle-active/);
+    await expect(page.locator(".conversation-participant-badge")).toHaveCount(0);
+    await expect(page.locator('[data-conversation-id="mine"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="draft"]')).toBeVisible();
+  });
+
+  test("participant badges name everyone who wrote in a conversation", async ({ page }) => {
+    await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
+    await stubConversationList(page, [
+      conversation("mine", false, [
+        ["collaborator@example.com", 2],
+        ["me@example.com", 3],
+      ]),
+      conversation("other", false, ["other@example.com"]),
+    ]);
+
+    await page.goto("/new");
+
+    const mineBadge = page.locator('[data-conversation-id="mine"] .conversation-participant-badge');
+    await expect(mineBadge).toContainText("2");
+    await expect(mineBadge.locator(".conversation-participant-badge-front-filled")).toHaveCount(1);
+    await mineBadge.click();
+    await expect(page.locator(".p-tooltip")).toContainText("collaborator@example.com");
+    await expect(
+      page.locator(".p-tooltip .conversation-participant-tooltip-identity-current"),
+    ).toHaveCount(1);
+    await expect(page.locator(".p-tooltip .conversation-participant-tooltip-identity")).toHaveCount(
+      2,
+    );
+    // Rows are ordered by authored-message count, with the count alongside.
+    const tooltipRows = page.locator(".p-tooltip .conversation-participant-tooltip-row");
+    await expect(tooltipRows.nth(0)).toContainText("me@example.com");
+    await expect(tooltipRows.nth(1)).toContainText("collaborator@example.com");
+    await expect(
+      tooltipRows
+        .filter({ hasText: "me@example.com" })
+        .locator(".conversation-participant-tooltip-count"),
+    ).toHaveText("3");
+    // A conversation whose only participant is someone else still gets a badge.
+    await expect(
+      page
+        .locator('[data-conversation-id="other"]')
+        .getByRole("button", { name: "other@example.com" }),
+    ).toContainText("1");
+  });
+
+  test("participant UI appears without a current user when a chat has several", async ({
+    page,
+  }) => {
+    await stubConversationList(page, [
+      conversation("shared", false, ["alice@example.com", "bob@example.com"]),
+      conversation("solo", false, ["alice@example.com"]),
+    ]);
+
+    await page.goto("/new");
+    await expect(
+      page.locator('[data-conversation-id="shared"] .conversation-participant-badge'),
+    ).toContainText("2");
+  });
+
   test("starts expanded even when the only item is a draft", async ({ page }) => {
     await stubConversationList(page, [conversation("draft", true)]);
 

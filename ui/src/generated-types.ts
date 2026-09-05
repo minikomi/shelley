@@ -76,6 +76,11 @@ export interface StreamResponseForTS {
   max_sequence_id?: number;
 }
 
+export interface ConversationParticipant {
+  email: string;
+  message_count: number;
+}
+
 export interface ConversationWithStateForTS {
   conversation_id: string;
   slug: string | null;
@@ -103,7 +108,7 @@ export interface ConversationWithStateForTS {
   preview_updated_at?: string;
   search_snippet?: string;
   max_sequence_id: number;
-  participants?: string[] | null;
+  participants?: ConversationParticipant[] | null;
 }
 
 export type MessageType =

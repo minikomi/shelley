@@ -621,6 +621,104 @@ body {
   color: var(--text);
 }
 
+.conversation-participant-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.125rem;
+  margin-left: auto;
+  padding: 0 0.25rem;
+  border: none;
+  border-radius: 0.25rem;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.conversation-participant-badge-icon {
+  width: 0.625rem;
+  height: 0.625rem;
+}
+
+.conversation-participant-badge-front-filled {
+  fill: currentColor;
+  fill-opacity: 0.48;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.conversation-participant-tooltip-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.conversation-participant-tooltip-row {
+  display: grid;
+  grid-template-columns: 0.625rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.conversation-participant-tooltip-identity {
+  display: inline-flex;
+  width: 0.625rem;
+  height: 0.625rem;
+  color: currentColor;
+}
+
+.conversation-participant-tooltip-identity svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+}
+
+.conversation-participant-tooltip-identity-current svg {
+  fill: currentColor;
+  stroke-width: 1.5;
+  opacity: 0.9;
+}
+
+.conversation-participant-tooltip-count {
+  margin-left: 0.75rem;
+  color: #aeb4be;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.conversation-terminal-count + .conversation-participant-badge,
+.conversation-participant-badge + .subagent-count-badge {
+  margin-left: 0;
+}
+
+.conversation-participant-badge:hover {
+  background: var(--gray-200);
+  color: var(--text-primary);
+}
+
+.dark .conversation-participant-badge:hover {
+  background: var(--gray-600);
+}
+
+.conversation-item.active .conversation-participant-badge {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.conversation-item.active .conversation-participant-badge:hover {
+  background: rgba(255, 255, 255, 0.25);
+  color: white;
+}
+
 /* Snippet shown in place of the preview for FTS search results.
    Wraps to two lines (instead of the single-line preview) so the
    highlighted match has a real chance of staying on screen. */

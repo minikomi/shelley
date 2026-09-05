@@ -642,9 +642,16 @@ SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, 
      WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(DISTINCT m.user_email) FROM messages m
-     WHERE m.conversation_id = c.conversation_id
-       AND m.user_email IS NOT NULL AND m.user_email <> ''), '[]') AS TEXT) AS participants_json
+    SELECT json_group_array(json_object(
+             'email', participant.user_email,
+             'message_count', participant.message_count))
+      FROM (
+        SELECT m.user_email, COUNT(*) AS message_count
+          FROM messages m
+         WHERE m.conversation_id = c.conversation_id
+           AND m.user_email IS NOT NULL AND m.user_email <> ''
+         GROUP BY m.user_email
+      ) participant), '[]') AS TEXT) AS participants_json
 FROM conversations c
 WHERE c.archived = FALSE
 ORDER BY c.updated_at DESC
@@ -794,9 +801,16 @@ SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, 
   -- Rides idx_messages_participants (a partial covering index over authored
   -- messages), so this costs one index seek per listed conversation.
   CAST(COALESCE((
-    SELECT json_group_array(DISTINCT m.user_email) FROM messages m
-     WHERE m.conversation_id = c.conversation_id
-       AND m.user_email IS NOT NULL AND m.user_email <> ''), '[]') AS TEXT) AS participants_json
+    SELECT json_group_array(json_object(
+             'email', participant.user_email,
+             'message_count', participant.message_count))
+      FROM (
+        SELECT m.user_email, COUNT(*) AS message_count
+          FROM messages m
+         WHERE m.conversation_id = c.conversation_id
+           AND m.user_email IS NOT NULL AND m.user_email <> ''
+         GROUP BY m.user_email
+      ) participant), '[]') AS TEXT) AS participants_json
 FROM conversations c
 WHERE c.archived = FALSE AND c.parent_conversation_id IS NULL
 ORDER BY c.updated_at DESC
@@ -983,9 +997,16 @@ SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, 
      WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(DISTINCT m.user_email) FROM messages m
-     WHERE m.conversation_id = c.conversation_id
-       AND m.user_email IS NOT NULL AND m.user_email <> ''), '[]') AS TEXT) AS participants_json
+    SELECT json_group_array(json_object(
+             'email', participant.user_email,
+             'message_count', participant.message_count))
+      FROM (
+        SELECT m.user_email, COUNT(*) AS message_count
+          FROM messages m
+         WHERE m.conversation_id = c.conversation_id
+           AND m.user_email IS NOT NULL AND m.user_email <> ''
+         GROUP BY m.user_email
+      ) participant), '[]') AS TEXT) AS participants_json
 FROM conversations c
 WHERE c.slug LIKE '%' || ? || '%' AND c.archived = FALSE AND c.parent_conversation_id IS NULL
 ORDER BY c.updated_at DESC
@@ -1081,9 +1102,16 @@ SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, 
      WHERE m.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(DISTINCT m.user_email) FROM messages m
-     WHERE m.conversation_id = c.conversation_id
-       AND m.user_email IS NOT NULL AND m.user_email <> ''), '[]') AS TEXT) AS participants_json
+    SELECT json_group_array(json_object(
+             'email', participant.user_email,
+             'message_count', participant.message_count))
+      FROM (
+        SELECT m.user_email, COUNT(*) AS message_count
+          FROM messages m
+         WHERE m.conversation_id = c.conversation_id
+           AND m.user_email IS NOT NULL AND m.user_email <> ''
+         GROUP BY m.user_email
+      ) participant), '[]') AS TEXT) AS participants_json
 FROM conversations c
 WHERE c.parent_conversation_id IS NULL
   AND (
@@ -1241,9 +1269,16 @@ SELECT DISTINCT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.upd
      WHERE pm.conversation_id = c.conversation_id), 0) AS INTEGER) AS max_sequence_id,
   -- See participants_json note on ListConversations.
   CAST(COALESCE((
-    SELECT json_group_array(DISTINCT pm.user_email) FROM messages pm
-     WHERE pm.conversation_id = c.conversation_id
-       AND pm.user_email IS NOT NULL AND pm.user_email <> ''), '[]') AS TEXT) AS participants_json
+    SELECT json_group_array(json_object(
+             'email', participant.user_email,
+             'message_count', participant.message_count))
+      FROM (
+        SELECT pm.user_email, COUNT(*) AS message_count
+          FROM messages pm
+         WHERE pm.conversation_id = c.conversation_id
+           AND pm.user_email IS NOT NULL AND pm.user_email <> ''
+         GROUP BY pm.user_email
+      ) participant), '[]') AS TEXT) AS participants_json
 FROM conversations c
 LEFT JOIN messages m ON c.conversation_id = m.conversation_id AND m.type IN ('user', 'agent')
 WHERE c.archived = FALSE

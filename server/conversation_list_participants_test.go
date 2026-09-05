@@ -41,7 +41,7 @@ func TestConversationListParticipants(t *testing.T) {
 	}
 
 	// Two different accounts send a message each; the list should end up
-	// listing both, sorted.
+	// listing both, sorted, with authored-message counts.
 	for _, email := range []string{"bob@example.com", "alice@example.com"} {
 		body, _ := json.Marshal(ChatRequest{Message: "echo: hi", Model: "predictable"})
 		w := httptest.NewRecorder()
@@ -56,7 +56,10 @@ func TestConversationListParticipants(t *testing.T) {
 
 	// Walk the patch stream forward until both participants have landed,
 	// applying every op so the frames are proven self-consistent.
-	want := []string{"alice@example.com", "bob@example.com"}
+	want := []db.ConversationParticipant{
+		{Email: "alice@example.com", MessageCount: 1},
+		{Email: "bob@example.com", MessageCount: 1},
+	}
 	prev := initial.NewHash
 	deadline := time.Now().Add(10 * time.Second)
 	for !slices.Equal(state[0].Participants, want) {

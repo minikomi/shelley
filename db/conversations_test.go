@@ -1200,8 +1200,8 @@ func TestPromoteDraftAtomicOverrides(t *testing.T) {
 }
 
 // TestListConversationsParticipants verifies that the conversation list
-// queries collect the distinct exe.dev authors of each conversation's
-// messages, sorted and de-duplicated, ignoring messages with no author.
+// queries collect each exe.dev author and authored-message count, sorted by
+// email, ignoring messages with no author.
 func TestListConversationsParticipants(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -1213,8 +1213,8 @@ func TestListConversationsParticipants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create shared: %v", err)
 	}
-	// bob first, then alice, then bob again: participants must come back
-	// sorted and de-duplicated, not in insertion order.
+	// bob first, then alice, then bob again: participants must come back sorted
+	// by email with counts, not in insertion order.
 	for _, email := range []string{"bob@example.com", "alice@example.com", "bob@example.com"} {
 		if _, err := db.CreateMessage(ctx, CreateMessageParams{
 			ConversationID: shared.ConversationID,
@@ -1252,9 +1252,9 @@ func TestListConversationsParticipants(t *testing.T) {
 
 	// check asserts that every wanted conversation appears in items with
 	// exactly the expected participants.
-	check := func(name string, items []ConversationListItem, want map[string][]string) {
+	check := func(name string, items []ConversationListItem, want map[string][]ConversationParticipant) {
 		t.Helper()
-		got := make(map[string][]string, len(items))
+		got := make(map[string][]ConversationParticipant, len(items))
 		for _, item := range items {
 			got[item.ConversationID] = item.Participants
 		}
@@ -1269,11 +1269,19 @@ func TestListConversationsParticipants(t *testing.T) {
 			}
 		}
 	}
-	both := map[string][]string{
-		shared.ConversationID: {"alice@example.com", "bob@example.com"},
-		anon.ConversationID:   nil,
+	both := map[string][]ConversationParticipant{
+		shared.ConversationID: {
+			{Email: "alice@example.com", MessageCount: 1},
+			{Email: "bob@example.com", MessageCount: 2},
+		},
+		anon.ConversationID: nil,
 	}
-	onlyShared := map[string][]string{shared.ConversationID: {"alice@example.com", "bob@example.com"}}
+	onlyShared := map[string][]ConversationParticipant{
+		shared.ConversationID: {
+			{Email: "alice@example.com", MessageCount: 1},
+			{Email: "bob@example.com", MessageCount: 2},
+		},
+	}
 
 	items, err := db.ListConversations(ctx, 10, 0)
 	if err != nil {
@@ -1318,11 +1326,22 @@ func TestDecodeParticipants(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
-		want []string
+		want []ConversationParticipant
 	}{
 		{"empty array", "[]", nil},
-		{"single", `["alice@example.com"]`, []string{"alice@example.com"}},
-		{"unsorted", `["bob@example.com","alice@example.com"]`, []string{"alice@example.com", "bob@example.com"}},
+		{
+			"single",
+			`[{"email":"alice@example.com","message_count":3}]`,
+			[]ConversationParticipant{{Email: "alice@example.com", MessageCount: 3}},
+		},
+		{
+			"unsorted",
+			`[{"email":"bob@example.com","message_count":2},{"email":"alice@example.com","message_count":1}]`,
+			[]ConversationParticipant{
+				{Email: "alice@example.com", MessageCount: 1},
+				{Email: "bob@example.com", MessageCount: 2},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

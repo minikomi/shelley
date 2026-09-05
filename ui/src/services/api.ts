@@ -1,5 +1,6 @@
 import {
   Conversation,
+  ConversationWithParticipants,
   ConversationWithState,
   StreamResponse,
   ChatRequest,
@@ -510,7 +511,7 @@ class ApiService {
     return response.json();
   }
 
-  async getArchivedConversations(): Promise<Conversation[]> {
+  async getArchivedConversations(): Promise<ConversationWithParticipants[]> {
     const response = await fetch(`${this.baseUrl}/conversations/archived`);
     if (!response.ok) {
       throw new Error(`Failed to get archived conversations: ${response.statusText}`);

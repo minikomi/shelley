@@ -61,6 +61,7 @@ export function renderSnippetSegments(snippet: string): SnippetSegment[] {
 export interface DrawerCtx {
   t: (key: keyof TranslationKeys) => string;
   currentConversationId: ComputedRef<string | null>;
+  showParticipantBadges: ComputedRef<boolean>;
   // Number of live terminals pinned to each conversation. Rows show a badge
   // when a conversation has more than one.
   terminalCounts: ComputedRef<Record<string, number>>;

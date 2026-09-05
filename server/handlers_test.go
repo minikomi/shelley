@@ -78,6 +78,20 @@ func TestHandleArchivedConversations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create conversation: %v", err)
 	}
+	if _, err := h.db.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: conv.ConversationID,
+		Type:           db.MessageTypeUser,
+		UserEmail:      "alice@example.com",
+	}); err != nil {
+		t.Fatalf("Failed to create participant message: %v", err)
+	}
+	if _, err := h.db.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: conv.ConversationID,
+		Type:           db.MessageTypeUser,
+		UserEmail:      "alice@example.com",
+	}); err != nil {
+		t.Fatalf("Failed to create second participant message: %v", err)
+	}
 
 	_, err = h.db.ArchiveConversation(ctx, conv.ConversationID)
 	if err != nil {
@@ -97,13 +111,20 @@ func TestHandleArchivedConversations(t *testing.T) {
 		t.Errorf("Expected Content-Type application/json, got %s", w.Header().Get("Content-Type"))
 	}
 
-	var conversations []generated.Conversation
+	var conversations []struct {
+		generated.Conversation
+		Participants []db.ConversationParticipant `json:"participants,omitempty"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &conversations); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
 	if len(conversations) != 1 {
 		t.Errorf("Expected 1 archived conversation, got %d", len(conversations))
+	}
+	wantParticipant := db.ConversationParticipant{Email: "alice@example.com", MessageCount: 2}
+	if got := conversations[0].Participants; len(got) != 1 || got[0] != wantParticipant {
+		t.Errorf("Expected archived participants [%+v], got %v", wantParticipant, got)
 	}
 
 	// Test method not allowed
