@@ -7,7 +7,7 @@
 
      React callback props -> emits:
        onClose   -> emit("close")
-       onOpenDiff-> emit("open-diff", commit, cwd) (presence gated by
+       onOpenDiff-> emit("open-diff", commit, cwd, file?) (presence gated by
                     `canOpenDiff` prop, mirroring the optional React callback) -->
 <template>
   <div v-if="isOpen" class="diff-viewer-overlay" @click="emit('close')">
@@ -285,7 +285,14 @@
                   −{{ detail.delTotal }}</span
                 >
               </div>
-              <DiffstatList :files="detail.files" />
+              <DiffstatList
+                :files="detail.files"
+                :file-href="(path) => diffHref(selectedCommit!.hash, path)"
+                @open="
+                  (path) =>
+                    canOpenDiff && emit('open-diff', selectedCommit!.hash, cwd, path)
+                "
+              />
             </div>
             <div v-if="detailLoading && !detail" class="git-graph-detail-loading">Loading…</div>
           </div>
@@ -342,7 +349,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: "close"): void;
-  (e: "open-diff", commit: string, cwd: string): void;
+  (e: "open-diff", commit: string, cwd: string, file?: string): void;
 }>();
 
 // Internal override so the user can switch directories without re-opening.
@@ -618,14 +625,17 @@ watch(selected, async (sel) => {
   }
 });
 
-const openDiffHref = computed(() => {
-  const sel = selectedCommit.value;
-  if (!sel) return "#";
+function diffHref(hash: string, file?: string): string {
   const params = new URLSearchParams();
-  params.set("diff", sel.hash);
+  params.set("diff", hash);
   if (cwd.value) params.set("cwd", cwd.value);
+  if (file) params.set("file", file);
   return `${window.location.pathname}?${params.toString()}`;
-});
+}
+
+const openDiffHref = computed(() =>
+  selectedCommit.value ? diffHref(selectedCommit.value.hash) : "#",
+);
 
 function onOpenDiffClick(e: MouseEvent) {
   // Let the browser handle modifier/middle-click so users can open the diff

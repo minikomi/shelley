@@ -11529,6 +11529,26 @@ kbd {
   display: contents;
 }
 
+/* The whole row is one link; subgrid keeps its cells in the list's columns. */
+.git-graph-diffstat-link {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 0.2rem;
+}
+
+.git-graph-diffstat-link:hover {
+  background: var(--bg-secondary);
+}
+
+.git-graph-diffstat-link:hover .git-graph-diffstat-path {
+  color: var(--accent, #3b82f6);
+  text-decoration: underline;
+}
+
 .git-graph-diffstat-path {
   color: var(--text-primary);
   white-space: nowrap;
