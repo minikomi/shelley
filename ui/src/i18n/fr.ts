@@ -118,6 +118,8 @@ export const fr: TranslationKeys = {
   clearTagFilter: "Tout effacer",
   searchOrTagPlaceholder: "Rechercher, ou tag: pour filtrer",
   untagged: "Sans étiquette",
+  participants: "Participants",
+  unattributed: "Non attribué",
   noMatchingTags: "Aucune étiquette correspondante",
   noTagsToNarrow: "Plus rien à affiner",
   noConversationsMatchTags: "Aucune conversation ne correspond à ces étiquettes",

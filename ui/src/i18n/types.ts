@@ -115,6 +115,8 @@ export interface TranslationKeys {
   other: string;
   clearTagFilter: string;
   untagged: string;
+  participants: string;
+  unattributed: string;
   searchOrTagPlaceholder: string;
   noMatchingTags: string;
   noTagsToNarrow: string;

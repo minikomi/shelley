@@ -576,6 +576,67 @@ test.describe("conversation drawer startup and app bar", () => {
     await page.getByRole("button", { name: "Search conversations..." }).click();
     await expectQuery(queryEditor(page), "");
     await expect(page.getByRole("button", { name: "Add user filter" })).toBeEnabled();
+    await page.getByRole("button", { name: "Group conversations" }).click();
+    await expect(page.getByRole("button", { name: "Participants", exact: true })).toBeVisible();
+  });
+
+  test("group by participants is offered only for multi-participant lists", async ({ page }) => {
+    await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "me@example.com" });
+    // Two participants exist across the list, but no conversation has more
+    // than one: there is nothing to group by.
+    await stubConversationList(page, [
+      conversation("mine", false, ["me@example.com"]),
+      conversation("other", false, ["other@example.com"]),
+    ]);
+
+    await page.goto("/new");
+    await expect(page.locator('[data-conversation-id="mine"]')).toBeVisible();
+    await page.getByRole("button", { name: "Group conversations" }).click();
+    await expect(page.getByRole("button", { name: "Tags", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Participants", exact: true })).toHaveCount(0);
+  });
+
+  test("group by participants buckets whole participant sets, current user first", async ({
+    page,
+  }) => {
+    await page.setExtraHTTPHeaders({ "X-ExeDev-Email": "adam@poyo.co" });
+    await stubConversationList(page, [
+      conversation("zed-pair", false, ["zed@example.com", "yan@example.com"]),
+      conversation("mine", false, ["adam@poyo.co"]),
+      // Same set, opposite order and casing: these must land in ONE group.
+      conversation("shared", false, ["aaaa@bbb.com", "adam@poyo.co"]),
+      conversation("shared-again", false, ["ADAM@POYO.CO", "aaaa@bbb.com"]),
+      conversation("alice-pair", false, ["alice@example.com", "bob@example.com"]),
+      conversation("none", false, []),
+    ]);
+
+    await page.goto("/new");
+    await expect(page.locator('[data-conversation-id="mine"]')).toBeVisible();
+    // Drop the seeded current-user filter so every group is on screen.
+    await page.getByRole("button", { name: "Search conversations..." }).click();
+    await queryEditor(page).fill("");
+    await expect(page.locator('[data-conversation-id="none"]')).toBeVisible();
+
+    await page.getByRole("button", { name: "Group conversations" }).click();
+    await page.getByRole("button", { name: "Participants", exact: true }).click();
+
+    await expect(page.locator(".conversation-group-label")).toHaveText([
+      "adam@poyo.co",
+      "aaaa@bbb.com, adam@poyo.co",
+      "alice@example.com, bob@example.com",
+      "yan@example.com, zed@example.com",
+      "Unattributed",
+    ]);
+    const sharedGroup = page.locator(".conversation-group").filter({
+      has: page.locator('[data-conversation-id="shared"]'),
+    });
+    await expect(sharedGroup).toHaveCount(1);
+    await expect(sharedGroup.locator('[data-conversation-id="shared-again"]')).toHaveCount(1);
+    await expect(sharedGroup.locator(".conversation-group-label")).toHaveAttribute(
+      "title",
+      "aaaa@bbb.com, adam@poyo.co",
+    );
+    await expect(page.locator('[data-conversation-id="shared"]')).toHaveCount(1);
   });
 
   test("starts expanded even when the only item is a draft", async ({ page }) => {

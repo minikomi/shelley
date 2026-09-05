@@ -75,7 +75,7 @@
           </Button>
           <div v-if="groupMenuOpen" class="group-by-menu">
             <button
-              v-for="value in ['none', 'cwd', 'git_repo', 'tag'] as GroupBy[]"
+              v-for="value in groupByOptions"
               :key="value"
               :class="`group-by-menu-item${groupBy === value ? ' active' : ''}`"
               @click="
@@ -461,9 +461,12 @@ import {
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
 import {
+  compareParticipantGroupKeys,
   filterConversationsByParticipantQuery,
   hasMultiParticipantConversation,
   hasOtherParticipant,
+  participantGroupKey,
+  participantGroupLabel,
 } from "../../utils/conversationParticipantFilter";
 import {
   clearConversationQueryText,
@@ -575,7 +578,12 @@ const expandedSubagents = ref<Set<string>>(new Set());
 const groupBy = ref<GroupBy>(
   (() => {
     const stored = localStorage.getItem("shelley-group-by");
-    return stored === "cwd" || stored === "git_repo" || stored === "tag" ? stored : "none";
+    return stored === "cwd" ||
+      stored === "git_repo" ||
+      stored === "tag" ||
+      stored === "participants"
+      ? stored
+      : "none";
   })(),
 );
 const collapsedGroups = ref<Set<string>>(new Set());
@@ -625,6 +633,14 @@ const multipleParticipantsAvailable = computed(
   () =>
     hasOtherParticipant(activeParticipantConversations.value, currentUserEmail) ||
     hasMultiParticipantConversation(activeParticipantConversations.value),
+);
+// "Group by participants" is offered only when some conversation actually has
+// several participants; a list of disjoint single-user conversations has
+// nothing to group by.
+const groupByOptions = computed<GroupBy[]>(() =>
+  hasMultiParticipantConversation(activeParticipantConversations.value)
+    ? ["none", "cwd", "git_repo", "tag", "participants"]
+    : ["none", "cwd", "git_repo", "tag"],
 );
 let participantDefaultsSeeded = false;
 watch(
@@ -1048,6 +1064,7 @@ function groupByLabel(value: GroupBy): string {
     cwd: t("directory"),
     git_repo: t("gitRepo"),
     tag: t("tags"),
+    participants: t("participants"),
   };
   return labels[value];
 }
@@ -1491,6 +1508,8 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
       // The key is the whole sorted tag set, so every conversation appears
       // exactly once (a tag-per-group layout would duplicate rows).
       key = tagGroupKey(conv);
+    } else if (groupBy.value === "participants") {
+      key = participantGroupKey(conv);
     }
     if (!key) {
       ungrouped.push(conv);
@@ -1498,29 +1517,46 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
     }
     let group = groups.get(key);
     if (!group) {
-      const label = groupBy.value === "tag" ? tagGroupLabel(conv) : formatCwdForDisplay(key) || key;
+      const label =
+        groupBy.value === "tag"
+          ? tagGroupLabel(conv)
+          : groupBy.value === "participants"
+            ? participantGroupLabel(key)
+            : formatCwdForDisplay(key) || key;
       group = { label, conversations: [] };
       groups.set(key, group);
     }
     group.conversations.push(conv);
   }
 
+  // Rows within a group keep their own stable order (new arrivals on top,
+  // reset by "re-sort"), independent of where they fall in the global list.
   const nextGroupOrder: Record<string, string[]> = {};
-  for (const [key, group] of groups) {
-    const sorted = sortConversationsByBucket(group.conversations);
-    const { items, order } = applyStableOrder(sorted, groupOrder[key] || []);
-    group.conversations = items;
+  const stableGroupRows = (key: string, rows: ConversationWithState[]) => {
+    const { items, order } = applyStableOrder(
+      sortConversationsByBucket(rows),
+      groupOrder[key] || [],
+    );
     nextGroupOrder[key] = order;
-  }
+    return items;
+  };
+  for (const [key, group] of groups)
+    group.conversations = stableGroupRows(key, group.conversations);
 
-  // Tag groups sort alphabetically by their tags, so a group's position is
-  // predictable from its name. The recency-ordered modes route through
-  // applyStableKeyOrder instead; that pass is skipped here because it pins
-  // seen keys to old positions, stranding a new group at the top of an
+  // Tag and participant groups sort alphabetically by their tuple, so a
+  // group's position is predictable from its name (participant groups the
+  // current user belongs to come first). The recency-ordered modes route
+  // through applyStableKeyOrder instead; that pass is skipped here because it
+  // pins seen keys to old positions, stranding a new group at the top of an
   // alphabetical list.
   let sorted: [string, Group][];
   if (groupBy.value === "tag") {
     sorted = [...groups.entries()].sort(([a], [b]) => compareTagGroupKeys(a, b));
+    groupKeysOrder = sorted.map(([k]) => k);
+  } else if (groupBy.value === "participants") {
+    sorted = [...groups.entries()].sort(([a], [b]) =>
+      compareParticipantGroupKeys(a, b, currentUserEmail),
+    );
     groupKeysOrder = sorted.map(([k]) => k);
   } else {
     const allGroups = new Map<string, ConversationWithState[]>();
@@ -1546,11 +1582,16 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
   }
 
   if (ungrouped.length > 0) {
-    const ungroupedSorted = sortConversationsByBucket(ungrouped);
-    const { items, order } = applyStableOrder(ungroupedSorted, groupOrder["__ungrouped__"] || []);
-    nextGroupOrder["__ungrouped__"] = order;
-    const ungroupedLabel = groupBy.value === "tag" ? t("untagged") : t("other");
-    sorted.push(["__ungrouped__", { label: ungroupedLabel, conversations: items }]);
+    const ungroupedLabel =
+      groupBy.value === "tag"
+        ? t("untagged")
+        : groupBy.value === "participants"
+          ? t("unattributed")
+          : t("other");
+    sorted.push([
+      "__ungrouped__",
+      { label: ungroupedLabel, conversations: stableGroupRows("__ungrouped__", ungrouped) },
+    ]);
   }
   groupOrder = nextGroupOrder;
   return sorted;
@@ -1560,7 +1601,7 @@ const groupedConversations = computed<[string, Group][] | null>(() => {
 // groups (their key is NUL-joined, not for eyes), the untruncated path else.
 function groupTitle(key: string, group: Group): string | undefined {
   if (key === "__ungrouped__") return undefined;
-  return groupBy.value === "tag" ? group.label : key;
+  return groupBy.value === "tag" || groupBy.value === "participants" ? group.label : key;
 }
 
 // Maintain the flat visual order for archive-based next-selection.

@@ -116,6 +116,8 @@ export const en: TranslationKeys = {
   clearTagFilter: "Clear all",
   searchOrTagPlaceholder: "Search, or tag: to filter",
   untagged: "Untagged",
+  participants: "Participants",
+  unattributed: "Unattributed",
   noMatchingTags: "No matching tags",
   noTagsToNarrow: "Nothing left to narrow by",
   noConversationsMatchTags: "No conversations match these tags",

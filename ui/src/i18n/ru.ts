@@ -116,6 +116,8 @@ export const ru: TranslationKeys = {
   clearTagFilter: "Очистить всё",
   searchOrTagPlaceholder: "Поиск или tag: для фильтра",
   untagged: "Без тегов",
+  participants: "Участники",
+  unattributed: "Без участников",
   noMatchingTags: "Нет подходящих тегов",
   noTagsToNarrow: "Больше нечем сужать",
   noConversationsMatchTags: "Нет диалогов с этими тегами",

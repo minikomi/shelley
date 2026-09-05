@@ -616,6 +616,67 @@ test.describe("Tag filter", () => {
     await expect(pairGroup.locator(".conversation-group-label")).toHaveText("#gt-blue #gt-red");
   });
 
+  test("a row that joins a group lands on top of it until re-sorted", async ({ page, request }) => {
+    // Rows inside a group keep their own stable order: a newcomer is
+    // prepended even when a plain sort would place it last (retagging does
+    // not bump updated_at), and "Re-sort now" restores the plain order.
+    const created = await Promise.all(
+      ["one", "two", "three"].map((n) =>
+        createConversationViaAPIWithDetails(request, `group order ${n}`, { cwd: "/tmp" }),
+      ),
+    );
+    // Within one recency bucket rows sort by id descending, so the smallest
+    // id is the one a plain re-sort demonstrably moves off the top.
+    const [mover, ...stayers] = [...created].sort((a, b) =>
+      a.conversationId < b.conversationId ? -1 : 1,
+    );
+    await setTags(request, mover.conversationId, ["so-away"]);
+    for (const stayer of stayers) await setTags(request, stayer.conversationId, ["so-home"]);
+    const updatedAt = async (conversationId: string) => {
+      const resp = await request.get(`/api/conversation/${conversationId}`);
+      expect(resp.ok()).toBeTruthy();
+      return new Date((await resp.json()).conversation.updated_at as string).getTime();
+    };
+    const buckets = new Map<string, number>();
+    for (const c of created) {
+      buckets.set(c.conversationId, Math.floor((await updatedAt(c.conversationId)) / 300_000));
+    }
+    const plainOrder = [...created]
+      .sort(
+        (a, b) =>
+          buckets.get(b.conversationId)! - buckets.get(a.conversationId)! ||
+          (a.conversationId < b.conversationId ? 1 : -1),
+      )
+      .map((c) => c.conversationId);
+
+    await page.goto(`/c/${mover.slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+    await openDrawer(page);
+    await page.locator('button[aria-label="Group conversations"]').click();
+    await page.getByRole("button", { name: "Tags", exact: true }).click();
+
+    const home = page.locator(".conversation-group").filter({
+      has: row(page, stayers[0].conversationId),
+    });
+    // The shared server may hold so-home rows from other runs; compare only
+    // the relative order of ours.
+    const ours = new Set(created.map((c) => c.conversationId));
+    const homeIds = () =>
+      home
+        .locator(".conversation-item")
+        .evaluateAll((rows) => rows.map((r) => r.getAttribute("data-conversation-id")))
+        .then((ids) => ids.filter((id) => id && ours.has(id)));
+    const initial = plainOrder.filter((id) => id !== mover.conversationId);
+    await expect.poll(homeIds).toEqual(initial);
+
+    await setTags(request, mover.conversationId, ["so-home"]);
+    await expect.poll(homeIds).toEqual([mover.conversationId, ...initial]);
+
+    await page.locator('button[aria-label="Group conversations"]').click();
+    await page.getByRole("button", { name: "Re-sort now" }).click();
+    await expect.poll(homeIds).toEqual(plainOrder);
+  });
+
   test("the row tag editor offers a dropdown of matching tags", async ({ page, request }) => {
     // `ac-terminal-work` and `workbench` exist on donors; typing `work` on
     // target should offer both (substring match), ranked prefix-first, with

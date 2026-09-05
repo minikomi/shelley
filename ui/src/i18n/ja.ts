@@ -116,6 +116,8 @@ export const ja: TranslationKeys = {
   clearTagFilter: "すべて解除",
   searchOrTagPlaceholder: "検索、または tag: で絞り込み",
   untagged: "タグなし",
+  participants: "参加者",
+  unattributed: "参加者なし",
   noMatchingTags: "一致するタグがありません",
   noTagsToNarrow: "これ以上絞り込めません",
   noConversationsMatchTags: "このタグに一致する会話はありません",

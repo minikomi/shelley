@@ -116,6 +116,8 @@ export const upgoer5: TranslationKeys = {
   clearTagFilter: "Drop them all",
   searchOrTagPlaceholder: "Look for words, or tag: to pick",
   untagged: "No word stickers",
+  participants: "People in it",
+  unattributed: "No people",
   noMatchingTags: "No word marks like that",
   noTagsToNarrow: "Nothing left to cut down",
   noConversationsMatchTags: "No talks have all these word marks",

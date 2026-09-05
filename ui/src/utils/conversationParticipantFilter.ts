@@ -1,3 +1,5 @@
+import { compareTagGroupKeys } from "./tagFilter";
+
 interface ConversationWithParticipantList {
   parent_conversation_id?: string | null;
   is_draft?: boolean;
@@ -37,6 +39,38 @@ function participantEmails(conversation: ConversationWithParticipantList): strin
     conversation.participants?.map(({ email }) => foldEmail(email)).filter(Boolean) ?? [],
   );
   return [...folded].sort();
+}
+
+// --- Grouping ---
+//
+// Mirrors tag grouping (see tagFilter.ts): the key is the whole participant
+// set, NUL-joined, so every conversation lands in exactly one group.
+const PARTICIPANT_KEY_SEP = "\u0000";
+
+export function participantGroupKey(conversation: ConversationWithParticipantList): string | null {
+  const emails = participantEmails(conversation);
+  return emails.length === 0 ? null : emails.join(PARTICIPANT_KEY_SEP);
+}
+
+export function participantGroupLabel(key: string): string {
+  return key.split(PARTICIPANT_KEY_SEP).join(", ");
+}
+
+// Groups the current user belongs to come first, then smaller participant
+// sets, then the same tuple order as tag groups.
+export function compareParticipantGroupKeys(
+  a: string,
+  b: string,
+  currentUserEmail: string | null | undefined,
+): number {
+  const current = foldEmail(currentUserEmail);
+  const left = a.split(PARTICIPANT_KEY_SEP);
+  const right = b.split(PARTICIPANT_KEY_SEP);
+  const includes = (emails: string[]) => current !== "" && emails.includes(current);
+  const partition = Number(includes(right)) - Number(includes(left));
+  if (partition !== 0) return partition;
+  const size = left.length - right.length;
+  return size !== 0 ? size : compareTagGroupKeys(a, b);
 }
 
 export function filterConversationsByParticipantQuery<T extends ConversationWithParticipantList>(

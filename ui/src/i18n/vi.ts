@@ -116,6 +116,8 @@ export const vi: TranslationKeys = {
   clearTagFilter: "Xóa tất cả",
   searchOrTagPlaceholder: "Tìm kiếm, hoặc tag: để lọc",
   untagged: "Chưa gắn thẻ",
+  participants: "Người tham gia",
+  unattributed: "Chưa gán người",
   noMatchingTags: "Không có thẻ khớp",
   noTagsToNarrow: "Không còn gì để thu hẹp",
   noConversationsMatchTags: "Không có hội thoại nào khớp các thẻ này",

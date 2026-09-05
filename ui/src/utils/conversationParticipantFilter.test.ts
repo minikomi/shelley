@@ -1,8 +1,11 @@
 import type { ConversationWithState } from "../types";
 import {
+  compareParticipantGroupKeys,
   filterConversationsByParticipantQuery,
   hasMultiParticipantConversation,
   hasOtherParticipant,
+  participantGroupKey,
+  participantGroupLabel,
 } from "./conversationParticipantFilter";
 
 function assert(condition: boolean, message: string): void {
@@ -81,4 +84,53 @@ assert(
   "disjoint single-user conversations are not multi-participant",
 );
 
-console.log("✓ conversation participant detection and filtering");
+const sharedReversed = conversation("shared-reversed", [
+  participant("me@example.com"),
+  participant("Other@example.com"),
+  participant("other@example.com"),
+]);
+assert(
+  participantGroupKey(shared) === participantGroupKey(sharedReversed),
+  "group key is order-, case- and duplicate-insensitive",
+);
+assert(participantGroupKey(shared) !== participantGroupKey(current), "distinct sets differ");
+assert(participantGroupKey(unattributed) === null, "no participants means no group");
+assert(participantGroupKey(empty) === null, "an empty participant list means no group");
+assert(
+  participantGroupLabel(participantGroupKey(shared)!) === "me@example.com, other@example.com",
+  "label lists the sorted set",
+);
+
+const key = (...emails: string[]) =>
+  participantGroupKey(
+    conversation(
+      "x",
+      emails.map((email) => participant(email)),
+    ),
+  )!;
+const ordered = [
+  key("zed@example.com"),
+  key("me@example.com", "zed@example.com"),
+  key("alice@example.com"),
+  key("me@example.com"),
+  key("alice@example.com", "me@example.com"),
+]
+  .sort((a, b) => compareParticipantGroupKeys(a, b, "ME@example.com"))
+  .map(participantGroupLabel);
+assert(
+  ordered.join(" | ") ===
+    [
+      "me@example.com",
+      "alice@example.com, me@example.com",
+      "me@example.com, zed@example.com",
+      "alice@example.com",
+      "zed@example.com",
+    ].join(" | "),
+  `groups with the current user come first, then smaller sets, then tuple order: ${ordered.join(" | ")}`,
+);
+assert(
+  compareParticipantGroupKeys(key("me@example.com"), key("alice@example.com"), "") > 0,
+  "without a current user, plain tuple order applies",
+);
+
+console.log("✓ conversation participant detection, filtering and grouping");

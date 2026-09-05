@@ -116,6 +116,8 @@ export const zhCN: TranslationKeys = {
   clearTagFilter: "全部清除",
   searchOrTagPlaceholder: "搜索，或用 tag: 筛选",
   untagged: "无标签",
+  participants: "参与者",
+  unattributed: "无参与者",
   noMatchingTags: "没有匹配的标签",
   noTagsToNarrow: "没有可继续缩小的标签",
   noConversationsMatchTags: "没有匹配这些标签的对话",
