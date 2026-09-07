@@ -106,7 +106,7 @@ const props = defineProps<{
   messages: Message[];
   containerRef: HTMLElement | null;
   nearBottom: boolean;
-  conversationSlug?: string | null;
+  conversationId: string;
 }>();
 const emit = defineEmits<{
   (e: "scroll-bottom"): void;
@@ -375,9 +375,9 @@ function findToolElement(container: HTMLElement, toolUseId: string): HTMLElement
 }
 
 function findElementByFragment(container: HTMLElement, fragment: string): HTMLElement | null {
+  if (!isValidFragment(fragment)) return null;
   const isMessage = fragment.startsWith("m-");
   const isTool = fragment.startsWith("t-");
-  if (!isMessage && !isTool) return null;
   const short = fragment.slice(2);
   const attr = isMessage ? "data-message-id" : "data-tool-use-id";
   const all = container.querySelectorAll<HTMLElement>(`[${attr}]`);
@@ -425,11 +425,7 @@ function highlightTool(container: HTMLElement, toolUseId: string, el: HTMLElemen
 // Defined in <script setup> (uses local helpers). Not exported: <script setup>
 // cannot contain ES module exports, and nothing imports this symbol. The React
 // module exported it for parity but only used it internally, as we do here.
-function scrollToFragment(
-  container: HTMLElement,
-  fragment: string,
-  options: { highlight?: boolean } = {},
-): boolean {
+function scrollToFragment(container: HTMLElement, fragment: string): boolean {
   const el = findElementByFragment(container, fragment);
   if (!el) {
     // Tail-first mounting may not have reached the target's chunk yet. Ask
@@ -437,15 +433,14 @@ function scrollToFragment(
     chunkMount?.revealTarget({ fragment });
     return false;
   }
+  emit("scroll-away");
   el.scrollIntoView({
     behavior: el.classList.contains("tool-card-mount-placeholder") ? "auto" : "smooth",
     block: "start",
   });
-  if (options.highlight !== false) {
-    const toolUseId = fragment.startsWith("t-") ? toolUseIdForElement(el) : null;
-    if (toolUseId) highlightTool(container, toolUseId, el);
-    else highlight(el);
-  }
+  const toolUseId = fragment.startsWith("t-") ? toolUseIdForElement(el) : null;
+  if (toolUseId) highlightTool(container, toolUseId, el);
+  else highlight(el);
   return true;
 }
 
@@ -586,26 +581,30 @@ async function ensureTargetMounted(target: {
 function handleGoto(entry: TOCEntry) {
   const container = props.containerRef;
   if (!container) return;
+  cancelFragmentNavigation();
+  const navigation = syncFragmentNavigation();
   popoverRef.value?.hide();
   if (entry.kind === "bottom") {
     if (!props.nearBottom) emit("scroll-bottom");
-    history.replaceState(null, "", window.location.pathname + window.location.search);
+    replaceFragment("");
     return;
   }
   emit("scroll-away");
   if (entry.kind === "top") {
     container.scrollTo({ top: 0, behavior: "smooth" });
-    history.replaceState(null, "", window.location.pathname + window.location.search);
+    replaceFragment("");
     return;
   }
   if (entry.kind === "gen") {
     const target = props.messages.find((m) => m.generation === entry.generation);
     if (target) {
       void ensureTargetMounted({ messageId: target.message_id }).then(() => {
+        if (!isCurrentNavigation(navigation)) return;
         const el = findMessageElement(container, target.message_id);
         if (el) {
           el.scrollIntoView({ behavior: "smooth", block: "start" });
           highlight(el);
+          navigation.resolved = true;
         }
       });
     }
@@ -614,6 +613,7 @@ function handleGoto(entry: TOCEntry) {
   if (entry.toolUseId) {
     const toolUseId = entry.toolUseId;
     void ensureTargetMounted({ toolUseId }).then(() => {
+      if (!isCurrentNavigation(navigation)) return;
       const el = findToolElement(container, toolUseId);
       if (!el) return;
       el.scrollIntoView({
@@ -621,55 +621,107 @@ function handleGoto(entry: TOCEntry) {
         block: "start",
       });
       highlightTool(container, toolUseId, el);
-      const url = `${window.location.pathname}${window.location.search}#${entry.id}`;
-      history.replaceState(null, "", url);
+      replaceFragment(entry.id);
     });
     return;
   }
   if (!entry.messageId) return;
   const messageId = entry.messageId;
   void ensureTargetMounted({ messageId }).then(() => {
+    if (!isCurrentNavigation(navigation)) return;
     const el = findMessageElement(container, messageId);
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "start" });
     highlight(el);
-    const url = `${window.location.pathname}${window.location.search}#${entry.id}`;
-    history.replaceState(null, "", url);
+    replaceFragment(entry.id);
   });
 }
 
-// Resolve URL fragment on mount + on messages/hash change.
+// A navigation owns at most one retry chain. Message arrivals can restart an
+// exhausted (unresolved) chain, but must never replay a successful jump.
+interface FragmentNavigation {
+  conversationId: string;
+  fragment: string;
+  container: HTMLElement | null;
+  resolved: boolean;
+}
+let fragmentNavigation: FragmentNavigation | null = null;
+let fragmentRetry: number | null = null;
+
+function isValidFragment(fragment: string): boolean {
+  return /^(m|t)-[a-zA-Z0-9]+$/.test(fragment);
+}
+
+function cancelFragmentNavigation() {
+  if (fragmentRetry !== null) window.clearTimeout(fragmentRetry);
+  fragmentRetry = null;
+  fragmentNavigation = null;
+}
+
+function isCurrentNavigation(navigation: FragmentNavigation): boolean {
+  return (
+    fragmentNavigation === navigation &&
+    navigation.conversationId === props.conversationId &&
+    navigation.fragment === window.location.hash.slice(1) &&
+    navigation.container === props.containerRef
+  );
+}
+
+function syncFragmentNavigation(): FragmentNavigation {
+  if (!fragmentNavigation || !isCurrentNavigation(fragmentNavigation)) {
+    cancelFragmentNavigation();
+    fragmentNavigation = {
+      conversationId: props.conversationId,
+      fragment: window.location.hash.slice(1),
+      container: props.containerRef,
+      resolved: false,
+    };
+  }
+  return fragmentNavigation;
+}
+
+function replaceFragment(fragment: string) {
+  cancelFragmentNavigation();
+  history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}${fragment ? `#${fragment}` : ""}`,
+  );
+  // replaceState does not emit hashchange; the direct TOC jump already landed.
+  syncFragmentNavigation().resolved = true;
+}
+
 function resolveFragmentWithRetry() {
-  const container = props.containerRef;
-  if (!container) return;
-  const fragment = window.location.hash.slice(1);
-  if (!fragment) return;
-  emit("scroll-away");
+  const navigation = syncFragmentNavigation();
+  const { container, fragment } = navigation;
+  if (!container || !isValidFragment(fragment) || navigation.resolved || fragmentRetry !== null) {
+    return;
+  }
   let tries = 0;
   const tryScroll = () => {
-    if (scrollToFragment(container, fragment)) return;
-    if (++tries < 10) window.setTimeout(tryScroll, 100);
+    if (!isCurrentNavigation(navigation)) return;
+    fragmentRetry = null;
+    if (navigation.resolved) return;
+    if (scrollToFragment(container, fragment)) {
+      navigation.resolved = true;
+      return;
+    }
+    if (++tries < 10) fragmentRetry = window.setTimeout(tryScroll, 100);
   };
   tryScroll();
 }
 
-watch([() => props.messages.length, () => props.containerRef], resolveFragmentWithRetry, {
-  immediate: true,
-});
+watch(
+  [() => props.conversationId, () => props.containerRef, () => props.messages.length],
+  resolveFragmentWithRetry,
+  { immediate: true, flush: "post" },
+);
 
-function onHashChange() {
-  const container = props.containerRef;
-  if (!container) return;
-  const fragment = window.location.hash.slice(1);
-  if (fragment) {
-    emit("scroll-away");
-    scrollToFragment(container, fragment);
-  }
-}
-window.addEventListener("hashchange", onHashChange);
+window.addEventListener("hashchange", resolveFragmentWithRetry);
 
 onUnmounted(() => {
+  cancelFragmentNavigation();
   detachScroll();
-  window.removeEventListener("hashchange", onHashChange);
+  window.removeEventListener("hashchange", resolveFragmentWithRetry);
 });
 </script>

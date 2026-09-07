@@ -243,7 +243,7 @@
           :messages="visibleMessages"
           :container-ref="messagesContainerRef"
           :near-bottom="!showScrollToBottom"
-          :conversation-slug="currentConversation?.slug"
+          :conversation-id="conversationId"
           @scroll-bottom="scrollToBottom"
           @scroll-away="markUserScrolledUp"
         />
