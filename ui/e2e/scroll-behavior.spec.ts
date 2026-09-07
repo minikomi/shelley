@@ -1,4 +1,7 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { createServer, type ServerResponse } from "node:http";
+import { once } from "node:events";
+import type { ConversationWithState, StreamResponse } from "../src/types";
 import { createConversationViaAPI, createConversationViaAPIWithDetails } from "./helpers";
 
 test.describe("Scroll behavior", () => {
@@ -714,6 +717,370 @@ test.describe("Scroll behavior", () => {
       .toBeLessThan(50);
     await expect(scrollButton).toBeVisible({ timeout: 5000 });
   });
+});
+
+// Drive a real, open EventSource one chunk at a time, through globalStream and
+// messageStore. No model timing, keyboard surrogate, or direct component calls.
+const streamingTest = test.extend<{
+  controlledStream: {
+    chunk: (type: "text" | "thinking", text: string) => Promise<void>;
+    finish: () => Promise<void>;
+  };
+}>({
+  controlledStream: async ({ page, request, baseURL }, use) => {
+    const url = baseURL ? new URL(baseURL) : undefined;
+    streamingTest.skip(
+      !url ||
+        url.protocol !== "http:" ||
+        !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname),
+      "Controlled SSE fixture requires a local HTTP baseURL; HTTPS and external servers are unsupported.",
+    );
+    let response: ServerResponse | undefined;
+    const server = createServer((_request, res) => {
+      response = res;
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.flushHeaders();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing SSE server port");
+    await page.route("**/api/stream2*", (route) =>
+      route.continue({ url: `http://127.0.0.1:${address.port}/` }),
+    );
+    const send = async (event: StreamResponse) => {
+      await expect.poll(() => !!response).toBe(true);
+      await new Promise<void>((resolve, reject) => {
+        response!.write(`data: ${JSON.stringify(event)}\n\n`, (error) =>
+          error ? reject(error) : resolve(),
+        );
+      });
+    };
+    try {
+      const generated = await request.post("/debug/loremipsum?json=1", {
+        form: { size: "5", model: "predictable" },
+      });
+      expect(generated.ok()).toBeTruthy();
+      const { conversation_id: conversationId } = await generated.json();
+      const snapshot = await request.get("/api/conversations/snapshot");
+      expect(snapshot.ok()).toBeTruthy();
+      const { conversations }: { conversations: ConversationWithState[] } = await snapshot.json();
+      await page.goto(`/c/${conversationId}`);
+      await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+      await expect(page.getByTestId("message").first()).toBeVisible({ timeout: 30000 });
+      const working = (value: boolean) =>
+        send({
+          conversation_list_patch: {
+            reset: true,
+            new_hash: `controlled-${value}`,
+            at: new Date().toISOString(),
+            patch: [
+              {
+                op: "replace",
+                path: "",
+                value: conversations.map((conversation) =>
+                  conversation.conversation_id === conversationId
+                    ? { ...conversation, working: value, agent_working: value }
+                    : conversation,
+                ),
+              },
+            ],
+          },
+        });
+      await working(true);
+      let seq = 0;
+      const chunk = async (type: "text" | "thinking", text: string) => {
+        await send({
+          conversation_id: conversationId,
+          stream_delta: { type, text, index: type === "thinking" ? 0 : 1, seq: seq++ },
+        });
+        await expect(page.locator(".streaming-message")).toContainText(text);
+        // Let the rendered chunk's resize and intersection callbacks run.
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            ),
+        );
+      };
+      await chunk("text", "Stream ready.\n\n");
+      await expect
+        .poll(() =>
+          page
+            .locator(".messages-container")
+            .evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+        )
+        .toBeLessThan(2);
+      await use({
+        chunk,
+        finish: async () => {
+          await working(false);
+          await expect(page.locator(".streaming-message")).toBeHidden();
+        },
+      });
+    } finally {
+      response?.end();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      });
+    }
+  },
+});
+
+streamingTest.describe("Mobile streaming scroll gestures", () => {
+  // Inherit isMobile from the project: Firefox supports touch events but not
+  // Playwright's isMobile emulation. Chromium keeps its Pixel device settings.
+  streamingTest.use({ viewport: { width: 393, height: 851 }, hasTouch: true });
+
+  for (const endEvent of ["touchend", "touchcancel", "unreleased"]) {
+    streamingTest(
+      `arrow resumes continuing chunks after ${endEvent}`,
+      async ({ page, controlledStream }) => {
+        const container = page.locator(".messages-container");
+        const button = page.locator(".scroll-to-bottom-button");
+        const expectFollowing = async () => {
+          await expect
+            .poll(() =>
+              container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+            )
+            .toBeLessThan(2);
+          await expect(button).toBeHidden();
+        };
+        const scrolled = await container.evaluate((el) => {
+          el.dispatchEvent(
+            new PointerEvent("pointerdown", { pointerType: "touch", bubbles: true }),
+          );
+          el.dispatchEvent(new Event("touchstart", { bubbles: true }));
+          el.dispatchEvent(
+            new PointerEvent("pointercancel", { pointerType: "touch", bubbles: true }),
+          );
+          el.scrollTop -= 300;
+          el.dispatchEvent(new Event("scroll"));
+          return el.scrollTop;
+        });
+        // Normally release before clicking. Also cover an interrupted gesture
+        // whose touchend never reached the container: explicit return must win.
+        if (endEvent !== "unreleased") await container.dispatchEvent(endEvent);
+        await expect(button).toBeVisible();
+        await controlledStream.chunk("text", "Before arrow.\n\n");
+        expect(await container.evaluate((el) => el.scrollTop)).toBeCloseTo(scrolled, 0);
+        await button.click();
+        await expectFollowing();
+        // Reaching bottom once is insufficient: the sentinel stops the RAF pin,
+        // and subsequent chunks must still follow after that temporary pin ends.
+        for (let chunk = 0; chunk < 3; chunk++) {
+          await controlledStream.chunk(
+            "text",
+            Array.from({ length: 12 }, (_, i) => `Continuing ${chunk} paragraph ${i}.\n\n`).join(
+              "",
+            ),
+          );
+          await expectFollowing();
+        }
+        await controlledStream.finish();
+      },
+    );
+  }
+
+  for (const endEvent of ["touchend", "touchcancel", "delayed touchend", "unreleased"]) {
+    streamingTest(
+      `manual bottom resumes continuing chunks after ${endEvent}`,
+      async ({ page, controlledStream }) => {
+        const container = page.locator(".messages-container");
+        const button = page.locator(".scroll-to-bottom-button");
+        const expectFollowing = async () => {
+          await expect
+            .poll(() =>
+              container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+            )
+            .toBeLessThan(2);
+          await expect(button).toBeHidden();
+        };
+        const scrolled = await container.evaluate((el) => {
+          el.dispatchEvent(
+            new PointerEvent("pointerdown", { pointerType: "touch", bubbles: true }),
+          );
+          el.dispatchEvent(new Event("touchstart", { bubbles: true }));
+          el.dispatchEvent(
+            new PointerEvent("pointercancel", { pointerType: "touch", bubbles: true }),
+          );
+          el.scrollTop -= 300;
+          el.dispatchEvent(new Event("scroll"));
+          return el.scrollTop;
+        });
+        await expect(button).toBeVisible();
+        await controlledStream.chunk("text", "While manually scrolled away.\n\n");
+        expect(await container.evaluate((el) => el.scrollTop)).toBeCloseTo(scrolled, 0);
+        if (endEvent === "touchend" || endEvent === "touchcancel") {
+          await container.dispatchEvent(endEvent);
+        }
+
+        // No arrow/shortcut: deliver scroll and the real sentinel intersection
+        // before sending more SSE data, including when touchend was lost.
+        await container.evaluate(async (el) => {
+          el.scrollTop = el.scrollHeight - el.clientHeight;
+          el.dispatchEvent(new Event("scroll"));
+          await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          );
+        });
+        await expectFollowing();
+        for (let chunk = 0; chunk < 3; chunk++) {
+          await controlledStream.chunk(
+            "text",
+            Array.from({ length: 12 }, (_, i) => `Manual return ${chunk} paragraph ${i}.\n\n`).join(
+              "",
+            ),
+          );
+          await expectFollowing();
+          // A late end event must not be needed to resume, nor undo the resume.
+          if (chunk === 0 && endEvent === "delayed touchend") {
+            await container.dispatchEvent("touchend");
+          }
+        }
+        await controlledStream.finish();
+      },
+    );
+  }
+
+  for (const endEvent of ["touchend", "touchcancel"]) {
+    streamingTest(
+      `incoming chunks respect scroll-up through ${endEvent}`,
+      async ({ page, controlledStream }) => {
+        const container = page.locator(".messages-container");
+        // A second gesture must work after explicit return to the bottom.
+        for (let gesture = 0; gesture < 2; gesture++) {
+          const before = await container.evaluate((el) => {
+            el.dispatchEvent(
+              new PointerEvent("pointerdown", {
+                pointerType: "touch",
+                bubbles: true,
+              }),
+            );
+            el.dispatchEvent(new Event("touchstart", { bubbles: true }));
+            // Native panning cancels the pointer, not the touch gesture.
+            el.dispatchEvent(
+              new PointerEvent("pointercancel", { pointerType: "touch", bubbles: true }),
+            );
+            return el.scrollTop;
+          });
+          await controlledStream.chunk("text", `Held chunk ${gesture}.\n\n`);
+          expect(await container.evaluate((el) => el.scrollTop)).toBeCloseTo(before, 0);
+          // Below both pin-release and sentinel margins. On the second gesture,
+          // release before the browser delivers the queued scroll event.
+          await container.evaluate(
+            (el, { gesture, endEvent }) => {
+              el.scrollTop -= 20;
+              el.dispatchEvent(new Event(gesture === 0 ? "scroll" : endEvent, { bubbles: true }));
+            },
+            { gesture, endEvent },
+          );
+          await controlledStream.chunk("thinking", `Thinking ${gesture}. `);
+          expect(await container.evaluate((el) => el.scrollTop)).toBeCloseTo(before - 20, 0);
+          if (gesture === 0) await container.dispatchEvent(endEvent);
+          await controlledStream.chunk("text", `After release ${gesture}.\n\n`);
+          expect(await container.evaluate((el) => el.scrollTop)).toBeCloseTo(before - 20, 0);
+          await page.keyboard.press("ControlOrMeta+ArrowDown");
+          await expect
+            .poll(() =>
+              container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+            )
+            .toBeLessThan(2);
+        }
+        await controlledStream.finish();
+      },
+    );
+  }
+
+  for (const endEvent of ["touchend", "touchcancel"]) {
+    streamingTest(
+      `resumes deferred follow on ${endEvent} without another chunk`,
+      async ({ page, controlledStream }) => {
+        const container = page.locator(".messages-container");
+        const before = await container.evaluate((el) => {
+          el.dispatchEvent(
+            new PointerEvent("pointerdown", {
+              pointerType: "touch",
+              bubbles: true,
+            }),
+          );
+          el.dispatchEvent(new Event("touchstart", { bubbles: true }));
+          el.dispatchEvent(
+            new PointerEvent("pointercancel", { pointerType: "touch", bubbles: true }),
+          );
+          return el.scrollTop;
+        });
+        // Cross the sentinel margin as well as growing the list: neither observer
+        // may re-pin or mistake growth for a genuine user scroll-up.
+        await controlledStream.chunk(
+          "text",
+          Array.from({ length: 12 }, (_, i) => `Held paragraph ${i}.\n\n`).join(""),
+        );
+        expect(await container.evaluate((el) => el.scrollTop)).toBeCloseTo(before, 0);
+        expect(
+          await container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+        ).toBeGreaterThan(100);
+        await container.dispatchEvent(endEvent);
+        // No new chunk, DOM growth, or keyboard action can rescue a missing resume.
+        await expect
+          .poll(() => container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+          .toBeLessThan(2);
+        await controlledStream.finish();
+      },
+    );
+  }
+});
+
+streamingTest.describe("Desktop streaming scroll behavior", () => {
+  streamingTest.use({ viewport: { width: 1280, height: 720 }, isMobile: false, hasTouch: false });
+
+  streamingTest(
+    "mouse-held streaming still follows; wheel and pointer scroll-up still disarm",
+    async ({ page, controlledStream }) => {
+      const container = page.locator(".messages-container");
+      const before = await container.evaluate((el) => {
+        el.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "mouse", bubbles: true }));
+        return el.scrollTop;
+      });
+      // Mouse pointerdown only stops the current pin; unlike touch, it must not
+      // pause follow writes from incoming chunks while the pointer stays down.
+      await controlledStream.chunk("text", "Mouse-held chunk.\n\n");
+      await expect
+        .poll(() => container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+        .toBeLessThan(2);
+      expect(await container.evaluate((el) => el.scrollTop)).toBeGreaterThan(before);
+      await container.dispatchEvent("pointerup");
+
+      for (const gesture of ["wheel", "pointer"]) {
+        await page.keyboard.press("ControlOrMeta+ArrowDown");
+        await expect
+          .poll(() => container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+          .toBeLessThan(2);
+        const scrolled = await container.evaluate((el, gesture) => {
+          if (gesture === "wheel") {
+            el.dispatchEvent(new WheelEvent("wheel", { deltaY: -20, bubbles: true }));
+          } else {
+            el.dispatchEvent(
+              new PointerEvent("pointerdown", { pointerType: "mouse", bubbles: true }),
+            );
+          }
+          el.scrollTop -= 20;
+          el.dispatchEvent(new Event("scroll"));
+          el.dispatchEvent(new PointerEvent("pointerup", { pointerType: "mouse", bubbles: true }));
+          return el.scrollTop;
+        }, gesture);
+        // The existing wheel release / scrollPointerActive recognition must keep
+        // small upward movements from being undone by the next streaming chunk.
+        await controlledStream.chunk("text", `After ${gesture} scroll-up.\n\n`);
+        expect(await container.evaluate((el) => el.scrollTop)).toBeCloseTo(scrolled, 0);
+      }
+      await controlledStream.finish();
+    },
+  );
 });
 
 // Desktop keeps the conversation drawer visible, which makes this a direct

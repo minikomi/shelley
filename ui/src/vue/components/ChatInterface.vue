@@ -2091,6 +2091,7 @@ const CLAMP_MISREAD_UNDO_WINDOW_MS = 250;
 let followExplicitSelectionToBottom = false;
 let suppressExplicitSelectionClamp = false;
 let scrollPointerActive = false;
+let touchScrolling = false;
 let bottomPinFrame: number | null = null;
 let bottomPinActive = false;
 
@@ -2122,9 +2123,11 @@ function handleBottomPinWheel(e: WheelEvent) {
 }
 
 function handleBottomPinTouch() {
-  lastScrollGestureAt = performance.now();
-  scrollPointerActive = true;
-  stopBottomPin();
+  touchScrolling = true;
+  handleScrollPointerDown();
+  // Start from the actual offset, not a rounded/clamped auto-follow target.
+  const container = messagesContainerRef.value;
+  if (container) lastObservedScrollTop = container.scrollTop;
 }
 
 function handleScrollPointerDown() {
@@ -2137,9 +2140,28 @@ function handleScrollPointerUp() {
   scrollPointerActive = false;
 }
 
+// Native touch panning fires pointercancel before the gesture's scroll events.
+// Keep touch state until touchend/touchcancel, not just until pointercancel.
+function userScrollGestureActive() {
+  return touchScrolling || scrollPointerActive;
+}
+
+function handleScrollTouchEnd() {
+  if (!touchScrolling) return;
+  // Account for a final movement even if its scroll event is still queued.
+  handleScroll();
+  touchScrolling = false;
+  scrollPointerActive = false;
+  if (!userScrolled && !loadingFlag && !catchingUp && pendingScroll === undefined) {
+    scrollToBottom();
+  }
+}
+
 function scrollToBottom() {
   const container = messagesContainerRef.value;
   if (!container) return;
+  // Returning to bottom supersedes even a touch whose end event was lost.
+  touchScrolling = false;
   stopBottomPin();
   userScrolled = false;
   showScrollToBottom.value = false;
@@ -3892,7 +3914,8 @@ watch(
         }
         return;
       }
-      if (!userScrolled && !wasCatchingUp) scrollToBottom();
+      // A streaming update must not re-pin before the touch's scroll event.
+      if (!userScrolled && !wasCatchingUp && !touchScrolling) scrollToBottom();
     });
   },
   { flush: "post" },
@@ -3934,7 +3957,7 @@ function handleScroll() {
   }
   const switchingConversation = pendingScroll !== undefined;
   const guardedLayoutShift =
-    upwardDelta > 0 && suppressExplicitSelectionClamp && !scrollPointerActive;
+    upwardDelta > 0 && suppressExplicitSelectionClamp && !userScrollGestureActive();
   if (switchingConversation || guardedLayoutShift) {
     // Replacing one transcript with another clamps the shared scroll container
     // before the pending destination is applied. Likewise, lazy renderers can
@@ -3944,7 +3967,12 @@ function handleScroll() {
     if (guardedLayoutShift) scrollToBottom();
     return;
   }
-  if (bottomPinActive && upwardDelta >= BOTTOM_PIN_SCROLL_RELEASE_DELTA) {
+  // Even a small upward touch movement releases a pin re-armed mid-gesture.
+  if (
+    bottomPinActive &&
+    upwardDelta > 0 &&
+    (upwardDelta >= BOTTOM_PIN_SCROLL_RELEASE_DELTA || touchScrolling)
+  ) {
     stopBottomPin();
   }
   // An upward delta this large, after clamp accounting, is unambiguously a
@@ -3957,7 +3985,7 @@ function handleScroll() {
   // while sentinelAtBottom is still stale-true and yanks the reader back down
   // (measured: scrollTop 0 -> 1607). The wheel/touch handlers only cover this
   // while the bottom pin is active, so they are not a substitute.
-  const definitelyGesture = scrollPointerActive || upwardDelta > BOTTOM_SENTINEL_MARGIN_PX;
+  const definitelyGesture = userScrollGestureActive() || upwardDelta > BOTTOM_SENTINEL_MARGIN_PX;
   if (!bottomPinActive && upwardDelta > 0 && (!sentinelAtBottom || definitelyGesture)) {
     // Below the gesture threshold, only act when the bottom sentinel has
     // actually left the near-bottom zone. While it still intersects we are
@@ -4003,8 +4031,8 @@ function setupScrollObservers() {
   container.addEventListener("scroll", handleScroll);
   container.addEventListener("wheel", handleBottomPinWheel, { passive: true });
   container.addEventListener("touchstart", handleBottomPinTouch, { passive: true });
-  container.addEventListener("touchend", handleScrollPointerUp, { passive: true });
-  container.addEventListener("touchcancel", handleScrollPointerUp, { passive: true });
+  container.addEventListener("touchend", handleScrollTouchEnd, { passive: true });
+  container.addEventListener("touchcancel", handleScrollTouchEnd, { passive: true });
   container.addEventListener("pointerdown", handleScrollPointerDown, { passive: true });
   window.addEventListener("pointerup", handleScrollPointerUp, { passive: true });
   window.addEventListener("pointercancel", handleScrollPointerUp, { passive: true });
@@ -4015,13 +4043,17 @@ function setupScrollObservers() {
       atBottom = nearBottom;
       showScrollToBottom.value = !nearBottom;
       if (nearBottom) {
+        // Manual return resumes follow even when touchend was lost or delayed.
+        touchScrolling = false;
         userScrolled = false;
         suppressExplicitSelectionClamp = false;
         stopBottomPin();
         if (!loadingFlag && followExplicitSelectionToBottom) {
           saveScroll(container.scrollTop);
         }
-      } else if (!bottomPinActive) {
+      } else if (!bottomPinActive && !touchScrolling) {
+        // Growth can move the sentinel while follow is paused. Only handleScroll
+        // may disarm an active touch; neither infer scroll-up nor re-pin here.
         if (!userScrolled && followExplicitSelectionToBottom) {
           // An explicitly selected conversation may grow after its first
           // bottom paint as lazy renderers hydrate. Keep the selection at its
@@ -4132,7 +4164,8 @@ function setupScrollObservers() {
     // Keep following pinned to the bottom as content streams in. User scroll-up
     // detection lives solely in handleScroll (with clamp discounting); inferring
     // it from resize events is what misfired on layout clamps.
-    if (!userScrolled && !catchingUp) {
+    // List growth must not move the viewport before the touch can disarm follow.
+    if (!userScrolled && !catchingUp && !touchScrolling) {
       // Avoid reading scrollTop after this write. In WebKit that read resolves
       // the clamped offset by synchronously laying out content-visibility
       // chunks. The observer already gives us both dimensions for free, and
@@ -4390,8 +4423,8 @@ onUnmounted(() => {
   container?.removeEventListener("scroll", handleScroll);
   container?.removeEventListener("wheel", handleBottomPinWheel);
   container?.removeEventListener("touchstart", handleBottomPinTouch);
-  container?.removeEventListener("touchend", handleScrollPointerUp);
-  container?.removeEventListener("touchcancel", handleScrollPointerUp);
+  container?.removeEventListener("touchend", handleScrollTouchEnd);
+  container?.removeEventListener("touchcancel", handleScrollTouchEnd);
   container?.removeEventListener("pointerdown", handleScrollPointerDown);
   window.removeEventListener("pointerup", handleScrollPointerUp);
   window.removeEventListener("pointercancel", handleScrollPointerUp);
