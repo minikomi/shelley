@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const ja: TranslationKeys = {
   // App-level
   loading: "読み込み中...",
+  diskSpaceLow: "ディスク容量が少なくなっています",
+  diskSpaceCritical: "ディスク容量が極めて少なくなっています",
+  diskSpaceRemaining: "残り",
+  dismiss: "閉じる",
   retry: "再試行",
   failedToLoadConversations: "会話の読み込みに失敗しました。ページを更新してください。",
 

@@ -66,6 +66,15 @@ export interface NotificationEventForTS {
   payload?: any;
 }
 
+export interface DiskSpaceStatus {
+  episode_id: number;
+  revision: number;
+  active: boolean;
+  critical: boolean;
+  dismissed: boolean;
+  available_bytes: number;
+}
+
 export interface StreamResponseForTS {
   conversation_id?: string;
   messages?: ApiMessageForTS[] | null;
@@ -73,6 +82,7 @@ export interface StreamResponseForTS {
   conversation_state?: ConversationStateForTS | null;
   heartbeat?: boolean;
   notification_event?: NotificationEventForTS | null;
+  disk_space_status?: DiskSpaceStatus | null;
   max_sequence_id?: number;
 }
 

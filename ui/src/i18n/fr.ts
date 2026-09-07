@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const fr: TranslationKeys = {
   // App-level
   loading: "Chargement...",
+  diskSpaceLow: "Espace disque faible",
+  diskSpaceCritical: "Espace disque critique",
+  diskSpaceRemaining: "restants",
+  dismiss: "Fermer",
   retry: "Réessayer",
   failedToLoadConversations:
     "Impossible de charger les conversations. Veuillez rafraîchir la page.",

@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const ru: TranslationKeys = {
   // App-level
   loading: "Загрузка...",
+  diskSpaceLow: "Мало места на диске",
+  diskSpaceCritical: "Критически мало места на диске",
+  diskSpaceRemaining: "осталось",
+  dismiss: "Скрыть",
   retry: "Повторить",
   failedToLoadConversations: "Не удалось загрузить диалоги. Пожалуйста, обновите страницу.",
 

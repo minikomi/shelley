@@ -17,6 +17,7 @@
 
 import type {
   ConversationListPatchEvent,
+  DiskSpaceStatus,
   NotificationEvent,
   StreamResponse,
   Message,
@@ -58,6 +59,8 @@ export interface GlobalStreamOptions {
    * received new messages while we were disconnected.
    */
   onReconnect?: () => void;
+  /** Server-wide disk space status: a snapshot after every (re)connect, then transitions. */
+  onDiskSpaceStatus?: (status: DiskSpaceStatus) => void;
 }
 
 export interface GlobalStreamHandle {
@@ -89,6 +92,7 @@ export function connectGlobalStream({
   onNotificationEvent,
   onStatusChange,
   onReconnect,
+  onDiskSpaceStatus,
 }: GlobalStreamOptions): GlobalStreamHandle {
   let closed = false;
   let eventSource: EventSource | null = null;
@@ -186,6 +190,9 @@ export function connectGlobalStream({
     }
     if (data.notification_event && onNotificationEvent) {
       onNotificationEvent(data.notification_event);
+    }
+    if (data.disk_space_status && onDiskSpaceStatus) {
+      onDiskSpaceStatus(data.disk_space_status);
     }
 
     const convId = data.conversation_id;

@@ -2195,7 +2195,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 	}
 
 	if includeConversationListPatches && s.streamPub != nil {
-		next, status := s.streamPub.SubscribeWithStatus(ctx, -1)
+		next, status, diskSpace := s.subscribeStream(ctx)
 		watchSubscription(status, "global")
 		go func() {
 			for {
@@ -2208,6 +2208,9 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 				}
 			}
 		}()
+		if diskSpace != nil && !writeStreamData(StreamResponse{DiskSpaceStatus: diskSpace}) {
+			return
+		}
 	}
 
 	// On the unified /api/stream2 endpoint, send a bare heartbeat whenever
