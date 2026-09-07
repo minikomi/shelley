@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -25,9 +26,6 @@ func init() {
 		panic(err)
 	}
 	assets = http.FS(sub)
-
-	// Check if UI sources are stale compared to the embedded build
-	checkStaleness()
 }
 
 // checkStaleness verifies that the embedded UI build is not stale.
@@ -103,8 +101,13 @@ func checkStaleness() {
 	}
 }
 
+var stalenessOnce sync.Once
+
 // Assets returns an http.FileSystem backed by the embedded UI assets.
+// It verifies that the embedded UI build is not stale, exiting with an
+// error if ui/src has files modified after the build.
 func Assets() http.FileSystem {
+	stalenessOnce.Do(checkStaleness)
 	return assets
 }
 
