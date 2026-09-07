@@ -500,6 +500,9 @@ const props = defineProps<{
   cwd: string;
   isOpen: boolean;
   initialCommit?: string;
+  // File to select once initialCommit's file list loads (e.g. from the git
+  // graph diffstat). Consumed on the first load only.
+  initialFile?: string;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -558,6 +561,7 @@ const tourLoading = ref(false);
 const tourError = ref<string | null>(null);
 const files = ref<GitFileInfo[]>([]);
 const selectedFile = ref<string | null>(null);
+let pendingInitialFile: string | undefined;
 const fileDiff = ref<GitFileDiff | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -792,6 +796,7 @@ watch(
   [() => props.isOpen, () => props.cwd, () => props.initialCommit],
   () => {
     if (props.isOpen && props.cwd) {
+      pendingInitialFile = props.initialFile;
       loadDiffs();
     } else if (!props.isOpen) {
       fileDiff.value = null;
@@ -1109,7 +1114,11 @@ async function loadFiles(diffId: string) {
 
     const allFiles = [...commitFileEntries, ...(filesData || [])];
     files.value = allFiles;
-    if (allFiles.length > 0) {
+    const initial = pendingInitialFile;
+    pendingInitialFile = undefined;
+    if (initial && allFiles.some((f) => f.path === initial)) {
+      selectedFile.value = initial;
+    } else if (allFiles.length > 0) {
       selectedFile.value = allFiles[0].path;
     } else {
       selectedFile.value = null;
