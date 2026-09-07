@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const zhCN: TranslationKeys = {
   // App-level
   loading: "加载中...",
+  diskSpaceLow: "磁盘空间不足",
+  diskSpaceCritical: "磁盘空间严重不足",
+  diskSpaceRemaining: "剩余",
+  dismiss: "关闭",
   retry: "重试",
   failedToLoadConversations: "加载对话失败，请刷新页面。",
 

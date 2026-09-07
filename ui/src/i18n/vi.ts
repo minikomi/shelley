@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const vi: TranslationKeys = {
   // App-level
   loading: "Đang tải ...",
+  diskSpaceLow: "Dung lượng đĩa còn ít",
+  diskSpaceCritical: "Dung lượng đĩa cực kỳ thấp",
+  diskSpaceRemaining: "còn lại",
+  dismiss: "Bỏ qua",
   retry: "Thử lại",
   failedToLoadConversations: "Tải trò chuyện thất bại. Vui lòng tải lại trang.",
 

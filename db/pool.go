@@ -173,7 +173,7 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...interface{}) erro
 	return wrapErr("pool.exec", err)
 }
 
-func (p *Pool) Tx(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) error {
+func (p *Pool) Tx(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) (err error) {
 	checkNoTx(ctx, "Tx")
 	var conn *sql.Conn
 	select {
@@ -198,7 +198,6 @@ func (p *Pool) Tx(ctx context.Context, fn func(ctx context.Context, tx *Tx) erro
 	}
 	tx.ctx = context.WithValue(ctx, CtxKey, tx)
 
-	var err error
 	committed := false
 	defer func() {
 		if err == nil {
