@@ -1591,3 +1591,64 @@ func TestParseResponsesSSECustomToolCall(t *testing.T) {
 		t.Fatalf("output = %+v", response.Output)
 	}
 }
+
+func TestResponsesResponseCreatedAtFractionalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want float64
+	}{
+		{name: "integer", raw: `{"id":"resp_1","created_at":1788698982}`, want: 1788698982},
+		{name: "zero fraction", raw: `{"id":"resp_1","created_at":1788698982.0}`, want: 1788698982.0},
+		{name: "true fraction", raw: `{"id":"resp_1","created_at":1788698982.25}`, want: 1788698982.25},
+		{name: "exponent", raw: `{"id":"resp_1","created_at":1.78869898225e9}`, want: 1788698982.25},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var response responsesResponse
+			if err := json.Unmarshal([]byte(tt.raw), &response); err != nil {
+				t.Fatalf("json.Unmarshal: %v", err)
+			}
+			if response.CreatedAt != tt.want {
+				t.Fatalf("created_at = %v, want %v", response.CreatedAt, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseResponsesSSETimestamps(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","created_at":1788698982.0,"status":"in_progress","output":[],"usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}`,
+		``,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1788698982.0,"status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}`,
+		``,
+	}, "\n")
+
+	var deltas []llm.StreamDelta
+	response, err := parseResponsesSSEStream(strings.NewReader(stream), func(delta llm.StreamDelta) {
+		deltas = append(deltas, delta)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.CreatedAt != 1788698982.0 {
+		t.Fatalf("created_at = %v, want 1788698982.0", response.CreatedAt)
+	}
+	if response.Usage.InputTokens != 3 || response.Usage.OutputTokens != 2 || response.Usage.TotalTokens != 5 {
+		t.Fatalf("usage = %+v", response.Usage)
+	}
+	if len(response.Output) != 1 || response.Output[0].ID != "msg_1" || response.Output[0].Type != "message" {
+		t.Fatalf("output = %+v", response.Output)
+	}
+	if len(deltas) != 1 || deltas[0].Type != "text" || deltas[0].Text != "hello" || deltas[0].Index != 0 {
+		t.Fatalf("deltas = %+v", deltas)
+	}
+}

@@ -180,7 +180,7 @@ type responsesToolGrammar struct {
 type responsesResponse struct {
 	ID        string                `json:"id"`
 	Object    string                `json:"object"` // "response"
-	CreatedAt int64                 `json:"created_at"`
+	CreatedAt float64               `json:"created_at"`
 	Status    string                `json:"status"` // "completed", "incomplete", etc.
 	Model     string                `json:"model"`
 	Output    []responsesOutputItem `json:"output"`
