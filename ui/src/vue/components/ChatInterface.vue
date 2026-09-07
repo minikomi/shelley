@@ -349,8 +349,9 @@
         focusMessageInputIfUnfocused();
       "
       @open-diff="
-        (commit, cwd) => {
+        (commit, cwd, file) => {
           diffViewerInitialCommit = commit;
+          diffViewerInitialFile = file;
           diffViewerCwd = cwd;
           showDiffViewer = true;
         }
@@ -373,6 +374,7 @@
       :cwd="(diffViewerCwd || currentConversation?.cwd || selectedCwd) as string"
       :is-open="showDiffViewer"
       :initial-commit="diffViewerInitialCommit"
+      :initial-file="diffViewerInitialFile"
       @close="onDiffViewerClose"
       @comment-text-change="(text) => (diffCommentText = text)"
       @cwd-change="(cwd) => (diffViewerCwd = cwd)"
@@ -856,6 +858,7 @@ const showGitGraph = ref(false);
 const showAgentsMdEditor = ref(false);
 const diffViewerInitialCommit = ref<string | undefined>(undefined);
 const diffViewerCwd = ref<string | undefined>(undefined);
+const diffViewerInitialFile = ref<string | undefined>(undefined);
 const diffCommentText = ref("");
 // The image being annotated, if any (module state so any image in the message
 // tree can open the view without prop drilling).
@@ -3230,6 +3233,7 @@ function onTerminalCloseHandler(id: string) {
 function onDiffViewerClose() {
   showDiffViewer.value = false;
   diffViewerInitialCommit.value = undefined;
+  diffViewerInitialFile.value = undefined;
   diffViewerCwd.value = undefined;
   if (!showGitGraph.value) focusMessageInputIfUnfocused();
 }
@@ -4310,10 +4314,12 @@ onMounted(() => {
   if (commit) {
     const cwdParam = params.get("cwd") || undefined;
     diffViewerInitialCommit.value = commit;
+    diffViewerInitialFile.value = params.get("file") || undefined;
     diffViewerCwd.value = cwdParam;
     showDiffViewer.value = true;
     params.delete("diff");
     params.delete("cwd");
+    params.delete("file");
     const qs = params.toString();
     window.history.replaceState(
       {},
