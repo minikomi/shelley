@@ -43,6 +43,7 @@ func GenerateConversationID() (string, error) {
 // DB wraps the database connection pool and provides high-level operations
 type DB struct {
 	pool *Pool
+	path string
 }
 
 // Config holds database configuration
@@ -60,9 +61,11 @@ func New(cfg Config) (*DB, error) {
 		return nil, fmt.Errorf(":memory: database not supported (requires multiple connections); use a temp file")
 	}
 
-	// Ensure directory exists for file-based SQLite databases
-	if cfg.DSN != ":memory:" {
-		dir := filepath.Dir(cfg.DSN)
+	// Plain filenames may include driver options. Leave file: URI handling
+	// (including its directory requirements) to SQLite.
+	filename, _, _ := strings.Cut(cfg.DSN, "?")
+	if !strings.HasPrefix(filename, "file:") {
+		dir := filepath.Dir(filename)
 		if dir != "." && dir != "" {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return nil, fmt.Errorf("failed to create database directory: %w", err)
@@ -83,10 +86,29 @@ func New(cfg Config) (*DB, error) {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
+	// Ask the opened connection, not the DSN: SQLite resolves relative paths,
+	// URI escaping/options and symlinks. Keep this instance-local and stable
+	// even if the process changes working directory later.
+	var path string
+	if err := pool.Rx(context.Background(), func(ctx context.Context, rx *Rx) error {
+		return rx.QueryRow("SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&path)
+	}); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("database path: %w", err)
+	}
+	if path == "" {
+		pool.Close()
+		return nil, fmt.Errorf("database must be backed by a filesystem file")
+	}
+
 	return &DB{
 		pool: pool,
+		path: path,
 	}, nil
 }
+
+// Path returns the filesystem path of this instance's main SQLite database.
+func (db *DB) Path() string { return db.path }
 
 // Close closes the database connection pool
 func (db *DB) Close() error {

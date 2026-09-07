@@ -3792,6 +3792,67 @@ select:disabled {
   text-align: center;
 }
 
+/* Low disk space notice. A server-wide, dismissible heads-up shown above the
+   status bar (a sibling, so it survives the mobile layout that folds the
+   status bar into the composer). Pairs with disk_space_status on the stream. */
+.disk-space-notice {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.375rem 0.75rem 0.375rem 1rem;
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
+  background: var(--warning-bg);
+  border-top: 1px solid var(--warning-border);
+  color: var(--warning-text);
+  font-size: 0.8rem;
+}
+
+.disk-space-notice-critical {
+  background: var(--error-bg);
+  border-top-color: var(--error-border);
+  color: var(--error-text);
+}
+
+.disk-space-notice-critical .disk-space-notice-icon {
+  border-color: var(--error-border);
+}
+
+.disk-space-notice-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 1px solid var(--warning-border);
+  border-radius: 50%;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.disk-space-notice-text {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.disk-space-notice-detail {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  opacity: 0.9;
+}
+
+.disk-space-notice-dismiss {
+  margin-left: auto;
+  color: var(--warning-text);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
 /* Unified Status Bar */
 .status-bar {
   flex: 0 0 auto;

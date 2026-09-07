@@ -422,5 +422,29 @@ await run("close() removes listeners and stops reconnecting", () => {
   assert(FakeEventSource.instances.length === count, "no reconnects after close()");
 });
 
+await run("disk_space_status frames reach onDiskSpaceStatus (no conversation_id)", () => {
+  reset();
+  const seen: unknown[] = [];
+  const handle = connectGlobalStream({
+    getHash: () => "hash0",
+    onListPatch: () => {},
+    onDiskSpaceStatus: (status) => seen.push(status),
+  });
+  latest().emitOpen();
+  latest().emitMessage({ heartbeat: true });
+  assert(seen.length === 0, "frames without disk_space_status are ignored");
+  const status = {
+    episode_id: 1,
+    revision: 1,
+    active: true,
+    dismissed: false,
+    available_bytes: 1_600_000_000,
+  };
+  latest().emitMessage({ disk_space_status: status });
+  assert(seen.length === 1, "disk_space_status delivered");
+  assert((seen[0] as typeof status).episode_id === 1, "payload passed through");
+  handle.close();
+});
+
 Date.now = realDateNow;
 console.log("\nglobalStream: all scenarios passed");

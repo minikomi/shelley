@@ -49,6 +49,8 @@
           :conversation-id="currentConversationId"
           :stream-status="streamStatus"
           :reconnect-nonce="reconnectNonce"
+          :disk-space-status="diskSpaceStatus"
+          :on-disk-space-status="applyDiskSpaceStatus"
           :on-open-drawer="() => (drawerOpen = true)"
           :on-new-conversation="startNewConversation"
           :on-select-conversation="selectConversation"
@@ -231,6 +233,7 @@ import {
   type Conversation,
   type ConversationWithState,
   type ConversationListPatchEvent,
+  type DiskSpaceStatus,
 } from "../types";
 import { api } from "../services/api";
 import { btwStore } from "../services/btwStore";
@@ -347,6 +350,12 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const ephemeralTerminals = ref<EphemeralTerminal[]>([]);
 const streamStatus = ref<StreamStatus>("connected");
+// Server-wide low-disk notice; the server sends a snapshot on every (re)connect.
+const diskSpaceStatus = ref<DiskSpaceStatus | null>(null);
+function applyDiskSpaceStatus(status: DiskSpaceStatus) {
+  if (diskSpaceStatus.value && status.revision < diskSpaceStatus.value.revision) return;
+  diskSpaceStatus.value = status;
+}
 const reconnectNonce = ref(0);
 const showActiveTrigger = ref(0);
 
@@ -912,6 +921,7 @@ onMounted(() => {
     onListPatch: handleConversationListPatch,
     onNotificationEvent: handleNotificationEvent,
     onStatusChange: (status) => (streamStatus.value = status),
+    onDiskSpaceStatus: applyDiskSpaceStatus,
     onReconnect: () => {
       reconnectNonce.value++;
     },
