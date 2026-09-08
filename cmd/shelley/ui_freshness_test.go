@@ -104,7 +104,8 @@ func isolatedCLIEnv(homeDir string) []string {
 		}
 		env = append(env, item)
 	}
-	return append(env,
+	return append(
+		env,
 		"HOME="+homeDir,
 		"XDG_CONFIG_HOME="+filepath.Join(homeDir, ".config"),
 	)
@@ -158,7 +159,8 @@ func assertStaleServeFails(t *testing.T, binary, fixtureDir, workDir string, env
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary,
+	cmd := exec.CommandContext(
+		ctx, binary,
 		"-db", filepath.Join(fixtureDir, "stale.db"),
 		"-predictable-only",
 		"-disable-llm-integration",
@@ -210,7 +212,8 @@ func assertFreshServeStarts(t *testing.T, binary, fixtureDir, workDir string, en
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary,
+	cmd := exec.CommandContext(
+		ctx, binary,
 		"-db", filepath.Join(fixtureDir, "fresh.db"),
 		"-predictable-only",
 		"-disable-llm-integration",
