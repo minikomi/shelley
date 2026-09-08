@@ -125,6 +125,9 @@ test.describe("Tail-first conversation mounting", () => {
     const before = await chunkCounts(page);
     expect(before.pending).toBeGreaterThan(0);
 
+    // Wheel intent releases follow before jumping to unmounted history.
+    await page.locator(".messages-container").hover();
+    await page.mouse.wheel(0, -200);
     // Scroll to the top of the transcript: placeholders enter the scrollport
     // and must hydrate into real content.
     await page

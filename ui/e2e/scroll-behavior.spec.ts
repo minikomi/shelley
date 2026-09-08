@@ -1,8 +1,16 @@
-import { test, expect, type APIRequestContext } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import type { ConversationWithState, StreamResponse } from "../src/types";
 import { createConversationViaAPI, createConversationViaAPIWithDetails } from "./helpers";
+
+async function userScrollUp(page: Page, container: Locator, scrollTop = 0) {
+  await container.hover();
+  await page.mouse.wheel(0, -200);
+  await container.evaluate((element, top) => {
+    element.scrollTop = top;
+  }, scrollTop);
+}
 
 test.describe("Scroll behavior", () => {
   test("auto-pinning does not synchronously read back scrollTop", async ({ page, request }) => {
@@ -161,9 +169,7 @@ test.describe("Scroll behavior", () => {
         state.__messageRectReads = 0;
         state.__messagesScrollHeightReads = 0;
       });
-      await messagesContainer.evaluate((el) => {
-        el.scrollTop = 0;
-      });
+      await userScrollUp(page, messagesContainer);
       await expect(scrollButton).toBeVisible({ timeout: 1000 });
     }).toPass({ timeout: 30000 });
     await expect
@@ -212,9 +218,7 @@ test.describe("Scroll behavior", () => {
       .toBe(true);
 
     await expect(async () => {
-      await messagesContainer.evaluate((el) => {
-        el.scrollTop = 0;
-      });
+      await userScrollUp(page, messagesContainer);
       await expect(scrollButton).toBeVisible({ timeout: 1000 });
     }).toPass({ timeout: 30000 });
 
@@ -229,7 +233,7 @@ test.describe("Scroll behavior", () => {
     await expect(scrollButton).not.toBeVisible({ timeout: 5000 });
 
     // A slow touch/scrollbar drag must release the RAF pin even when its first
-    // scroll event moves less than the pin's 128px jump threshold.
+    // scroll event stays inside the sentinel margin.
     await messagesContainer.evaluate(async (el) => {
       el.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, bubbles: true }));
       el.scrollTop = Math.max(0, el.scrollTop - 50);
@@ -251,18 +255,22 @@ test.describe("Scroll behavior", () => {
       el.scrollTop = 0;
     });
     await expect(scrollButton).toBeVisible({ timeout: 5000 });
-    // A large upward jump (for example Home or a scrollbar drag) must also
-    // release the pin, even when no wheel event preceded it.
-    await messagesContainer.evaluate((container) => {
-      const button = document.querySelector<HTMLButtonElement>(".scroll-to-bottom-button");
+    // A scrollbar drag must also release the pin.
+    await scrollButton.click();
+    await messagesContainer.evaluate(async (container) => {
       const list = container.querySelector(".messages-list");
       const sentinel = container.querySelector(".messages-bottom-sentinel");
-      if (!button || !list || !sentinel) throw new Error("scroll controls not found");
-      button.click();
+      if (!list || !sentinel) throw new Error("scroll controls not found");
       const spacer = document.createElement("div");
       spacer.style.height = "1200px";
       list.insertBefore(spacer, sentinel);
+      container.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 1, bubbles: true }));
+      const scrolled = new Promise<void>((resolve) =>
+        container.addEventListener("scroll", () => resolve(), { once: true }),
+      );
       container.scrollTop = Math.max(0, container.scrollTop - 200);
+      await scrolled;
+      container.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, bubbles: true }));
     });
     await expect
       .poll(() =>
@@ -302,9 +310,7 @@ test.describe("Scroll behavior", () => {
     await expect(messagesContainer).toBeVisible({ timeout: 30000 });
 
     await expect(async () => {
-      await messagesContainer.evaluate((el) => {
-        el.scrollTop = 0;
-      });
+      await userScrollUp(page, messagesContainer);
       await expect(scrollButton).toBeVisible({ timeout: 1000 });
     }).toPass({ timeout: 30000 });
 
@@ -647,12 +653,9 @@ test.describe("Scroll behavior", () => {
     }
     await expect(scrollButton).not.toBeVisible({ timeout: 5000 });
 
-    // A genuine scroll to the very top, dispatched as a bare scrollTop write so
-    // no wheel/touch handler runs -- exactly the path where handleScroll is the
-    // only chance to notice before the observer catches up.
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
+    // Genuine wheel input releases follow before the asynchronous bottom
+    // observer catches up with the move to the top.
+    await userScrollUp(page, messagesContainer);
     await expect(scrollButton).toBeVisible({ timeout: 5000 });
 
     const before = await messagesContainer.evaluate((el) => el.scrollTop);
@@ -695,11 +698,10 @@ test.describe("Scroll behavior", () => {
     }
     await expect(scrollButton).not.toBeVisible({ timeout: 5000 });
 
-    // Scroll to the top and grow the list in the same task, so no observer
-    // callback can run in between. Deliberately no wheel event: those handlers
-    // only arm auto-follow-off while the bottom pin is active, so relying on
-    // one here would hide the bug (with a wheel event this passed even while a
-    // bare scroll was yanked from 0 to 1607).
+    // Genuine input releases follow before list growth races the resulting
+    // scroll event and observer callbacks.
+    await messagesContainer.hover();
+    await page.mouse.wheel(0, -200);
     await messagesContainer.evaluate((el) => {
       el.scrollTop = 0;
       const list = el.querySelector(".messages-list");
@@ -829,6 +831,29 @@ const streamingTest = test.extend<{
       });
     }
   },
+});
+
+streamingTest.describe("Layout-driven streaming scroll behavior", () => {
+  for (const drop of [20, 200]) {
+    streamingTest(`a ${drop}px scrollTop drop without input keeps following`, async ({
+      page,
+      controlledStream,
+    }) => {
+      const container = page.locator(".messages-container");
+      // Model layout resolving an estimated follow target before its resize
+      // report. A scroll event alone is not wheel, touch, or keyboard intent.
+      await container.evaluate((el, drop) => {
+        el.scrollTop -= drop;
+        el.dispatchEvent(new Event("scroll"));
+      }, drop);
+      await controlledStream.chunk("text", "After layout movement.\n\n");
+      await expect
+        .poll(() => container.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+        .toBeLessThan(2);
+      await expect(page.locator(".scroll-to-bottom-button")).toBeHidden();
+      await controlledStream.finish();
+    });
+  }
 });
 
 streamingTest.describe("Mobile streaming scroll gestures", () => {
@@ -1110,9 +1135,7 @@ test.describe("Conversation drawer selection", () => {
     await expect(page.locator('[data-testid="message-input"]')).toBeVisible({ timeout: 30000 });
     await expect.poll(() => page.getByTestId("message").count()).toBeGreaterThan(100);
 
-    await messagesContainer.evaluate((element) => {
-      element.scrollTop = 0;
-    });
+    await userScrollUp(page, messagesContainer);
     await expect(page.locator(".scroll-to-bottom-button")).toBeVisible({ timeout: 10000 });
     await expect
       .poll(() => page.evaluate((id) => localStorage.getItem(`shelley_scroll_${id}`), first))
@@ -1163,12 +1186,9 @@ test.describe("Conversation drawer selection", () => {
       .toBeLessThan(120);
     await expect(page.locator(".scroll-to-bottom-button")).not.toBeVisible({ timeout: 10000 });
 
-    // Browser find/accessibility jumps do not carry wheel or pointer markers.
-    // Once the selected conversation reaches bottom, a raw upward scroll must
-    // be treated as navigation rather than late layout growth.
-    await messagesContainer.evaluate((element) => {
-      element.scrollTop = 0;
-    });
+    // After selection reaches bottom, genuine wheel input must still release
+    // follow rather than being mistaken for late layout growth.
+    await userScrollUp(page, messagesContainer);
     await expect
       .poll(() => messagesContainer.evaluate((element) => element.scrollTop), { timeout: 10000 })
       .toBeLessThan(50);
@@ -1400,9 +1420,10 @@ test.describe("Conversation page-key scrolling", () => {
         { timeout: 5000 },
       )
       .toBe(true);
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = el.scrollHeight - el.clientHeight - el.clientHeight / 2;
-    });
+    const halfPageUp = await messagesContainer.evaluate(
+      (el) => el.scrollHeight - el.clientHeight - el.clientHeight / 2,
+    );
+    await userScrollUp(page, messagesContainer, halfPageUp);
     await expect(scrollButton).toBeVisible({ timeout: 5000 });
 
     await input.evaluate((el) => {
@@ -1463,9 +1484,7 @@ test.describe("Conversation page-key scrolling", () => {
     await input.evaluate((el: HTMLTextAreaElement) => {
       el.selectionStart = el.selectionEnd = el.value.length;
     });
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
+    await userScrollUp(page, messagesContainer);
 
     await page.keyboard.press("Shift+PageUp");
 
@@ -1554,9 +1573,7 @@ test.describe("Cmd/Ctrl+ArrowDown scroll-to-bottom shortcut", () => {
     });
 
     const messagesContainer = page.locator(".messages-container");
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
+    await userScrollUp(page, messagesContainer);
     await expect(page.locator(".scroll-to-bottom-button")).toBeVisible({ timeout: 10000 });
 
     await page.keyboard.press("ControlOrMeta+ArrowDown");
@@ -1580,9 +1597,7 @@ test.describe("Cmd/Ctrl+ArrowDown scroll-to-bottom shortcut", () => {
     await expect(page.getByTestId("message").first()).toBeVisible({ timeout: 30000 });
 
     const messagesContainer = page.locator(".messages-container");
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
+    await userScrollUp(page, messagesContainer);
     await expect(page.locator(".scroll-to-bottom-button")).toBeVisible({ timeout: 10000 });
 
     await page.locator(".drawer-header-actions").getByLabel("Search conversations").click();
@@ -1610,9 +1625,7 @@ test.describe("Cmd/Ctrl+ArrowDown scroll-to-bottom shortcut", () => {
     await expect(menu).toBeVisible({ timeout: 10000 });
 
     const messagesContainer = page.locator(".messages-container");
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
+    await userScrollUp(page, messagesContainer);
     await expect(page.locator(".scroll-to-bottom-button")).toBeVisible({ timeout: 10000 });
 
     await page.keyboard.press("ControlOrMeta+ArrowDown");
@@ -1643,9 +1656,7 @@ test.describe("Cmd/Ctrl+ArrowDown scroll-to-bottom shortcut", () => {
     await xtermInput.focus();
 
     const messagesContainer = page.locator(".messages-container");
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
+    await userScrollUp(page, messagesContainer);
     await expect(page.locator(".scroll-to-bottom-button")).toBeVisible({ timeout: 10000 });
 
     // Meta specifically: Ctrl+ArrowDown is consumed by xterm itself, so it
@@ -1666,9 +1677,7 @@ test.describe("Cmd/Ctrl+ArrowDown scroll-to-bottom shortcut", () => {
     await expect(page.getByTestId("message").first()).toBeVisible({ timeout: 30000 });
 
     const messagesContainer = page.locator(".messages-container");
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
+    await userScrollUp(page, messagesContainer);
     await expect(page.locator(".scroll-to-bottom-button")).toBeVisible({ timeout: 10000 });
 
     await page.locator(".chat-overflow-menu-wrapper .btn-icon").click();

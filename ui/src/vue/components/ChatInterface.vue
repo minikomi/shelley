@@ -981,12 +981,6 @@ let inferredScrollUpDelta = 0;
 // Last upward wheel / touch gesture; a scroll-up near a real gesture must
 // never be undone as a clamp misread.
 let lastScrollGestureAt = -Infinity;
-// Last scroll event on the messages container, whatever its cause. Used by
-// the bottom sentinel's IntersectionObserver to tell "the user scrolled away"
-// from "the list grew above the viewport": growth (a tail-first sweep mount
-// laying out near the viewport, an image decoding) moves the sentinel out of
-// the near-bottom zone WITHOUT any scroll event, and must not disarm follow.
-let lastScrollEventAt = -Infinity;
 let hiddenAt: number | null = null;
 let lastGeneration: { id: string | null; gen: number } | null = null;
 
@@ -2074,11 +2068,7 @@ const MAX_SCROLL_OFFSET = 0x7fffffff;
 function observedBottomScrollTop(listHeight: number, containerHeight: number): number {
   return Math.max(0, listHeight - containerHeight);
 }
-const BOTTOM_PIN_SCROLL_RELEASE_DELTA = 128;
-// The bottom sentinel's IntersectionObserver rootMargin, which the observer
-// below is built from. An upward scroll larger than this cannot be one of the
-// sub-margin layout clamps that handleScroll must ignore: it necessarily takes
-// the sentinel out of the near-bottom zone.
+// The bottom sentinel's IntersectionObserver rootMargin.
 const BOTTOM_SENTINEL_MARGIN_PX = 100;
 // How long a clamp bookkeeping entry stays valid. A layout clamp and its
 // scroll event land within a rendering update or two of each other; anything
@@ -2110,15 +2100,10 @@ function markUserScrolledUp() {
   showScrollToBottom.value = true;
 }
 
-function releaseBottomPinForUser() {
-  if (!bottomPinActive && !followExplicitSelectionToBottom) return;
-  markUserScrolledUp();
-}
-
 function handleBottomPinWheel(e: WheelEvent) {
   if (e.deltaY < 0) {
     lastScrollGestureAt = performance.now();
-    releaseBottomPinForUser();
+    markUserScrolledUp();
   }
 }
 
@@ -3627,7 +3612,6 @@ watch(
     inferredScrollUpAt = -Infinity;
     inferredScrollUpDelta = 0;
     lastScrollGestureAt = -Infinity;
-    lastScrollEventAt = -Infinity;
     atBottom = true;
     // Per-message memo caches are keyed by message_id, which is globally
     // unique, so stale entries are never *wrong* — they'd just accumulate for
@@ -3946,7 +3930,6 @@ function handleScroll() {
   const container = messagesContainerRef.value;
   if (!container) return;
   perfCount("chat.handleScroll");
-  lastScrollEventAt = performance.now();
   let upwardDelta = lastObservedScrollTop - container.scrollTop;
   // Discount any scrollTop drop the ResizeObserver already attributed to a
   // list shrink (a layout clamp, not a gesture).
@@ -3967,44 +3950,11 @@ function handleScroll() {
     if (guardedLayoutShift) scrollToBottom();
     return;
   }
-  // Even a small upward touch movement releases a pin re-armed mid-gesture.
-  if (
-    bottomPinActive &&
-    upwardDelta > 0 &&
-    (upwardDelta >= BOTTOM_PIN_SCROLL_RELEASE_DELTA || touchScrolling)
-  ) {
-    stopBottomPin();
-  }
-  // An upward delta this large, after clamp accounting, is unambiguously a
-  // gesture: clampBudget has already absorbed the pixels the ResizeObserver
-  // attributed to a list shrink or container growth, so what remains is not
-  // explained by layout. (Clamps themselves can far exceed this — a 1200px list
-  // shrink is ordinary — which is why the discounting above has to come first.)
-  // Acting on it immediately matters because the observer is async — if the list
-  // grows in the same task, the ResizeObserver's follow-the-bottom branch runs
-  // while sentinelAtBottom is still stale-true and yanks the reader back down
-  // (measured: scrollTop 0 -> 1607). The wheel/touch handlers only cover this
-  // while the bottom pin is active, so they are not a substitute.
-  const definitelyGesture = userScrollGestureActive() || upwardDelta > BOTTOM_SENTINEL_MARGIN_PX;
-  if (!bottomPinActive && upwardDelta > 0 && (!sentinelAtBottom || definitelyGesture)) {
-    // Below the gesture threshold, only act when the bottom sentinel has
-    // actually left the near-bottom zone. While it still intersects we are
-    // following the conversation, and the
-    // IntersectionObserver reports only *changes*, so it will not fire again:
-    // showing the button here would strand it visible with the container
-    // sitting at the bottom, and disarming auto-follow here would silently
-    // stop streaming from following. Sub-margin drops are routine —
-    // content-visibility:auto chunks swapping estimated for real heights clamp
-    // scrollTop by a few pixels. sentinelAtBottom comes from the observer, so
-    // testing it costs no forced layout (reading scrollHeight here would lay
-    // out every off-screen chunk and stall the main thread).
-    //
-    // A genuine gesture that outruns the observer is still handled: the wheel
-    // and touchstart handlers release the pin synchronously, and the observer
-    // shows the button a frame later when the sentinel leaves the margin.
-    //
-    // Record the inference so the container ResizeObserver can undo it if a
-    // growth report arrives that explains this drop as a layout clamp.
+  // Layout can decrease scrollTop before ResizeObserver reports the change.
+  // Only active touch/scrollbar gestures may release follow here; wheel and
+  // keyboard input release it synchronously in their own handlers. Keep touch
+  // intent through pointercancel, including a final movement at touchend.
+  if (userScrollGestureActive() && upwardDelta > 0) {
     const now = performance.now();
     inferredScrollUpDelta =
       now - inferredScrollUpAt < CLAMP_MISREAD_UNDO_WINDOW_MS
@@ -4054,26 +4004,10 @@ function setupScrollObservers() {
       } else if (!bottomPinActive && !touchScrolling) {
         // Growth can move the sentinel while follow is paused. Only handleScroll
         // may disarm an active touch; neither infer scroll-up nor re-pin here.
-        if (!userScrolled && followExplicitSelectionToBottom) {
-          // An explicitly selected conversation may grow after its first
-          // bottom paint as lazy renderers hydrate. Keep the selection at its
-          // promised destination unless the user has tried to scroll away.
+        if (!userScrolled) {
+          // Layout can move the sentinel with or without a scroll event. Only
+          // input intent releases following, so keep the viewport pinned.
           scrollToBottom();
-        } else if (!userScrolled && performance.now() - lastScrollEventAt > 200) {
-          // The sentinel left the near-bottom zone with NO scroll event: the
-          // viewport didn't move, the list grew under it (a tail-first sweep
-          // mount laying out near the viewport, an image decode). We were
-          // following, so keep following. A real gesture always produces
-          // scroll events, so it can't be misread here; layout clamps DO
-          // fire scroll events, but they land at/near the bottom where the
-          // sentinel stays visible and this branch isn't reached.
-          scrollToBottom();
-        } else {
-          // The sentinel left the near-bottom zone, so we are no longer
-          // following the conversation. handleScroll cannot always have
-          // noticed: its event can race this async observer while
-          // sentinelAtBottom is still stale-true.
-          userScrolled = true;
         }
       }
     },
@@ -4162,7 +4096,7 @@ function setupScrollObservers() {
     lastContainerHeight = containerHeight;
     lastListHeight = listHeight;
     // Keep following pinned to the bottom as content streams in. User scroll-up
-    // detection lives solely in handleScroll (with clamp discounting); inferring
+    // detection requires input intent (with clamp discounting); inferring
     // it from resize events is what misfired on layout clamps.
     // List growth must not move the viewport before the touch can disarm follow.
     if (!userScrolled && !catchingUp && !touchScrolling) {
