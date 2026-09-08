@@ -621,6 +621,11 @@ func (s *ResponsesService) MaxImageBytes() int {
 
 // Do sends a request to OpenAI using the Responses API.
 func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error) {
+	var err error
+	ir, err = llm.PrepareRequestCitations(ctx, ir, llm.CitationsOpenAIResponses)
+	if err != nil {
+		return nil, err
+	}
 	httpc := cmp.Or(s.HTTPC, http.DefaultClient)
 	model := cmp.Or(s.Model, DefaultModel)
 	openAIResponses := s.isOpenAIResponses()
