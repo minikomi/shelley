@@ -7,16 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
-)
-
-// CitationTarget identifies the request serializer, not the originating provider.
-type CitationTarget string
-
-const (
-	CitationsAnthropic       CitationTarget = "anthropic"
-	CitationsOpenAIChat      CitationTarget = "openai-chat"
-	CitationsOpenAIResponses CitationTarget = "openai-responses"
 )
 
 type citationConversion struct {
@@ -25,40 +15,32 @@ type citationConversion struct {
 }
 
 // PrepareRequestCitations copies request history and adapts citations before any
-// provider filtering or retries. Native Anthropic objects are opaque: only their
-// object shape and recognized type tag are checked; provider schema validation
-// (including signed/encrypted fields) remains Anthropic's responsibility.
-// URL conversions validate the fields they interpret and render source references
-// as text, never fabricating Anthropic encrypted_index values. Document/search
-// locators cannot be represented faithfully by the OpenAI serializers and error.
-func PrepareRequestCitations(ctx context.Context, req *Request, target CitationTarget) (*Request, error) {
-	switch target {
-	case CitationsAnthropic, CitationsOpenAIChat, CitationsOpenAIResponses:
-	default:
-		return nil, fmt.Errorf("prepare citations: unsupported destination %q", target)
-	}
+// provider filtering or retries. adapt owns citation type and field policy; it
+// returns either a text reference or retain=true to preserve the opaque object.
+// destination is only a diagnostic label. Logs never include source payloads.
+func PrepareRequestCitations(ctx context.Context, req *Request, destination string, adapt func(kind string, fields map[string]json.RawMessage) (reference string, retain bool, err error)) (*Request, error) {
 	if req == nil {
-		return nil, fmt.Errorf("prepare citations for %s: nil request", target)
+		return nil, fmt.Errorf("prepare citations for %s: nil request", destination)
 	}
 	out := *req
 	out.Messages = slices.Clone(req.Messages)
 	var conversions []citationConversion
 	for i := range out.Messages {
-		content, err := prepareContentCitations(req.Messages[i].Content, target, fmt.Sprintf("messages[%d].content", i), &conversions)
+		content, err := prepareContentCitations(req.Messages[i].Content, adapt, fmt.Sprintf("messages[%d].content", i), &conversions)
 		if err != nil {
-			return nil, fmt.Errorf("prepare citations for %s: %w", target, err)
+			return nil, fmt.Errorf("prepare citations for %s: %w", destination, err)
 		}
 		out.Messages[i].Content = content
 	}
 	// Report only after the entire request validates; never log source payloads.
 	for _, conversion := range conversions {
-		slog.InfoContext(ctx, "converted request citations to text references", "destination", target,
+		slog.InfoContext(ctx, "converted request citations to text references", "destination", destination,
 			"path", conversion.path, "count", len(conversion.types), "types", conversion.types)
 	}
 	return &out, nil
 }
 
-func prepareContentCitations(content []Content, target CitationTarget, path string, conversions *[]citationConversion) ([]Content, error) {
+func prepareContentCitations(content []Content, adapt func(string, map[string]json.RawMessage) (string, bool, error), path string, conversions *[]citationConversion) ([]Content, error) {
 	out := slices.Clone(content)
 	for i := range out {
 		c := &out[i]
@@ -84,26 +66,20 @@ func prepareContentCitations(content []Content, target CitationTarget, path stri
 				if err := json.Unmarshal(entry, &fields); err != nil || fields == nil {
 					return nil, fmt.Errorf("%s: expected citation object", entryPath)
 				}
-				kind, err := citationString(fields, "type", true, false)
+				kind, err := CitationString(fields, "type", true, false)
 				if err != nil || kind == "" {
 					return nil, fmt.Errorf("%s: type must be a nonempty string", entryPath)
 				}
-				switch kind {
-				case "char_location", "page_location", "content_block_location", "search_result_location", "web_search_result_location":
-					if target == CitationsAnthropic {
-						retained = append(retained, entry)
-						continue
-					}
-					if kind != "web_search_result_location" {
-						return nil, fmt.Errorf("%s: cannot convert %q to text URL references; document/search locators are unsupported", entryPath, kind)
-					}
-				case "url_citation":
-				default:
-					return nil, fmt.Errorf("%s: unsupported citation type %q", entryPath, kind)
-				}
-				reference, err := citationURLReference(fields, kind)
+				reference, retain, err := adapt(kind, fields)
 				if err != nil {
 					return nil, fmt.Errorf("%s (%s): %w", entryPath, kind, err)
+				}
+				if retain {
+					retained = append(retained, entry)
+					continue
+				}
+				if reference == "" {
+					return nil, fmt.Errorf("%s (%s): citation conversion returned no source reference", entryPath, kind)
 				}
 				c.Text += reference
 				converted = append(converted, kind)
@@ -120,7 +96,7 @@ func prepareContentCitations(content []Content, target CitationTarget, path stri
 			}
 		}
 		var err error
-		c.ToolResult, err = prepareContentCitations(c.ToolResult, target, fmt.Sprintf("%s[%d].tool_result", path, i), conversions)
+		c.ToolResult, err = prepareContentCitations(c.ToolResult, adapt, fmt.Sprintf("%s[%d].tool_result", path, i), conversions)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +104,8 @@ func prepareContentCitations(content []Content, target CitationTarget, path stri
 	return out, nil
 }
 
-func citationString(fields map[string]json.RawMessage, name string, required, nullable bool) (string, error) {
+// CitationString reads a string field using the caller's presence/null policy.
+func CitationString(fields map[string]json.RawMessage, name string, required, nullable bool) (string, error) {
 	raw, ok := fields[name]
 	if !ok && !required {
 		return "", nil
@@ -143,34 +120,19 @@ func citationString(fields map[string]json.RawMessage, name string, required, nu
 	return value, nil
 }
 
-func citationURLReference(fields map[string]json.RawMessage, kind string) (string, error) {
-	url, err := citationString(fields, "url", true, false)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(url) == "" {
-		return "", fmt.Errorf("url must be a nonempty string")
-	}
-	web := kind == "web_search_result_location"
-	title, err := citationString(fields, "title", web, web)
-	if err != nil {
-		return "", err
-	}
-	quote, err := citationString(fields, "cited_text", web, false)
-	if err != nil {
-		return "", err
-	}
-	if _, err := citationString(fields, "encrypted_index", false, false); err != nil {
-		return "", err
-	}
-	for _, name := range []string{"start_index", "end_index"} {
-		if raw, ok := fields[name]; ok {
-			var index int
-			if bytes.Equal(raw, []byte("null")) || json.Unmarshal(raw, &index) != nil || index < 0 {
-				return "", fmt.Errorf("%s must be a nonnegative integer", name)
-			}
+// CitationNonnegativeInteger validates an optional integer field.
+func CitationNonnegativeInteger(fields map[string]json.RawMessage, name string) error {
+	if raw, ok := fields[name]; ok {
+		var index int
+		if bytes.Equal(raw, []byte("null")) || json.Unmarshal(raw, &index) != nil || index < 0 {
+			return fmt.Errorf("%s must be a nonnegative integer", name)
 		}
 	}
+	return nil
+}
+
+// FormatCitationURLReference renders validated source fields as plain text.
+func FormatCitationURLReference(url, title, quote string) string {
 	reference := "\n\nSource: "
 	if title != "" {
 		reference += title + " — "
@@ -179,5 +141,5 @@ func citationURLReference(fields map[string]json.RawMessage, kind string) (strin
 	if quote != "" {
 		reference += "\nCited text: " + quote
 	}
-	return reference, nil
+	return reference
 }

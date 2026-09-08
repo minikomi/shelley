@@ -1243,7 +1243,7 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 // Do sends a streaming request to Anthropic and collects the full response.
 func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error) {
 	var err error
-	ir, err = llm.PrepareRequestCitations(ctx, ir, llm.CitationsAnthropic)
+	ir, err = llm.PrepareRequestCitations(ctx, ir, "anthropic", adaptCitation)
 	if err != nil {
 		return nil, err
 	}

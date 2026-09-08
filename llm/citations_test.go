@@ -4,37 +4,44 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
 )
 
-const openAICitation = `{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/source","title":"Source title"}`
-const anthropicWebCitation = `{"type":"web_search_result_location","url":"https://example.com/web","title":"Web title","cited_text":"Original cited passage","encrypted_index":"opaque-signed-index","extra":{"keep":true}}`
+const convertedCitation = `{"type":"convert","private":"example.com Source title"}`
+const retainedCitation = `{"type":"retain","opaque":{"keep":true}}`
+
+func fakeAdaptCitation(kind string, fields map[string]json.RawMessage) (string, bool, error) {
+	switch kind {
+	case "retain":
+		return "", true, nil
+	case "convert":
+		return "\n\nSource: Source title — https://example.com/source", false, nil
+	case "empty":
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("unsupported citation type %q", kind)
+	}
+}
 
 func citationRequest(raw string) *Request {
 	return &Request{Messages: []Message{{Role: MessageRoleAssistant, Content: []Content{{Type: ContentTypeText, Text: "Answer", Citations: json.RawMessage(raw)}}}}}
 }
 
 func TestPrepareRequestCitations(t *testing.T) {
-	native := " [ \n" + anthropicWebCitation + `, {"type":"char_location","opaque":true}, {"type":"page_location"}, {"type":"content_block_location"}, {"type":"search_result_location"} ] `
+	native := " [ \n" + retainedCitation + " ] "
 	for _, tt := range []struct {
 		name     string
-		target   CitationTarget
 		raw      string
 		wantRaw  string
 		wantText string
 	}{
-		{"original OpenAI bug", CitationsAnthropic, "[" + openAICitation + "]", "", "Answer\n\nSource: Source title — https://example.com/source"},
-		{"native byte preservation and provider validation boundary", CitationsAnthropic, native, native, "Answer"},
-		{"mixed retains native", CitationsAnthropic, "[" + anthropicWebCitation + "," + openAICitation + "]", "[" + anthropicWebCitation + "]", "Answer\n\nSource: Source title — https://example.com/source"},
-		{"reverse chat", CitationsOpenAIChat, "[" + anthropicWebCitation + "]", "", "Answer\n\nSource: Web title — https://example.com/web\nCited text: Original cited passage"},
-		{"reverse responses", CitationsOpenAIResponses, "[" + anthropicWebCitation + "]", "", "Answer\n\nSource: Web title — https://example.com/web\nCited text: Original cited passage"},
-		{"same provider responses", CitationsOpenAIResponses, "[" + openAICitation + "]", "", "Answer\n\nSource: Source title — https://example.com/source"},
-		{"same provider chat", CitationsOpenAIChat, "[" + openAICitation + "]", "", "Answer\n\nSource: Source title — https://example.com/source"},
-		{"omitted local zero ranges and title", CitationsAnthropic, `[{"type":"url_citation","url":"https://example.com"}]`, "", "Answer\n\nSource: https://example.com"},
-		{"nullable web title", CitationsOpenAIChat, `[{"type":"web_search_result_location","url":"https://example.com","title":null,"cited_text":"quote","encrypted_index":"sig"}]`, "", "Answer\n\nSource: https://example.com\nCited text: quote"},
+		{"converted", "[" + convertedCitation + "]", "", "Answer\n\nSource: Source title — https://example.com/source"},
+		{"retained byte preservation", native, native, "Answer"},
+		{"mixed", "[" + retainedCitation + "," + convertedCitation + "]", "[" + retainedCitation + "]", "Answer\n\nSource: Source title — https://example.com/source"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			req := citationRequest(tt.raw)
@@ -42,7 +49,7 @@ func TestPrepareRequestCitations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := PrepareRequestCitations(context.Background(), req, tt.target)
+			got, err := PrepareRequestCitations(context.Background(), req, "test-adapter", fakeAdaptCitation)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,7 +65,7 @@ func TestPrepareRequestCitations(t *testing.T) {
 				t.Fatal("preparation mutated original history")
 			}
 			for _, input := range []*Request{req, got} {
-				again, err := PrepareRequestCitations(context.Background(), input, tt.target)
+				again, err := PrepareRequestCitations(context.Background(), input, "test-adapter", fakeAdaptCitation)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -70,7 +77,7 @@ func TestPrepareRequestCitations(t *testing.T) {
 			if err := json.Unmarshal(before, &reloaded); err != nil {
 				t.Fatal(err)
 			}
-			roundTrip, err := PrepareRequestCitations(context.Background(), &reloaded, tt.target)
+			roundTrip, err := PrepareRequestCitations(context.Background(), &reloaded, "test-adapter", fakeAdaptCitation)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,21 +100,19 @@ func TestPrepareRequestCitations(t *testing.T) {
 }
 
 func TestPrepareRequestCitationsAbsent(t *testing.T) {
-	for _, target := range []CitationTarget{CitationsAnthropic, CitationsOpenAIChat, CitationsOpenAIResponses} {
-		for _, raw := range []string{"", "null", " \n null ", "[]", "[ ]"} {
-			for _, mediaType := range []string{"", "image/png"} {
-				req := citationRequest(raw)
-				req.Messages[0].Content[0].MediaType = mediaType
-				got, err := PrepareRequestCitations(context.Background(), req, target)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got.Messages[0].Content[0].Citations != nil {
-					t.Fatalf("%q not normalized to nil", raw)
-				}
-				if string(req.Messages[0].Content[0].Citations) != raw {
-					t.Fatal("mutated absent metadata")
-				}
+	for _, raw := range []string{"", "null", " \n null ", "[]", "[ ]"} {
+		for _, mediaType := range []string{"", "image/png"} {
+			req := citationRequest(raw)
+			req.Messages[0].Content[0].MediaType = mediaType
+			got, err := PrepareRequestCitations(context.Background(), req, "test-adapter", fakeAdaptCitation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Messages[0].Content[0].Citations != nil {
+				t.Fatalf("%q not normalized to nil", raw)
+			}
+			if string(req.Messages[0].Content[0].Citations) != raw {
+				t.Fatal("mutated absent metadata")
 			}
 		}
 	}
@@ -116,7 +121,7 @@ func TestPrepareRequestCitationsAbsent(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"Messages":[{"Role":1,"Content":[{"Type":2,"Text":"old history","Citations":null}]}]}`), &req); err != nil {
 		t.Fatal(err)
 	}
-	got, err := PrepareRequestCitations(context.Background(), &req, CitationsAnthropic)
+	got, err := PrepareRequestCitations(context.Background(), &req, "test-adapter", fakeAdaptCitation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,66 +131,36 @@ func TestPrepareRequestCitationsAbsent(t *testing.T) {
 }
 
 func TestPrepareRequestCitationsErrors(t *testing.T) {
-	for _, target := range []CitationTarget{CitationsAnthropic, CitationsOpenAIChat, CitationsOpenAIResponses} {
-		for _, tt := range []struct{ name, raw, path, reason string }{
-			{"unknown", `[{"type":"future_citation"}]`, "[0]", "unsupported citation type"},
-			{"malformed", `[{`, "", "expected citation array"},
-			{"object", `{}`, "", "expected citation array"},
-			{"whitespace", ` `, "", "expected citation array"},
-			{"entry null", `[null]`, "[0]", "expected citation object"},
-			{"entry array", `[[]]`, "[0]", "expected citation object"},
-			{"entry number", `[1]`, "[0]", "expected citation object"},
-			{"missing tag", `[{}]`, "[0]", "type must"},
-			{"null tag", `[{"type":null}]`, "[0]", "type must"},
-			{"wrong tag shape", `[{"type":{}}]`, "[0]", "type must"},
-			{"missing URL", `[{"type":"url_citation"}]`, "[0]", "url must"},
-			{"empty URL", `[{"type":"url_citation","url":" "}]`, "[0]", "url must"},
-			{"URL shape", `[{"type":"url_citation","url":5}]`, "[0]", "url must"},
-			{"title shape", `[{"type":"url_citation","url":"x","title":[]}]`, "[0]", "title must"},
-			{"quote shape", `[{"type":"url_citation","url":"x","cited_text":false}]`, "[0]", "cited_text must"},
-			{"range shape", `[{"type":"url_citation","url":"x","start_index":"0"}]`, "[0]", "start_index must"},
-			{"null range", `[{"type":"url_citation","url":"x","end_index":null}]`, "[0]", "end_index must"},
-			{"mixed invalid", "[" + openAICitation + `,{"type":"future"}]`, "[1]", "unsupported citation type"},
-		} {
-			t.Run(string(target)+"/"+tt.name, func(t *testing.T) {
-				req := citationRequest(tt.raw)
-				got, err := PrepareRequestCitations(context.Background(), req, target)
-				if got != nil || err == nil || !strings.Contains(err.Error(), string(target)) || !strings.Contains(err.Error(), "messages[0].content[0].citations"+tt.path) || !strings.Contains(err.Error(), tt.reason) {
-					t.Fatalf("got %v, error %v", got, err)
-				}
-				if req.Messages[0].Content[0].Text != "Answer" || string(req.Messages[0].Content[0].Citations) != tt.raw {
-					t.Fatal("error mutated history")
-				}
-			})
-		}
-		for _, content := range []Content{{Type: ContentTypeText, MediaType: "image/png"}, {Type: ContentTypeThinking}, {Type: ContentTypeToolResult}} {
-			content.Citations = json.RawMessage("[" + openAICitation + "]")
-			req := &Request{Messages: []Message{{Content: []Content{content}}}}
-			if _, err := PrepareRequestCitations(context.Background(), req, target); err == nil || !strings.Contains(err.Error(), "messages[0].content[0].citations[0]: citations require text") {
-				t.Fatalf("non-text error = %v", err)
+	for _, tt := range []struct{ name, raw, path, reason string }{
+		{"unknown", `[{"type":"future_citation"}]`, "[0]", "unsupported citation type"},
+		{"empty conversion", `[{"type":"empty"}]`, "[0]", "citation conversion returned no source reference"},
+		{"malformed", `[{`, "", "expected citation array"},
+		{"object", `{}`, "", "expected citation array"},
+		{"whitespace", ` `, "", "expected citation array"},
+		{"entry null", `[null]`, "[0]", "expected citation object"},
+		{"entry array", `[[]]`, "[0]", "expected citation object"},
+		{"entry number", `[1]`, "[0]", "expected citation object"},
+		{"missing tag", `[{}]`, "[0]", "type must"},
+		{"null tag", `[{"type":null}]`, "[0]", "type must"},
+		{"wrong tag shape", `[{"type":{}}]`, "[0]", "type must"},
+		{"mixed invalid", "[" + convertedCitation + `,{"type":"future"}]`, "[1]", "unsupported citation type"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := citationRequest(tt.raw)
+			got, err := PrepareRequestCitations(context.Background(), req, "test-adapter", fakeAdaptCitation)
+			if got != nil || err == nil || !strings.Contains(err.Error(), "test-adapter") || !strings.Contains(err.Error(), "messages[0].content[0].citations"+tt.path) || !strings.Contains(err.Error(), tt.reason) {
+				t.Fatalf("got %v, error %v", got, err)
 			}
-		}
-		if target == CitationsAnthropic {
-			continue
-		}
-		for _, kind := range []string{"char_location", "page_location", "content_block_location", "search_result_location"} {
-			if _, err := PrepareRequestCitations(context.Background(), citationRequest(`[{"type":"`+kind+`"}]`), target); err == nil || !strings.Contains(err.Error(), "locators are unsupported") {
-				t.Fatalf("locator error = %v", err)
+			if req.Messages[0].Content[0].Text != "Answer" || string(req.Messages[0].Content[0].Citations) != tt.raw {
+				t.Fatal("error mutated history")
 			}
-		}
-		for _, field := range []string{"url", "title", "cited_text", "encrypted_index"} {
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(anthropicWebCitation), &fields); err != nil {
-				t.Fatal(err)
-			}
-			fields[field] = json.RawMessage(`42`)
-			raw, err := json.Marshal([]map[string]json.RawMessage{fields})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := PrepareRequestCitations(context.Background(), citationRequest(string(raw)), target); err == nil || !strings.Contains(err.Error(), field+" must") {
-				t.Fatalf("web field error = %v", err)
-			}
+		})
+	}
+	for _, content := range []Content{{Type: ContentTypeText, MediaType: "image/png"}, {Type: ContentTypeThinking}, {Type: ContentTypeToolResult}} {
+		content.Citations = json.RawMessage("[" + convertedCitation + "]")
+		req := &Request{Messages: []Message{{Content: []Content{content}}}}
+		if _, err := PrepareRequestCitations(context.Background(), req, "test-adapter", fakeAdaptCitation); err == nil || !strings.Contains(err.Error(), "messages[0].content[0].citations[0]: citations require text") {
+			t.Fatalf("non-text error = %v", err)
 		}
 	}
 }
@@ -195,16 +170,16 @@ func TestPrepareRequestCitationsNestedAndLogs(t *testing.T) {
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
-	req := citationRequest("[" + openAICitation + "]")
+	req := citationRequest("[" + convertedCitation + "]")
 	req.Messages = append(req.Messages, Message{Role: MessageRoleUser, Content: []Content{{Type: ContentTypeToolResult, ToolUseID: "call", ToolResult: []Content{{Type: ContentTypeText, Text: "Nested", Citations: json.RawMessage(`[{"type":"future"}]`)}}}}})
-	if _, err := PrepareRequestCitations(context.Background(), req, CitationsAnthropic); err == nil || !strings.Contains(err.Error(), "messages[1].content[0].tool_result[0].citations[0]") {
+	if _, err := PrepareRequestCitations(context.Background(), req, "test-adapter", fakeAdaptCitation); err == nil || !strings.Contains(err.Error(), "messages[1].content[0].tool_result[0].citations[0]") {
 		t.Fatalf("nested error = %v", err)
 	}
 	if logs.Len() != 0 {
 		t.Fatalf("logged success before complete validation: %s", logs.String())
 	}
-	req.Messages[1].Content[0].ToolResult[0].Citations = json.RawMessage("[" + openAICitation + "]")
-	got, err := PrepareRequestCitations(context.Background(), req, CitationsAnthropic)
+	req.Messages[1].Content[0].ToolResult[0].Citations = json.RawMessage("[" + convertedCitation + "]")
+	got, err := PrepareRequestCitations(context.Background(), req, "test-adapter", fakeAdaptCitation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +190,7 @@ func TestPrepareRequestCitationsNestedAndLogs(t *testing.T) {
 	if req.Messages[1].Content[0].ToolResult[0].Text != "Nested" {
 		t.Fatal("nested history aliases input")
 	}
-	for _, want := range []string{`"destination":"anthropic"`, `"count":1`, `"types":["url_citation"]`, `messages[1].content[0].tool_result[0].citations`} {
+	for _, want := range []string{`"destination":"test-adapter"`, `"count":1`, `"types":["convert"]`, `messages[1].content[0].tool_result[0].citations`} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("log missing %s: %s", want, logs.String())
 		}
