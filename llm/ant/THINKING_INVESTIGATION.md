@@ -4,6 +4,65 @@ Investigated September 9, 2026 against `dca552b2`. The original investigation
 below describes the old policy. The follow-up implements a controlled change;
 it does not establish a response-quality improvement.
 
+## Cache follow-up with the new adapter (September 9, 2026)
+
+Measured against production adapter `cfe8d7dd`. The A/B test changes only
+age-based stripping: the old-policy arm also sends the new binding controls,
+so this isolates preservation rather than comparing every old transport detail.
+Both arms use the same generated signed history. The live fixture uses actual
+production request construction, but a direct non-streaming HTTP call rather
+than `Service.Do`; the separate binding test above/below covers streaming.
+
+The former trivial lookup elicited no thinking from Opus 5, so that attempt
+stopped after one request and is not a cache result. The fixture now requires a
+calculated tool-argument checksum and high effort in both arms. The first seed
+must still contain real signed thinking. No signatures are fabricated or logged.
+
+Two completed Opus 5 runs used opposite replay orders. A means old stripping;
+B means production preservation. Each run uses a unique system prefix, two seed
+requests, then four replays. Seed B warms the preserved prefix in both orders,
+matching the growing-tool-history scenario being tested. Repeated requests
+within each run are deliberately cache-warm and are not independent samples.
+
+| Run/order | Replay | Uncached input | Cache write | Cache read | Output | Latency ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| ABBA | Old first | 2 | 15,128 | 0 | 280 | 5,183 |
+| ABBA | New first | 2 | 79 | 15,476 | 32 | 2,441 |
+| ABBA | New repeat | 2 | 0 | 15,555 | 31 | 3,259 |
+| ABBA | Old repeat | 2 | 0 | 15,128 | 268 | 5,339 |
+| BAAB | New first | 2 | 79 | 15,328 | 32 | 3,652 |
+| BAAB | Old first | 2 | 15,128 | 0 | 274 | 6,619 |
+| BAAB | Old repeat | 2 | 0 | 15,128 | 289 | 6,926 |
+| BAAB | New repeat | 2 | 0 | 15,407 | 31 | 3,836 |
+
+**Objective:** on the first replay after appending another tool round, preservation
+reused the prior cache and needed 99.48% fewer cache-write tokens. Both policies
+hit their own cache when replayed unchanged. All eight answers passed the strict
+612-only check; no input transformations were reported. This is not a general
+quality or latency benchmark, nor a 99.48% reduction in total cost: cached reads,
+outputs, and additional retained thinking also matter.
+
+Fable 5.1 refused its checksum seed (`stop_reason=refusal`), so that attempt stopped
+after one request. There is no comparable Fable cache result from this follow-up.
+
+Read-only usage metadata from the actual preview corroborates cache reuse despite
+repeated model-binding drops. After the first Opus 5 request, 15 subsequent
+requests recorded 643,659 cache-read tokens, 9,414 cache-write tokens, and 30
+uncached input tokens: 98.55% cache-read share of total input, with individual
+requests ranging from 96.40% to 99.81%. The first Opus request wrote 38,276 tokens
+and read zero. This is observation under the new adapter, not a paired old/new
+comparison. No conversation content was replayed for this analysis.
+
+Reproduce either order (six generation calls per invocation, explicit opt-in):
+
+```sh
+ANTHROPIC_THINKING_LIVE=1 \
+ANTHROPIC_THINKING_MODEL=anthropic/claude-opus-5 \
+ANTHROPIC_THINKING_ORDER=ABBA \
+go test ./llm/ant -run '^TestThinkingInvestigationLive$' -count=1 -v
+# Repeat with ANTHROPIC_THINKING_ORDER=BAAB for the opposite order.
+```
+
 ## Follow-up: preserve history and report provider drops
 
 Production request construction now preserves older signed/redacted thinking.

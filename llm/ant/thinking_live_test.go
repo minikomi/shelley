@@ -21,8 +21,8 @@ import (
 // generation calls, no retries/sleeps, 90 seconds per call. Genuine signatures
 // stay in memory. Only capped final synthetic text is logged, never thinking,
 // signatures, full responses, or error bodies.
-// Seed two warms the preserved prefix intentionally. ABBA replays expose cold
-// versus repeated requests, but shared caches/order still confound comparisons.
+// Seed two warms the preserved prefix intentionally. ABBA (or BAAB) replays expose
+// cold versus repeated requests, but shared caches/order still confound comparisons.
 func TestThinkingInvestigationLive(t *testing.T) {
 	if os.Getenv("ANTHROPIC_THINKING_LIVE") != "1" {
 		t.Skip("set ANTHROPIC_THINKING_LIVE=1 and ANTHROPIC_THINKING_MODEL to opt in")
@@ -31,6 +31,15 @@ func TestThinkingInvestigationLive(t *testing.T) {
 	if !strings.HasPrefix(model, "anthropic/claude-") {
 		t.Fatal("ANTHROPIC_THINKING_MODEL must be an advertised anthropic/claude- model")
 	}
+	order := os.Getenv("ANTHROPIC_THINKING_ORDER")
+	if order == "" {
+		order = "ABBA"
+	}
+	if order != "ABBA" && order != "BAAB" {
+		t.Fatal("ANTHROPIC_THINKING_ORDER must be ABBA or BAAB")
+	}
+	t.Logf("replay_order=%s A=old-policy B=production-preserved effort=high", order)
+	const checksum int64 = (123457 * 765431) % 9973
 	const gateway = "https://llm.int.exe.xyz/v1/"
 	client := &http.Client{Timeout: 90 * time.Second}
 	// The Anthropic-Version header selects the Anthropic model catalog.
@@ -51,15 +60,15 @@ func TestThinkingInvestigationLive(t *testing.T) {
 	if !found {
 		t.Fatal("selected model is not advertised by the gateway")
 	}
-	s := &Service{Model: model, MaxTokens: 2048, ThinkingLevel: llm.ThinkingLevelLow}
+	s := &Service{Model: model, MaxTokens: 2048, ThinkingLevel: llm.ThinkingLevelHigh}
 	r := &llm.Request{
 		System: []llm.SystemContent{{Text: fmt.Sprintf("Synthetic test run %d. Follow the lookup protocol exactly.", time.Now().UnixNano())}},
 		Tools: []*llm.Tool{{
-			Name: "lookup", Description: "Return the value for key A or B.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"key":{"type":"string","enum":["A","B"]}},"required":["key"],"additionalProperties":false}`),
+			Name: "lookup", Description: "Return the value for key A or B; requires the calculated checksum.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"key":{"type":"string","enum":["A","B"]},"checksum":{"type":"integer"}},"required":["key","checksum"],"additionalProperties":false}`),
 		}},
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: llm.TextContent(
-			"Call lookup for A only. After its result, call lookup for B only. Do not combine calls. Ignore padding fields. Once both results arrive, calculate (A*7+B*11) modulo 997 and reply with only the decimal integer, no tools or explanation.")}},
+			"Before calling lookup, calculate (123457*765431) modulo 9973 and supply that integer as checksum in every lookup call. Call lookup for A only. After its result, call lookup for B only. Do not combine calls. Ignore padding fields. Once both results arrive, calculate (A*7+B*11) modulo 997 and reply with only the decimal integer, no tools or explanation.")}},
 	}
 	call := func(label string, wire *request) (*response, error) {
 		start := time.Now()
@@ -75,6 +84,11 @@ func TestThinkingInvestigationLive(t *testing.T) {
 		t.Logf("%s model=%s latency_ms=%d input=%d cache_write=%d cache_read=%d output=%d stop=%s",
 			label, out.Model, time.Since(start).Milliseconds(), out.Usage.InputTokens,
 			out.Usage.CacheCreationInputTokens, out.Usage.CacheReadInputTokens, out.Usage.OutputTokens, out.StopReason)
+		t.Logf("%s input_transformations=%d", label, len(out.InputTransformations))
+		for _, transformation := range out.InputTransformations {
+			t.Logf("%s input_transformation type=%q path=%q reason=%q",
+				label, transformation.Type, transformation.Path, transformation.Reason)
+		}
 		return &out, nil
 	}
 	for i, key := range []string{"A", "B"} {
@@ -90,8 +104,11 @@ func TestThinkingInvestigationLive(t *testing.T) {
 			}
 			if c.Type == "tool_use" {
 				calls++
-				var args struct{ Key string }
-				if err := json.Unmarshal(c.ToolInput, &args); err != nil || args.Key != key || c.ToolName != "lookup" {
+				var args struct {
+					Key      string
+					Checksum int64
+				}
+				if err := json.Unmarshal(c.ToolInput, &args); err != nil || args.Key != key || args.Checksum != checksum || c.ToolName != "lookup" {
 					t.Fatal("seed did not follow the lookup protocol")
 				}
 				toolID = c.ID
@@ -125,9 +142,9 @@ func TestThinkingInvestigationLive(t *testing.T) {
 	if bytes.Equal(thinkingJSON(t, stock), thinkingJSON(t, preserved)) {
 		t.Fatal("experiment failed to create different histories")
 	}
-	for i, preserve := range []bool{false, true, true, false} {
+	for i, armCode := range order {
 		wire, arm := stock, "old-policy"
-		if preserve {
+		if armCode == 'B' {
 			wire, arm = preserved, "production-preserved"
 		}
 		label := fmt.Sprintf("replay-%d-%s", i+1, arm)
