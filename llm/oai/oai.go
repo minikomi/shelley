@@ -1331,6 +1331,11 @@ func (s *Service) SupportedReasoningLevels() []llm.ThinkingLevel {
 
 // Do sends a request to OpenAI using the go-openai package.
 func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error) {
+	var err error
+	ir, err = llm.PrepareRequestCitations(ctx, ir, "openai-chat", adaptCitation)
+	if err != nil {
+		return nil, err
+	}
 	// Configure the OpenAI client
 	httpc := cmp.Or(s.HTTPC, http.DefaultClient)
 	model := cmp.Or(s.Model, DefaultModel)
