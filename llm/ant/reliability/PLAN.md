@@ -16,10 +16,10 @@ Started September 9, 2026. Baseline: `1300b889`.
 
 | Owner | Scope | Owned artifacts | Status |
 | --- | --- | --- | --- |
-| Recovery worker | Corrupt signatures, stream interruptions, cancellation, recovery then subsequent request | `../thinking_reliability_recovery_test.go`, `RECOVERY.md` | Dispatched |
-| History worker | Model switches/back, compaction, message/system/tool edits, serialization round trips | `../thinking_reliability_history_test.go`, `HISTORY.md` | Dispatched |
-| Evaluation worker | Matched coding tasks, objective scoring, rollout gates, bounded live-test proposal | `EVALUATION.md` | Dispatched |
-| Coordinator | Review evidence, integrate tests, track blockers and prepare later write-up | This file | In progress |
+| Recovery worker | Corrupt signatures, stream interruptions, cancellation, recovery then subsequent request | `../thinking_reliability_recovery_test.go`, `RECOVERY.md` | Offline evidence complete; live untested |
+| History worker | Model switches/back, compaction, message/system/tool edits, serialization round trips | `../thinking_reliability_history_test.go`, `HISTORY.md` | Offline evidence complete; live untested |
+| Evaluation worker | Matched coding tasks, objective scoring, rollout gates, bounded live-test proposal | `EVALUATION.md` | Focused proposal complete; live unrun |
+| Coordinator | Review evidence, integrate tests, track blockers and prepare later write-up | This file | Offline evidence integrated; live case/cap selection next |
 
 Paths in the table are relative to this directory.
 
@@ -62,3 +62,8 @@ measured cache reuse.
 - September 9: baseline clean; investigation planned and three independent workstreams assigned.
 - Existing evidence: cache-reuse improvement reproduced on Opus 5; live Fable prefix mismatch/drop and corrupt-signature recovery probes passed. Those are limited scenarios, not a general reliability guarantee.
 - Known test-suite caveat: `TestReflectionProbeCachedAndCollapsed` has intermittently failed in the full server suite and passed in isolation. Track separately from new failures.
+- September 9 review: all three workers completed offline artifacts; coordinator ran combined recovery/history tests and their race suite successfully. A pass here includes tests deliberately witnessing defects; it is not provider conformance.
+- Recovery priorities: the next request can repeat a full strip/retry; signature errors inside HTTP-200 SSE bypass the bounded HTTP-400 recovery path; malformed thinking completion is insufficiently validated. All three are currently mock/code evidence, not newly observed Anthropic incidents.
+- Historical request bytes remain unavailable in inspected artifacts; alias rotation remains unproven. Corrected two copied cache/latency numbers in the history note against the primary investigation table.
+- Live proposals in worker notes are alternatives, not cumulative authorization. No new live batch or coding benchmark is running. Next coordinator action: choose the smallest historically anchored case manifest, publish its attempt/output cap, and run the real-provider comparison before drawing conclusions.
+- Updates: report real-400 reproduction, old/new task results, blockers/decisions, and write-up readiness here. External push updates have been offered but not enabled.
