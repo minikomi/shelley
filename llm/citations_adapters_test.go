@@ -51,6 +51,22 @@ func TestCitationAdapterBoundaries(t *testing.T) {
 			response:    `{"id":"test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
 			contentType: "application/json",
 		},
+		{
+			name: "openai-responses/fireworks",
+			service: func(c *http.Client) llm.Service {
+				return &oai.ResponsesService{HTTPC: c, Model: oai.GPT41, ModelURL: "http://provider.test", ProviderName: "fireworks"}
+			},
+			response:    `{"id":"test","status":"completed","output":[]}`,
+			contentType: "application/json",
+		},
+		{
+			name: "openai-responses/xai",
+			service: func(c *http.Client) llm.Service {
+				return &oai.ResponsesService{HTTPC: c, Model: oai.GPT41, ModelURL: "http://provider.test", ProviderName: "xai"}
+			},
+			response:    `{"id":"test","status":"completed","output":[]}`,
+			contentType: "application/json",
+		},
 	} {
 		t.Run(adapter.name, func(t *testing.T) {
 			var payloads [][]byte
@@ -68,7 +84,7 @@ func TestCitationAdapterBoundaries(t *testing.T) {
 			}
 			for _, raw := range []string{`[{"type":"future_citation"}]`, `[{`, "[" + urlCitation + `,{"type":"future"}]`, `[{"type":"url_citation","url":42}]`} {
 				req := makeRequest(raw)
-				if _, err := svc.Do(context.Background(), req); err == nil || !strings.Contains(err.Error(), adapter.name) || !strings.Contains(err.Error(), "messages[0].content[0].citations") {
+				if _, err := svc.Do(context.Background(), req); err == nil || !strings.Contains(err.Error(), strings.Split(adapter.name, "/")[0]) || !strings.Contains(err.Error(), "messages[0].content[0].citations") {
 					t.Fatalf("invalid citation error = %v", err)
 				}
 				if len(payloads) != 0 {
@@ -82,6 +98,8 @@ func TestCitationAdapterBoundaries(t *testing.T) {
 			// Tool results must be prepared before either serializer flattens them.
 			req.Messages[0].Content = append(req.Messages[0].Content, llm.Content{Type: llm.ContentTypeToolUse, ID: "call", ToolName: "lookup", ToolInput: json.RawMessage(`{}`)})
 			req.Messages = append(req.Messages, llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeToolResult, ToolUseID: "call", ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "Nested answer", Citations: json.RawMessage("[" + urlCitation + "]")}}}}})
+			// Top-level user text cannot carry output_text annotations either.
+			req.Messages = append(req.Messages, llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "User answer", Citations: json.RawMessage("[" + urlCitation + "]")}}})
 			before, err := json.Marshal(req)
 			if err != nil {
 				t.Fatal(err)
@@ -102,13 +120,20 @@ func TestCitationAdapterBoundaries(t *testing.T) {
 				t.Fatal("adapter mutated original history")
 			}
 			body := string(payloads[0])
-			for _, want := range []string{"Source title", "https://example.com/source", "Web title", "https://example.com/web", "Original passage", `Nested answer\n\nSource: Source title`} {
+			for _, want := range []string{"Source title", "https://example.com/source", "Web title", "https://example.com/web", "Original passage", `Nested answer\n\nSource: Source title`, `User answer\n\nSource: Source title`} {
 				if !strings.Contains(body, want) {
 					t.Fatalf("outgoing request lost %q: %s", want, body)
 				}
 			}
-			if strings.Contains(body, `"url_citation"`) {
-				t.Fatalf("foreign/native OpenAI citation tag survived: %s", body)
+			if adapter.name == "openai-responses" {
+				if strings.Count(body, `"url_citation"`) != 1 || !strings.Contains(body, `"annotations":[`+urlCitation+`]`) {
+					t.Fatalf("native assistant annotation not preserved exclusively: %s", body)
+				}
+				if !strings.Contains(body, `"text":"Answer\n\nSource: Web title`) {
+					t.Fatalf("native citation changed text or foreign citation was not converted: %s", body)
+				}
+			} else if strings.Contains(body, `"url_citation"`) || strings.Contains(body, `"annotations"`) {
+				t.Fatalf("foreign OpenAI citation metadata survived: %s", body)
 			}
 			if adapter.name == "anthropic" {
 				if !strings.Contains(body, `"citations":[`+webCitation+`]`) {

@@ -8,7 +8,7 @@ import (
 	"shelley.exe.dev/llm"
 )
 
-func adaptCitation(kind string, fields map[string]json.RawMessage) (reference string, retain bool, err error) {
+func adaptCitation(_ llm.CitationContext, kind string, fields map[string]json.RawMessage) (reference string, retain bool, err error) {
 	// Native objects are opaque, including signed fields. Full schema validation
 	// remains Anthropic's responsibility; never fabricate encrypted_index values.
 	switch kind {

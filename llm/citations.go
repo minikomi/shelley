@@ -9,6 +9,13 @@ import (
 	"slices"
 )
 
+// CitationContext identifies where a cited text block appears in request history.
+// Providers decide whether that position supports native citation metadata.
+type CitationContext struct {
+	Role         MessageRole
+	InToolResult bool
+}
+
 type citationConversion struct {
 	path  string
 	types []string
@@ -18,7 +25,7 @@ type citationConversion struct {
 // provider filtering or retries. adapt owns citation type and field policy; it
 // returns either a text reference or retain=true to preserve the opaque object.
 // destination is only a diagnostic label. Logs never include source payloads.
-func PrepareRequestCitations(ctx context.Context, req *Request, destination string, adapt func(kind string, fields map[string]json.RawMessage) (reference string, retain bool, err error)) (*Request, error) {
+func PrepareRequestCitations(ctx context.Context, req *Request, destination string, adapt func(position CitationContext, kind string, fields map[string]json.RawMessage) (reference string, retain bool, err error)) (*Request, error) {
 	if req == nil {
 		return nil, fmt.Errorf("prepare citations for %s: nil request", destination)
 	}
@@ -26,7 +33,7 @@ func PrepareRequestCitations(ctx context.Context, req *Request, destination stri
 	out.Messages = slices.Clone(req.Messages)
 	var conversions []citationConversion
 	for i := range out.Messages {
-		content, err := prepareContentCitations(req.Messages[i].Content, adapt, fmt.Sprintf("messages[%d].content", i), &conversions)
+		content, err := prepareContentCitations(req.Messages[i].Content, CitationContext{Role: req.Messages[i].Role}, adapt, fmt.Sprintf("messages[%d].content", i), &conversions)
 		if err != nil {
 			return nil, fmt.Errorf("prepare citations for %s: %w", destination, err)
 		}
@@ -40,7 +47,7 @@ func PrepareRequestCitations(ctx context.Context, req *Request, destination stri
 	return &out, nil
 }
 
-func prepareContentCitations(content []Content, adapt func(string, map[string]json.RawMessage) (string, bool, error), path string, conversions *[]citationConversion) ([]Content, error) {
+func prepareContentCitations(content []Content, position CitationContext, adapt func(CitationContext, string, map[string]json.RawMessage) (string, bool, error), path string, conversions *[]citationConversion) ([]Content, error) {
 	out := slices.Clone(content)
 	for i := range out {
 		c := &out[i]
@@ -70,7 +77,7 @@ func prepareContentCitations(content []Content, adapt func(string, map[string]js
 				if err != nil || kind == "" {
 					return nil, fmt.Errorf("%s: type must be a nonempty string", entryPath)
 				}
-				reference, retain, err := adapt(kind, fields)
+				reference, retain, err := adapt(position, kind, fields)
 				if err != nil {
 					return nil, fmt.Errorf("%s (%s): %w", entryPath, kind, err)
 				}
@@ -96,7 +103,7 @@ func prepareContentCitations(content []Content, adapt func(string, map[string]js
 			}
 		}
 		var err error
-		c.ToolResult, err = prepareContentCitations(c.ToolResult, adapt, fmt.Sprintf("%s[%d].tool_result", path, i), conversions)
+		c.ToolResult, err = prepareContentCitations(c.ToolResult, CitationContext{Role: position.Role, InToolResult: true}, adapt, fmt.Sprintf("%s[%d].tool_result", path, i), conversions)
 		if err != nil {
 			return nil, err
 		}

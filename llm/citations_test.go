@@ -14,7 +14,7 @@ import (
 const convertedCitation = `{"type":"convert","private":"example.com Source title"}`
 const retainedCitation = `{"type":"retain","opaque":{"keep":true}}`
 
-func fakeAdaptCitation(kind string, fields map[string]json.RawMessage) (string, bool, error) {
+func fakeAdaptCitation(_ CitationContext, kind string, fields map[string]json.RawMessage) (string, bool, error) {
 	switch kind {
 	case "retain":
 		return "", true, nil
