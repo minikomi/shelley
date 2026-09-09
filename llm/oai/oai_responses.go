@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -142,21 +143,11 @@ type responsesInputItem struct {
 }
 
 type responsesContent struct {
-	Type        string                `json:"type"` // "input_text", "output_text", "input_image"
-	Text        string                `json:"text,omitempty"`
-	ImageURL    string                `json:"image_url,omitempty"`
-	Detail      responsesImageDetail  `json:"detail,omitempty"`
-	Annotations []responsesAnnotation `json:"annotations,omitempty"`
-}
-
-// responsesAnnotation is an annotation attached to output_text content.
-// For web_search results, OpenAI emits url_citation annotations.
-type responsesAnnotation struct {
-	Type       string `json:"type"` // "url_citation"
-	StartIndex int    `json:"start_index,omitempty"`
-	EndIndex   int    `json:"end_index,omitempty"`
-	URL        string `json:"url,omitempty"`
-	Title      string `json:"title,omitempty"`
+	Type        string               `json:"type"` // "input_text", "output_text", "input_image"
+	Text        string               `json:"text,omitempty"`
+	ImageURL    string               `json:"image_url,omitempty"`
+	Detail      responsesImageDetail `json:"detail,omitempty"`
+	Annotations json.RawMessage      `json:"annotations,omitempty"` // Preserve zero/empty and unknown provider fields.
 }
 
 type responsesImageDetail string
@@ -333,12 +324,15 @@ func fromLLMMessageResponses(msg llm.Message) []responsesInputItem {
 					messageContent = append(messageContent, responsesImageContent(c))
 				} else if c.Text != "" {
 					contentType := "input_text"
+					var annotations json.RawMessage
 					if msg.Role == llm.MessageRoleAssistant {
 						contentType = "output_text"
+						annotations = c.Citations
 					}
 					messageContent = append(messageContent, responsesContent{
-						Type: contentType,
-						Text: c.Text,
+						Type:        contentType,
+						Text:        c.Text,
+						Annotations: annotations,
 					})
 				}
 			case llm.ContentTypeThinking:
@@ -433,15 +427,11 @@ func (s *ResponsesService) toLLMResponseFromResponses(resp *responsesResponse, h
 		case "message":
 			// Convert message content
 			for _, c := range item.Content {
-				if c.Text != "" {
+				if c.Text != "" || len(c.Annotations) > 0 {
 					text := llm.Content{
-						Type: llm.ContentTypeText,
-						Text: c.Text,
-					}
-					if len(c.Annotations) > 0 {
-						if b, err := json.Marshal(c.Annotations); err == nil {
-							text.Citations = b
-						}
+						Type:      llm.ContentTypeText,
+						Text:      c.Text,
+						Citations: slices.Clone(c.Annotations),
 					}
 					contents = append(contents, text)
 				}
@@ -621,6 +611,11 @@ func (s *ResponsesService) MaxImageBytes() int {
 
 // Do sends a request to OpenAI using the Responses API.
 func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error) {
+	var err error
+	ir, err = llm.PrepareRequestCitations(ctx, ir, "openai-responses", s.adaptCitation)
+	if err != nil {
+		return nil, err
+	}
 	httpc := cmp.Or(s.HTTPC, http.DefaultClient)
 	model := cmp.Or(s.Model, DefaultModel)
 	openAIResponses := s.isOpenAIResponses()
@@ -637,7 +632,12 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 		}
 		messages = fittedMessages
 	}
-	for _, msg := range messages {
+	for i, msg := range messages {
+		for j, c := range msg.Content {
+			if len(c.Citations) > 0 && c.Text == "" {
+				return nil, fmt.Errorf("openai-responses messages[%d].content[%d]: cannot replay citations on empty assistant text", i, j)
+			}
+		}
 		items := fromLLMMessageResponses(msg)
 		allInput = append(allInput, items...)
 	}
