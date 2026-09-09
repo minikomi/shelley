@@ -5,7 +5,8 @@ Started September 9, 2026. Baseline: `1300b889`.
 ## Scope and constraints
 
 - Local investigation only. No push, deployment, or production/preview restart.
-- No paid live requests in this phase. Prepare a bounded live batch for separate approval.
+- **Primary objective:** recreate historically reported HTTP-400 failure cases on actual Anthropic, then measure caching and useful coding-task performance. Mock tests support this; they cannot establish provider compatibility.
+- The generic live matrix and its provisional budgets are superseded. Scope each targeted real-provider batch explicitly before running it; none has run in this investigation phase.
 - Test code and research notes only; propose production fixes separately.
 - Do not replay user conversations or log thinking/signatures.
 - Keep thinking-drop diagnostics logs-only. Do not reintroduce banners.
@@ -50,11 +51,11 @@ measured cache reuse.
 
 ## Checkpoints
 
-1. Workers produce offline evidence and individual notes.
-2. Coordinator checks ownership/diffs and runs the combined relevant suites.
-3. Record concrete defects before recommending fixes; do not hide them behind passing mock tests.
-4. Propose the smallest live validation batch with exact request/output/time caps.
-5. Prepare the later write-up: bugs first, cheap fixes second, measured benefits and unresolved risks clearly separated.
+1. Recover the evidence behind `bd271d9b` and `3f02a1d3`: distinguish the reported signature failures from the unproven model-rotation explanation. Where original payloads are unavailable, explicitly label reconstructed cases.
+2. Run targeted **actual Anthropic** reproductions: historical stripping/recovery, preserve-only diagnostic control, and the new protected adapter. A scenario must demonstrably produce the relevant 400 in its control to count as a reproduction of that failure mechanism. Check the request after apparent recovery.
+3. Compare old versus new protected adapters on representative multi-tool coding tasks with executable correctness checks. Measure task success, total time, attempts/retries, cache reads/writes, uncached input, and output—including failures. Do not substitute arithmetic/checksum accuracy for coding-task quality.
+4. Keep full-strategy old/new comparisons separate from experiments that hold binding controls constant to isolate retention. Record shared-cache/order limitations.
+5. Prepare the later write-up: original evidence, reconstructed failures, real-provider results, useful-task outcomes, measured efficiency, and concrete remaining risks. No rollout conclusion from mock passes or cache-hit percentage alone.
 
 ## Activity log
 
