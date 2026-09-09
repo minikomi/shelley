@@ -78,7 +78,7 @@ func TestThinkingInvestigationLive(t *testing.T) {
 		return &out, nil
 	}
 	for i, key := range []string{"A", "B"} {
-		out, err := call("seed-"+key, preserveThinkingRequest(s, r))
+		out, err := call("seed-"+key, s.fromLLMRequest(r))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,14 +121,14 @@ func TestThinkingInvestigationLive(t *testing.T) {
 			}},
 		})
 	}
-	stock, preserved := s.fromLLMRequest(r), preserveThinkingRequest(s, r)
+	stock, preserved := oldThinkingPolicyRequest(s, r), s.fromLLMRequest(r)
 	if bytes.Equal(thinkingJSON(t, stock), thinkingJSON(t, preserved)) {
 		t.Fatal("experiment failed to create different histories")
 	}
 	for i, preserve := range []bool{false, true, true, false} {
-		wire, arm := stock, "stock"
+		wire, arm := stock, "old-policy"
 		if preserve {
-			wire, arm = preserved, "preserve"
+			wire, arm = preserved, "production-preserved"
 		}
 		label := fmt.Sprintf("replay-%d-%s", i+1, arm)
 		out, err := call(label, wire)
@@ -172,6 +172,9 @@ func thinkingHTTP(client *http.Client, method, url string, payload []byte) ([]by
 	}
 	req.Header.Set("X-API-Key", "implicit")
 	req.Header.Set("Anthropic-Version", "2023-06-01")
+	if method == http.MethodPost {
+		req.Header.Set("Anthropic-Beta", thinkingBindingBeta)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {

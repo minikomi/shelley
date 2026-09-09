@@ -718,11 +718,11 @@ func abs(x float64) float64 {
 	return x
 }
 
-func TestFromLLMRequestStripsOldThinkingBlocks(t *testing.T) {
+func TestFromLLMRequestPreservesOldThinkingBlocks(t *testing.T) {
 	s := &Service{Model: Claude46Opus, ThinkingLevel: llm.ThinkingLevelMedium}
 
 	// Simulate a conversation with multiple assistant turns containing thinking blocks.
-	// Only the last assistant turn's thinking should be preserved.
+	// Every valid signed or redacted block should be preserved.
 	req := s.fromLLMRequest(&llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{
@@ -759,19 +759,14 @@ func TestFromLLMRequestStripsOldThinkingBlocks(t *testing.T) {
 		t.Fatalf("expected 7 messages, got %d", len(req.Messages))
 	}
 
-	// First assistant (index 1): thinking should be stripped, only text remains
 	firstAssistant := req.Messages[1]
-	if len(firstAssistant.Content) != 1 {
-		t.Errorf("first assistant: expected 1 content block, got %d", len(firstAssistant.Content))
+	if len(firstAssistant.Content) != 2 || firstAssistant.Content[0].Signature != "old-sig-1" {
+		t.Fatal("first assistant thinking was not preserved")
 	}
-	if firstAssistant.Content[0].Type != "text" {
-		t.Errorf("first assistant content[0]: expected text, got %s", firstAssistant.Content[0].Type)
-	}
-
-	// Second assistant (index 3): thinking + redacted_thinking stripped, only text remains
 	secondAssistant := req.Messages[3]
-	if len(secondAssistant.Content) != 1 {
-		t.Errorf("second assistant: expected 1 content block, got %d", len(secondAssistant.Content))
+	if len(secondAssistant.Content) != 3 || secondAssistant.Content[0].Signature != "old-sig-2" ||
+		secondAssistant.Content[1].Type != "redacted_thinking" || secondAssistant.Content[1].Data != "redacted" {
+		t.Fatal("older signed/redacted thinking was not preserved")
 	}
 
 	// Last assistant (index 5): thinking preserved
@@ -1790,7 +1785,7 @@ func TestDoRetriesOnInvalidThinkingSignature(t *testing.T) {
 		Model:         Claude46Opus,
 		ThinkingLevel: llm.ThinkingLevelMedium,
 		HTTPC:         &http.Client{Transport: transport},
-		Backoff:       []time.Duration{time.Millisecond}, // fast backoff for tests
+		Backoff:       []time.Duration{0}, // no waiting in tests
 	}
 
 	req := &llm.Request{
@@ -3016,7 +3011,7 @@ func TestFromLLMRequestThinkingLevels(t *testing.T) {
 		{name: "adaptive opus48 xhigh", model: Claude48Opus, svcLevel: llm.ThinkingLevelMedium, reqLevel: llm.ThinkingLevelXHigh, wantType: "adaptive", wantEffort: "xhigh"},
 		{name: "adaptive minimal maps to low", model: Claude48Opus, svcLevel: llm.ThinkingLevelMedium, reqLevel: llm.ThinkingLevelMinimal, wantType: "adaptive", wantEffort: "low"},
 		{name: "adaptive fable minimal maps to low", model: ClaudeFable5, svcLevel: llm.ThinkingLevelMinimal, wantType: "adaptive", wantEffort: "low"},
-		{name: "adaptive req off rounds to low", model: Claude47Opus, svcLevel: llm.ThinkingLevelMedium, reqLevel: llm.ThinkingLevelOff, wantType: "adaptive", wantEffort: "low"},
+		{name: "adaptive req off", model: Claude47Opus, svcLevel: llm.ThinkingLevelMedium, reqLevel: llm.ThinkingLevelOff, wantType: ""},
 		{name: "adaptive provider-qualified opus48", model: "us.anthropic.claude-opus-4-8-v1:0", svcLevel: llm.ThinkingLevelMedium, wantType: "adaptive", wantEffort: "medium"},
 		{name: "budget default medium", model: Claude45Sonnet, svcLevel: llm.ThinkingLevelMedium, wantType: "enabled", wantBudgetGreat: 8192},
 		{name: "budget req low", model: Claude45Sonnet, svcLevel: llm.ThinkingLevelMedium, reqLevel: llm.ThinkingLevelLow, wantType: "enabled", wantBudgetGreat: 2048},

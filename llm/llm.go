@@ -644,6 +644,9 @@ type Response struct {
 	// stop_details object on refusals). Nil for non-refusals or providers that
 	// don't surface a reason.
 	RefusalDetails *RefusalDetails
+	// InputTransformations describes provider changes to the input, not model output.
+	// It is deliberately excluded from ToMessage and conversation history.
+	InputTransformations []InputTransformation
 }
 
 // RefusalDetails is the provider-supplied reason a request was refused
@@ -652,6 +655,14 @@ type Response struct {
 type RefusalDetails struct {
 	Category    string
 	Explanation string
+}
+
+// InputTransformation is structured provider metadata about a changed input block.
+// Unknown types and reasons are retained without interpreting their meaning.
+type InputTransformation struct {
+	Type   string `json:"type"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 func (m *Response) ToMessage() Message {

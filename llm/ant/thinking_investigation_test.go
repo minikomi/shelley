@@ -9,12 +9,22 @@ import (
 	"shelley.exe.dev/llm"
 )
 
-// Investigation only: retain the normal request settings and all existing
-// sanitizers, changing only the age-based thinking removal.
-func preserveThinkingRequest(s *Service, r *llm.Request) *request {
+// Test-only old policy: compare age-based removal with preserved production.
+// Keep request settings and corruption filters identical between arms.
+func oldThinkingPolicyRequest(s *Service, r *llm.Request) *request {
 	out := s.fromLLMRequest(r)
 	out.Messages = nil
-	for _, m := range sanitizeServerToolBlocks(r.Messages) {
+	src := sanitizeServerToolBlocks(r.Messages)
+	last := -1
+	for i, m := range src {
+		if m.Role == llm.MessageRoleAssistant {
+			last = i
+		}
+	}
+	for i, m := range src {
+		if m.Role == llm.MessageRoleAssistant && i != last {
+			m = stripThinkingBlocks(m)
+		}
 		if msg := fromLLMMessage(m); len(msg.Content) > 0 {
 			out.Messages = append(out.Messages, msg)
 		}
@@ -48,14 +58,14 @@ func TestThinkingInvestigationPrefixChurn(t *testing.T) {
 	s := &Service{Model: Claude46Sonnet, ThinkingLevel: llm.ThinkingLevelLow}
 	r := &llm.Request{Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: llm.TextContent("Look up A, then B.")}}}
 	r.Messages = append(r.Messages, thinkingRound("a")...)
-	before := s.fromLLMRequest(r)
-	preservedBefore := preserveThinkingRequest(s, r)
+	before := oldThinkingPolicyRequest(s, r)
+	preservedBefore := s.fromLLMRequest(r)
 	if !reflect.DeepEqual(before, preservedBefore) {
 		t.Fatal("one-assistant requests should be identical")
 	}
 	r.Messages = append(r.Messages, thinkingRound("b")...)
-	after := s.fromLLMRequest(r)
-	preservedAfter := preserveThinkingRequest(s, r)
+	after := oldThinkingPolicyRequest(s, r)
+	preservedAfter := s.fromLLMRequest(r)
 	if !reflect.DeepEqual(before.Messages[0], after.Messages[0]) ||
 		!reflect.DeepEqual(before.Messages[2], after.Messages[2]) {
 		t.Fatal("user and cached tool-result blocks should not change")
@@ -80,7 +90,7 @@ func TestThinkingInvestigationMultipleToolRounds(t *testing.T) {
 		r.Messages = append(r.Messages, thinkingRound(id)...)
 	}
 	s := &Service{Model: Claude46Sonnet}
-	stock, preserved := s.fromLLMRequest(r), preserveThinkingRequest(s, r)
+	stock, preserved := oldThinkingPolicyRequest(s, r), s.fromLLMRequest(r)
 	for i := 1; i < len(r.Messages); i += 2 {
 		want := preserved.Messages[i].Content
 		if i < 5 {
@@ -111,7 +121,7 @@ func TestThinkingInvestigationImmutabilityAndSanitizers(t *testing.T) {
 	s := &Service{Model: Claude46Sonnet}
 	before := thinkingJSON(t, r)
 	stock := thinkingJSON(t, s.fromLLMRequest(r))
-	preserved := preserveThinkingRequest(s, r)
+	preserved := s.fromLLMRequest(r)
 	s.fromLLMRequestStrippingAllThinking(r)
 	if !bytes.Equal(before, thinkingJSON(t, r)) {
 		t.Fatal("conversion mutated the source history")

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -276,15 +277,16 @@ func (u *usage) Add(other usage) {
 
 // response represents the response from the message API.
 type response struct {
-	ID           string       `json:"id"`
-	Type         string       `json:"type"`
-	Role         string       `json:"role"`
-	Model        string       `json:"model"`
-	Content      []content    `json:"content"`
-	StopReason   string       `json:"stop_reason"`
-	StopSequence *string      `json:"stop_sequence,omitempty"`
-	StopDetails  *stopDetails `json:"stop_details,omitempty"`
-	Usage        usage        `json:"usage"`
+	ID                   string                    `json:"id"`
+	Type                 string                    `json:"type"`
+	Role                 string                    `json:"role"`
+	Model                string                    `json:"model"`
+	Content              []content                 `json:"content"`
+	StopReason           string                    `json:"stop_reason"`
+	StopSequence         *string                   `json:"stop_sequence,omitempty"`
+	StopDetails          *stopDetails              `json:"stop_details,omitempty"`
+	InputTransformations []llm.InputTransformation `json:"input_transformations,omitempty"`
+	Usage                usage                     `json:"usage"`
 }
 
 // stopDetails is Anthropic's structured stop explanation. On a refusal it
@@ -333,6 +335,17 @@ func useAdaptiveThinking(model string) bool {
 		return false
 	}
 	return major > minVer[0] || (major == minVer[0] && minor >= minVer[1])
+}
+
+// isClaudeModelID recognizes canonical Claude names, including provider-qualified
+// names, without restricting binding controls to known adaptive-thinking families.
+func isClaudeModelID(model string) bool {
+	for _, name := range strings.FieldsFunc(model, func(r rune) bool { return r == '/' || r == '.' }) {
+		if strings.HasPrefix(name, "claude-") && len(name) > len("claude-") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseClaudeModel extracts the family ("opus", "sonnet", "haiku", "fable")
@@ -386,9 +399,17 @@ func parseClaudeModel(model string) (family string, major, minor int, ok bool) {
 // request represents the request payload for creating a message.
 // thinking configures extended thinking for Claude models.
 type thinking struct {
-	Type         string `json:"type"`                    // "enabled" or "adaptive"
-	BudgetTokens int    `json:"budget_tokens,omitempty"` // Max tokens for thinking (legacy, not used with adaptive)
-	Display      string `json:"display,omitempty"`       // "summarized": return thinking text. Opus 4.7+ defaults to "omitted" (empty thinking blocks).
+	BlockBinding *thinkingBlockBinding `json:"block_binding,omitempty"`
+	Type         string                `json:"type"`                    // "enabled" or "adaptive"
+	BudgetTokens int                   `json:"budget_tokens,omitempty"` // Max tokens for thinking (legacy, not used with adaptive)
+	Display      string                `json:"display,omitempty"`       // "summarized": return thinking text. Opus 4.7+ defaults to "omitted" (empty thinking blocks).
+}
+
+// thinkingBindingBeta enables input transformation reports and binding controls.
+const thinkingBindingBeta = "thinking-binding-controls-2026-08-01"
+
+type thinkingBlockBinding struct {
+	PrefixMismatchBehavior string `json:"prefix_mismatch_behavior"`
 }
 
 // outputConfig controls output behavior (effort level for adaptive thinking).
@@ -746,27 +767,10 @@ func (s *Service) fromLLMRequest(r *llm.Request) *request {
 	// rejects such histories. See sanitizeServerToolBlocks.
 	srcMessages := sanitizeServerToolBlocks(r.Messages)
 
-	// Find the last assistant message index so we can strip thinking blocks
-	// from all earlier assistant messages. The Anthropic API validates thinking
-	// signatures, and they become invalid when the underlying model version
-	// rotates (e.g. "claude-opus-4-6" points to a new version). Only the
-	// most recent assistant turn's thinking blocks need to be preserved.
-	lastAssistantIdx := -1
-	for i := len(srcMessages) - 1; i >= 0; i-- {
-		if srcMessages[i].Role == llm.MessageRoleAssistant {
-			lastAssistantIdx = i
-			break
-		}
-	}
-
+	// Preserve valid thinking at every age for reasoning continuity and a stable
+	// cache prefix. Let the API report blocks it cannot safely reuse.
 	var messages []message
-	for i, m := range srcMessages {
-		// Strip thinking/redacted_thinking blocks from all assistant messages
-		// except the last one. This avoids "Invalid signature" errors when
-		// the model version has changed since the thinking was generated.
-		if m.Role == llm.MessageRoleAssistant && i != lastAssistantIdx {
-			m = stripThinkingBlocks(m)
-		}
+	for _, m := range srcMessages {
 		msg := fromLLMMessage(m)
 		if len(msg.Content) > 0 {
 			messages = append(messages, msg)
@@ -791,6 +795,15 @@ const minAnthropicThinkingBudget = 1024
 // increasing the configured output allowance. Budget-style thinking shares
 // max_tokens with the final answer, so leave 1024 tokens for that answer.
 func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel, maxTokens int) {
+	if level == llm.ThinkingLevelOff || level == llm.ThinkingLevelDefault {
+		return
+	}
+	// Binding controls also work on older, budget-style Claude models.
+	defer func() {
+		if req.Thinking != nil && isClaudeModelID(model) {
+			req.Thinking.BlockBinding = &thinkingBlockBinding{PrefixMismatchBehavior: "drop_block"}
+		}
+	}()
 	adaptive := useAdaptiveThinking(model)
 	if adaptive {
 		caps, found := modelsdev.LookupReasoningCapabilities("", model)
@@ -800,9 +813,6 @@ func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel,
 			// Historical fallback for adaptive models without exact metadata.
 			level = llm.ThinkingLevelLow
 		}
-	}
-	if level == llm.ThinkingLevelOff || level == llm.ThinkingLevelDefault {
-		return
 	}
 	if adaptive {
 		effort := level.ThinkingEffort()
@@ -826,7 +836,7 @@ func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel,
 
 // fromLLMRequestStrippingAllThinking is like fromLLMRequest but strips thinking
 // blocks from ALL assistant messages (including the last one). Used as a fallback
-// when the API rejects thinking signatures — e.g. after model version rotation.
+// when the API rejects a signature despite the binding controls.
 func (s *Service) fromLLMRequestStrippingAllThinking(r *llm.Request) *request {
 	model := cmp.Or(s.Model, DefaultModel)
 	maxTokens := s.requestMaxTokens(model)
@@ -904,14 +914,15 @@ func toLLMContent(c content) llm.Content {
 
 func toLLMResponse(r *response) *llm.Response {
 	resp := &llm.Response{
-		ID:           r.ID,
-		Type:         r.Type,
-		Role:         toLLMRole[r.Role],
-		Model:        r.Model,
-		Content:      mapped(r.Content, toLLMContent),
-		StopReason:   toLLMStopReason[r.StopReason],
-		StopSequence: r.StopSequence,
-		Usage:        toLLMUsage(r.Usage),
+		InputTransformations: r.InputTransformations,
+		ID:                   r.ID,
+		Type:                 r.Type,
+		Role:                 toLLMRole[r.Role],
+		Model:                r.Model,
+		Content:              mapped(r.Content, toLLMContent),
+		StopReason:           toLLMStopReason[r.StopReason],
+		StopSequence:         r.StopSequence,
+		Usage:                toLLMUsage(r.Usage),
 	}
 	if r.StopDetails != nil && r.StopDetails.Type == "refusal" {
 		resp.RefusalDetails = &llm.RefusalDetails{
@@ -924,7 +935,8 @@ func toLLMResponse(r *response) *llm.Response {
 
 // streamEvent represents a single SSE event from the Anthropic streaming API.
 type streamEvent struct {
-	Type string `json:"type"`
+	Type                 string                    `json:"type"`
+	InputTransformations []llm.InputTransformation `json:"input_transformations,omitempty"`
 
 	// message_start
 	Message *response `json:"message,omitempty"`
@@ -1062,9 +1074,10 @@ func truncateForError(data string, maxLen int) string {
 // If onStream is non-nil, it is called with each text/thinking delta as it arrives.
 func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, error) {
 	var (
-		resp        *response
-		contents    []content // indexed by content block index
-		messageDone bool
+		resp            *response
+		contents        []content // indexed by content block index
+		messageDone     bool
+		transformations []llm.InputTransformation
 	)
 
 	err := iterSSEEvents(r, func(sse sseEvent) error {
@@ -1165,6 +1178,17 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 		case "error":
 			return fmt.Errorf("stream error event: %s", data)
 		}
+		if event.Type == "message_start" || event.Type == "message_delta" {
+			entries := event.InputTransformations
+			if event.Type == "message_start" && event.Message != nil {
+				entries = event.Message.InputTransformations
+			}
+			for _, entry := range entries {
+				if !slices.Contains(transformations, entry) {
+					transformations = append(transformations, entry)
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -1206,6 +1230,7 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 	}
 	contents = filtered
 
+	resp.InputTransformations = transformations
 	resp.Content = contents
 	return resp, nil
 }
@@ -1289,6 +1314,9 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-API-Key", s.APIKey)
 		req.Header.Set("Anthropic-Version", "2023-06-01")
+		if request.Thinking != nil && request.Thinking.BlockBinding != nil {
+			req.Header.Set("Anthropic-Beta", thinkingBindingBeta)
+		}
 
 		resp, err := httpc.Do(req)
 		if err != nil {
@@ -1316,6 +1344,11 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 
 			endTime := time.Now()
 			result := toLLMResponse(response)
+			for _, entry := range result.InputTransformations {
+				slog.WarnContext(ctx, "anthropic_input_transformation", "provider", "anthropic",
+					"model", response.Model, "request_id", resp.Header.Get("Request-Id"), "response_id", response.ID,
+					"type", entry.Type, "path", entry.Path, "reason", entry.Reason)
+			}
 			result.StartTime = &startTime
 			result.EndTime = &endTime
 			result.URL = url
@@ -1341,12 +1374,16 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 				errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %v (url=%s, model=%s): %s", attempts+1, time.Now().Format(time.DateTime), resp.Status, url, cmp.Or(s.Model, DefaultModel), buf))
 				continue
 			case resp.StatusCode >= 400 && resp.StatusCode < 500:
-				// Check for "Invalid signature" in thinking blocks — this happens
-				// when the model version rotated and old signatures are no longer valid.
-				// Retry once with ALL thinking blocks stripped from the request.
-				if strippedPayload == nil && strings.Contains(string(buf), "Invalid `signature`") {
-					slog.WarnContext(ctx, "anthropic_invalid_thinking_signature, retrying without thinking blocks",
-						"response", string(buf), "url", url, "model", s.Model)
+				// A rejected signature may be corrupt or bound to a different prefix.
+				// Never log/return its error body: it can echo thinking/signatures.
+				if strings.Contains(string(buf), "Invalid `signature`") {
+					lastErrSummary = "invalid thinking signature; retrying without historical thinking blocks"
+					slog.WarnContext(ctx, "anthropic_invalid_thinking_signature", "provider", "anthropic",
+						"model", request.Model, "request_id", resp.Header.Get("Request-Id"),
+						"reason", "invalid_thinking_signature", "retry", strippedPayload == nil)
+					if strippedPayload != nil {
+						return nil, errors.Join(errs, fmt.Errorf("invalid thinking signature after stripping historical thinking blocks"))
+					}
 					strippedReq := s.fromLLMRequestStrippingAllThinking(ir)
 					strippedReq.Stream = true
 					strippedPayload, err = json.Marshal(strippedReq)

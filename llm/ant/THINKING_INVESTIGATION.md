@@ -1,14 +1,53 @@
 # Thinking history investigation
 
-Investigated September 9, 2026 against `dca552b2`. Production behavior is unchanged.
+Investigated September 9, 2026 against `dca552b2`. The original investigation
+below describes the old policy. The follow-up implements a controlled change;
+it does not establish a response-quality improvement.
 
-## Decision
+## Follow-up: preserve history and report provider drops
+
+Production request construction now preserves older signed/redacted thinking.
+Existing malformed-block filtering and the bounded invalid-signature strip-all
+retry remain. Active-thinking requests for recognized Claude models opt into
+`thinking-binding-controls-2026-08-01` with
+`thinking.block_binding.prefix_mismatch_behavior = "drop_block"`.
+
+Provider input-transformation metadata reaches the existing persisted warning
+path, outside LLM history, with human-readable prefix/model mismatch reasons.
+Structured logs include block path and reason, not thinking or signatures.
+
+A six-request live conformance test through `Service.Do` and the SSE parser
+passed on Fable 5.1 on September 9, 2026:
+
+| Probe | Result |
+| --- | --- |
+| Generate genuine signed thinking | HTTP 200 |
+| Replay unchanged history | HTTP 200, no drops |
+| Change system prompt; force strict binding | HTTP 400, invalid signature |
+| Same changed history; production drop-block mode | HTTP 200, `thinking_dropped`, `prefix_binding_mismatch`, `messages.1.content.0` |
+| Corrupted signature; existing recovery | HTTP 400 then HTTP 200, exactly one retry with explained warning |
+
+This establishes one real failure mechanism and targeted recovery, not the cause
+of the original March incident. Model switching and broader task-quality testing
+remain follow-ups. The first four probes each permit only one network
+attempt, so prefix-mismatch success cannot be explained by the old strip-all
+retry. Only the fifth probe permits two attempts, explicitly testing that recovery.
+
+```sh
+ANTHROPIC_THINKING_BINDING_LIVE=1 \
+go test ./llm/ant -run '^TestThinkingBindingLive$' -count=1 -v
+```
+
+The older cache experiment now reconstructs the former stripping policy only in
+test code, comparing it against production preservation. Its strict formatting
+check remains strict; its earlier failures are recorded below.
+
+## Original investigation and decision
 
 Evaluate removing **proactive age-based stripping**, separately from unsigned-block
 filtering and signature-error recovery. The cache benefit has a small live
-reproduction. Response-quality benefit and safe recovery are not established.
-
-Do not deploy a blanket revert based on this experiment.
+reproduction. Response-quality benefit and safe recovery were not established by
+the original cache experiment alone.
 
 ## Why the fence exists
 
