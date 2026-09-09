@@ -12,9 +12,9 @@ retry remain. Active-thinking requests for recognized Claude models opt into
 `thinking-binding-controls-2026-08-01` with
 `thinking.block_binding.prefix_mismatch_behavior = "drop_block"`.
 
-Provider input-transformation metadata reaches the existing persisted warning
-path, outside LLM history, with human-readable prefix/model mismatch reasons.
-Structured logs include block path and reason, not thinking or signatures.
+Provider input-transformation metadata is logged with its reported reason, block
+path, model, response ID, and conversation correlation. Thinking drops do not
+create conversation banners. Neither thinking text nor signatures are logged.
 
 A six-request live conformance test through `Service.Do` and the SSE parser
 passed on Fable 5.1 on September 9, 2026:
