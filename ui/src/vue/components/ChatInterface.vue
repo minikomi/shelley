@@ -63,6 +63,8 @@
         <!-- Overflow menu (PrimeVue Popover + Select) -->
         <ChatOverflowMenu
           :has-cwd="hasCwd"
+          :show-directory="statusSlotInline"
+          :cwd="currentConversation?.cwd || selectedCwd"
           :links="links"
           :can-archive="
             !!(conversationId && onArchiveConversation && !currentConversation?.archived)
@@ -70,6 +72,7 @@
           :can-export="!!(conversationId && messages.length > 0)"
           :has-update="hasUpdate"
           @open-command-palette="props.onOpenCommandPalette?.()"
+          @open-directory-picker="showDirectoryPicker = true"
           @open-diffs="showDiffViewer = true"
           @open-git-graph="showGitGraph = true"
           @open-terminal="openInAppTerminal"

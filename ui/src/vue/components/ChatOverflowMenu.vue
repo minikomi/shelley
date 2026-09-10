@@ -121,6 +121,11 @@
           ><kbd>{{ menuShortcutLabel("terminal") }}</kbd></span
         >
       </button>
+      <button v-if="showDirectory" class="overflow-menu-item" @click="onDirectory">
+        <i class="pi pi-folder chat-menu-icon" aria-hidden="true" />
+        {{ t("directory") }}
+        <span class="overflow-menu-cwd" :title="cwd">{{ tildifyPath(cwd) }}</span>
+      </button>
 
       <!-- Custom server-provided links (icon is a raw SVG path) -->
       <button
@@ -342,6 +347,7 @@ import type { Locale } from "../../i18n/types";
 import { useI18n } from "../composables/i18n";
 import { useConversationView } from "../composables/conversationView";
 import { menuShortcutLabel, isFirefox } from "../../utils/menuShortcuts";
+import { tildifyPath } from "../../utils/tildify";
 import { type ThemeMode, getStoredTheme, setStoredTheme, applyTheme } from "../../services/theme";
 import {
   isChannelEnabled,
@@ -352,6 +358,8 @@ import {
 
 defineProps<{
   hasCwd: boolean;
+  showDirectory: boolean;
+  cwd: string;
   links: Link[];
   canArchive: boolean;
   canExport: boolean;
@@ -360,6 +368,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: "open-command-palette"): void;
+  (e: "open-directory-picker"): void;
   (e: "open-diffs"): void;
   (e: "open-git-graph"): void;
   (e: "open-terminal"): void;
@@ -395,6 +404,7 @@ function hide() {
 // one-liners (rather than a union-typed helper) so defineEmits' per-event
 // overloads type-check cleanly.
 const onCommandPalette = () => (emit("open-command-palette"), hide());
+const onDirectory = () => (emit("open-directory-picker"), hide());
 const onDiffs = () => (emit("open-diffs"), hide());
 const onGitGraph = () => (emit("open-git-graph"), hide());
 const onTerminal = () => (emit("open-terminal"), hide());
