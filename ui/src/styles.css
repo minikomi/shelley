@@ -10668,10 +10668,19 @@ kbd {
 }
 
 [data-content-entity] > .message-action-bar-wrapper {
-  top: auto;
-  /* The bar overlaps the entity's top padding, leaving a continuous hover
-     path while remaining one pixel above the rendered content. */
-  bottom: calc(100% - 1rem + 1px);
+  position: sticky;
+  /* The action bar is 30px tall and the message scroller has 1rem padding.
+     Combined with the translation below, 22px leaves the visible bar 8px
+     inside the scrollport while it is stuck. */
+  top: 22px;
+  right: auto;
+  bottom: auto;
+  width: max-content;
+  margin-left: auto;
+  margin-bottom: -30px;
+  /* Preserve the existing above-content resting position. The negative
+     margin removes the sticky element from the content's vertical flow. */
+  transform: translateY(-30px);
 }
 
 [data-content-entity="thinking"] .thinking-content-wrapper {
@@ -10771,6 +10780,14 @@ kbd {
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.1s ease;
+}
+
+.message-action-button[data-tooltip-placement="bottom"]::after {
+  top: calc(100% + 0.4rem);
+  right: 0;
+  bottom: auto;
+  left: auto;
+  transform: none;
 }
 
 .message-action-button:hover::after,
