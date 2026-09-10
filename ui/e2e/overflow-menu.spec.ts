@@ -7,6 +7,50 @@ import { createConversationViaAPI } from "./helpers";
 // is covered by other specs (agents-md-vim, diff-viewer-find); here we
 // exercise the PrimeVue-specific controls.
 test.describe("Overflow menu (PrimeVue)", () => {
+  test("directory item opens the picker and closes the popover on mobile", async ({
+    page,
+    request,
+    isMobile,
+  }) => {
+    test.skip(!isMobile, "Mobile overflow menu (Pixel 5 in the chromium project)");
+    const slug = await createConversationViaAPI(request, "Hello");
+    const trigger = page.getByRole("button", { name: "More options" });
+    const popover = page.locator(".chat-overflow-popover");
+    const directory = popover.getByRole("button", { name: /^Directory\b/ });
+
+    await page.goto("/new");
+    await trigger.tap();
+    await expect(popover).toBeVisible();
+    await expect(directory).toHaveCount(0);
+
+    await page.goto(`/c/${slug}`);
+
+    const picker = page.locator(".modal.directory-picker-modal");
+    await expect(picker).toBeHidden();
+    await trigger.tap();
+
+    await expect(popover).toBeVisible();
+    await expect(directory).toBeVisible();
+    await expect(directory.locator("xpath=preceding-sibling::*[1]")).toHaveAccessibleName(
+      /^Terminal\b/,
+    );
+    await expect(directory.locator(".overflow-menu-cwd")).toHaveText("/tmp");
+    await expect(directory.locator(".overflow-menu-cwd")).toHaveAttribute("title", "/tmp");
+    await directory.tap();
+
+    await expect(picker).toBeVisible();
+    await expect(popover).toBeHidden();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+    await picker.getByRole("button", { name: "Cancel", exact: true }).tap();
+    await expect(picker).toBeHidden();
+    await trigger.tap();
+    await expect(directory).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(popover).toBeVisible();
+    await expect(directory).toHaveCount(0);
+  });
+
   test("popover opens, compact controls and language Select work", async ({ page, request }) => {
     test.setTimeout(60000);
     await page.addInitScript(() => {
