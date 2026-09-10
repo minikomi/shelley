@@ -348,10 +348,6 @@ func (s *customService) GetDefaultModel() string {
 
 func (s *customService) Provider() string { return "" }
 
-func (s *customService) TokenContextWindow() int {
-	return 100000
-}
-
 func (s *customService) MaxImageDimension() int {
 	return 8000
 }

@@ -2,8 +2,11 @@ package models
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -13,6 +16,7 @@ import (
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/predictable"
+	"shelley.exe.dev/models/modelsdev"
 )
 
 // predictableBuilt returns a Built entry for the predictable test model.
@@ -223,9 +227,6 @@ func TestLoggingService(t *testing.T) {
 	if err != nil || response == nil {
 		t.Fatalf("Do: response=%v err=%v", response, err)
 	}
-	if loggingSvc.TokenContextWindow() != mockService.TokenContextWindow() {
-		t.Errorf("TokenContextWindow mismatch")
-	}
 	if loggingSvc.MaxImageDimension() != mockService.MaxImageDimension() {
 		t.Errorf("MaxImageDimension mismatch")
 	}
@@ -299,8 +300,7 @@ func (z *zeroUsageLLMService) Do(ctx context.Context, request *llm.Request) (*ll
 
 // mockLLMService implements llm.Service for testing.
 type mockLLMService struct {
-	tokenContextWindow int
-	maxImageDimension  int
+	maxImageDimension int
 }
 
 func (m *mockLLMService) Do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
@@ -311,13 +311,6 @@ func (m *mockLLMService) Do(ctx context.Context, request *llm.Request) (*llm.Res
 }
 
 func (m *mockLLMService) Provider() string { return "" }
-
-func (m *mockLLMService) TokenContextWindow() int {
-	if m.tokenContextWindow == 0 {
-		return 4096
-	}
-	return m.tokenContextWindow
-}
 
 func (m *mockLLMService) MaxImageDimension() int {
 	if m.maxImageDimension == 0 {
@@ -385,7 +378,6 @@ func TestRefreshCustomModelsConcurrent(t *testing.T) {
 		Endpoint:     "https://api.example.com/v1",
 		ApiKey:       "test-key",
 		ModelName:    "test-model",
-		MaxTokens:    4096,
 	}); err != nil {
 		t.Fatalf("failed to create test model: %v", err)
 	}
@@ -419,6 +411,309 @@ func TestRefreshCustomModelsConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCustomOpenAIModelsCapLegacyMaxOutputTokens(t *testing.T) {
+	wantMax, found := modelsdev.LookupOutputLimit("", "gpt-5.6-sol")
+	if !found {
+		t.Fatal("no catalog output limit for gpt-5.6-sol")
+	}
+	for _, tc := range []struct {
+		name     string
+		provider string
+		path     string
+		response string
+	}{
+		{
+			name:     "chat completions",
+			provider: "openai",
+			path:     "/chat/completions",
+			response: `{"id":"chat-test","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+		},
+		{
+			name:     "responses",
+			provider: "openai-responses",
+			path:     "/responses",
+			response: `{"id":"responses-test","status":"completed","model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path {
+					t.Errorf("request path = %q, want %q", r.URL.Path, tc.path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+
+			testDB := newTestModelDB(t)
+			modelID := "legacy-" + tc.provider
+			if _, err := testDB.CreateModel(context.Background(), generated.CreateModelParams{
+				ModelID: modelID, DisplayName: modelID, ProviderType: tc.provider,
+				Endpoint: server.URL, ApiKey: "test-key", ModelName: "gpt-5.6-sol",
+			}); err != nil {
+				t.Fatalf("create model: %v", err)
+			}
+			if err := testDB.Pool().Exec(context.Background(), "UPDATE models SET max_tokens = ? WHERE model_id = ?", 200000, modelID); err != nil {
+				t.Fatalf("seed legacy max_tokens: %v", err)
+			}
+
+			manager, err := NewManager(&Config{DB: testDB, HTTPC: server.Client()})
+			if err != nil {
+				t.Fatalf("NewManager: %v", err)
+			}
+			service, err := manager.GetService(modelID)
+			if err != nil {
+				t.Fatalf("GetService: %v", err)
+			}
+			response, err := service.Do(context.Background(), simpleRequest())
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			if len(response.Content) == 0 || response.Content[0].Text != "ok" {
+				t.Fatalf("response = %#v, want successful provider response", response)
+			}
+			wantKey := "max_completion_tokens"
+			if tc.provider == "openai-responses" {
+				wantKey = "max_output_tokens"
+			}
+			var maxTokens int
+			if err := json.Unmarshal(got[wantKey], &maxTokens); err != nil {
+				t.Fatalf("%s = %s, want %d", wantKey, got[wantKey], wantMax)
+			}
+			if maxTokens != wantMax {
+				t.Fatalf("%s = %d, want %d", wantKey, maxTokens, wantMax)
+			}
+		})
+	}
+}
+
+func TestCustomAnthropicModelsUseCatalogLimitsOnWire(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		endpoint  string
+		model     string
+		wantMax   int
+		captured  bool
+		maxTokens int64
+	}{
+		{
+			name:    "unknown endpoint known Claude uses canonical catalog",
+			model:   "claude-sonnet-5",
+			wantMax: 128000,
+		},
+		{
+			name:     "known provider endpoint uses its snapshot entry",
+			endpoint: "https://api.fireworks.ai/inference/v1",
+			model:    "accounts/fireworks/models/gpt-oss-120b",
+			wantMax:  32768,
+			captured: true,
+		},
+		{
+			name:      "unknown model may lower the default output limit",
+			model:     "custom-claude",
+			wantMax:   8192,
+			maxTokens: 8192,
+		},
+		{
+			name:      "unknown model with stale context-token value is capped",
+			model:     "custom-claude",
+			wantMax:   64000,
+			maxTokens: 200000,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got struct {
+				MaxTokens int `json:"max_tokens"`
+				Thinking  *struct {
+					BudgetTokens int `json:"budget_tokens"`
+				} `json:"thinking"`
+			}
+			var gotRaw map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&gotRaw); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				if err := json.Unmarshal([]byte(mustJSON(t, gotRaw)), &got); err != nil {
+					t.Errorf("decode max token fields: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(mockAnthropicSSE(tc.model)))
+			}))
+			defer server.Close()
+
+			endpoint := tc.endpoint
+			httpc := server.Client()
+			if endpoint == "" {
+				endpoint = server.URL
+			}
+			var captured *captureTransport
+			if tc.captured {
+				captured = &captureTransport{response: mockAnthropicSSE(tc.model)}
+				httpc = &http.Client{Transport: captured}
+			}
+			testDB := newTestModelDB(t)
+			modelID := "anthropic-" + strings.ReplaceAll(tc.model, "/", "-")
+			if _, err := testDB.CreateModel(context.Background(), generated.CreateModelParams{
+				ModelID: modelID, DisplayName: modelID, ProviderType: "anthropic",
+				Endpoint: endpoint, ApiKey: "test-key", ModelName: tc.model, MaxTokens: tc.maxTokens, ReasoningSupport: "yes",
+			}); err != nil {
+				t.Fatalf("create model: %v", err)
+			}
+
+			manager, err := NewManager(&Config{DB: testDB, HTTPC: httpc})
+			if err != nil {
+				t.Fatalf("NewManager: %v", err)
+			}
+			service, err := manager.GetService(modelID)
+			if err != nil {
+				t.Fatalf("GetService: %v", err)
+			}
+			request := simpleRequest()
+			request.ThinkingLevel = llm.ThinkingLevelHigh
+			response, err := service.Do(context.Background(), request)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			if captured != nil {
+				if err := json.Unmarshal(captured.body, &gotRaw); err != nil {
+					t.Fatalf("decode captured request: %v", err)
+				}
+				if err := json.Unmarshal([]byte(mustJSON(t, gotRaw)), &got); err != nil {
+					t.Fatalf("decode captured max token fields: %v", err)
+				}
+			}
+			if len(response.Content) == 0 || response.Content[0].Text != "ok" {
+				t.Fatalf("response = %#v, want successful provider response", response)
+			}
+			if _, found := gotRaw["max_tokens"]; !found {
+				t.Fatal("required max_tokens was omitted")
+			}
+			if got.MaxTokens != tc.wantMax {
+				t.Fatalf("max_tokens = %d, want %d", got.MaxTokens, tc.wantMax)
+			}
+			if got.Thinking == nil {
+				t.Fatal("thinking was omitted")
+			}
+			if got.Thinking.BudgetTokens >= got.MaxTokens {
+				t.Fatalf("thinking budget = %d, want less than max_tokens %d", got.Thinking.BudgetTokens, got.MaxTokens)
+			}
+			if captured != nil && captured.url != endpoint {
+				t.Fatalf("request URL = %q, want configured endpoint %q", captured.url, endpoint)
+			}
+		})
+	}
+}
+
+func TestCustomGeminiModelCapsConfiguredOutputLimit(t *testing.T) {
+	wantMax, found := modelsdev.LookupOutputLimit("", "gemini-3-flash-preview")
+	if !found {
+		t.Fatal("no catalog output limit for gemini-3-flash-preview")
+	}
+	var got map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`))
+	}))
+	defer server.Close()
+
+	testDB := newTestModelDB(t)
+	if _, err := testDB.CreateModel(context.Background(), generated.CreateModelParams{
+		ModelID: "custom-gemini", DisplayName: "Custom Gemini", ProviderType: "gemini",
+		Endpoint: server.URL, ApiKey: "test-key",
+		ModelName: "gemini-3-flash-preview", MaxTokens: 200000,
+	}); err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	manager, err := NewManager(&Config{DB: testDB, HTTPC: server.Client()})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	service, err := manager.GetService("custom-gemini")
+	if err != nil {
+		t.Fatalf("GetService: %v", err)
+	}
+	response, err := service.Do(context.Background(), simpleRequest())
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if len(response.Content) == 0 || response.Content[0].Text != "ok" {
+		t.Fatalf("response = %#v, want successful provider response", response)
+	}
+	var generationConfig struct {
+		MaxOutputTokens int `json:"maxOutputTokens"`
+	}
+	if err := json.Unmarshal(got["generationConfig"], &generationConfig); err != nil {
+		t.Fatalf("decode generationConfig: %v", err)
+	}
+	if generationConfig.MaxOutputTokens != wantMax {
+		t.Fatalf("maxOutputTokens = %d, want %d", generationConfig.MaxOutputTokens, wantMax)
+	}
+}
+
+func newTestModelDB(t *testing.T) *db.DB {
+	t.Helper()
+	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatalf("new test DB: %v", err)
+	}
+	t.Cleanup(func() { testDB.Close() })
+	if err := testDB.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate test DB: %v", err)
+	}
+	return testDB
+}
+
+func simpleRequest() *llm.Request {
+	return &llm.Request{Messages: []llm.Message{llm.UserStringMessage("hi")}}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON: %v", err)
+	}
+	return string(body)
+}
+
+func mockAnthropicSSE(model string) string {
+	return "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-test\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"" + model + "\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+}
+
+type captureTransport struct {
+	response string
+	url      string
+	body     []byte
+}
+
+func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.url = req.URL.String()
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	t.body = body
+	req.Body.Close()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(t.response)),
+		Request:    req,
+	}, nil
+}
+
 func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testing.T) {
 	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
 	if err != nil {
@@ -435,7 +730,6 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 		Endpoint:     "https://api.example.com/v1",
 		ApiKey:       "test-key",
 		ModelName:    "test-model",
-		MaxTokens:    4096,
 	}); err != nil {
 		t.Fatalf("failed to create test model: %v", err)
 	}

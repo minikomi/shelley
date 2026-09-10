@@ -20,11 +20,10 @@ func (s *blockingService) Do(ctx context.Context, req *llm.Request) (*llm.Respon
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (s *blockingService) Provider() string        { return "" }
-func (s *blockingService) TokenContextWindow() int { return 200000 }
-func (s *blockingService) MaxImageDimension() int  { return 0 }
-func (s *blockingService) MaxImageBytes() int      { return 0 }
-func (s *blockingService) SupportsImages() bool    { return false }
+func (s *blockingService) Provider() string       { return "" }
+func (s *blockingService) MaxImageDimension() int { return 0 }
+func (s *blockingService) MaxImageBytes() int     { return 0 }
+func (s *blockingService) SupportsImages() bool   { return false }
 
 // failingService blocks until its context dies, then fails with a
 // non-retryable error. Mimics a slow LLM request that outlives the turn
@@ -36,11 +35,10 @@ func (s *failingService) Do(ctx context.Context, req *llm.Request) (*llm.Respons
 	<-ctx.Done()
 	return nil, errors.New("status 400: bad request")
 }
-func (s *failingService) Provider() string        { return "" }
-func (s *failingService) TokenContextWindow() int { return 200000 }
-func (s *failingService) MaxImageDimension() int  { return 0 }
-func (s *failingService) MaxImageBytes() int      { return 0 }
-func (s *failingService) SupportsImages() bool    { return false }
+func (s *failingService) Provider() string       { return "" }
+func (s *failingService) MaxImageDimension() int { return 0 }
+func (s *failingService) MaxImageBytes() int     { return 0 }
+func (s *failingService) SupportsImages() bool   { return false }
 
 // TestCancelledTurnDoesNotRecordErrorMessage verifies that when the loop's
 // context is cancelled mid-request (the user hit Stop; CancelConversation

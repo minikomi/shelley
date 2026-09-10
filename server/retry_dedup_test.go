@@ -45,11 +45,10 @@ func (g *gatingTestLLM) Do(ctx context.Context, req *llm.Request) (*llm.Response
 	}
 	return g.inner.Do(ctx, req)
 }
-func (g *gatingTestLLM) Provider() string        { return g.inner.Provider() }
-func (g *gatingTestLLM) TokenContextWindow() int { return g.inner.TokenContextWindow() }
-func (g *gatingTestLLM) MaxImageDimension() int  { return g.inner.MaxImageDimension() }
-func (g *gatingTestLLM) MaxImageBytes() int      { return g.inner.MaxImageBytes() }
-func (g *gatingTestLLM) SupportsImages() bool    { return g.inner.SupportsImages() }
+func (g *gatingTestLLM) Provider() string       { return g.inner.Provider() }
+func (g *gatingTestLLM) MaxImageDimension() int { return g.inner.MaxImageDimension() }
+func (g *gatingTestLLM) MaxImageBytes() int     { return g.inner.MaxImageBytes() }
+func (g *gatingTestLLM) SupportsImages() bool   { return g.inner.SupportsImages() }
 
 // TestRetryDoubleClickDeduped verifies that a second retry POST for the SAME
 // bottom error message is rejected (MAJOR 6) — without mutating the error row.

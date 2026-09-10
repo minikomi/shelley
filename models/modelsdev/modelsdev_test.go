@@ -257,8 +257,82 @@ func TestLookupCost(t *testing.T) {
 			if found != tc.wantFound {
 				t.Fatalf("LookupCost(%q, %q) found = %v, want %v", tc.endpoint, tc.model, found, tc.wantFound)
 			}
-			if c != tc.want {
+			c.Tiers = nil // pricing tiers are exercised by TestLookupContextLimit
+			if !reflect.DeepEqual(c, tc.want) {
 				t.Errorf("LookupCost(%q, %q) = %+v, want %+v", tc.endpoint, tc.model, c, tc.want)
+			}
+		})
+	}
+}
+
+func TestLookupAnthropicOutputLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		model    string
+		want     int
+		found    bool
+	}{
+		{"canonical Anthropic", "https://api.anthropic.com/v1/messages", "claude-opus-4-5-20251101", 64000, true},
+		{"gateway Claude resolves canonical catalog", "https://llm.int.exe.xyz/anthropic/v1/messages", "claude-sonnet-5", 128000, true},
+		{"date alias resolves canonical catalog", "", "claude-opus-4-5-2026-01-01", 64000, true},
+		// The Fireworks endpoint must win over OpenRouter's differently priced
+		// gpt-oss-120b entry. No cross-provider catalog scan is allowed.
+		{"endpoint-specific entry does not spill providers", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-120b", 32768, true},
+		{"unknown has no invented limit", "https://made-up.example/v1", "custom-claude", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found := LookupAnthropicOutputLimit(tc.endpoint, tc.model)
+			if found != tc.found || got != tc.want {
+				t.Fatalf("LookupAnthropicOutputLimit(%q, %q) = (%d, %v), want (%d, %v)", tc.endpoint, tc.model, got, found, tc.want, tc.found)
+			}
+		})
+	}
+}
+
+func TestLookupOutputLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		model    string
+		want     int
+		found    bool
+	}{
+		{"OpenAI endpoint", "https://api.openai.com/v1", "gpt-5.4", 128000, true},
+		{"Google endpoint", "https://generativelanguage.googleapis.com/v1beta", "gemini-3-flash-preview", 65536, true},
+		{"Fireworks endpoint", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-120b", 32768, true},
+		{"gateway falls back by model name", "https://llm.int.exe.xyz/v1", "gpt-5.4", 128000, true},
+		{"unknown has no invented limit", "https://made-up.example/v1", "custom-model", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found := LookupOutputLimit(tc.endpoint, tc.model)
+			if found != tc.found || got != tc.want {
+				t.Fatalf("LookupOutputLimit(%q, %q) = (%d, %v), want (%d, %v)", tc.endpoint, tc.model, got, found, tc.want, tc.found)
+			}
+		})
+	}
+}
+
+func TestLookupContextLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		model    string
+		want     int
+		found    bool
+	}{
+		{"OpenAI clamps to the context pricing tier", "https://api.openai.com/v1", "gpt-5.6-sol", 272000, true},
+		{"Anthropic 1M has no tier", "https://api.anthropic.com", "claude-opus-5", 1000000, true},
+		{"Anthropic 200k", "https://api.anthropic.com", "claude-opus-4-5-20251101", 200000, true},
+		{"unknown has no invented limit", "https://made-up.example/v1", "custom-model", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found := LookupContextLimit(tc.endpoint, tc.model)
+			if found != tc.found || got != tc.want {
+				t.Fatalf("LookupContextLimit(%q, %q) = (%d, %v), want (%d, %v)", tc.endpoint, tc.model, got, found, tc.want, tc.found)
 			}
 		})
 	}

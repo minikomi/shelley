@@ -83,11 +83,10 @@ func (s *refuseThenOKService) Do(ctx context.Context, req *llm.Request) (*llm.Re
 	}, nil
 }
 
-func (s *refuseThenOKService) Provider() string        { return s.inner.Provider() }
-func (s *refuseThenOKService) TokenContextWindow() int { return s.inner.TokenContextWindow() }
-func (s *refuseThenOKService) MaxImageDimension() int  { return s.inner.MaxImageDimension() }
-func (s *refuseThenOKService) MaxImageBytes() int      { return s.inner.MaxImageBytes() }
-func (s *refuseThenOKService) SupportsImages() bool    { return s.inner.SupportsImages() }
+func (s *refuseThenOKService) Provider() string       { return s.inner.Provider() }
+func (s *refuseThenOKService) MaxImageDimension() int { return s.inner.MaxImageDimension() }
+func (s *refuseThenOKService) MaxImageBytes() int     { return s.inner.MaxImageBytes() }
+func (s *refuseThenOKService) SupportsImages() bool   { return s.inner.SupportsImages() }
 
 // TestContinueAfterRefusalSwitchesModelAndResumes verifies the refusal
 // affordance: after a refusal error, POST /continue with a target model

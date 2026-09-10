@@ -172,7 +172,10 @@ export const ja: TranslationKeys = {
   nameShownInSelector: "モデル選択に表示される名前",
   apiKey: "APIキー",
   enterApiKey: "APIキーを入力",
-  maxContextTokens: "最大コンテキストトークン数",
+  maxOutputTokens: "最大出力トークン数",
+  maxOutputTokensHelp:
+    "空欄にするとモデルの公開出力上限を使用します。応答の長さやコストを抑えたい場合は小さくしてください。推論トークンもこの上限に含まれます。",
+  maxOutputTokensPlaceholder: "モデルの公開上限",
   imageSupport: "Image input support",
   imageSupportHelp: "自動で検出します。手動で設定するには「対応」または「非対応」を選びます。",
   imageSupportAuto: "自動",

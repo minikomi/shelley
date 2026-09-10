@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultMaxTokens = 32768
+	DefaultMaxTokens = 32768 // output cap when neither config nor the models.dev catalog supplies one
 
 	OpenAIURL    = "https://api.openai.com/v1"
 	FireworksURL = "https://api.fireworks.ai/inference/v1"
@@ -725,11 +725,9 @@ func fromLLMContent(c llm.Content) (string, []openai.ToolCall) {
 	}
 }
 
-// isDeepSeekBaseURL reports whether the given base URL points at DeepSeek's
-// chat completions API. DeepSeek extends the OpenAI chat completions schema
-// with a reasoning_content field that must round-trip on assistant messages
-// with tool_calls when thinking mode is on (the default for deepseek-v4-pro).
-func isDeepSeekBaseURL(baseURL string) bool {
+// endpointHostMatches reports whether baseURL's hostname is one of domains or
+// one of their subdomains. Paths and query strings are intentionally ignored.
+func endpointHostMatches(baseURL string, domains ...string) bool {
 	if baseURL == "" {
 		return false
 	}
@@ -738,7 +736,51 @@ func isDeepSeekBaseURL(baseURL string) bool {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	return host == "deepseek.com" || strings.HasSuffix(host, ".deepseek.com")
+	for _, domain := range domains {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDeepSeekBaseURL reports whether the given base URL points at DeepSeek's
+// chat completions API. DeepSeek extends the OpenAI chat completions schema
+// with a reasoning_content field that must round-trip on assistant messages
+// with tool_calls when thinking mode is on (the default for deepseek-v4-pro).
+func isDeepSeekBaseURL(baseURL string) bool {
+	return endpointHostMatches(baseURL, "deepseek.com")
+}
+
+// usesLegacyMaxTokensField identifies OpenAI-compatible endpoints that accept
+// max_tokens but not max_completion_tokens. This mirrors Pi's URL-based
+// compatibility detection without adding another custom-model setting.
+func usesLegacyMaxTokensField(baseURL string) bool {
+	return endpointHostMatches(baseURL,
+		"chutes.ai",
+		"deepseek.com",
+		"moonshot.ai",
+		"moonshot.cn",
+		"gateway.ai.cloudflare.com",
+		"api.together.ai",
+		"api.together.xyz",
+		"integrate.api.nvidia.com",
+		"api.ant-ling.com",
+		"api.z.ai",
+		"open.bigmodel.cn",
+	)
+}
+
+// maxOutputTokens returns the output limit to send. MaxTokens may contain the
+// custom-model column's old 200000 context-window default, so a configured
+// value can only lower a known models.dev limit, never raise it. Unknown models
+// retain the configured value or the historical service default.
+func maxOutputTokens(endpoint, modelName string, configured int) int {
+	limit, found := modelsdev.LookupOutputLimit(endpoint, modelName)
+	if !found {
+		return cmp.Or(configured, DefaultMaxTokens)
+	}
+	return min(cmp.Or(configured, limit), limit)
 }
 
 // fromLLMMessage converts llm.Message to OpenAI ChatCompletionMessage format
@@ -1218,45 +1260,6 @@ func (s *Service) DefaultReasoningLevel() string {
 // to true; set Model.SupportsImages on image-capable models.
 func (s *Service) SupportsImages() bool { return s.Model.SupportsImages }
 
-// TokenContextWindow returns the maximum token context window size for this service
-func (s *Service) TokenContextWindow() int {
-	// TODO: move TokenContextWindow information to Model struct
-
-	model := cmp.Or(s.Model, DefaultModel)
-
-	// OpenAI models generally have 128k context windows
-	// Some newer models have larger windows, but 128k is a safe default
-	switch model.ModelName {
-	case "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
-		return 272000 // keep Astra and GPT-5.6 requests below long-context pricing
-	case "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23":
-		return 272000
-	case "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano-2025-04-14":
-		return 200000 // 200k for newer GPT-4.1 models
-	case "gpt-4o-2024-08-06", "gpt-4o-mini-2024-07-18":
-		return 128000 // 128k for GPT-4o models
-	case "o3-2025-04-16", "o3-mini-2025-04-16":
-		return 200000 // 200k for O3 models
-	case "glm":
-		return 128000
-	case "qwen":
-		return 256000
-	case "gpt-oss-120b":
-		return 128000
-	case "accounts/fireworks/models/deepseek-v4-pro-0813", "accounts/fireworks/models/deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-flash-0731":
-		return 1048576
-	case "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/kimi-k2p6":
-		return 262144
-	case "accounts/fireworks/models/kimi-k3":
-		return 1048576
-	case "gpt-5.1", "gpt-5.1-mini", "gpt-5.1-nano":
-		return 256000
-	default:
-		// Default for unknown models
-		return 128000
-	}
-}
-
 // MaxImageDimension returns the maximum allowed image dimension.
 // TODO: determine actual OpenAI image dimension limits
 func (s *Service) MaxImageDimension() int {
@@ -1386,11 +1389,16 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 
 	// Create the OpenAI request
 	req := openai.ChatCompletionRequest{
-		Model:               model.ModelName,
-		Messages:            allMessages,
-		Tools:               tools,
-		ToolChoice:          fromLLMToolChoice(ir.ToolChoice), // TODO: make fromLLMToolChoice return an error when a perfect translation is not possible
-		MaxCompletionTokens: cmp.Or(s.MaxTokens, DefaultMaxTokens),
+		Model:      model.ModelName,
+		Messages:   allMessages,
+		Tools:      tools,
+		ToolChoice: fromLLMToolChoice(ir.ToolChoice), // TODO: make fromLLMToolChoice return an error when a perfect translation is not possible
+	}
+	maxTokens := maxOutputTokens(baseURL, model.ModelName, s.MaxTokens)
+	if usesLegacyMaxTokensField(cmp.Or(s.ModelURL, model.URL)) {
+		req.MaxTokens = maxTokens
+	} else {
+		req.MaxCompletionTokens = maxTokens
 	}
 	streaming := ir.OnStream != nil
 	if streaming && (s.ProviderName == "fireworks" || s.ProviderName == "openai") {

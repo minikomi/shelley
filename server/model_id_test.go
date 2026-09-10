@@ -103,7 +103,6 @@ func TestGenerateUniqueModelID(t *testing.T) {
 		Endpoint:     endpoint,
 		ApiKey:       "sk-test",
 		ModelName:    modelName,
-		MaxTokens:    200000,
 		ImageSupport: "auto",
 	}); err != nil {
 		t.Fatal(err)

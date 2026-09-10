@@ -208,7 +208,6 @@ func TestBtwServiceForwardsOptionalCapabilities(t *testing.T) {
 	inner := btwCapabilityService{Service: predictable.NewService()}
 	service := &btwService{Service: inner}
 	if service.Provider() != inner.Provider() ||
-		service.TokenContextWindow() != inner.TokenContextWindow() ||
 		service.MaxImageDimension() != inner.MaxImageDimension() ||
 		service.MaxImageBytes() != inner.MaxImageBytes() ||
 		service.SupportsImages() != inner.SupportsImages() {

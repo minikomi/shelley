@@ -19,8 +19,6 @@ type Service interface {
 	Do(context.Context, *Request) (*Response, error)
 	// Provider returns the provider name (e.g., "anthropic", "openai", "fireworks", "gemini").
 	Provider() string
-	// TokenContextWindow returns the maximum token context window size for this service
-	TokenContextWindow() int
 	// MaxImageDimension returns the maximum allowed dimension (width or height) for images.
 	// For multi-image requests, some providers enforce stricter limits.
 	// Returns 0 if there is no limit.

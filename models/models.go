@@ -1,6 +1,7 @@
 package models
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -107,6 +108,10 @@ type Built struct {
 	ReleaseDate string // ISO date from models.dev; empty when unknown
 	Service     llm.Service
 
+	// APIModelName is the model name sent on the wire, used for models.dev
+	// lookups (see Model.APIModelName).
+	APIModelName string
+
 	// APIType is the wire protocol used to talk to this model.
 	APIType APIType
 
@@ -152,13 +157,21 @@ func antSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) l
 	}
 }
 
+// outputLimit is the models.dev output limit for a model, or 0 so the service
+// falls back to its own default. Uses the configured base URL when set,
+// otherwise the model's canonical URL.
+func outputLimit(baseURL, modelURL, modelName string) int {
+	limit, _ := modelsdev.LookupOutputLimit(cmp.Or(baseURL, modelURL), modelName)
+	return limit
+}
+
 func oaiResponsesSvc(model oai.Model) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return oaiResponsesSvcNamed(model, "openai")
 }
 
 func oaiResponsesSvcNamed(model oai.Model, providerName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		s := &oai.ResponsesService{Model: model, APIKey: apiKey, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium, ProviderName: providerName}
+		s := &oai.ResponsesService{Model: model, APIKey: apiKey, HTTPC: httpc, MaxTokens: outputLimit(baseURL, model.URL, model.ModelName), ThinkingLevel: llm.ThinkingLevelMedium, ProviderName: providerName}
 		if baseURL != "" {
 			s.ModelURL = baseURL + "/v1"
 		}
@@ -168,7 +181,7 @@ func oaiResponsesSvcNamed(model oai.Model, providerName string) func(baseURL, ap
 
 func oaiChatSvc(model oai.Model, providerName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		s := &oai.Service{Model: model, APIKey: apiKey, HTTPC: httpc, ProviderName: providerName}
+		s := &oai.Service{Model: model, APIKey: apiKey, HTTPC: httpc, MaxTokens: outputLimit(baseURL, model.URL, model.ModelName), ProviderName: providerName}
 		if baseURL != "" {
 			s.ModelURL = baseURL + "/v1"
 		}
@@ -178,7 +191,7 @@ func oaiChatSvc(model oai.Model, providerName string) func(baseURL, apiKey strin
 
 func gemSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) llm.Service {
 	return func(baseURL, apiKey string, httpc *http.Client) llm.Service {
-		s := &gem.Service{APIKey: apiKey, Model: modelName, HTTPC: httpc, SupportsImages_: true}
+		s := &gem.Service{APIKey: apiKey, Model: modelName, MaxTokens: outputLimit(baseURL, "", modelName), HTTPC: httpc, SupportsImages_: true}
 		if baseURL != "" {
 			s.URL = baseURL + "/v1beta"
 		}
@@ -453,6 +466,8 @@ type serviceEntry struct {
 	releaseDate string
 	baseURL     string
 	apiType     APIType
+	// apiModelName is the wire model name used for models.dev lookups.
+	apiModelName string
 }
 
 // ConfigInfo is an optional interface that services can implement to provide configuration details for logging
@@ -515,10 +530,9 @@ func (l *loggingService) Do(ctx context.Context, request *llm.Request) (*llm.Res
 	return response, err
 }
 
-func (l *loggingService) Provider() string        { return l.service.Provider() }
-func (l *loggingService) TokenContextWindow() int { return l.service.TokenContextWindow() }
-func (l *loggingService) MaxImageDimension() int  { return l.service.MaxImageDimension() }
-func (l *loggingService) MaxImageBytes() int      { return l.service.MaxImageBytes() }
+func (l *loggingService) Provider() string       { return l.service.Provider() }
+func (l *loggingService) MaxImageDimension() int { return l.service.MaxImageDimension() }
+func (l *loggingService) MaxImageBytes() int     { return l.service.MaxImageBytes() }
 
 func (l *loggingService) PatchProfile() string { return llm.PatchProfile(l.service) }
 
@@ -578,15 +592,16 @@ func (m *Manager) registerBuiltModelsLocked(built []Built) {
 			dn = b.ID
 		}
 		m.services[b.ID] = serviceEntry{
-			service:     b.Service,
-			provider:    b.Provider,
-			modelID:     b.ID,
-			source:      b.Source,
-			displayName: dn,
-			tags:        b.Tags,
-			releaseDate: b.ReleaseDate,
-			baseURL:     b.BaseURL,
-			apiType:     b.APIType,
+			service:      b.Service,
+			provider:     b.Provider,
+			modelID:      b.ID,
+			source:       b.Source,
+			displayName:  dn,
+			tags:         b.Tags,
+			releaseDate:  b.ReleaseDate,
+			baseURL:      b.BaseURL,
+			apiType:      b.APIType,
+			apiModelName: b.APIModelName,
 		}
 		m.modelOrder = append(m.modelOrder, b.ID)
 		if m.logger != nil {
@@ -621,12 +636,14 @@ func (m *Manager) loadCustomModelsLocked(dbModels []generated.Model) {
 			continue
 		}
 		m.services[model.ModelID] = serviceEntry{
-			service:     svc,
-			provider:    Provider(model.ProviderType),
-			modelID:     model.ModelID,
-			source:      SourceCustomLabel,
-			displayName: model.DisplayName,
-			tags:        model.Tags,
+			service:      svc,
+			provider:     Provider(model.ProviderType),
+			modelID:      model.ModelID,
+			source:       SourceCustomLabel,
+			displayName:  model.DisplayName,
+			tags:         model.Tags,
+			baseURL:      model.Endpoint,
+			apiModelName: model.ModelName,
 		}
 		m.modelOrder = append(m.modelOrder, model.ModelID)
 	}
@@ -714,6 +731,9 @@ type ModelInfo struct {
 	ReleaseDate string
 	BaseURL     string
 	APIType     string
+	// APIModelName is the wire model name (e.g. "claude-opus-5"), for
+	// models.dev lookups.
+	APIModelName string
 }
 
 func (m *Manager) GetModelInfo(modelID string) *ModelInfo {
@@ -723,7 +743,7 @@ func (m *Manager) GetModelInfo(modelID string) *ModelInfo {
 	if !ok {
 		return nil
 	}
-	return &ModelInfo{DisplayName: entry.displayName, Provider: entry.provider, Tags: entry.tags, Source: entry.source, ReleaseDate: entry.releaseDate, BaseURL: entry.baseURL, APIType: string(entry.apiType)}
+	return &ModelInfo{DisplayName: entry.displayName, Provider: entry.provider, Tags: entry.tags, Source: entry.source, ReleaseDate: entry.releaseDate, BaseURL: entry.baseURL, APIType: string(entry.apiType), APIModelName: entry.apiModelName}
 }
 
 type reasoningMapping struct {
@@ -837,14 +857,16 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 			APIKey:          model.ApiKey,
 			URL:             model.Endpoint,
 			Model:           model.ModelName,
+			MaxTokens:       int(model.MaxTokens),
 			HTTPC:           m.httpc,
 			ThinkingLevel:   llm.ThinkingLevelMedium,
 			SupportsImages_: supportsImages,
 		}
 	case "openai":
 		service = &oai.Service{
-			APIKey:   model.ApiKey,
-			ModelURL: model.Endpoint,
+			APIKey:    model.ApiKey,
+			ModelURL:  model.Endpoint,
+			MaxTokens: int(model.MaxTokens),
 			Model: oai.Model{
 				UserName:         "",
 				ModelName:        model.ModelName,
@@ -854,15 +876,15 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 				IsReasoningModel: false,
 				SupportsImages:   supportsImages,
 			},
-			MaxTokens:       int(model.MaxTokens),
 			HTTPC:           m.httpc,
 			ProviderName:    "openai",
 			ReasoningEffort: model.ReasoningEffort,
 		}
 	case "openai-responses":
 		service = &oai.ResponsesService{
-			APIKey:   model.ApiKey,
-			ModelURL: model.Endpoint,
+			APIKey:    model.ApiKey,
+			ModelURL:  model.Endpoint,
+			MaxTokens: int(model.MaxTokens),
 			Model: oai.Model{
 				UserName:         "",
 				ModelName:        model.ModelName,
@@ -872,7 +894,6 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 				IsReasoningModel: false,
 				SupportsImages:   supportsImages,
 			},
-			MaxTokens:       int(model.MaxTokens),
 			HTTPC:           m.httpc,
 			ThinkingLevel:   llm.ThinkingLevelMedium,
 			ReasoningEffort: model.ReasoningEffort,
@@ -883,6 +904,7 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 			APIKey:          model.ApiKey,
 			URL:             model.Endpoint,
 			Model:           model.ModelName,
+			MaxTokens:       int(model.MaxTokens),
 			HTTPC:           m.httpc,
 			ReasoningEffort: model.ReasoningEffort,
 			SupportsImages_: supportsImages,

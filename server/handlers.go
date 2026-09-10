@@ -32,6 +32,7 @@ import (
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/models/modelsdev"
 	"shelley.exe.dev/slug"
 	"shelley.exe.dev/subpub"
 	"shelley.exe.dev/ui"
@@ -2503,14 +2504,16 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 // ModelInfo represents a model in the API response
 type ModelInfo struct {
-	ID               string `json:"id"`
-	DisplayName      string `json:"display_name,omitempty"`
-	Source           string `json:"source,omitempty"`   // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
-	BaseURL          string `json:"base_url,omitempty"` // Upstream origin (e.g., "https://llm.int.exe.xyz")
-	APIType          string `json:"api_type,omitempty"` // Wire protocol (e.g., "anthropic-messages")
-	Ready            bool   `json:"ready"`
-	MaxContextTokens int    `json:"max_context_tokens,omitempty"`
-	IsDefault        bool   `json:"is_default,omitempty"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Source      string `json:"source,omitempty"`   // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
+	BaseURL     string `json:"base_url,omitempty"` // Upstream origin (e.g., "https://llm.int.exe.xyz")
+	APIType     string `json:"api_type,omitempty"` // Wire protocol (e.g., "anthropic-messages")
+	Ready       bool   `json:"ready"`
+	// MaxContextTokens is the models.dev context window (clamped to the
+	// pricing tier, see modelsdev.LookupContextLimit); 0 when unknown.
+	MaxContextTokens int  `json:"max_context_tokens,omitempty"`
+	IsDefault        bool `json:"is_default,omitempty"`
 	// Tier is 1 for prominent models and 2 for models overshadowed by a
 	// better available sibling (see models.AssignTiers). The UI keeps tier-2
 	// models behind a "more models" affordance. Older iOS/Android clients that
@@ -2842,13 +2845,11 @@ func (s *Server) getModelList() []ModelInfo {
 				continue
 			}
 			svc, err := s.llmManager.GetService(id)
-			maxCtx := 0
 			supportsImages := false
 			supportsReasoning := false
 			var reasoningLevels []string
 			defaultReasoning := ""
 			if err == nil && svc != nil {
-				maxCtx = svc.TokenContextWindow()
 				supportsImages = svc.SupportsImages()
 				supportsReasoning = llm.SupportsReasoning(svc)
 				for _, level := range llm.SupportedReasoningLevels(svc) {
@@ -2856,13 +2857,14 @@ func (s *Server) getModelList() []ModelInfo {
 				}
 				defaultReasoning = llm.ServiceDefaultReasoningLevel(svc)
 			}
-			info := ModelInfo{ID: id, Ready: err == nil, MaxContextTokens: maxCtx, SupportsImages: supportsImages, SupportsReasoning: supportsReasoning, ReasoningLevels: reasoningLevels, DefaultReasoningLevel: defaultReasoning}
+			info := ModelInfo{ID: id, Ready: err == nil, SupportsImages: supportsImages, SupportsReasoning: supportsReasoning, ReasoningLevels: reasoningLevels, DefaultReasoningLevel: defaultReasoning}
 			// Add display name and source from model info
 			if modelInfo := s.llmManager.GetModelInfo(id); modelInfo != nil {
 				info.DisplayName = modelInfo.DisplayName
 				info.Source = modelInfo.Source
 				info.BaseURL = modelInfo.BaseURL
 				info.APIType = modelInfo.APIType
+				info.MaxContextTokens, _ = modelsdev.LookupContextLimit(modelInfo.BaseURL, modelInfo.APIModelName)
 			}
 			modelList = append(modelList, info)
 		}

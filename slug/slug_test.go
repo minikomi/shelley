@@ -110,10 +110,6 @@ func (m *MockLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Respons
 
 func (m *MockLLMService) Provider() string { return "" }
 
-func (m *MockLLMService) TokenContextWindow() int {
-	return 8192 // Mock token limit
-}
-
 func (m *MockLLMService) MaxImageDimension() int {
 	return 0 // No limit for mock
 }
@@ -273,10 +269,6 @@ func (m *MockLLMServiceWithError) Do(ctx context.Context, req *llm.Request) (*ll
 
 func (m *MockLLMServiceWithError) Provider() string { return "" }
 
-func (m *MockLLMServiceWithError) TokenContextWindow() int {
-	return 8192
-}
-
 func (m *MockLLMServiceWithError) MaxImageDimension() int {
 	return 0
 }
@@ -359,10 +351,6 @@ func (m *MockLLMServiceEmptyResponse) Do(ctx context.Context, req *llm.Request) 
 }
 
 func (m *MockLLMServiceEmptyResponse) Provider() string { return "" }
-
-func (m *MockLLMServiceEmptyResponse) TokenContextWindow() int {
-	return 8192
-}
 
 func (m *MockLLMServiceEmptyResponse) MaxImageDimension() int {
 	return 0

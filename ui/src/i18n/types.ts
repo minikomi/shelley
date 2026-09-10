@@ -172,7 +172,9 @@ export interface TranslationKeys {
   nameShownInSelector: string;
   apiKey: string;
   enterApiKey: string;
-  maxContextTokens: string;
+  maxOutputTokens: string;
+  maxOutputTokensHelp: string;
+  maxOutputTokensPlaceholder: string;
   imageSupport: string;
   imageSupportHelp: string;
   imageSupportAuto: string;

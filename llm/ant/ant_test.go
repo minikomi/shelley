@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/models/modelsdev"
 )
 
 func TestIsClaudeModel(t *testing.T) {
@@ -55,29 +56,6 @@ func TestClaudeModelName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := ClaudeModelName(tt.userName); got != tt.want {
 				t.Errorf("ClaudeModelName(%q) = %v, want %v", tt.userName, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestTokenContextWindow(t *testing.T) {
-	tests := []struct {
-		name  string
-		model string
-		want  int
-	}{
-		{"default model", "", 200000},
-		{"Claude46Sonnet", Claude46Sonnet, 200000},
-		{"Claude45Haiku", Claude45Haiku, 200000},
-		{"Claude45Opus", Claude45Opus, 200000},
-		{"unknown model", "unknown-model", 200000},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := &Service{Model: tt.model}
-			if got := s.TokenContextWindow(); got != tt.want {
-				t.Errorf("TokenContextWindow() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -852,6 +830,17 @@ func TestFromLLMRequest(t *testing.T) {
 	if got.MaxTokens != 1000 {
 		t.Errorf("fromLLMRequest().MaxTokens = %v, want %v", got.MaxTokens, 1000)
 	}
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal Anthropic request: %v", err)
+	}
+	var serialized map[string]json.RawMessage
+	if err := json.Unmarshal(body, &serialized); err != nil {
+		t.Fatalf("decode Anthropic request: %v", err)
+	}
+	if _, ok := serialized["max_tokens"]; !ok {
+		t.Fatalf("Anthropic request omitted required max_tokens: %s", body)
+	}
 	if len(got.Messages) != 1 {
 		t.Errorf("fromLLMRequest().Messages length = %v, want %v", len(got.Messages), 1)
 	}
@@ -919,56 +908,86 @@ func TestMaxOutputTokensCapping(t *testing.T) {
 	if got5.Thinking == nil || got5.Thinking.Type != "adaptive" {
 		t.Errorf("Fable 5.1 thinking = %+v, want adaptive", got5.Thinking)
 	}
+
+	// The embedded snapshot, not a handwritten Claude table, sets Sonnet 5.
+	s6 := &Service{Model: Claude5Sonnet, MaxTokens: 200000}
+	if got := s6.fromLLMRequest(simpleReq); got.MaxTokens != 128000 {
+		t.Errorf("Sonnet 5: MaxTokens = %d, want 128000", got.MaxTokens)
+	}
 }
 
-// TestMaxOutputTokensMatchModelsDevAPI validates our maxOutputTokens() values against
-// the live models.dev API (same pattern as llmcatalog.TestPricingMatchesModelsDev).
-func TestMaxOutputTokensMatchModelsDevAPI(t *testing.T) {
-	resp, err := http.Get("https://models.dev/api.json")
-	if err != nil {
-		t.Skipf("Failed to fetch models.dev API: %v", err)
+// TestRequestMaxTokensCeiling covers the read-time rule for the custom-model
+// max_tokens column: the configured value may lower the allowance but never
+// raise it above the catalog limit, or above the unknown-model default when
+// the model is not in the catalog (e.g. Bedrock IDs, proxy aliases).
+func TestRequestMaxTokensCeiling(t *testing.T) {
+	simpleReq := &llm.Request{Messages: []llm.Message{llm.UserStringMessage("Hello")}}
+	opusLimit, found := modelsdev.LookupAnthropicOutputLimit("", Claude5Opus)
+	if !found {
+		t.Fatalf("no catalog output limit for %s", Claude5Opus)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Skipf("models.dev API returned status %d", resp.StatusCode)
+	const bedrock = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+	tests := []struct {
+		name      string
+		model     string
+		maxTokens int
+		want      int
+	}{
+		{"unknown stale 200000", bedrock, 200000, unknownAnthropicMaxOutputTokens},
+		{"unknown lowered", "my-proxy-alias", 8192, 8192},
+		{"unknown zero", bedrock, 0, unknownAnthropicMaxOutputTokens},
+		{"known stale 200000", Claude5Opus, 200000, opusLimit},
+		{"known lowered", Claude5Opus, 32000, 32000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Service{Model: tt.model, MaxTokens: tt.maxTokens}
+			if got := s.fromLLMRequest(simpleReq); got.MaxTokens != tt.want {
+				t.Errorf("fromLLMRequest MaxTokens = %d, want %d", got.MaxTokens, tt.want)
+			}
+			if got := s.fromLLMRequestStrippingAllThinking(simpleReq); got.MaxTokens != tt.want {
+				t.Errorf("fromLLMRequestStrippingAllThinking MaxTokens = %d, want %d", got.MaxTokens, tt.want)
+			}
+		})
 	}
 
-	type ModelInfo struct {
-		Limit struct {
-			Output int `json:"output"`
-		} `json:"limit"`
+	// Thinking budget is clamped to the lowered allowance, not the default.
+	s := &Service{Model: "my-proxy-alias", MaxTokens: 8192, ThinkingLevel: llm.ThinkingLevelHigh}
+	got := s.fromLLMRequest(simpleReq)
+	if got.MaxTokens != 8192 {
+		t.Fatalf("MaxTokens = %d, want 8192", got.MaxTokens)
 	}
-	type ProviderInfo struct {
-		Models map[string]ModelInfo `json:"models"`
+	if got.Thinking == nil || got.Thinking.BudgetTokens != 8192-1024 {
+		t.Fatalf("thinking = %+v, want budget %d", got.Thinking, 8192-1024)
 	}
-	var apiData map[string]ProviderInfo
-	if err := json.NewDecoder(resp.Body).Decode(&apiData); err != nil {
-		t.Fatalf("Failed to decode models.dev API: %v", err)
+}
+
+func TestThinkingDoesNotIncreaseExplicitMaxTokens(t *testing.T) {
+	request := &llm.Request{Messages: []llm.Message{llm.UserStringMessage("Hello")}}
+
+	tooSmall := (&Service{Model: Claude46Sonnet, MaxTokens: 1000, ThinkingLevel: llm.ThinkingLevelHigh}).fromLLMRequest(request)
+	if tooSmall.MaxTokens != 1000 {
+		t.Fatalf("max_tokens = %d, want 1000", tooSmall.MaxTokens)
+	}
+	if tooSmall.Thinking != nil {
+		t.Fatalf("thinking = %+v, want disabled for insufficient output budget", tooSmall.Thinking)
 	}
 
-	anthropic, ok := apiData["anthropic"]
-	if !ok {
-		t.Fatal("anthropic provider not found in models.dev API")
+	minimum := (&Service{Model: Claude46Sonnet, MaxTokens: 2048, ThinkingLevel: llm.ThinkingLevelHigh}).fromLLMRequest(request)
+	if minimum.MaxTokens != 2048 {
+		t.Fatalf("max_tokens = %d, want 2048", minimum.MaxTokens)
+	}
+	if minimum.Thinking == nil || minimum.Thinking.BudgetTokens != minAnthropicThinkingBudget {
+		t.Fatalf("thinking = %+v, want minimum budget %d", minimum.Thinking, minAnthropicThinkingBudget)
 	}
 
-	// Every model constant we define must match models.dev
-	for _, model := range []string{
-		ClaudeFable51,
-		Claude45Haiku,
-		Claude45Opus,
-		Claude46Opus,
-		Claude46Sonnet,
-	} {
-		apiModel, ok := anthropic.Models[model]
-		if !ok {
-			t.Errorf("%s: not found in models.dev data", model)
-			continue
-		}
-		svc := &Service{Model: model}
-		got := svc.maxOutputTokens()
-		if got != apiModel.Limit.Output {
-			t.Errorf("%s: maxOutputTokens() = %d, models.dev says %d", model, got, apiModel.Limit.Output)
-		}
+	fitted := (&Service{Model: Claude46Sonnet, MaxTokens: 3000, ThinkingLevel: llm.ThinkingLevelHigh}).fromLLMRequest(request)
+	if fitted.MaxTokens != 3000 {
+		t.Fatalf("max_tokens = %d, want 3000", fitted.MaxTokens)
+	}
+	if fitted.Thinking == nil || fitted.Thinking.BudgetTokens != 1976 {
+		t.Fatalf("thinking = %+v, want budget 1976", fitted.Thinking)
 	}
 }
 
@@ -2766,6 +2785,20 @@ func TestPauseTurnStopReason(t *testing.T) {
 	}
 	if got != llm.StopReasonPause {
 		t.Errorf("toLLMStopReason[pause_turn] = %v, want %v", got, llm.StopReasonPause)
+	}
+}
+
+func TestContextWindowExceededStopReason(t *testing.T) {
+	// Claude 4.5+ returns model_context_window_exceeded instead of a 400 when
+	// input + max_tokens overruns the window. It must map to StopReasonMaxTokens
+	// so the loop runs its truncation handling; an unmapped reason would fall
+	// to the zero value StopReasonStopSequence and be recorded as a normal stop.
+	got, ok := toLLMStopReason["model_context_window_exceeded"]
+	if !ok {
+		t.Fatal("model_context_window_exceeded not found in toLLMStopReason")
+	}
+	if got != llm.StopReasonMaxTokens {
+		t.Errorf("toLLMStopReason[model_context_window_exceeded] = %v, want %v", got, llm.StopReasonMaxTokens)
 	}
 }
 

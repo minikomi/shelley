@@ -990,6 +990,7 @@ export interface TestCustomModelRequest {
   endpoint: string;
   api_key: string;
   model_name: string;
+  max_tokens?: number;
   reasoning_effort?: string;
   reasoning_support?: "auto" | "yes" | "no";
   reasoning_map?: string;

@@ -10,13 +10,249 @@ import (
 	"testing"
 	"time"
 
+	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/ant"
+	"shelley.exe.dev/llm/oai"
 )
 
 func TestValidReasoningMapAcceptsMax(t *testing.T) {
 	if err := validReasoningMap(`{"max":"max"}`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCustomModelAPIPersistsMaxOutputTokens(t *testing.T) {
+	h := NewTestHarness(t)
+	body := []byte(`{
+		"display_name":"Test model",
+		"provider_type":"openai",
+		"endpoint":"https://example.test/v1",
+		"api_key":"test-key",
+		"model_name":"test-model",
+		"max_tokens":77777
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/custom-models", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.server.handleCreateModel(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create custom model: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response ModelAPI
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.MaxTokens != 77777 {
+		t.Fatalf("response max_tokens = %d, want 77777", response.MaxTokens)
+	}
+	stored, err := h.db.GetModel(context.Background(), response.ModelID)
+	if err != nil {
+		t.Fatalf("get stored custom model: %v", err)
+	}
+	if stored.MaxTokens != 77777 {
+		t.Fatalf("stored max_tokens = %d, want 77777", stored.MaxTokens)
+	}
+}
+
+func TestCustomModelUpdatePersistsMaxOutputTokens(t *testing.T) {
+	h := NewTestHarness(t)
+	created, err := h.db.CreateModel(context.Background(), generated.CreateModelParams{
+		ModelID:      "legacy-max",
+		DisplayName:  "Legacy max",
+		ProviderType: "openai",
+		Endpoint:     "https://example.test/v1",
+		ApiKey:       "test-key",
+		ModelName:    "test-model",
+	})
+	if err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	body := []byte(`{
+		"display_name":"Renamed model",
+		"provider_type":"openai",
+		"endpoint":"https://example.test/v1",
+		"api_key":"",
+		"model_name":"test-model",
+		"max_tokens":77777,
+		"tags":"updated"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/custom-models/"+created.ModelID, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.server.handleUpdateModel(rec, req, created.ModelID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update custom model: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := h.db.GetModel(context.Background(), created.ModelID)
+	if err != nil {
+		t.Fatalf("get updated model: %v", err)
+	}
+	if stored.MaxTokens != 77777 {
+		t.Fatalf("stored max_tokens = %d, want 77777", stored.MaxTokens)
+	}
+}
+
+func TestCustomModelUpdateWithoutMaxOutputTokensPreservesExistingValue(t *testing.T) {
+	h := NewTestHarness(t)
+	created, err := h.db.CreateModel(context.Background(), generated.CreateModelParams{
+		ModelID: "preserve-max", DisplayName: "Preserve max", ProviderType: "openai",
+		Endpoint: "https://example.test/v1", ApiKey: "test-key", ModelName: "test-model", MaxTokens: 77777,
+	})
+	if err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	body := []byte(`{
+		"display_name":"Renamed model",
+		"provider_type":"openai",
+		"endpoint":"https://example.test/v1",
+		"api_key":"",
+		"model_name":"test-model",
+		"tags":"updated"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/custom-models/"+created.ModelID, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.server.handleUpdateModel(rec, req, created.ModelID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update custom model: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := h.db.GetModel(context.Background(), created.ModelID)
+	if err != nil {
+		t.Fatalf("get updated model: %v", err)
+	}
+	if stored.MaxTokens != 77777 {
+		t.Fatalf("stored max_tokens = %d, want 77777", stored.MaxTokens)
+	}
+}
+
+// A custom model created without max_tokens stores 0, which means the
+// provider's own default applies at request time.
+func TestCustomModelCreateBlankMaxOutputTokensStoresZero(t *testing.T) {
+	h := NewTestHarness(t)
+	body := []byte(`{
+		"display_name":"Test model",
+		"provider_type":"openai",
+		"endpoint":"https://example.test/v1",
+		"api_key":"test-key",
+		"model_name":"test-model"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/custom-models", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.server.handleCreateModel(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create custom model: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response ModelAPI
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.MaxTokens != 0 {
+		t.Fatalf("response max_tokens = %d, want 0", response.MaxTokens)
+	}
+}
+
+func TestCustomModelRejectsNegativeMaxOutputTokens(t *testing.T) {
+	h := NewTestHarness(t)
+	createBody := []byte(`{
+		"display_name":"Test model",
+		"provider_type":"openai",
+		"endpoint":"https://example.test/v1",
+		"api_key":"test-key",
+		"model_name":"test-model",
+		"max_tokens":-1
+	}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/custom-models", bytes.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	h.server.handleCreateModel(createRec, createReq)
+	if createRec.Code != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400: %s", createRec.Code, createRec.Body.String())
+	}
+
+	created, err := h.db.CreateModel(context.Background(), generated.CreateModelParams{
+		ModelID: "negative-max", DisplayName: "Negative max", ProviderType: "openai",
+		Endpoint: "https://example.test/v1", ApiKey: "test-key", ModelName: "test-model", MaxTokens: 77777,
+	})
+	if err != nil {
+		t.Fatalf("create stored model: %v", err)
+	}
+	updateBody := []byte(`{
+		"display_name":"Negative max",
+		"provider_type":"openai",
+		"endpoint":"https://example.test/v1",
+		"api_key":"",
+		"model_name":"test-model",
+		"max_tokens":-1
+	}`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/custom-models/"+created.ModelID, bytes.NewReader(updateBody))
+	updateRec := httptest.NewRecorder()
+	h.server.handleUpdateModel(updateRec, updateReq, created.ModelID)
+	if updateRec.Code != http.StatusBadRequest {
+		t.Fatalf("update status = %d, want 400: %s", updateRec.Code, updateRec.Body.String())
+	}
+
+	testReq := httptest.NewRequest(http.MethodPost, "/api/custom-models-test", bytes.NewReader([]byte(`{
+		"provider_type":"openai",
+		"endpoint":"https://example.test/v1",
+		"api_key":"test-key",
+		"model_name":"test-model",
+		"max_tokens":-1
+	}`)))
+	testRec := httptest.NewRecorder()
+	h.server.handleTestModel(testRec, testReq)
+	if testRec.Code != http.StatusBadRequest {
+		t.Fatalf("test status = %d, want 400: %s", testRec.Code, testRec.Body.String())
+	}
+}
+
+func TestCustomModelTestMaxOutputTokenPresence(t *testing.T) {
+	zero := int64(0)
+	for _, tc := range []struct {
+		name      string
+		maxTokens *int64
+		want      float64
+	}{
+		{name: "omitted uses saved value", want: 77777},
+		{name: "explicit zero uses provider default", maxTokens: &zero, want: float64(oai.DefaultMaxTokens)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]any
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("decode upstream request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chat-test","choices":[{"message":{"role":"assistant","content":"test successful"},"finish_reason":"stop"}]}`))
+			}))
+			defer upstream.Close()
+
+			h := NewTestHarness(t)
+			modelID := "test-max-output"
+			if _, err := h.db.CreateModel(context.Background(), generated.CreateModelParams{
+				ModelID: modelID, DisplayName: "Test max output", ProviderType: "openai",
+				Endpoint: upstream.URL, ApiKey: "saved-key", ModelName: "test-model", MaxTokens: 77777,
+			}); err != nil {
+				t.Fatalf("create model: %v", err)
+			}
+			body := map[string]any{
+				"model_id": modelID, "provider_type": "openai", "endpoint": upstream.URL,
+				"model_name": "test-model",
+			}
+			if tc.maxTokens != nil {
+				body["max_tokens"] = *tc.maxTokens
+			}
+			encoded, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/custom-models-test", bytes.NewReader(encoded))
+			rec := httptest.NewRecorder()
+			h.server.handleTestModel(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("test status = %d: %s", rec.Code, rec.Body.String())
+			}
+			if got["max_completion_tokens"] != tc.want {
+				t.Fatalf("max_completion_tokens = %#v, want %.0f", got["max_completion_tokens"], tc.want)
+			}
+		})
 	}
 }
 

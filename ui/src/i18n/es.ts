@@ -173,7 +173,10 @@ export const es: TranslationKeys = {
   nameShownInSelector: "Nombre que se muestra en el selector de modelos",
   apiKey: "Clave de API",
   enterApiKey: "Ingrese la clave de API",
-  maxContextTokens: "Tokens de contexto máximos",
+  maxOutputTokens: "Máximo de tokens de salida",
+  maxOutputTokensHelp:
+    "Déjelo en blanco para usar el límite de salida publicado del modelo. Redúzcalo para limitar la longitud o el coste de la respuesta. Los tokens de razonamiento cuentan para este límite.",
+  maxOutputTokensPlaceholder: "Límite publicado del modelo",
   imageSupport: "Image input support",
   imageSupportHelp:
     "Auto detecta esto automáticamente. Elige Compatible o No compatible para definirlo tú.",

@@ -12,8 +12,7 @@ import (
 
 // mockService implements Service interface for testing
 type mockService struct {
-	tokenContextWindow int
-	maxImageDimension  int
+	maxImageDimension int
 }
 
 func (m *mockService) Do(ctx context.Context, req *Request) (*Response, error) {
@@ -21,10 +20,6 @@ func (m *mockService) Do(ctx context.Context, req *Request) (*Response, error) {
 }
 
 func (m *mockService) Provider() string { return "" }
-
-func (m *mockService) TokenContextWindow() int {
-	return m.tokenContextWindow
-}
 
 func (m *mockService) MaxImageDimension() int {
 	return m.maxImageDimension

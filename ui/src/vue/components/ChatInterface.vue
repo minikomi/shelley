@@ -1407,7 +1407,9 @@ const isDistilling = computed(() => {
 });
 
 const selectedModelInfo = computed(() => models.value.find((m) => m.id === selectedModel.value));
-const maxContextTokens = computed(() => selectedModelInfo.value?.max_context_tokens || 200000);
+// 0 when the model's context window is unknown: the readout then shows the
+// count alone rather than a made-up denominator.
+const maxContextTokens = computed(() => selectedModelInfo.value?.max_context_tokens || 0);
 
 // Content type constants mirror llm/llm.go.
 const LLM_TYPE_TEXT = 2;

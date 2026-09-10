@@ -73,9 +73,7 @@ func requestMentions(req *llm.Request, needle string) bool {
 //   - "fail <error>" - emits a retry warning and returns a failure
 //   - See Do() method for complete list of supported patterns
 type Service struct {
-	// TokenContextWindow size
-	tokenContextWindow int
-	mu                 sync.Mutex
+	mu sync.Mutex
 	// Recent requests for testing inspection
 	recentRequests []*llm.Request
 	responseDelay  time.Duration
@@ -83,9 +81,7 @@ type Service struct {
 
 // NewService creates a new predictable LLM service
 func NewService() *Service {
-	svc := &Service{
-		tokenContextWindow: 200000,
-	}
+	svc := &Service{}
 
 	if delayEnv := os.Getenv("PREDICTABLE_DELAY_MS"); delayEnv != "" {
 		if ms, err := strconv.Atoi(delayEnv); err == nil && ms > 0 {
@@ -101,11 +97,6 @@ func (s *Service) Provider() string { return "builtin" }
 // SupportsImages reports that the predictable service accepts image inputs
 // (it returns image dimensions in its synthetic responses).
 func (s *Service) SupportsImages() bool { return true }
-
-// TokenContextWindow returns the maximum token context window size
-func (s *Service) TokenContextWindow() int {
-	return s.tokenContextWindow
-}
 
 // MaxImageDimension returns the maximum allowed image dimension.
 func (s *Service) MaxImageDimension() int {

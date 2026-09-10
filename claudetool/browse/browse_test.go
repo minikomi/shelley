@@ -571,11 +571,10 @@ func (s noImageService) SupportsImages() bool { return false }
 func (s limitedService) Do(context.Context, *llm.Request) (*llm.Response, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (s limitedService) TokenContextWindow() int { return 0 }
-func (s limitedService) MaxImageDimension() int  { return s.maxDim }
-func (s limitedService) MaxImageBytes() int      { return s.maxBytes }
-func (s limitedService) Provider() string        { return "test" }
-func (s limitedService) SupportsImages() bool    { return true }
+func (s limitedService) MaxImageDimension() int { return s.maxDim }
+func (s limitedService) MaxImageBytes() int     { return s.maxBytes }
+func (s limitedService) Provider() string       { return "test" }
+func (s limitedService) SupportsImages() bool   { return true }
 
 func TestReadImageToolResizesOversizedImage(t *testing.T) {
 	browseTools := NewBrowseTools(context.Background(), 0)

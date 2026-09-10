@@ -108,16 +108,21 @@
         />
       </div>
 
-      <!-- Max Tokens -->
+      <!-- Maximum generated response tokens for custom models. -->
       <div class="form-group">
-        <label>{{ t("maxContextTokens") }}</label>
+        <label for="custom-model-max-output-tokens">{{ t("maxOutputTokens") }}</label>
         <InputText
+          id="custom-model-max-output-tokens"
           type="number"
-          :model-value="String(form.max_tokens)"
+          min="1"
+          step="1"
+          :model-value="form.max_tokens ? String(form.max_tokens) : ''"
+          :placeholder="t('maxOutputTokensPlaceholder')"
           fluid
           :dt="inputFieldDt"
-          @update:model-value="form.max_tokens = parseInt($event ?? '') || 200000"
+          @update:model-value="form.max_tokens = parseInt($event ?? '', 10) || 0"
         />
+        <div class="form-hint">{{ t("maxOutputTokensHelp") }}</div>
       </div>
 
       <!-- Image input support -->
@@ -308,6 +313,7 @@ const reasoningSupportOptions = computed(() => [
 ]);
 
 const form = reactive<FormData>({ ...emptyForm });
+
 const error = ref<string | null>(null);
 const testing = ref(false);
 const testResult = ref<{ success: boolean; message: string } | null>(null);
@@ -415,6 +421,7 @@ async function handleTest() {
       endpoint: form.endpoint,
       api_key: form.api_key,
       model_name: form.model_name,
+      max_tokens: form.max_tokens,
       reasoning_effort: form.reasoning_effort,
       reasoning_support: form.reasoning_support,
       reasoning_map: serializeReasoningMap(),

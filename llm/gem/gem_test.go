@@ -11,6 +11,7 @@ import (
 
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/gem/gemini"
+	"shelley.exe.dev/models/modelsdev"
 )
 
 func TestBuildGeminiRequest(t *testing.T) {
@@ -70,6 +71,48 @@ func TestBuildGeminiRequest(t *testing.T) {
 	// Verify the role is set correctly
 	if gemReq.Contents[0].Role != "user" {
 		t.Fatalf("Expected role 'user', got '%s'", gemReq.Contents[0].Role)
+	}
+	wantMax, found := modelsdev.LookupOutputLimit("", DefaultModel)
+	if !found {
+		t.Fatalf("no catalog output limit for %s", DefaultModel)
+	}
+	if gemReq.GenerationConfig == nil || gemReq.GenerationConfig.MaxOutputTokens != wantMax {
+		t.Fatalf("maxOutputTokens = %#v, want %d", gemReq.GenerationConfig, wantMax)
+	}
+}
+
+// TestMaxOutputTokensCeiling: the configured MaxTokens (possibly a stale
+// 200000 from the repurposed custom-model DB column) may lower the allowance
+// but never raise it above the catalog output limit. Unknown models have no
+// cap and keep the configured value.
+func TestMaxOutputTokensCeiling(t *testing.T) {
+	limit, found := modelsdev.LookupOutputLimit("", "gemini-3.8-flash")
+	if !found {
+		t.Fatal("no catalog output limit for gemini-3.8-flash")
+	}
+	tests := []struct {
+		name      string
+		model     string
+		maxTokens int
+		want      int
+	}{
+		{"known stale 200000", "gemini-3.8-flash", 200000, limit},
+		{"known lowered", "gemini-3.8-flash", 4096, 4096},
+		{"known zero", "gemini-3.8-flash", 0, limit},
+		{"unknown 200000", "my-gemini-proxy", 200000, 200000},
+		{"unknown zero", "my-gemini-proxy", 0, DefaultMaxTokens},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Service{Model: tt.model, MaxTokens: tt.maxTokens, APIKey: "k"}
+			gemReq, err := s.buildGeminiRequest(&llm.Request{Messages: []llm.Message{llm.UserStringMessage("Hello")}})
+			if err != nil {
+				t.Fatalf("buildGeminiRequest: %v", err)
+			}
+			if got := gemReq.GenerationConfig.MaxOutputTokens; got != tt.want {
+				t.Errorf("MaxOutputTokens = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -363,87 +406,6 @@ func TestHeaderCostIntegration(t *testing.T) {
 	}
 	if res.Usage.OutputTokens == 0 {
 		t.Fatalf("Expected output tokens to be estimated, got 0")
-	}
-}
-
-func TestTokenContextWindow(t *testing.T) {
-	tests := []struct {
-		name     string
-		model    string
-		expected int
-	}{
-		{
-			name:     "gemini-3.6-flash",
-			model:    "gemini-3.6-flash",
-			expected: 1000000,
-		},
-		{
-			name:     "gemini-3-flash-preview",
-			model:    "gemini-3-flash-preview",
-			expected: 1000000,
-		},
-		{
-			name:     "gemini-2.5-pro",
-			model:    "gemini-2.5-pro",
-			expected: 1000000,
-		},
-		{
-			name:     "gemini-2.5-flash",
-			model:    "gemini-2.5-flash",
-			expected: 1000000,
-		},
-		{
-			name:     "gemini-2.0-flash-exp",
-			model:    "gemini-2.0-flash-exp",
-			expected: 1000000,
-		},
-		{
-			name:     "gemini-2.0-flash",
-			model:    "gemini-2.0-flash",
-			expected: 1000000,
-		},
-		{
-			name:     "gemini-1.5-pro",
-			model:    "gemini-1.5-pro",
-			expected: 2000000,
-		},
-		{
-			name:     "gemini-1.5-pro-latest",
-			model:    "gemini-1.5-pro-latest",
-			expected: 2000000,
-		},
-		{
-			name:     "gemini-1.5-flash",
-			model:    "gemini-1.5-flash",
-			expected: 1000000,
-		},
-		{
-			name:     "gemini-1.5-flash-latest",
-			model:    "gemini-1.5-flash-latest",
-			expected: 1000000,
-		},
-		{
-			name:     "default model",
-			model:    "",
-			expected: 1000000,
-		},
-		{
-			name:     "unknown model",
-			model:    "unknown-model",
-			expected: 1000000,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			service := &Service{
-				Model: tt.model,
-			}
-			got := service.TokenContextWindow()
-			if got != tt.expected {
-				t.Errorf("TokenContextWindow() = %v, want %v", got, tt.expected)
-			}
-		})
 	}
 }
 

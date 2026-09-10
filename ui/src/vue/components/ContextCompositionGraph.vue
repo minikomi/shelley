@@ -3,7 +3,7 @@
      visible history categories made it up. -->
 <template>
   <div class="context-composition-graph">
-    <template v-if="points.length > 0 && props.maxContextTokens > 0">
+    <template v-if="points.length > 0">
       <div class="token-cost-controls context-composition-graph-header">
         <span>estimated composition</span>
         <span class="token-cost-controls-spacer" />
@@ -58,10 +58,10 @@
       >
         <template v-if="hoverPoint">
           call {{ hoverIndex! + 1 }} of {{ points.length }} ·
-          <b>{{ formatTokenCount(hoverPoint.total) }}</b> · {{ (hoverPoint.total / props.maxContextTokens * 100).toFixed(1) }}%
+          <b>{{ formatTokenCount(hoverPoint.total) }}</b> tokens
         </template>
         <template v-else>
-          current <b>{{ formatTokenCount(points.at(-1)!.total) }}</b> · {{ (points.at(-1)!.total / props.maxContextTokens * 100).toFixed(1) }}%
+          current <b>{{ formatTokenCount(points.at(-1)!.total) }}</b> tokens
         </template>
       </div>
       <div
@@ -104,10 +104,7 @@ import { computed, ref } from "vue";
 import type { LLMContent, Message, Usage } from "../../types";
 import { formatTokenCount } from "../../utils/tokenCostGraph";
 
-const props = defineProps<{
-  messages: Message[];
-  maxContextTokens: number;
-}>();
+const props = defineProps<{ messages: Message[] }>();
 
 const TYPE_TEXT = 2;
 const TYPE_THINKING = 3;

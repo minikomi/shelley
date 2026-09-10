@@ -53,11 +53,10 @@ func (s *workhorseService) do(ctx context.Context, service llm.Service, req *llm
 	return service.Do(ctx, &request)
 }
 
-func (s *workhorseService) Provider() string        { return s.primary.Provider() }
-func (s *workhorseService) TokenContextWindow() int { return s.primary.TokenContextWindow() }
-func (s *workhorseService) MaxImageDimension() int  { return s.primary.MaxImageDimension() }
-func (s *workhorseService) MaxImageBytes() int      { return s.primary.MaxImageBytes() }
-func (s *workhorseService) SupportsImages() bool    { return s.primary.SupportsImages() }
+func (s *workhorseService) Provider() string       { return s.primary.Provider() }
+func (s *workhorseService) MaxImageDimension() int { return s.primary.MaxImageDimension() }
+func (s *workhorseService) MaxImageBytes() int     { return s.primary.MaxImageBytes() }
+func (s *workhorseService) SupportsImages() bool   { return s.primary.SupportsImages() }
 
 func (m *Manager) getWorkhorseService(conversationModelID string) (llm.Service, error) {
 	modelID := m.workhorseModel(conversationModelID)

@@ -423,10 +423,9 @@ func (s *switchableTestLLM) Do(ctx context.Context, req *llm.Request) (*llm.Resp
 	}
 	return s.inner.Do(ctx, req)
 }
-func (s *switchableTestLLM) Provider() string        { return s.inner.Provider() }
-func (s *switchableTestLLM) TokenContextWindow() int { return s.inner.TokenContextWindow() }
-func (s *switchableTestLLM) MaxImageDimension() int  { return s.inner.MaxImageDimension() }
-func (s *switchableTestLLM) MaxImageBytes() int      { return s.inner.MaxImageBytes() }
+func (s *switchableTestLLM) Provider() string       { return s.inner.Provider() }
+func (s *switchableTestLLM) MaxImageDimension() int { return s.inner.MaxImageDimension() }
+func (s *switchableTestLLM) MaxImageBytes() int     { return s.inner.MaxImageBytes() }
 func (s *switchableTestLLM) setErr(err error) {
 	s.mu.Lock()
 	s.err = err

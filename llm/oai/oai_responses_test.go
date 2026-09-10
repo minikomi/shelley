@@ -524,51 +524,6 @@ func TestResponsesReasoningSummaryUnmarshal(t *testing.T) {
 	}
 }
 
-func TestResponsesServiceTokenContextWindow(t *testing.T) {
-	tests := []struct {
-		model    Model
-		expected int
-	}{
-		{model: GPT6Astra, expected: 272000},
-		{model: GPT56Sol, expected: 272000},
-		{model: GPT56Terra, expected: 272000},
-		{model: GPT56Luna, expected: 272000},
-		{model: GPT55, expected: 272000},
-		{model: GPT55Pro, expected: 272000},
-		{model: Model{
-			UserName:         "gpt-5.5-2026-04-23",
-			ModelName:        "gpt-5.5-2026-04-23",
-			TextVerbosity:    "",
-			URL:              "",
-			APIKeyEnv:        "",
-			IsReasoningModel: false,
-			SupportsImages:   false,
-		}, expected: 272000},
-		{model: Model{
-			UserName:         "gpt-5.5-pro-2026-04-23",
-			ModelName:        "gpt-5.5-pro-2026-04-23",
-			TextVerbosity:    "",
-			URL:              "",
-			APIKeyEnv:        "",
-			IsReasoningModel: false,
-			SupportsImages:   false,
-		}, expected: 272000},
-		{model: GPT53Codex, expected: 288000},
-		{model: GPT41, expected: 200000},
-		{model: GPT4o, expected: 128000},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.model.UserName, func(t *testing.T) {
-			svc := &ResponsesService{Model: tt.model}
-			got := svc.TokenContextWindow()
-			if got != tt.expected {
-				t.Errorf("expected %d, got %d", tt.expected, got)
-			}
-		})
-	}
-}
-
 func TestResponsesServiceConfigDetails(t *testing.T) {
 	svc := &ResponsesService{
 		Model:  GPT53Codex,
@@ -752,7 +707,7 @@ func TestResponsesServiceDoSendsSystemAsInstructions(t *testing.T) {
 	}
 }
 
-func TestResponsesServiceDoSendsMaxOutputTokens(t *testing.T) {
+func TestResponsesServiceDoSendsDefaultMaxOutputTokens(t *testing.T) {
 	var gotReq map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
@@ -784,8 +739,8 @@ func TestResponsesServiceDoSendsMaxOutputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
-	if gotReq["max_output_tokens"] != float64(DefaultMaxTokens) {
-		t.Fatalf("max_output_tokens = %#v, want %d; body = %#v", gotReq["max_output_tokens"], DefaultMaxTokens, gotReq)
+	if got, ok := gotReq["max_output_tokens"].(float64); !ok || got != DefaultMaxTokens {
+		t.Fatalf("max_output_tokens = %#v, want %d", gotReq["max_output_tokens"], DefaultMaxTokens)
 	}
 }
 

@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	DefaultModel    = "gemini-3.8-flash"
-	GeminiAPIKeyEnv = "GEMINI_API_KEY"
+	DefaultModel     = "gemini-3.8-flash"
+	DefaultMaxTokens = 16384
+	GeminiAPIKeyEnv  = "GEMINI_API_KEY"
 )
 
 // Service provides Gemini completions.
@@ -29,6 +30,7 @@ type Service struct {
 	URL           string            // Gemini API URL, uses the gemini package default if empty
 	APIKey        string            // must be non-empty
 	Model         string            // defaults to DefaultModel if empty
+	MaxTokens     int               // defaults to DefaultMaxTokens if zero
 	ThinkingLevel llm.ThinkingLevel // service-level default; zero (ThinkingLevelDefault) leaves thinkingConfig at the model default
 
 	// ReasoningEffort, if non-empty, is used as the thinkingConfig.thinkingLevel
@@ -352,10 +354,12 @@ func (s *Service) buildGeminiRequest(req *llm.Request) (*gemini.Request, error) 
 		}
 	}
 
-	if tc := s.thinkingConfig(req); tc != nil {
-		if gemReq.GenerationConfig == nil {
-			gemReq.GenerationConfig = &gemini.GenerationConfig{}
-		}
+	tc := s.thinkingConfig(req)
+	if gemReq.GenerationConfig == nil {
+		gemReq.GenerationConfig = &gemini.GenerationConfig{}
+	}
+	gemReq.GenerationConfig.MaxOutputTokens = s.maxOutputTokens()
+	if tc != nil {
 		gemReq.GenerationConfig.ThinkingConfig = tc
 	}
 
@@ -603,6 +607,18 @@ func (s *Service) DefaultReasoningLevel() string {
 	return ""
 }
 
+// maxOutputTokens returns the maxOutputTokens to send. As in
+// ant.Service.requestMaxTokens, s.MaxTokens may hold a stale 200000 from the
+// custom-model column, so it can only lower the catalog limit, never raise it.
+// Models missing from the catalog keep the configured value or DefaultMaxTokens.
+func (s *Service) maxOutputTokens() int {
+	limit, found := modelsdev.LookupOutputLimit(s.URL, cmp.Or(s.Model, DefaultModel))
+	if !found {
+		return cmp.Or(s.MaxTokens, DefaultMaxTokens)
+	}
+	return min(cmp.Or(s.MaxTokens, limit), limit)
+}
+
 func (s *Service) SupportsReasoning() bool {
 	caps, found := modelsdev.LookupReasoningCapabilities(s.URL, cmp.Or(s.Model, DefaultModel))
 	return !found || caps.Supported
@@ -622,33 +638,6 @@ func (s *Service) SupportedReasoningLevels() []llm.ThinkingLevel {
 // SupportsImages reports whether this service accepts image inputs.
 // Gemini models support images by default; set SupportsImages_=false to opt out.
 func (s *Service) SupportsImages() bool { return s.SupportsImages_ }
-
-// TokenContextWindow returns the maximum token context window size for this service
-func (s *Service) TokenContextWindow() int {
-	model := s.Model
-	if model == "" {
-		model = DefaultModel
-	}
-
-	// Gemini models generally have large context windows
-	switch model {
-	case "gemini-3-flash-preview", "gemini-3.1-pro-preview",
-		"gemini-3.1-flash-lite-preview", "gemini-3.6-flash",
-		"gemini-3.8-flash":
-		return 1000000 // 1M tokens for Gemini 3 / 3.1 / 3.6 / 3.8
-	case "gemini-2.5-pro", "gemini-2.5-flash":
-		return 1000000 // 1M tokens for Gemini 2.5
-	case "gemini-2.0-flash-exp", "gemini-2.0-flash":
-		return 1000000 // 1M tokens for Gemini 2.0 Flash
-	case "gemini-1.5-pro", "gemini-1.5-pro-latest":
-		return 2000000 // 2M tokens for Gemini 1.5 Pro
-	case "gemini-1.5-flash", "gemini-1.5-flash-latest":
-		return 1000000 // 1M tokens for Gemini 1.5 Flash
-	default:
-		// Default for unknown models
-		return 1000000
-	}
-}
 
 // MaxImageDimension returns the maximum allowed image dimension.
 // TODO: determine actual Gemini image dimension limits

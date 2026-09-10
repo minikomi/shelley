@@ -24,7 +24,11 @@ type modelEntry struct {
 	Reasoning        bool              `json:"reasoning"`
 	ReasoningOptions []reasoningOption `json:"reasoning_options"`
 	ReleaseDate      string            `json:"release_date"`
-	Modalities       struct {
+	Limit            struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+	Modalities struct {
 		Input  []string `json:"input"`
 		Output []string `json:"output"`
 	} `json:"modalities"`
@@ -52,9 +56,21 @@ type Cost struct {
 	Output     float64 `json:"output"`
 	CacheRead  float64 `json:"cache_read"`
 	CacheWrite float64 `json:"cache_write"`
+	// Tiers marks where pricing changes; a "context" tier records the prompt
+	// size above which the model bills at a higher rate.
+	Tiers []costTier `json:"tiers"`
 }
 
-func (c Cost) isZero() bool { return c == Cost{} }
+type costTier struct {
+	Tier struct {
+		Type string `json:"type"`
+		Size int    `json:"size"`
+	} `json:"tier"`
+}
+
+func (c Cost) isZero() bool {
+	return c.Input == 0 && c.Output == 0 && c.CacheRead == 0 && c.CacheWrite == 0
+}
 
 type providerEntry struct {
 	// API is the provider's base URL (the "api" field in models.dev), e.g.
@@ -248,15 +264,71 @@ func LookupCost(endpoint, modelName string) (Cost, bool) {
 	return m.Cost, found
 }
 
+// LookupAnthropicOutputLimit reports the positive output limit for a model
+// sent through the Anthropic Messages API. It first uses the endpoint's
+// catalog, so a provider-specific model never inherits another provider's
+// limit. If that endpoint is unknown, or does not list the model, it accepts
+// only an exact (or date-suffix alias) match in the canonical Anthropic
+// catalog. This supports Claude models routed through integration gateways
+// without treating arbitrary cost-style metadata as an Anthropic limit.
+func LookupAnthropicOutputLimit(endpoint, modelName string) (int, bool) {
+	data := load()
+	names := modelNames(modelName)
+	if host := hostOf(endpoint); host != "" {
+		for _, name := range names {
+			if p, ok := bestProviderForPath(hostIndex[host], pathSegments(endpoint), name); ok {
+				if m, ok := lookupInProvider(p, name); ok && m.Limit.Output > 0 {
+					return m.Limit.Output, true
+				}
+			}
+		}
+	}
+	p, ok := data["anthropic"]
+	if !ok {
+		return 0, false
+	}
+	for _, name := range names {
+		if m, ok := lookupInProvider(p, name); ok && m.Limit.Output > 0 {
+			return m.Limit.Output, true
+		}
+	}
+	return 0, false
+}
+
+// LookupOutputLimit reports the positive models.dev output limit for a model.
+// Endpoint matches take precedence; gateway hosts can then fall back to a
+// first-party catalog by model name.
+func LookupOutputLimit(endpoint, modelName string) (int, bool) {
+	m, found := lookupBroad(endpoint, modelName, func(m modelEntry) bool { return m.Limit.Output > 0 })
+	return m.Limit.Output, found
+}
+
+// LookupContextLimit reports the models.dev context window for a model,
+// clamped to the smallest "context" pricing tier when one exists. The tier is
+// a pricing cliff (e.g. gpt-5.6 lists a 1,050,000 window but doubles its price
+// past 272,000), not a hard limit; the UI uses this value as the denominator of
+// its context usage readout, so the clamp keeps the readout honest about where
+// a conversation gets expensive.
+func LookupContextLimit(endpoint, modelName string) (int, bool) {
+	m, found := lookupBroad(endpoint, modelName, func(m modelEntry) bool { return m.Limit.Context > 0 })
+	if !found {
+		return 0, false
+	}
+	limit := m.Limit.Context
+	for _, t := range m.Cost.Tiers {
+		if t.Tier.Type == "context" && t.Tier.Size > 0 && t.Tier.Size < limit {
+			limit = t.Tier.Size
+		}
+	}
+	return limit, true
+}
+
 // lookupBroad resolves models that may be reached through gateway hosts absent
 // from models.dev: endpoint host first, then first-party catalogs by bare name,
 // then OpenRouter. Each path also tries a trailing date suffix stripped.
 func lookupBroad(endpoint, modelName string, usable func(modelEntry) bool) (modelEntry, bool) {
 	data := load()
-	names := []string{modelName}
-	if stripped := dateSuffixRe.ReplaceAllString(modelName, ""); stripped != modelName {
-		names = append(names, stripped)
-	}
+	names := modelNames(modelName)
 	tryProvider := func(p providerEntry, name string) (modelEntry, bool) {
 		m, found := lookupInProvider(p, name)
 		return m, found && usable(m)
@@ -287,6 +359,14 @@ func lookupBroad(endpoint, modelName string, usable func(modelEntry) bool) (mode
 		}
 	}
 	return modelEntry{}, false
+}
+
+func modelNames(modelName string) []string {
+	names := []string{modelName}
+	if stripped := dateSuffixRe.ReplaceAllString(modelName, ""); stripped != modelName {
+		names = append(names, stripped)
+	}
+	return names
 }
 
 // firstPartyProviders are the models.dev catalogs scanned by bare model name

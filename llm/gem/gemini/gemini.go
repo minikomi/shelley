@@ -112,6 +112,7 @@ const (
 type GenerationConfig struct {
 	ResponseMimeType string          `json:"responseMimeType,omitempty"` // text/plain, application/json, or text/x.enum
 	ResponseSchema   *Schema         `json:"responseSchema,omitempty"`   // for JSON
+	MaxOutputTokens  int             `json:"maxOutputTokens,omitempty"`
 	ThinkingConfig   *ThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 

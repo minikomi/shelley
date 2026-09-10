@@ -571,31 +571,6 @@ func (s *ResponsesService) SupportedReasoningLevels() []llm.ThinkingLevel {
 // Model.SupportsImages to enable image inputs.
 func (s *ResponsesService) SupportsImages() bool { return s.Model.SupportsImages }
 
-// TokenContextWindow returns the maximum token context window size for this service
-func (s *ResponsesService) TokenContextWindow() int {
-	model := cmp.Or(s.Model, DefaultModel)
-
-	// Use the same context window logic as the regular service
-	switch model.ModelName {
-	case "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
-		return 272000 // keep Astra and GPT-5.6 requests below long-context pricing
-	case "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23":
-		return 272000 // 272k for the GPT-5.5 family in Shelley
-	case "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano":
-		return 304000 // 304k for the GPT-5.4 family
-	case "gpt-5.3-codex":
-		return 288000 // 288k for gpt-5.3-codex
-	case "grok-4.5":
-		return 500000 // 500k context window for Grok 4.5
-	case "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano-2025-04-14":
-		return 200000
-	case "gpt-4o-2024-08-06", "gpt-4o-mini-2024-07-18":
-		return 128000
-	default:
-		return 128000
-	}
-}
-
 // MaxImageDimension returns the maximum allowed image dimension.
 // TODO: determine actual OpenAI image dimension limits
 func (s *ResponsesService) MaxImageDimension() int {
@@ -667,7 +642,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 		Stream:          true,
 		Input:           allInput,
 		Tools:           tools,
-		MaxOutputTokens: cmp.Or(s.MaxTokens, DefaultMaxTokens),
+		MaxOutputTokens: maxOutputTokens(baseURL, model.ModelName, s.MaxTokens),
 	}
 	if openAIResponses {
 		req.Include = []string{"reasoning.encrypted_content"}

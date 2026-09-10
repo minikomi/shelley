@@ -1108,14 +1108,6 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func TestPredictableFixtureTokenContextWindow(t *testing.T) {
-	service := predictable.NewService()
-	window := service.TokenContextWindow()
-	if window != 200000 {
-		t.Errorf("expected TokenContextWindow to return 200000, got %d", window)
-	}
-}
-
 func TestPredictableFixtureMaxImageDimension(t *testing.T) {
 	service := predictable.NewService()
 	dimension := service.MaxImageDimension()
@@ -1504,10 +1496,6 @@ func (e *errorLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Respon
 
 func (e *errorLLMService) Provider() string { return "" }
 
-func (e *errorLLMService) TokenContextWindow() int {
-	return 200000
-}
-
 func (e *errorLLMService) MaxImageDimension() int {
 	return 2000
 }
@@ -1560,10 +1548,6 @@ func (r *retryableLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Re
 }
 
 func (r *retryableLLMService) Provider() string { return "" }
-
-func (r *retryableLLMService) TokenContextWindow() int {
-	return 200000
-}
 
 func (r *retryableLLMService) MaxImageDimension() int {
 	return 2000
@@ -2320,7 +2304,7 @@ func TestRefusal(t *testing.T) {
 // delegates to a predictable.Service so keyword triggers like "refusal" and
 // "hello" still drive realistic responses.
 type requestCapturingService struct {
-	*predictable.Service // embedded: promotes Provider/TokenContextWindow/MaxImage*/etc.
+	*predictable.Service // embedded: promotes Provider/MaxImage*/etc.
 	mu                   *sync.Mutex
 	out                  *[]*llm.Request
 }
@@ -2547,10 +2531,9 @@ func (s *switchableLLM) Do(ctx context.Context, req *llm.Request) (*llm.Response
 		StopReason: llm.StopReasonEndTurn,
 	}, nil
 }
-func (s *switchableLLM) Provider() string        { return "" }
-func (s *switchableLLM) TokenContextWindow() int { return 200000 }
-func (s *switchableLLM) MaxImageDimension() int  { return 2000 }
-func (s *switchableLLM) MaxImageBytes() int      { return 5 * 1024 * 1024 }
+func (s *switchableLLM) Provider() string       { return "" }
+func (s *switchableLLM) MaxImageDimension() int { return 2000 }
+func (s *switchableLLM) MaxImageBytes() int     { return 5 * 1024 * 1024 }
 func (s *switchableLLM) succeed() {
 	s.mu.Lock()
 	s.failWith = nil
@@ -2700,10 +2683,9 @@ func (p *pauseLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Respon
 	}, nil
 }
 
-func (p *pauseLLMService) Provider() string        { return "anthropic" }
-func (p *pauseLLMService) TokenContextWindow() int { return 200000 }
-func (p *pauseLLMService) MaxImageDimension() int  { return 2000 }
-func (p *pauseLLMService) MaxImageBytes() int      { return 5 * 1024 * 1024 }
+func (p *pauseLLMService) Provider() string       { return "anthropic" }
+func (p *pauseLLMService) MaxImageDimension() int { return 2000 }
+func (p *pauseLLMService) MaxImageBytes() int     { return 5 * 1024 * 1024 }
 
 // TestLoopResolvesPauseTurn verifies that a server-side tool pause_turn is
 // resolved by re-requesting and merging the continuation into a SINGLE assistant

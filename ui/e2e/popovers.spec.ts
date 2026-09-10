@@ -141,15 +141,15 @@ test.describe("Context usage popup", () => {
     // The label reads "<tokens> · <model name>"; the terse visible text is
     // spelled out for assistive tech.
     await expect(label.locator(".context-usage-label-tokens")).not.toBeEmpty();
-    // The denominator is only in the name when the model declares a context
-    // window, which the predictable test model does.
-    await expect(label).toHaveAccessibleName(/^Context usage: .+ of .+ tokens \([\d.]+%\)$/);
+    // The readout reports actual usage only; no denominator or percentage. A
+    // short test conversation is nowhere near any threshold, so no suffix either.
+    await expect(label).toHaveAccessibleName(/^Context usage: .+ tokens$/);
     await expect(label).toHaveAttribute("aria-expanded", "false");
 
     await label.click();
     const popup = page.locator(".chat-context-popup");
     await expect(popup).toBeVisible();
-    await expect(popup).toContainText("tokens used");
+    await expect(popup).toContainText("LLM call number");
     await expect(label).toHaveAttribute("aria-expanded", "true");
     // The panel is teleported out of the button's subtree, so aria-controls is
     // the only thing tying the two together. It must resolve to the dialog.
@@ -647,7 +647,7 @@ test.describe("Status readout controls", () => {
     // Token count -> cost popup, and NOT the picker.
     await tokens.click();
     await expect(costPopup).toBeVisible();
-    await expect(costPopup).toContainText("tokens used");
+    await expect(costPopup).toContainText("LLM call number");
     await expect(pickerPanel).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(costPopup).toBeHidden();

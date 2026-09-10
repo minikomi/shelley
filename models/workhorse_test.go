@@ -18,14 +18,13 @@ func newWorkhorseManager(t *testing.T, built ...Built) *Manager {
 }
 
 type recordingService struct {
-	request            *llm.Request
-	calls              int
-	err                error
-	provider           string
-	tokenContextWindow int
-	maxImageDimension  int
-	maxImageBytes      int
-	supportsImages     bool
+	request           *llm.Request
+	calls             int
+	err               error
+	provider          string
+	maxImageDimension int
+	maxImageBytes     int
+	supportsImages    bool
 }
 
 func (s *recordingService) Do(_ context.Context, req *llm.Request) (*llm.Response, error) {
@@ -36,11 +35,10 @@ func (s *recordingService) Do(_ context.Context, req *llm.Request) (*llm.Respons
 	}
 	return &llm.Response{}, nil
 }
-func (s *recordingService) Provider() string        { return s.provider }
-func (s *recordingService) TokenContextWindow() int { return s.tokenContextWindow }
-func (s *recordingService) MaxImageDimension() int  { return s.maxImageDimension }
-func (s *recordingService) MaxImageBytes() int      { return s.maxImageBytes }
-func (s *recordingService) SupportsImages() bool    { return s.supportsImages }
+func (s *recordingService) Provider() string       { return s.provider }
+func (s *recordingService) MaxImageDimension() int { return s.maxImageDimension }
+func (s *recordingService) MaxImageBytes() int     { return s.maxImageBytes }
+func (s *recordingService) SupportsImages() bool   { return s.supportsImages }
 
 type optionalRecordingService struct{ *recordingService }
 
@@ -84,11 +82,10 @@ func TestWorkhorseModel(t *testing.T) {
 
 func TestGetWorkhorseServiceUsesSelectedPrimary(t *testing.T) {
 	workhorse := &optionalRecordingService{recordingService: &recordingService{
-		provider:           "anthropic",
-		tokenContextWindow: 200000,
-		maxImageDimension:  2048,
-		maxImageBytes:      5 << 20,
-		supportsImages:     true,
+		provider:          "anthropic",
+		maxImageDimension: 2048,
+		maxImageBytes:     5 << 20,
+		supportsImages:    true,
 	}}
 	conversation := &recordingService{provider: "conversation"}
 	manager := newWorkhorseManager(
@@ -102,7 +99,6 @@ func TestGetWorkhorseServiceUsesSelectedPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if service.Provider() != workhorse.provider ||
-		service.TokenContextWindow() != workhorse.tokenContextWindow ||
 		service.MaxImageDimension() != workhorse.maxImageDimension ||
 		service.MaxImageBytes() != workhorse.maxImageBytes ||
 		service.SupportsImages() != workhorse.supportsImages {
@@ -125,11 +121,10 @@ func TestGetWorkhorseServiceUsesSelectedPrimary(t *testing.T) {
 
 func TestGetWorkhorseServiceFallsBackWhenPrimaryLookupFails(t *testing.T) {
 	conversation := &recordingService{
-		provider:           "anthropic",
-		tokenContextWindow: 100000,
-		maxImageDimension:  1024,
-		maxImageBytes:      2 << 20,
-		supportsImages:     true,
+		provider:          "anthropic",
+		maxImageDimension: 1024,
+		maxImageBytes:     2 << 20,
+		supportsImages:    true,
 	}
 	manager := newWorkhorseManager(
 		t,
@@ -141,7 +136,6 @@ func TestGetWorkhorseServiceFallsBackWhenPrimaryLookupFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	if service.Provider() != conversation.provider ||
-		service.TokenContextWindow() != conversation.tokenContextWindow ||
 		service.MaxImageDimension() != conversation.maxImageDimension ||
 		service.MaxImageBytes() != conversation.maxImageBytes ||
 		service.SupportsImages() != conversation.supportsImages {

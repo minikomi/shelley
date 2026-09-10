@@ -172,7 +172,10 @@ export const zhCN: TranslationKeys = {
   nameShownInSelector: "在模型选择器中显示的名称",
   apiKey: "API 密钥",
   enterApiKey: "输入 API 密钥",
-  maxContextTokens: "最大上下文令牌数",
+  maxOutputTokens: "最大输出令牌数",
+  maxOutputTokensHelp:
+    "留空则使用模型公布的输出上限。降低该值可限制回答长度或成本。推理令牌也计入此上限。",
+  maxOutputTokensPlaceholder: "模型公布的上限",
   imageSupport: "Image input support",
   imageSupportHelp: "自动检测。选择「支持」或「不支持」可手动设置。",
   imageSupportAuto: "自动",

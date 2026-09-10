@@ -41,33 +41,10 @@ const (
 	ClaudeFable5   = "claude-fable-5"
 )
 
-// modelMaxOutputTokens maps model names to their maximum output token limits.
-// See https://docs.anthropic.com/en/docs/about-claude/models/all-models
-var modelMaxOutputTokens = map[string]int{
-	ClaudeFable51:  128000,
-	ClaudeFable5:   128000,
-	Claude5Opus:    128000,
-	Claude48Opus:   128000,
-	Claude47Opus:   128000,
-	Claude46Opus:   128000,
-	Claude45Opus:   128000,
-	Claude5Sonnet:  64000,
-	Claude46Sonnet: 128000,
-	Claude45Sonnet: 64000,
-	Claude4Sonnet:  64000,
-	Claude45Haiku:  64000,
-}
-
-// defaultMaxOutputTokens is used for unrecognized models.
-const defaultMaxOutputTokens = 64000
-
-// maxOutputTokens returns the max output token limit for a model.
-func maxOutputTokens(model string) int {
-	if n, ok := modelMaxOutputTokens[model]; ok {
-		return n
-	}
-	return defaultMaxOutputTokens
-}
+// unknownAnthropicMaxOutputTokens preserves the established Anthropic
+// allowance when no catalog entry is available. Anthropic requires
+// max_tokens, so unknown models cannot omit it.
+const unknownAnthropicMaxOutputTokens = 64000
 
 // IsClaudeModel reports whether userName is a user-friendly Claude model.
 // It uses ClaudeModelName under the hood.
@@ -133,27 +110,28 @@ func (s *Service) DefaultReasoningLevel() string {
 // (e.g. for a custom endpoint that proxies a text-only model).
 func (s *Service) SupportsImages() bool { return s.SupportsImages_ }
 
-// TokenContextWindow returns the maximum token context window size for this service
-func (s *Service) TokenContextWindow() int {
-	return 200000
+// maxOutputTokens reads the embedded models.dev output limit. Unknown models
+// retain the historical named conservative default because Anthropic requires
+// max_tokens on every request.
+func (s *Service) maxOutputTokens(model string) int {
+	if limit, found := modelsdev.LookupAnthropicOutputLimit(s.URL, model); found {
+		return limit
+	}
+	return unknownAnthropicMaxOutputTokens
 }
 
-// maxOutputTokens returns the maximum allowed output tokens for the configured model.
-// Source: https://models.dev/api.json (Anthropic provider, limit.output)
-func (s *Service) maxOutputTokens() int {
-	model := s.Model
-	if model == "" {
-		model = DefaultModel
-	}
-	switch model {
-	case ClaudeFable51, ClaudeFable5, Claude5Opus, Claude48Opus, Claude47Opus, Claude46Opus, Claude46Sonnet:
-		return 128000
-	case Claude4Sonnet, Claude45Sonnet, Claude5Sonnet,
-		Claude45Haiku, Claude45Opus:
-		return 64000
-	default:
-		return 64000
-	}
+// requestMaxTokens returns the max_tokens to send for model.
+//
+// s.MaxTokens may only lower the limit, never raise it. For custom models it
+// comes from the models.max_tokens column, which used to mean context tokens
+// and defaulted to 200000; those rows were not migrated. Anthropic rejects
+// max_tokens above the model's output limit with a non-retryable 400, so the
+// value is capped at the catalog limit, or at unknownAnthropicMaxOutputTokens
+// when the model is not in the catalog (Bedrock IDs, proxy aliases,
+// Anthropic-compatible endpoints). Zero means use that limit.
+func (s *Service) requestMaxTokens(model string) int {
+	limit := s.maxOutputTokens(model)
+	return min(cmp.Or(s.MaxTokens, limit), limit)
 }
 
 // MaxImageDimension returns the maximum allowed image dimension for multi-image requests.
@@ -176,7 +154,7 @@ type Service struct {
 	URL             string            // defaults to DefaultURL if empty
 	APIKey          string            // must be non-empty
 	Model           string            // defaults to DefaultModel if empty
-	MaxTokens       int               // 0 means use model-specific limit from modelMaxOutputTokens
+	MaxTokens       int               // 0 uses the catalog limit, or the named unknown-model default
 	ThinkingLevel   llm.ThinkingLevel // service-level default; ThinkingLevelDefault (zero) means "none configured"
 	Backoff         []time.Duration   // retry backoff durations; defaults to {15s, 30s, 60s} if nil
 	SupportsImages_ bool              // whether this service accepts image inputs
@@ -489,6 +467,11 @@ var (
 		"tool_use":      llm.StopReasonToolUse,
 		"refusal":       llm.StopReasonRefusal,
 		"pause_turn":    llm.StopReasonPause, // server-side tool execution, model will continue
+		// Claude 4.5+ accepts input + max_tokens > context window and stops
+		// with this reason instead of a 400 when generation hits the window.
+		// Treat it as truncation; unmapped it would fall to the zero value
+		// StopReasonStopSequence and look like a normal completion.
+		"model_context_window_exceeded": llm.StopReasonMaxTokens,
 	}
 )
 
@@ -756,7 +739,7 @@ func fromLLMSystem(s llm.SystemContent) systemContent {
 
 func (s *Service) fromLLMRequest(r *llm.Request) *request {
 	model := cmp.Or(s.Model, DefaultModel)
-	maxTokens := cmp.Or(s.MaxTokens, maxOutputTokens(model))
+	maxTokens := s.requestMaxTokens(model)
 
 	// Drop orphaned server-side tool blocks (e.g. a web_search server_tool_use
 	// whose web_search_tool_result ended up in a different message). Anthropic
@@ -799,21 +782,14 @@ func (s *Service) fromLLMRequest(r *llm.Request) *request {
 	}
 
 	applyAnthropicThinking(req, model, llm.EffectiveThinkingLevel(s.ThinkingLevel, r.ThinkingLevel), maxTokens)
-
-	// Cap max_tokens at the model's maximum allowed output tokens
-	if limit := s.maxOutputTokens(); req.MaxTokens > limit {
-		req.MaxTokens = limit
-		// Also cap the thinking budget if it exceeds the new max_tokens
-		if req.Thinking != nil && req.Thinking.BudgetTokens >= req.MaxTokens {
-			req.Thinking.BudgetTokens = req.MaxTokens - 1024
-		}
-	}
 	return req
 }
 
-// applyAnthropicThinking sets the Thinking / OutputConfig fields and may bump
-// MaxTokens for budget-style models so max_tokens > budget_tokens (an API
-// requirement).
+const minAnthropicThinkingBudget = 1024
+
+// applyAnthropicThinking sets the Thinking / OutputConfig fields without
+// increasing the configured output allowance. Budget-style thinking shares
+// max_tokens with the final answer, so leave 1024 tokens for that answer.
 func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel, maxTokens int) {
 	adaptive := useAdaptiveThinking(model)
 	if adaptive {
@@ -841,8 +817,9 @@ func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel,
 	if budget == 0 {
 		return
 	}
-	if maxTokens <= budget {
-		req.MaxTokens = budget + 1024
+	budget = min(budget, maxTokens-minAnthropicThinkingBudget)
+	if budget < minAnthropicThinkingBudget {
+		return
 	}
 	req.Thinking = &thinking{Type: "enabled", BudgetTokens: budget}
 }
@@ -852,7 +829,7 @@ func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel,
 // when the API rejects thinking signatures — e.g. after model version rotation.
 func (s *Service) fromLLMRequestStrippingAllThinking(r *llm.Request) *request {
 	model := cmp.Or(s.Model, DefaultModel)
-	maxTokens := cmp.Or(s.MaxTokens, maxOutputTokens(model))
+	maxTokens := s.requestMaxTokens(model)
 
 	var messages []message
 	for _, m := range sanitizeServerToolBlocks(r.Messages) {
@@ -874,13 +851,6 @@ func (s *Service) fromLLMRequestStrippingAllThinking(r *llm.Request) *request {
 	}
 
 	applyAnthropicThinking(req, model, llm.EffectiveThinkingLevel(s.ThinkingLevel, r.ThinkingLevel), maxTokens)
-
-	if limit := s.maxOutputTokens(); req.MaxTokens > limit {
-		req.MaxTokens = limit
-		if req.Thinking != nil && req.Thinking.BudgetTokens >= req.MaxTokens {
-			req.Thinking.BudgetTokens = req.MaxTokens - 1024
-		}
-	}
 	return req
 }
 

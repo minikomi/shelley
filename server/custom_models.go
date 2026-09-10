@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -60,7 +61,7 @@ type UpdateModelRequest struct {
 	Endpoint         string  `json:"endpoint"`
 	APIKey           string  `json:"api_key"` // Empty string means keep existing
 	ModelName        string  `json:"model_name"`
-	MaxTokens        int64   `json:"max_tokens"`
+	MaxTokens        *int64  `json:"max_tokens"`
 	Tags             string  `json:"tags"` // Comma-separated tags
 	ReasoningEffort  *string `json:"reasoning_effort,omitempty"`
 	ImageSupport     string  `json:"image_support"`     // "auto"|"yes"|"no"; empty preserves existing
@@ -105,13 +106,22 @@ func validReasoningMap(raw string) error {
 	return nil
 }
 
-// TestModelRequest is the request body for testing a model
+// customMaxTokens validates a requested output limit: negatives are rejected
+// and zero is stored as-is, meaning the provider's own default applies.
+func customMaxTokens(v int64) (int64, error) {
+	if v < 0 {
+		return 0, errors.New("max_tokens must not be negative")
+	}
+	return v, nil
+}
+
 type TestModelRequest struct {
 	ModelID          string  `json:"model_id,omitempty"` // If provided, use stored API key
 	ProviderType     string  `json:"provider_type"`
 	Endpoint         string  `json:"endpoint"`
 	APIKey           string  `json:"api_key"`
 	ModelName        string  `json:"model_name"`
+	MaxTokens        *int64  `json:"max_tokens"`
 	ReasoningSupport string  `json:"reasoning_support"`
 	ReasoningMap     string  `json:"reasoning_map"`
 	ReasoningEffort  *string `json:"reasoning_effort,omitempty"`
@@ -188,10 +198,9 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to generate model ID: %v", err), http.StatusInternalServerError)
 		return
 	}
-
-	// Default max tokens
-	if req.MaxTokens <= 0 {
-		req.MaxTokens = 200000
+	if req.MaxTokens, err = customMaxTokens(req.MaxTokens); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	imageSupport, err := validImageSupport(req.ImageSupport)
@@ -306,11 +315,6 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, model
 		apiKey = existing.ApiKey
 	}
 
-	// Default max tokens
-	if req.MaxTokens <= 0 {
-		req.MaxTokens = 200000
-	}
-
 	// Empty support settings preserve the existing values; otherwise validate.
 	imageSupport := existing.ImageSupport
 	if req.ImageSupport != "" {
@@ -338,6 +342,13 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, model
 	if req.ReasoningEffort != nil {
 		reasoningEffort = *req.ReasoningEffort
 	}
+	maxTokens := existing.MaxTokens
+	if req.MaxTokens != nil {
+		if maxTokens, err = customMaxTokens(*req.MaxTokens); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	model, err := s.db.UpdateModel(r.Context(), generated.UpdateModelParams{
 		DisplayName:      req.DisplayName,
@@ -345,7 +356,7 @@ func (s *Server) handleUpdateModel(w http.ResponseWriter, r *http.Request, model
 		Endpoint:         req.Endpoint,
 		ApiKey:           apiKey,
 		ModelName:        req.ModelName,
-		MaxTokens:        req.MaxTokens,
+		MaxTokens:        maxTokens,
 		Tags:             req.Tags,
 		ReasoningEffort:  reasoningEffort,
 		ImageSupport:     imageSupport,
@@ -472,10 +483,22 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 		if req.ReasoningEffort == nil {
 			req.ReasoningEffort = &model.ReasoningEffort
 		}
+		if req.MaxTokens == nil {
+			req.MaxTokens = &model.MaxTokens
+		}
 	}
 
 	if req.ProviderType == "" || req.Endpoint == "" || req.APIKey == "" || req.ModelName == "" {
 		http.Error(w, "provider_type, endpoint, api_key, and model_name are required", http.StatusBadRequest)
+		return
+	}
+	requestedMaxTokens := int64(0)
+	if req.MaxTokens != nil {
+		requestedMaxTokens = *req.MaxTokens
+	}
+	maxTokens, err := customMaxTokens(requestedMaxTokens)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -492,12 +515,14 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 			APIKey:        req.APIKey,
 			URL:           req.Endpoint,
 			Model:         req.ModelName,
+			MaxTokens:     int(maxTokens),
 			ThinkingLevel: llm.ThinkingLevelMedium,
 		}
 	case "openai":
 		service = &oai.Service{
 			APIKey:          req.APIKey,
 			ModelURL:        req.Endpoint,
+			MaxTokens:       int(maxTokens),
 			ReasoningEffort: reasoningEffort,
 			Model: oai.Model{
 				UserName:         "",
@@ -514,11 +539,13 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 			APIKey:          req.APIKey,
 			URL:             req.Endpoint,
 			Model:           req.ModelName,
+			MaxTokens:       int(maxTokens),
 			ReasoningEffort: reasoningEffort,
 		}
 	case "openai-responses":
 		service = &oai.ResponsesService{
-			APIKey: req.APIKey,
+			APIKey:    req.APIKey,
+			MaxTokens: int(maxTokens),
 			Model: oai.Model{
 				UserName:         "",
 				ModelName:        req.ModelName,

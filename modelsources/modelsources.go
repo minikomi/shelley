@@ -196,14 +196,15 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 				}
 				seen[id] = true
 				out = append(out, models.Built{
-					ID:          id,
-					DisplayName: id,
-					Provider:    models.Provider(m.Provider),
-					Source:      integrationSourceLabel(src.label, models.Provider(m.Provider)),
-					ReleaseDate: modelReleaseDate(src.integration.URL, m.apiModelName()),
-					Service:     svc,
-					APIType:     apiType,
-					BaseURL:     src.integration.URL,
+					ID:           id,
+					DisplayName:  id,
+					Provider:     models.Provider(m.Provider),
+					Source:       integrationSourceLabel(src.label, models.Provider(m.Provider)),
+					ReleaseDate:  modelReleaseDate(src.integration.URL, m.apiModelName()),
+					Service:      svc,
+					APIType:      apiType,
+					BaseURL:      src.integration.URL,
+					APIModelName: m.apiModelName(),
 				})
 				logger.Debug("Materialized integration model", "id", id, "source", src.label)
 			}
@@ -226,15 +227,16 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 				baseURL = m.DefaultBaseURL
 			}
 			out = append(out, models.Built{
-				ID:          id,
-				DisplayName: id,
-				Provider:    m.Provider,
-				Tags:        m.Tags,
-				Source:      label,
-				ReleaseDate: modelReleaseDate(baseURL, m.APIModelName),
-				Service:     svc,
-				APIType:     m.APIType,
-				BaseURL:     baseURL,
+				ID:           id,
+				DisplayName:  id,
+				Provider:     m.Provider,
+				Tags:         m.Tags,
+				Source:       label,
+				ReleaseDate:  modelReleaseDate(baseURL, m.APIModelName),
+				Service:      svc,
+				APIType:      m.APIType,
+				BaseURL:      baseURL,
+				APIModelName: m.APIModelName,
 			})
 			logger.Debug("Materialized model", "id", id, "source", label)
 		}

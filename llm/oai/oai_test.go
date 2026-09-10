@@ -15,6 +15,7 @@ import (
 
 	"github.com/sashabaranov/go-openai"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/models/modelsdev"
 )
 
 func modelForTest(name string) Model {
@@ -124,83 +125,6 @@ func TestToStopReason(t *testing.T) {
 			result := toStopReason(tt.reason)
 			if result != tt.expected {
 				t.Errorf("toStopReason(%q) = %v, expected %v", tt.reason, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestTokenContextWindow(t *testing.T) {
-	tests := []struct {
-		name     string
-		model    Model
-		expected int
-	}{
-		{
-			name:     "GPT-4.1 model",
-			model:    GPT41,
-			expected: 200000,
-		},
-		{
-			name:     "GPT-4o model",
-			model:    GPT4o,
-			expected: 128000,
-		},
-		{
-			name:     "GPT-4o Mini model",
-			model:    GPT4oMini,
-			expected: 128000,
-		},
-		{
-			name:     "O3 model",
-			model:    O3,
-			expected: 200000,
-		},
-		{
-			name:     "O4-mini model",
-			model:    O4Mini,
-			expected: 128000, // o4-mini-2025-04-16 is not in the special cases, so it defaults to 128k
-		},
-		{
-			name:     "Gemini 2.5 Flash model",
-			model:    Gemini25Flash,
-			expected: 128000,
-		},
-		{
-			name:     "Gemini 2.5 Pro model",
-			model:    Gemini25Pro,
-			expected: 128000,
-		},
-		{
-			name:     "Together Deepseek V3 model",
-			model:    TogetherDeepseekV3,
-			expected: 128000,
-		},
-		{
-			name:     "Together Qwen3 model",
-			model:    TogetherQwen3,
-			expected: 128000, // Qwen/Qwen3-235B-A22B-fp8-tput is not in the special cases, so it defaults to 128k
-		},
-		{
-			name: "Default model for unknown",
-			model: Model{
-				UserName:         "",
-				ModelName:        "unknown-model",
-				TextVerbosity:    "",
-				URL:              "",
-				APIKeyEnv:        "",
-				IsReasoningModel: false,
-				SupportsImages:   false,
-			},
-			expected: 128000,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			service := &Service{Model: tt.model}
-			result := service.TokenContextWindow()
-			if result != tt.expected {
-				t.Errorf("TokenContextWindow() for model %s = %d, expected %d", tt.model.ModelName, result, tt.expected)
 			}
 		})
 	}
@@ -1343,139 +1267,6 @@ func TestFromLLMMessageEdgeCases(t *testing.T) {
 	}
 }
 
-func TestTokenContextWindowAdditionalCases(t *testing.T) {
-	tests := []struct {
-		name     string
-		model    Model
-		expected int
-	}{
-		{
-			name:     "GPT-4.1 Mini model",
-			model:    GPT41Mini,
-			expected: 200000,
-		},
-		{
-			name:     "GPT-4.1 Nano model",
-			model:    GPT41Nano,
-			expected: 200000,
-		},
-		{
-			name:     "GLM model",
-			model:    GLM,
-			expected: 128000,
-		},
-		{
-			name:     "Qwen model",
-			model:    Qwen,
-			expected: 256000,
-		},
-		{
-			name:     "DeepSeek V4 Pro 0813 Fireworks model",
-			model:    DeepseekV4ProFireworks,
-			expected: 1048576,
-		},
-		{
-			name:     "GPT-OSS 120B model",
-			model:    GPTOSS120B,
-			expected: 128000,
-		},
-		{
-			name:     "GPT-5 model",
-			model:    GPT5,
-			expected: 256000,
-		},
-		{
-			name:     "GPT-6 Astra model",
-			model:    GPT6Astra,
-			expected: 272000,
-		},
-		{
-			name:     "GPT-5.6 Sol model",
-			model:    GPT56Sol,
-			expected: 272000,
-		},
-		{
-			name:     "GPT-5.6 Terra model",
-			model:    GPT56Terra,
-			expected: 272000,
-		},
-		{
-			name:     "GPT-5.6 Luna model",
-			model:    GPT56Luna,
-			expected: 272000,
-		},
-		{
-			name:     "GPT-5.5 model",
-			model:    GPT55,
-			expected: 272000,
-		},
-		{
-			name:     "GPT-5.5 Pro model",
-			model:    GPT55Pro,
-			expected: 272000,
-		},
-		{
-			name: "GPT-5.5 dated model",
-			model: Model{
-				UserName:         "",
-				ModelName:        "gpt-5.5-2026-04-23",
-				TextVerbosity:    "",
-				URL:              "",
-				APIKeyEnv:        "",
-				IsReasoningModel: false,
-				SupportsImages:   false,
-			},
-			expected: 272000,
-		},
-		{
-			name: "GPT-5.5 Pro dated model",
-			model: Model{
-				UserName:         "",
-				ModelName:        "gpt-5.5-pro-2026-04-23",
-				TextVerbosity:    "",
-				URL:              "",
-				APIKeyEnv:        "",
-				IsReasoningModel: false,
-				SupportsImages:   false,
-			},
-			expected: 272000,
-		},
-		{
-			name:     "GPT-5 Mini model",
-			model:    GPT5Mini,
-			expected: 256000,
-		},
-		{
-			name:     "GPT-5 Nano model",
-			model:    GPT5Nano,
-			expected: 256000,
-		},
-		{
-			name: "Unknown model defaults to 128k",
-			model: Model{
-				UserName:         "",
-				ModelName:        "unknown-model-name",
-				TextVerbosity:    "",
-				URL:              "",
-				APIKeyEnv:        "",
-				IsReasoningModel: false,
-				SupportsImages:   false,
-			},
-			expected: 128000,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			service := &Service{Model: tt.model}
-			result := service.TokenContextWindow()
-			if result != tt.expected {
-				t.Errorf("TokenContextWindow() for model %s = %d, expected %d", tt.model.ModelName, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestServiceDo(t *testing.T) {
 	// Create a mock OpenAI server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1678,7 +1469,7 @@ func TestServiceDoDoesNotRetryBrokenFireworksStream(t *testing.T) {
 	}
 }
 
-func TestServiceDoSendsMaxCompletionTokens(t *testing.T) {
+func TestServiceDoSendsDefaultMaxCompletionTokens(t *testing.T) {
 	var gotReq map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
@@ -1710,11 +1501,93 @@ func TestServiceDoSendsMaxCompletionTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
-	if gotReq["max_completion_tokens"] != float64(DefaultMaxTokens) {
-		t.Fatalf("max_completion_tokens = %#v, want %d; body = %#v", gotReq["max_completion_tokens"], DefaultMaxTokens, gotReq)
+	if got, ok := gotReq["max_completion_tokens"].(float64); !ok || got != DefaultMaxTokens {
+		t.Fatalf("max_completion_tokens = %#v, want %d", gotReq["max_completion_tokens"], DefaultMaxTokens)
 	}
 	if stream, _ := gotReq["stream"].(bool); stream {
 		t.Fatalf("non-Fireworks request unexpectedly enabled streaming: %#v", gotReq)
+	}
+}
+
+func TestServiceDoUsesLegacyMaxTokensForCompatibleEndpoints(t *testing.T) {
+	var gotReq map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode req: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(openai.ChatCompletionResponse{
+			ID: "chatcmpl-test",
+			Choices: []openai.ChatCompletionChoice{{
+				Message:      openai.ChatCompletionMessage{Role: "assistant", Content: "ok"},
+				FinishReason: "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{
+		APIKey:    "test-api-key",
+		Model:     modelForTest("test-model"),
+		ModelURL:  "https://api.deepseek.com/v1",
+		MaxTokens: 77777,
+		HTTPC:     &http.Client{Transport: rewriteHostTransport{addr: u.Host}},
+	}
+	if _, err := svc.Do(context.Background(), &llm.Request{Messages: []llm.Message{llm.UserStringMessage("hi")}}); err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if got, ok := gotReq["max_tokens"].(float64); !ok || got != 77777 {
+		t.Fatalf("max_tokens = %#v, want 77777", gotReq["max_tokens"])
+	}
+	if _, found := gotReq["max_completion_tokens"]; found {
+		t.Fatalf("max_completion_tokens unexpectedly serialized: %#v", gotReq)
+	}
+}
+
+func TestMaxOutputTokensCeiling(t *testing.T) {
+	knownLimit, found := modelsdev.LookupOutputLimit("", GPT56Sol.ModelName)
+	if !found {
+		t.Fatalf("no catalog output limit for %s", GPT56Sol.ModelName)
+	}
+	for _, tc := range []struct {
+		name       string
+		model      string
+		configured int
+		want       int
+	}{
+		{"known zero uses catalog", GPT56Sol.ModelName, 0, knownLimit},
+		{"known stale value is capped", GPT56Sol.ModelName, 200000, knownLimit},
+		{"known configured value may lower", GPT56Sol.ModelName, 8192, 8192},
+		{"unknown zero uses default", "custom-openai-model", 0, DefaultMaxTokens},
+		{"unknown configured value is preserved", "custom-openai-model", 77777, 77777},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := maxOutputTokens("https://gateway.example/v1", tc.model, tc.configured); got != tc.want {
+				t.Fatalf("maxOutputTokens() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUsesLegacyMaxTokensFieldMatchesHostnameOnly(t *testing.T) {
+	for _, tc := range []struct {
+		url  string
+		want bool
+	}{
+		{url: "https://api.deepseek.com/v1", want: true},
+		{url: "https://subdomain.chutes.ai/v1", want: true},
+		{url: "https://api.moonshot.cn/v1", want: true},
+		{url: "https://example.com/deepseek.com/v1", want: false},
+		{url: "https://example.com/v1?upstream=api.z.ai", want: false},
+		{url: "https://notdeepseek.com/v1", want: false},
+	} {
+		if got := usesLegacyMaxTokensField(tc.url); got != tc.want {
+			t.Errorf("usesLegacyMaxTokensField(%q) = %v, want %v", tc.url, got, tc.want)
+		}
 	}
 }
 

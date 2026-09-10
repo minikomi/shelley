@@ -51,6 +51,31 @@ func TestHandleModelsIncludesReasoningLevels(t *testing.T) {
 	}
 }
 
+func TestHandleModelsReportsMaxContextTokens(t *testing.T) {
+	mgr, err := models.NewManager(&models.Config{Models: []models.Built{
+		{ID: "sol", Provider: models.ProviderOpenAI, APIModelName: "gpt-5.6-sol", BaseURL: "https://api.openai.com", Service: predictable.NewService()},
+		{ID: "opus", Provider: models.ProviderAnthropic, APIModelName: "claude-opus-5", BaseURL: "https://llm.int.exe.xyz", Service: predictable.NewService()},
+		{ID: "mystery", Provider: models.ProviderBuiltIn, APIModelName: "not-in-models-dev", Service: predictable.NewService()},
+	}})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	s := &Server{llmManager: mgr, logger: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.handleModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+
+	var got []ModelInfo
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{"sol": 272000, "opus": 1000000, "mystery": 0}
+	for _, m := range got {
+		if m.MaxContextTokens != want[m.ID] {
+			t.Errorf("%s max_context_tokens = %d, want %d", m.ID, m.MaxContextTokens, want[m.ID])
+		}
+	}
+}
+
 func TestHandleModelRefreshReturnsRefreshedModels(t *testing.T) {
 	mgr, err := models.NewManager(&models.Config{
 		Models: []models.Built{

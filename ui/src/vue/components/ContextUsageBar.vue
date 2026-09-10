@@ -1,17 +1,7 @@
-<!-- The token-count segment of the status readout ("15k"), where the number is
-     the live context window size. Clicking it opens the context usage popup
-     (token counts, cost graph, compaction actions), backed by PrimeVue Popover
-     so outside-click dismissal and positioning come for free. Keeps the
-     chat-context-popup / chat-distill-* class contract (minus the model-name
-     header, which the model segment beside this one now owns). Auto-opens once
-     per browser on the long-conversation threshold.
-
-     Type (family/size/color) is inherited from the enclosing .status-readout so
-     this segment matches the cwd and model segments beside it — with two
-     departures, both carrying meaning the segment used to get from a warning
-     triangle beside it and a native title attribute: the number takes on a
-     warm color as the conversation grows past 100k / 200k / 300k tokens, and
-     a dotted underline plus a hover tooltip say that it is clickable. -->
+<!-- The token-count segment of the status readout ("15k"). Opens token/cost
+     graphs and manual compaction actions. The count warms up at 100k / 200k /
+     300k tokens (or 70/80/90% of a known context window) and the popup
+     auto-opens once per browser at the first step. -->
 <template>
   <div ref="barRef" class="context-usage-root">
     <Popover
@@ -27,9 +17,7 @@
       @show="onPopupShow"
       @hide="popupOpen = false"
     >
-      {{ formatTokenCount(contextWindowSize) }} / {{ formatTokenCount(maxContextTokens) }} ({{
-        percentage.toFixed(1)
-      }}%) tokens used
+      {{ formatTokenCount(contextWindowSize) }} tokens
       <div v-if="popupOpen" class="usage-graph-panel">
         <div
           :class="{ 'usage-graph-panel-item-inactive': usageGraph !== 'cost' }"
@@ -54,7 +42,7 @@
           :aria-hidden="usageGraph !== 'context'"
           :inert="usageGraph !== 'context'"
         >
-          <ContextCompositionGraph :messages="messages || []" :max-context-tokens="maxContextTokens">
+          <ContextCompositionGraph :messages="messages || []">
             <template #mode-controls>
               <UsageGraphSwitch v-model="usageGraph" />
             </template>
@@ -64,7 +52,7 @@
       <div v-if="showLongConversationWarning" class="chat-popup-warning">
         This conversation is getting long.
         <br />
-        For best results, start a new conversation.
+        Compact it or start a new conversation.
       </div>
       <div
         v-if="conversationId && (onDistillNewGeneration || onStartNewGeneration)"
@@ -120,6 +108,8 @@ import UsageGraphSwitch from "./UsageGraphSwitch.vue";
 
 const props = defineProps<{
   contextWindowSize: number;
+  /** Model context window (models.dev, pricing-tier clamped); 0 when unknown.
+   *  Never displayed — only floors the warning color as the window fills. */
   maxContextTokens: number;
   conversationId?: string | null;
   usageEntries?: UsageEntry[];
@@ -137,65 +127,31 @@ const props = defineProps<{
 
 const distilling = ref(false);
 const usageGraph = ref<"cost" | "context">("cost");
-// Mirrors the Popover's visibility for aria-expanded. PrimeVue owns the state;
-// we only observe its show/hide events (the popover also closes on outside
-// click and Escape, which never route through our click handler).
 const popupOpen = ref(false);
-// The popover panel is teleported out of this subtree, so aria-controls is the
-// only thing tying it back to the button. Per-instance: ChatStatusContent is
-// rendered twice (standalone status bar + inline in the mobile controls row),
-// so a fixed id would be duplicated. Only advertised while open — the panel
-// element doesn't exist otherwise, and aria-controls must resolve.
 const popupId = useId();
-const barRef = ref<HTMLDivElement | null>(null);
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null);
-let hasAutoOpened = false;
+const barRef = ref<HTMLElement | null>(null);
 
-const percentage = computed(() =>
-  props.maxContextTokens > 0 ? (props.contextWindowSize / props.maxContextTokens) * 100 : 0,
-);
-// The token count is the whole warning now: it warms up (amber, orange, red)
-// as the conversation grows, rather than a triangle appearing beside it.
+// The token count is the whole warning: it warms up (amber, orange, red) as
+// the conversation grows, rather than a triangle appearing beside it.
 const usageLevel = computed(() =>
   contextUsageLevel(props.contextWindowSize, props.maxContextTokens),
 );
-
-// The popup's advice and its once-per-browser auto-open fire exactly when the
-// count first colors. Same event, said two ways: a number the user might not
-// look at, and — once — the sentence explaining what to do about it.
-const showLongConversationWarning = computed(() => usageLevel.value !== "");
-
-// A class rather than an inline style so the color lives with the rest of the
-// label's styling in styles.css.
 const usageLevelClass = computed(() =>
   usageLevel.value ? `context-usage-label-tokens-${usageLevel.value}` : "",
 );
+// The popup's advice and its once-per-browser auto-open fire exactly when the
+// count first colors.
+const showLongConversationWarning = computed(() => usageLevel.value !== "");
+let hasAutoOpened = false;
 
-// Spelled out for the button's accessible name: the visible label is
-// deliberately terse ("15k"), which alone says nothing about what the number is
-// or what it is out of. The level is named in words too — it is otherwise
-// carried by hue alone, which is no signal at all for some readers.
+// Spelled out for the accessible name; the level is named in words too since
+// hue alone is no signal for some readers.
 const usageTitle = computed(() => {
-  const used = formatTokenCount(props.contextWindowSize);
   const level = contextUsageLevelLabel(usageLevel.value);
   const suffix = level ? ` — conversation ${level}` : "";
-  // A model with no declared context window has no denominator to report;
-  // "0 tokens (0.0%)" would read as a limit of zero.
-  if (props.maxContextTokens <= 0) return `Context usage: ${used} tokens${suffix}`;
-  return (
-    `Context usage: ${used} of ${formatTokenCount(props.maxContextTokens)} tokens ` +
-    `(${percentage.value.toFixed(1)}%)${suffix}`
-  );
+  return `Context usage: ${formatTokenCount(props.contextWindowSize)} tokens${suffix}`;
 });
-
-// The hover hint says what a click does, because nothing else visible here
-// can: the segment has to read as part of the "~/dir · 115k · Model" line, so
-// it gets a dotted underline and no other affordance. A PrimeVue tooltip
-// rather than a native title — title waits about a second, which is long
-// enough that most people never see it. Pointer-only: PrimeVue's directive
-// binds either focus/blur or mouse events, not both, and the mouse is the case
-// that needs the help; a keyboard user gets aria-haspopup="dialog" on the
-// button, which announces the same thing.
 const usageTooltip = computed(() => `${usageTitle.value}. Click for details.`);
 
 // Warn the parent as early as we can — hover/focus, which precede the click —

@@ -103,7 +103,7 @@ export const emptyForm: FormData = {
   endpoint_custom: false,
   api_key: "",
   model_name: "",
-  max_tokens: 200000,
+  max_tokens: 0,
   tags: "",
   reasoning_effort: "",
   reasoning_support: "auto",
