@@ -127,6 +127,48 @@ test.describe("Message action bar", () => {
     await expect(copy).toBeVisible();
     await expect(copy).toHaveAttribute("data-tooltip", "Copy");
   });
+
+  test("follows long messages and flips clipped tooltips below", async ({ page, request }) => {
+    const slug = await createConversationViaAPI(request, "echo sticky action bar");
+    await page.setViewportSize({ width: 390, height: 667 });
+    await page.goto(`/c/${slug}`);
+
+    const message = page.locator('[data-testid="message"].message-agent').last();
+    await expect(message).toBeVisible({ timeout: 30000 });
+    const entity = message.locator('[data-content-entity="content"]');
+    await expect(entity).toBeVisible();
+
+    await entity.evaluate((element) => {
+      element.style.minHeight = "1000px";
+      const scrollContainer = element.closest<HTMLElement>(".messages-container");
+      if (!scrollContainer) throw new Error("message scroll container not found");
+      const containerTop = scrollContainer.getBoundingClientRect().top;
+      scrollContainer.scrollTop += element.getBoundingClientRect().top - containerTop + 96;
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const actionBar = entity.locator(".message-action-bar-wrapper");
+    await expect(actionBar).toBeVisible();
+    const stickyInset = await actionBar.evaluate((element) => {
+      const scrollContainer = element.closest<HTMLElement>(".messages-container");
+      if (!scrollContainer) throw new Error("message scroll container not found");
+      return element.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top;
+    });
+    expect(stickyInset).toBeCloseTo(8, 0);
+
+    const fork = actionBar.getByRole("button", { name: "Fork conversation from here" });
+    await fork.hover();
+    await expect(fork).toHaveAttribute("data-tooltip-placement", "bottom");
+
+    await entity.evaluate((element) => {
+      const scrollContainer = element.closest<HTMLElement>(".messages-container");
+      if (!scrollContainer) throw new Error("message scroll container not found");
+      const containerTop = scrollContainer.getBoundingClientRect().top;
+      scrollContainer.scrollTop += element.getBoundingClientRect().top - containerTop - 120;
+    });
+    await fork.dispatchEvent("mouseover");
+    await expect(fork).toHaveAttribute("data-tooltip-placement", "top");
+  });
 });
 
 test.describe("Context usage popup", () => {

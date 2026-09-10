@@ -3,7 +3,12 @@
      .message-action-bar-wrapper, the data-action-bar marker, and the
      .message-action-button(-success) classes and titles. -->
 <template>
-  <div class="message-action-bar message-action-bar-wrapper" data-action-bar>
+  <div
+    class="message-action-bar message-action-bar-wrapper"
+    data-action-bar
+    @mouseover="updateTooltipPlacement"
+    @focusin="updateTooltipPlacement"
+  >
     <button
       v-if="onCopy"
       aria-label="Copy"
@@ -98,6 +103,19 @@ const props = defineProps<{
 }>();
 
 const copyFeedback = ref(false);
+
+function updateTooltipPlacement(event: Event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+
+  const button = target.closest<HTMLButtonElement>(".message-action-button");
+  if (!button) return;
+
+  const scrollContainer = button.closest<HTMLElement>(".messages-container");
+  const clippingTop = Math.max(0, scrollContainer?.getBoundingClientRect().top ?? 0);
+  button.dataset.tooltipPlacement =
+    button.getBoundingClientRect().top - 32 < clippingTop ? "bottom" : "top";
+}
 
 function handleCopy(e: MouseEvent) {
   e.stopPropagation();
