@@ -68,6 +68,10 @@ type repositorySelectRequest struct {
 	Path string `json:"path"`
 }
 
+type sessionRequest struct {
+	Cwd string `json:"cwd"`
+}
+
 func main() {
 	cfg := config{
 		addr:             envOr("LISTEN_ADDR", ":8765"),
@@ -167,27 +171,42 @@ func (a *app) handleStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleSession(w http.ResponseWriter, r *http.Request) {
+	var input sessionRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	cwd := a.cfg.shelleyCWD
+	if strings.TrimSpace(input.Cwd) != "" {
+		var err error
+		cwd, err = a.validateWorkspacePath(input.Cwd)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	instructions := fmt.Sprintf(`You coordinate a live conversation with Shelley, an asynchronous coding agent.
+The active working directory is %q. Never ask which project or directory to use unless the user explicitly wants to change it.
+Be concise, practical, and decisive. Do not repeatedly paraphrase the request.
+For any substantive codebase-specific request, start plan_with_shelley promptly so an asynchronous Shelley agent can inspect the repository and prior work while the conversation continues.
+Use search_repository and read_repository_file only for quick follow-up facts while the Shelley agent runs.
+Never merely promise to inspect, explore, or check the code. Perform a tool call.
+Use list_shelley_conversations and read_shelley_conversation when earlier work or a current task may contain relevant decisions.
+Ask a clarifying question only for a genuine product decision that cannot be inferred from the request, repository, or prior conversations.
+When reasonable defaults exist, state the assumptions briefly and proceed.
+When the user says "go for it", "build it", "implement it", "do it", or otherwise explicitly approves implementation, call build_with_shelley immediately. Do not ask another setup question.
+Planning and builds run asynchronously. Tell the user when one starts, continue the conversation, and incorporate its findings when the task update arrives.
+Use continue_shelley_job for follow-up instructions on the active task.
+Never claim a Shelley task is complete until a task update says it completed.`, cwd)
 	body := map[string]any{
 		"session": map[string]any{
-			"type":  "realtime",
-			"model": "gpt-realtime",
-			"instructions": `You are the conversational front door to Shelley, a coding agent working in the active repository.
-Be concise, practical, and decisive. Inspect before asking.
-For codebase-specific questions, proactively use search_repository and read_repository_file before responding.
-Do not ask the user where logic lives, how existing code is structured, or what conventions the repository uses. Discover those facts with tools.
-Use set_working_directory when the user names another project or directory. All later inspection and Shelley tasks use that directory.
-Use list_shelley_conversations and read_shelley_conversation when prior work, current status, or an earlier decision may answer the question.
-Ask a clarifying question only when a genuine product decision cannot be inferred from the request or repository.
-When reasonable defaults exist, state the assumptions briefly and proceed.
-Use plan_with_shelley when deeper repository investigation or a written implementation plan would help.
-Use build_with_shelley only after the user clearly asks to implement, build, fix, or change something.
-Builds run asynchronously. After starting one, tell the user it is running and continue the conversation.
-Use continue_shelley_job for follow-up instructions on the active task.
-Never claim a Shelley task is complete until a task update says it completed.`,
+			"type":         "realtime",
+			"model":        "gpt-realtime",
+			"instructions": instructions,
 			"audio": map[string]any{
 				"input": map[string]any{
 					"transcription":  map[string]any{"model": "gpt-4o-mini-transcribe"},
-					"turn_detection": map[string]any{"type": "semantic_vad"},
+					"turn_detection": map[string]any{"type": "semantic_vad", "eagerness": "low"},
 				},
 				"output": map[string]any{"voice": "marin"},
 			},
@@ -213,12 +232,12 @@ Never claim a Shelley task is complete until a task update says it completed.`,
 				realtimeTool("read_shelley_conversation", "Read the recent user and agent messages from a Shelley conversation.", map[string]any{
 					"conversation_id": stringProperty("Conversation ID returned by list_shelley_conversations"),
 				}, []string{"conversation_id"}),
-				realtimeTool("plan_with_shelley", "Start a deeper repository-aware planning task without editing files. Prefer first using the fast repository search and read tools for ordinary questions.", map[string]any{
+				realtimeTool("plan_with_shelley", "Start an asynchronous Shelley research and planning agent for a substantive codebase request. Call this early so it can inspect while the live conversation continues.", map[string]any{
 					"goal":                stringProperty("What the user wants to understand or plan"),
 					"details":             stringProperty("Relevant context and constraints"),
 					"acceptance_criteria": stringProperty("How the user will judge the plan"),
 				}, []string{"goal"}),
-				realtimeTool("build_with_shelley", "Start an asynchronous Shelley implementation task after the user explicitly asks to build or change something.", map[string]any{
+				realtimeTool("build_with_shelley", "Start or promote the active asynchronous Shelley task into implementation after explicit user approval.", map[string]any{
 					"goal":                stringProperty("The concrete change to implement"),
 					"details":             stringProperty("Relevant context and constraints"),
 					"acceptance_criteria": stringProperty("Objective completion checks"),

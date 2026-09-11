@@ -21,15 +21,18 @@ func TestSessionMintsRealtimeClientSecret(t *testing.T) {
 	}))
 	defer upstream.Close()
 
+	workspace := t.TempDir()
 	a, err := newApp(config{
 		openAIBaseURL: upstream.URL,
 		openAIAPIKey:  "secret",
 		shelleyURL:    upstream.URL,
+		shelleyCWD:    workspace,
+		workspaceRoot: workspace,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/session", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/session", strings.NewReader(`{"cwd":"`+workspace+`"}`))
 	rec := httptest.NewRecorder()
 	a.routes().ServeHTTP(rec, req)
 
@@ -46,8 +49,15 @@ func TestSessionMintsRealtimeClientSecret(t *testing.T) {
 	if len(session["tools"].([]any)) != 8 {
 		t.Fatalf("tools = %v", session["tools"])
 	}
-	if !strings.Contains(session["instructions"].(string), "Inspect before asking") {
+	if !strings.Contains(session["instructions"].(string), "asynchronous Shelley agent") ||
+		!strings.Contains(session["instructions"].(string), workspace) {
 		t.Fatalf("instructions = %q", session["instructions"])
+	}
+	audio := session["audio"].(map[string]any)
+	input := audio["input"].(map[string]any)
+	turnDetection := input["turn_detection"].(map[string]any)
+	if turnDetection["eagerness"] != "low" {
+		t.Fatalf("turn detection = %#v", turnDetection)
 	}
 }
 

@@ -8,6 +8,12 @@ const state = {
   assistantMessages: new Map(),
   tasks: new Map(),
   activeConversationID: null,
+  activeTaskWorking: false,
+  buildStarting: false,
+  researchStarting: false,
+  researchTimer: null,
+  responseActive: false,
+  userHistory: [],
   cwd: "",
 };
 
@@ -49,7 +55,11 @@ async function connect() {
   connectButton.disabled = true;
   setStatus("Requesting microphone…");
   try {
-    const tokenResponse = await fetch("/api/session", { method: "POST" });
+    const tokenResponse = await fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: state.cwd }),
+    });
     if (!tokenResponse.ok) throw new Error(await tokenResponse.text());
     const tokenPayload = await tokenResponse.json();
     const ephemeralKey = tokenPayload.value || tokenPayload.client_secret?.value;
@@ -120,7 +130,10 @@ function sendEvent(event) {
 }
 
 function sendText(text, visible = true) {
-  if (visible) addMessage("user", text);
+  if (visible) {
+    addMessage("user", text);
+    rememberUserInput(text);
+  }
   sendEvent({
     type: "conversation.item.create",
     item: {
@@ -129,6 +142,7 @@ function sendText(text, visible = true) {
       content: [{ type: "input_text", text }],
     },
   });
+  if (visible && handleUserIntent(text)) return;
   sendEvent({ type: "response.create" });
 }
 
@@ -136,7 +150,11 @@ async function handleRealtimeEvent(raw) {
   const event = JSON.parse(raw.data);
   if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
     addMessage("user", event.transcript);
+    rememberUserInput(event.transcript);
+    handleUserIntent(event.transcript);
   }
+  if (event.type === "response.created") state.responseActive = true;
+  if (event.type === "response.done" || event.type === "response.cancelled") state.responseActive = false;
   if (event.type === "response.output_audio_transcript.delta") {
     assistantDelta(event.response_id || event.item_id, event.delta || "");
   }
@@ -193,13 +211,30 @@ async function executeTool(item) {
 
     let payload;
     if (item.name === "plan_with_shelley" || item.name === "build_with_shelley") {
+      if (item.name === "plan_with_shelley" && (state.researchStarting || state.activeTaskWorking)) {
+        return toolResult(item.call_id, {
+          status: "already_started",
+          conversation_id: state.activeConversationID,
+          message: "A Shelley research task is already running.",
+        });
+      }
+      if (item.name === "build_with_shelley" && state.buildStarting) {
+        return toolResult(item.call_id, {
+          status: "already_started",
+          conversation_id: state.activeConversationID,
+          message: "The Shelley build is already starting.",
+        });
+      }
       payload = {
         kind: item.name === "plan_with_shelley" ? "plan" : "build",
         goal: args.goal,
         details: args.details || "",
         acceptance_criteria: args.acceptance_criteria || "",
         cwd: state.cwd,
+        conversation_id: state.activeConversationID || "",
       };
+      if (item.name === "plan_with_shelley") state.researchStarting = true;
+      if (item.name === "build_with_shelley") state.buildStarting = true;
     } else if (item.name === "continue_shelley_job") {
       if (!state.activeConversationID) throw new Error("There is no active Shelley task.");
       payload = {
@@ -213,7 +248,10 @@ async function executeTool(item) {
 
     const result = await postJSON("/api/jobs", payload);
     state.activeConversationID = result.conversation_id;
+    state.activeTaskWorking = true;
     startTask(result, payload.goal);
+    state.researchStarting = false;
+    state.buildStarting = false;
     toolResult(item.call_id, {
       status: "started",
       kind: result.kind,
@@ -221,7 +259,97 @@ async function executeTool(item) {
       message: "Shelley is working asynchronously. Progress is visible in the task panel.",
     });
   } catch (error) {
+    state.researchStarting = false;
+    state.buildStarting = false;
     toolResult(item.call_id, { error: error.message });
+  }
+}
+
+function rememberUserInput(text) {
+  const normalized = text.trim();
+  if (!normalized) return;
+  state.userHistory.push(normalized);
+  state.userHistory = state.userHistory.slice(-12);
+}
+
+function handleUserIntent(text) {
+  if (/\b(go for it|build it|implement it|make the change|do it|ship it)\b/i.test(text)) {
+    clearTimeout(state.researchTimer);
+    state.researchTimer = null;
+    void startBuildFromConversation();
+    return true;
+  }
+  scheduleBackgroundResearch(text);
+  return false;
+}
+
+function scheduleBackgroundResearch(text) {
+  if (state.activeTaskWorking || state.researchStarting || state.buildStarting) return;
+  const words = text.trim().split(/\s+/);
+  if (words.length < 5 || /^(hi|hello|hey|thanks|thank you)[.!]?$/i.test(text.trim())) return;
+  clearTimeout(state.researchTimer);
+  state.researchTimer = setTimeout(() => {
+    state.researchTimer = null;
+    void startBackgroundResearch();
+  }, 1400);
+}
+
+function liveConversationBrief() {
+  return state.userHistory.map((text, index) => `${index + 1}. ${text}`).join("\n");
+}
+
+async function startBackgroundResearch() {
+  if (state.activeTaskWorking || state.researchStarting || state.buildStarting) return;
+  state.researchStarting = true;
+  try {
+    const result = await postJSON("/api/jobs", {
+      kind: "plan",
+      goal: "Investigate the feature or change described in the Live conversation.",
+      details: `Live conversation so far:\n${liveConversationBrief()}`,
+      acceptance_criteria: "Return codebase-specific findings, relevant files and existing behavior, unresolved product decisions, and a concise implementation plan.",
+      cwd: state.cwd,
+      conversation_id: state.activeConversationID || "",
+    });
+    state.activeConversationID = result.conversation_id;
+    state.activeTaskWorking = true;
+    startTask(result, "Background repository research");
+    addMessage("system", "Started a background Shelley agent to inspect the repository.");
+  } catch (error) {
+    addMessage("system", `Could not start background research: ${error.message}`);
+  } finally {
+    state.researchStarting = false;
+  }
+}
+
+async function startBuildFromConversation() {
+  if (state.buildStarting) return;
+  state.buildStarting = true;
+  if (state.responseActive) {
+    sendEvent({ type: "response.cancel" });
+    state.responseActive = false;
+  }
+  try {
+    const result = await postJSON("/api/jobs", {
+      kind: "build",
+      goal: "Implement the feature or change approved in the Live conversation.",
+      details: `Treat the following transcript as the product brief. Resolve codebase facts by inspection and preserve explicit user decisions:\n${liveConversationBrief()}`,
+      acceptance_criteria: "Implement the approved behavior, validate it with the narrowest relevant tests and required project checks, and commit the change.",
+      cwd: state.cwd,
+      conversation_id: state.activeConversationID || "",
+    });
+    state.activeConversationID = result.conversation_id;
+    state.activeTaskWorking = true;
+    startTask(result, "Approved implementation");
+    addMessage("system", "Shelley is implementing this asynchronously.", "task-update");
+    sendText(
+      `[Shelley task update — do not start another build]\nThe user's approval has already started Shelley implementation ${result.conversation_id}. Tell the user it is running and continue with any useful concise context.`,
+      false,
+    );
+  } catch (error) {
+    addMessage("system", `Could not start Shelley build: ${error.message}`);
+    if (state.dc?.readyState === "open") sendEvent({ type: "response.create" });
+  } finally {
+    state.buildStarting = false;
   }
 }
 
@@ -274,14 +402,27 @@ function startTask(result, goal) {
       agentText: "",
       wasWorking: false,
       announced: false,
+      events: null,
+      waitForNextTurn: false,
+      sawInterimCompletion: false,
     };
     state.tasks.set(result.conversation_id, task);
     $("#task-count").textContent = String(state.tasks.size);
   } else {
+    const wasRunning = !task.announced && state.activeTaskWorking;
+    task.kind = result.kind;
+    task.goal = goal;
+    task.announced = false;
+    task.waitForNextTurn = wasRunning;
+    task.sawInterimCompletion = false;
+    task.el.querySelector("h3").textContent = goal;
+    task.el.querySelector(".kind").textContent = result.kind;
     task.el.querySelector(".state").textContent = "Follow-up queued";
   }
 
+  if (task.events && task.events.readyState !== EventSource.CLOSED) return;
   const events = new EventSource(`/api/jobs/${encodeURIComponent(result.conversation_id)}/events`);
+  task.events = events;
   events.onmessage = (message) => updateTask(result.conversation_id, JSON.parse(message.data), events);
   events.onerror = () => {
     if (!task.announced) task.el.querySelector(".state").textContent = "Reconnecting…";
@@ -298,6 +439,10 @@ function updateTask(id, event, events) {
   }
   if (event.conversation_state) {
     if (event.conversation_state.working) {
+      if (task.sawInterimCompletion) {
+        task.waitForNextTurn = false;
+        task.sawInterimCompletion = false;
+      }
       task.wasWorking = true;
       task.el.querySelector(".state").textContent = "Shelley is working";
     } else if (task.wasWorking) {
@@ -321,9 +466,17 @@ function updateTask(id, event, events) {
 function finishTask(id, events) {
   const task = state.tasks.get(id);
   if (!task || task.announced) return;
+  if (task.waitForNextTurn) {
+    task.sawInterimCompletion = true;
+    task.wasWorking = false;
+    task.el.querySelector(".state").textContent = "Research complete; implementation queued";
+    return;
+  }
   task.announced = true;
+  state.activeTaskWorking = false;
   task.el.querySelector(".state").textContent = "Completed";
   events.close();
+  task.events = null;
   addMessage("system", `Shelley ${task.kind} completed: ${task.goal}`, "task-update");
 
   if ($("#announce").checked && state.dc?.readyState === "open") {
