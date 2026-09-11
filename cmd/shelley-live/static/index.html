@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shelley Live</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">EXPERIMENT</p>
+      <h1>Shelley Live</h1>
+      <p class="subtitle">Talk through an idea, make a plan, then let Shelley build in the background.</p>
+    </div>
+    <div class="connection">
+      <span id="status-dot" class="dot"></span>
+      <span id="status">Not connected</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="conversation-panel">
+      <div class="controls">
+        <button id="connect" class="primary">Start conversation</button>
+        <button id="mute" disabled>Mute</button>
+        <button id="disconnect" disabled>End</button>
+        <label><input id="announce" type="checkbox" checked> Announce completed tasks</label>
+      </div>
+
+      <div id="transcript" class="transcript" aria-live="polite">
+        <article class="message system">
+          <strong>How it works</strong>
+          <p>Speak or type naturally. Ask to “plan this with Shelley” for repository-aware planning. Say “build it” when you want an asynchronous implementation.</p>
+        </article>
+      </div>
+
+      <form id="composer">
+        <textarea id="message" rows="2" placeholder="Type if you do not want to speak…" disabled></textarea>
+        <button class="primary" type="submit" disabled>Send</button>
+      </form>
+    </section>
+
+    <aside>
+      <div class="aside-heading">
+        <div>
+          <p class="eyebrow">ASYNC WORK</p>
+          <h2>Shelley tasks</h2>
+        </div>
+        <span id="task-count">0</span>
+      </div>
+      <div id="tasks" class="tasks">
+        <p class="empty">No tasks yet. Ask the conversation to plan or build something.</p>
+      </div>
+    </aside>
+  </main>
+
+  <audio id="remote-audio" autoplay></audio>
+  <script src="/app.js" defer></script>
+</body>
+</html>
