@@ -22,6 +22,8 @@ The server listens on port `8765` by default.
   `unix:///home/exedev/.config/shelley/shelley.sock`.
 - `SHELLEY_LIVE_CWD`: working directory for new tasks. Defaults to this Shelley
   checkout.
+- `SHELLEY_LIVE_ROOT`: allowed root for per-session working-directory changes.
+  Defaults to `/home/exedev`.
 - `SHELLEY_PUBLIC_URL`: browser-visible Shelley base URL.
 - `SHELLEY_USER_EMAIL`: author attached to proxied user messages.
 - `LISTEN_ADDR`: defaults to `:8765`.

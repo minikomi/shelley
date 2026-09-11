@@ -26,6 +26,11 @@
         <button id="mute" disabled>Mute</button>
         <button id="disconnect" disabled>End</button>
         <label><input id="announce" type="checkbox" checked> Announce completed tasks</label>
+        <form id="cwd-form" class="cwd-form">
+          <label for="cwd">Working directory</label>
+          <input id="cwd" type="text" spellcheck="false" autocomplete="off">
+          <button type="submit">Set</button>
+        </form>
       </div>
 
       <div id="transcript" class="transcript" aria-live="polite">

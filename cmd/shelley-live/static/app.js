@@ -8,6 +8,7 @@ const state = {
   assistantMessages: new Map(),
   tasks: new Map(),
   activeConversationID: null,
+  cwd: "",
 };
 
 const connectButton = $("#connect");
@@ -18,6 +19,8 @@ const messageInput = $("#message");
 const sendButton = composer.querySelector("button");
 const transcript = $("#transcript");
 const tasks = $("#tasks");
+const cwdForm = $("#cwd-form");
+const cwdInput = $("#cwd");
 
 function setStatus(text, mode = "") {
   $("#status").textContent = text;
@@ -157,6 +160,37 @@ async function executeTool(item) {
   }
 
   try {
+    if (item.name === "set_working_directory") {
+      const result = await postJSON("/api/repository/select", { path: args.path });
+      state.cwd = result.cwd;
+      cwdInput.value = result.cwd;
+      addMessage("system", `Working directory set to ${result.cwd}`);
+      return toolResult(item.call_id, result);
+    }
+    if (item.name === "search_repository") {
+      const result = await postJSON("/api/repository/search", { terms: args.terms, cwd: state.cwd });
+      return toolResult(item.call_id, result);
+    }
+    if (item.name === "read_repository_file") {
+      const result = await postJSON("/api/repository/read", {
+        path: args.path,
+        start_line: args.start_line || 1,
+        end_line: args.end_line || 0,
+        cwd: state.cwd,
+      });
+      return toolResult(item.call_id, result);
+    }
+    if (item.name === "list_shelley_conversations") {
+      const response = await fetch("/api/conversations");
+      if (!response.ok) throw new Error(await response.text());
+      return toolResult(item.call_id, await response.json());
+    }
+    if (item.name === "read_shelley_conversation") {
+      const response = await fetch(`/api/conversations/${encodeURIComponent(args.conversation_id)}`);
+      if (!response.ok) throw new Error(await response.text());
+      return toolResult(item.call_id, await response.json());
+    }
+
     let payload;
     if (item.name === "plan_with_shelley" || item.name === "build_with_shelley") {
       payload = {
@@ -164,6 +198,7 @@ async function executeTool(item) {
         goal: args.goal,
         details: args.details || "",
         acceptance_criteria: args.acceptance_criteria || "",
+        cwd: state.cwd,
       };
     } else if (item.name === "continue_shelley_job") {
       if (!state.activeConversationID) throw new Error("There is no active Shelley task.");
@@ -176,13 +211,7 @@ async function executeTool(item) {
       throw new Error(`Unknown tool ${item.name}`);
     }
 
-    const response = await fetch("/api/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) throw new Error(await response.text());
-    const result = await response.json();
+    const result = await postJSON("/api/jobs", payload);
     state.activeConversationID = result.conversation_id;
     startTask(result, payload.goal);
     toolResult(item.call_id, {
@@ -194,6 +223,16 @@ async function executeTool(item) {
   } catch (error) {
     toolResult(item.call_id, { error: error.message });
   }
+}
+
+async function postJSON(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
 }
 
 function toolResult(callID, result) {
@@ -334,3 +373,26 @@ composer.addEventListener("submit", (event) => {
   sendText(text);
   messageInput.value = "";
 });
+
+cwdForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const result = await postJSON("/api/repository/select", { path: cwdInput.value });
+    state.cwd = result.cwd;
+    cwdInput.value = result.cwd;
+    addMessage("system", `Working directory set to ${result.cwd}`);
+  } catch (error) {
+    addMessage("system", `Could not set working directory: ${error.message}`);
+  }
+});
+
+fetch("/api/config")
+  .then((response) => {
+    if (!response.ok) throw new Error(response.statusText);
+    return response.json();
+  })
+  .then((config) => {
+    state.cwd = config.cwd;
+    cwdInput.value = config.cwd;
+  })
+  .catch((error) => addMessage("system", `Could not load configuration: ${error.message}`));

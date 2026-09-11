@@ -90,6 +90,25 @@ button:disabled { opacity: .45; cursor: default; }
 button.primary { background: var(--green); border-color: var(--green); color: #17200f; }
 label { margin-left: auto; color: var(--muted); font-size: .82rem; }
 
+.cwd-form {
+  flex-basis: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.cwd-form label { margin: 0; }
+.cwd-form input {
+  min-width: 0;
+  border: 1px solid #3a4036;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #11130f;
+  color: #f3f4f0;
+  font: .82rem ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .transcript {
   height: min(58vh, 610px);
   min-height: 380px;
@@ -161,5 +180,7 @@ aside { padding: 17px; }
   aside { order: -1; }
   .transcript { min-height: 360px; height: 52vh; }
   label { width: 100%; margin: 4px 0 0; }
+  .cwd-form { grid-template-columns: 1fr auto; }
+  .cwd-form label { grid-column: 1 / -1; }
   .message { max-width: 93%; }
 }

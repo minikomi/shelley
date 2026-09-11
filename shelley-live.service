@@ -14,6 +14,7 @@ RestartSec=3
 Environment=HOME=/home/exedev
 Environment=SHELLEY_URL=unix:///home/exedev/.config/shelley/shelley.sock
 Environment=SHELLEY_LIVE_CWD=/home/exedev/shelley
+Environment=SHELLEY_LIVE_ROOT=/home/exedev
 Environment=SHELLEY_PUBLIC_URL=https://exedevwork.exe.xyz
 Environment=SHELLEY_USER_EMAIL=adam@poyo.co
 

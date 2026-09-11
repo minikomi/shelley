@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"embed"
@@ -14,7 +15,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -28,6 +31,7 @@ type config struct {
 	openAIAPIKey     string
 	shelleyURL       string
 	shelleyCWD       string
+	workspaceRoot    string
 	shelleyPublicURL string
 	userEmail        string
 }
@@ -45,6 +49,23 @@ type jobRequest struct {
 	Details            string `json:"details"`
 	AcceptanceCriteria string `json:"acceptance_criteria"`
 	ConversationID     string `json:"conversation_id"`
+	Cwd                string `json:"cwd"`
+}
+
+type repositorySearchRequest struct {
+	Terms []string `json:"terms"`
+	Cwd   string   `json:"cwd"`
+}
+
+type repositoryReadRequest struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Cwd       string `json:"cwd"`
+}
+
+type repositorySelectRequest struct {
+	Path string `json:"path"`
 }
 
 func main() {
@@ -54,6 +75,7 @@ func main() {
 		openAIAPIKey:     os.Getenv("OPENAI_API_KEY"),
 		shelleyURL:       envOr("SHELLEY_URL", "unix:///home/exedev/.config/shelley/shelley.sock"),
 		shelleyCWD:       envOr("SHELLEY_LIVE_CWD", "/home/exedev/shelley"),
+		workspaceRoot:    envOr("SHELLEY_LIVE_ROOT", "/home/exedev"),
 		shelleyPublicURL: strings.TrimRight(envOr("SHELLEY_PUBLIC_URL", "https://exedevwork.exe.xyz"), "/"),
 		userEmail:        envOr("SHELLEY_USER_EMAIL", "adam@poyo.co"),
 	}
@@ -116,7 +138,13 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /api/config", a.handleConfig)
 	mux.HandleFunc("POST /api/session", a.handleSession)
+	mux.HandleFunc("POST /api/repository/select", a.handleRepositorySelect)
+	mux.HandleFunc("POST /api/repository/search", a.handleRepositorySearch)
+	mux.HandleFunc("POST /api/repository/read", a.handleRepositoryRead)
+	mux.HandleFunc("GET /api/conversations", a.handleConversations)
+	mux.HandleFunc("GET /api/conversations/{id}", a.handleConversation)
 	mux.HandleFunc("POST /api/jobs", a.handleJob)
 	mux.HandleFunc("GET /api/jobs/{id}/events", a.handleJobEvents)
 	return mux
@@ -143,9 +171,15 @@ func (a *app) handleSession(w http.ResponseWriter, r *http.Request) {
 		"session": map[string]any{
 			"type":  "realtime",
 			"model": "gpt-realtime",
-			"instructions": `You are the conversational front door to Shelley, a coding agent.
-Be concise and practical. Help the user talk through ideas, narrow scope, and define acceptance criteria.
-Use plan_with_shelley when the user wants repository-aware investigation or a written plan.
+			"instructions": `You are the conversational front door to Shelley, a coding agent working in the active repository.
+Be concise, practical, and decisive. Inspect before asking.
+For codebase-specific questions, proactively use search_repository and read_repository_file before responding.
+Do not ask the user where logic lives, how existing code is structured, or what conventions the repository uses. Discover those facts with tools.
+Use set_working_directory when the user names another project or directory. All later inspection and Shelley tasks use that directory.
+Use list_shelley_conversations and read_shelley_conversation when prior work, current status, or an earlier decision may answer the question.
+Ask a clarifying question only when a genuine product decision cannot be inferred from the request or repository.
+When reasonable defaults exist, state the assumptions briefly and proceed.
+Use plan_with_shelley when deeper repository investigation or a written implementation plan would help.
 Use build_with_shelley only after the user clearly asks to implement, build, fix, or change something.
 Builds run asynchronously. After starting one, tell the user it is running and continue the conversation.
 Use continue_shelley_job for follow-up instructions on the active task.
@@ -158,7 +192,28 @@ Never claim a Shelley task is complete until a task update says it completed.`,
 				"output": map[string]any{"voice": "marin"},
 			},
 			"tools": []any{
-				realtimeTool("plan_with_shelley", "Ask Shelley to inspect the repository and create a plan without editing files.", map[string]any{
+				realtimeTool("set_working_directory", "Change the active project directory for repository inspection and future Shelley plan/build tasks.", map[string]any{
+					"path": stringProperty("Absolute project directory under /home/exedev"),
+				}, []string{"path"}),
+				realtimeTool("search_repository", "Search the active repository for relevant symbols, phrases, routes, tests, or concepts. Use this proactively instead of asking the user where code lives.", map[string]any{
+					"terms": map[string]any{
+						"type":        "array",
+						"description": "One to five short literal search terms, ordered from most important to least important",
+						"items":       map[string]any{"type": "string"},
+						"minItems":    1,
+						"maxItems":    5,
+					},
+				}, []string{"terms"}),
+				realtimeTool("read_repository_file", "Read a bounded line range from a repository file found with search_repository.", map[string]any{
+					"path":       stringProperty("Repository-relative file path"),
+					"start_line": map[string]any{"type": "integer", "description": "First line to read, starting at 1"},
+					"end_line":   map[string]any{"type": "integer", "description": "Last line to read, inclusive; at most 200 lines"},
+				}, []string{"path"}),
+				realtimeTool("list_shelley_conversations", "List recent Shelley conversations with their directory, working state, and preview. Use this to find relevant prior work or current tasks.", map[string]any{}, []string{}),
+				realtimeTool("read_shelley_conversation", "Read the recent user and agent messages from a Shelley conversation.", map[string]any{
+					"conversation_id": stringProperty("Conversation ID returned by list_shelley_conversations"),
+				}, []string{"conversation_id"}),
+				realtimeTool("plan_with_shelley", "Start a deeper repository-aware planning task without editing files. Prefer first using the fast repository search and read tools for ordinary questions.", map[string]any{
 					"goal":                stringProperty("What the user wants to understand or plan"),
 					"details":             stringProperty("Relevant context and constraints"),
 					"acceptance_criteria": stringProperty("How the user will judge the plan"),
@@ -216,6 +271,336 @@ func stringProperty(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
 
+func (a *app) handleConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cwd":            a.cfg.shelleyCWD,
+		"workspace_root": a.cfg.workspaceRoot,
+	})
+}
+
+func (a *app) handleRepositorySelect(w http.ResponseWriter, r *http.Request) {
+	var input repositorySelectRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	cwd, err := a.validateWorkspacePath(input.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cwd": cwd})
+}
+
+func (a *app) validateWorkspacePath(rawPath string) (string, error) {
+	requested := strings.TrimSpace(rawPath)
+	if requested == "" {
+		requested = a.cfg.shelleyCWD
+	}
+	if !filepath.IsAbs(requested) {
+		return "", errors.New("working directory must be an absolute path")
+	}
+	root, err := filepath.EvalSymlinks(a.cfg.workspaceRoot)
+	if err != nil {
+		return "", errors.New("workspace root is unavailable")
+	}
+	resolved, err := filepath.EvalSymlinks(requested)
+	if err != nil {
+		return "", errors.New("working directory does not exist")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("working directory is not a directory")
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("working directory must be under %s", root)
+	}
+	return resolved, nil
+}
+
+func (a *app) handleRepositorySearch(w http.ResponseWriter, r *http.Request) {
+	var input repositorySearchRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if len(input.Terms) == 0 || len(input.Terms) > 5 {
+		http.Error(w, "terms must contain one to five values", http.StatusBadRequest)
+		return
+	}
+	cwd, err := a.validateWorkspacePath(input.Cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	var output strings.Builder
+	for _, rawTerm := range input.Terms {
+		term := strings.TrimSpace(rawTerm)
+		if term == "" || len(term) > 120 {
+			http.Error(w, "search terms must be between 1 and 120 characters", http.StatusBadRequest)
+			return
+		}
+		cmd := exec.CommandContext(ctx, "rg",
+			"--line-number",
+			"--ignore-case",
+			"--fixed-strings",
+			"--max-count", "12",
+			"--glob", "!ui/node_modules/**",
+			"--glob", "!ui/dist/**",
+			"--glob", "!.git/**",
+			"--", term, cwd,
+		)
+		found, err := cmd.Output()
+		if err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				http.Error(w, "repository search failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		fmt.Fprintf(&output, "## %s\n", term)
+		if len(found) == 0 {
+			output.WriteString("No matches.\n")
+		} else {
+			text := strings.ReplaceAll(string(found), cwd+string(filepath.Separator), "")
+			output.WriteString(text)
+			if !strings.HasSuffix(text, "\n") {
+				output.WriteByte('\n')
+			}
+		}
+		if output.Len() > 24<<10 {
+			output.WriteString("\n[results truncated]\n")
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": output.String()})
+}
+
+func (a *app) handleRepositoryRead(w http.ResponseWriter, r *http.Request) {
+	var input repositoryReadRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	relative := filepath.Clean(strings.TrimSpace(input.Path))
+	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		http.Error(w, "path must be a repository-relative file", http.StatusBadRequest)
+		return
+	}
+	cwd, err := a.validateWorkspacePath(input.Cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	fullPath := filepath.Join(cwd, relative)
+	resolvedRoot, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		http.Error(w, "working directory is unavailable", http.StatusInternalServerError)
+		return
+	}
+	resolvedPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		http.Error(w, "path escapes the repository", http.StatusBadRequest)
+		return
+	}
+
+	start := input.StartLine
+	if start < 1 {
+		start = 1
+	}
+	end := input.EndLine
+	if end < start {
+		end = start + 119
+	}
+	if end-start >= 200 {
+		end = start + 199
+	}
+	file, err := os.Open(resolvedPath)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+
+	var output strings.Builder
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	line := 0
+	for scanner.Scan() {
+		line++
+		if line < start {
+			continue
+		}
+		if line > end {
+			break
+		}
+		fmt.Fprintf(&output, "%d: %s\n", line, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		http.Error(w, "file read failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":       relative,
+		"start_line": start,
+		"end_line":   min(line, end),
+		"content":    output.String(),
+	})
+}
+
+func (a *app) handleConversations(w http.ResponseWriter, r *http.Request) {
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, a.shelleyBase+"/api/conversations/snapshot", nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp, err := a.shelleyClient.Do(req)
+	if err != nil {
+		http.Error(w, "Shelley request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		copyResponse(w, resp, 1<<20)
+		return
+	}
+	var snapshot struct {
+		Conversations []map[string]any `json:"conversations"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&snapshot); err != nil {
+		http.Error(w, "invalid Shelley response", http.StatusBadGateway)
+		return
+	}
+	limit := min(20, len(snapshot.Conversations))
+	compact := make([]map[string]any, 0, limit)
+	for _, conversation := range snapshot.Conversations[:limit] {
+		compact = append(compact, map[string]any{
+			"conversation_id": conversation["conversation_id"],
+			"slug":            conversation["slug"],
+			"cwd":             conversation["cwd"],
+			"updated_at":      conversation["updated_at"],
+			"working":         conversation["agent_working"],
+			"preview":         conversation["preview"],
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": compact})
+}
+
+func (a *app) handleConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validConversationID(id) {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, a.shelleyBase+"/api/conversation/"+id, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp, err := a.shelleyClient.Do(req)
+	if err != nil {
+		http.Error(w, "Shelley request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		copyResponse(w, resp, 2<<20)
+		return
+	}
+	var payload struct {
+		Conversation map[string]any `json:"conversation"`
+		Messages     []struct {
+			Type        string  `json:"type"`
+			DisplayData *string `json:"display_data"`
+			LLMData     *string `json:"llm_data"`
+			EndOfTurn   *bool   `json:"end_of_turn"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&payload); err != nil {
+		http.Error(w, "invalid Shelley response", http.StatusBadGateway)
+		return
+	}
+	start := max(0, len(payload.Messages)-24)
+	messages := make([]map[string]any, 0, len(payload.Messages)-start)
+	total := 0
+	for _, message := range payload.Messages[start:] {
+		if message.Type != "user" && message.Type != "agent" {
+			continue
+		}
+		text := extractMessageText(message.DisplayData)
+		if text == "" {
+			text = extractMessageText(message.LLMData)
+		}
+		if text == "" {
+			continue
+		}
+		if len(text) > 4000 {
+			text = text[:4000] + "\n[message truncated]"
+		}
+		total += len(text)
+		if total > 20<<10 {
+			break
+		}
+		messages = append(messages, map[string]any{
+			"role":        message.Type,
+			"text":        text,
+			"end_of_turn": message.EndOfTurn,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"conversation_id": id,
+		"slug":            payload.Conversation["slug"],
+		"cwd":             payload.Conversation["cwd"],
+		"working":         payload.Conversation["agent_working"],
+		"messages":        messages,
+	})
+}
+
+func extractMessageText(raw *string) string {
+	if raw == nil || *raw == "" {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal([]byte(*raw), &value); err != nil {
+		return *raw
+	}
+	var found []string
+	var visit func(any)
+	visit = func(node any) {
+		switch typed := node.(type) {
+		case string:
+			found = append(found, typed)
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		case map[string]any:
+			if text, ok := typed["text"].(string); ok {
+				found = append(found, text)
+				return
+			}
+			if content, ok := typed["content"].(string); ok {
+				found = append(found, content)
+				return
+			}
+			for _, child := range typed {
+				visit(child)
+			}
+		}
+	}
+	visit(value)
+	return strings.Join(found, "\n")
+}
+
 func (a *app) handleJob(w http.ResponseWriter, r *http.Request) {
 	var input jobRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
@@ -242,7 +627,12 @@ func (a *app) handleJob(w http.ResponseWriter, r *http.Request) {
 	}
 	endpoint := a.shelleyBase + "/api/conversations/new"
 	if input.ConversationID == "" {
-		payload["cwd"] = a.cfg.shelleyCWD
+		cwd, err := a.validateWorkspacePath(input.Cwd)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		payload["cwd"] = cwd
 		payload["conversation_options"] = map[string]any{"disable_notifications": false}
 	} else {
 		endpoint = a.shelleyBase + "/api/conversation/" + input.ConversationID + "/chat"

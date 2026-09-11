@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -41,8 +43,88 @@ func TestSessionMintsRealtimeClientSecret(t *testing.T) {
 	if session["model"] != "gpt-realtime" {
 		t.Fatalf("model = %v", session["model"])
 	}
-	if len(session["tools"].([]any)) != 3 {
+	if len(session["tools"].([]any)) != 8 {
 		t.Fatalf("tools = %v", session["tools"])
+	}
+	if !strings.Contains(session["instructions"].(string), "Inspect before asking") {
+		t.Fatalf("instructions = %q", session["instructions"])
+	}
+}
+
+func TestRepositorySearchReturnsBoundedLiteralMatches(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "flags.go"), []byte("const autoCompactionThreshold = 80\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := newApp(config{shelleyURL: "http://example.test", shelleyCWD: root, workspaceRoot: root})
+	req := httptest.NewRequest(http.MethodPost, "/api/repository/search", strings.NewReader(
+		`{"terms":["autoCompaction","missing phrase"]}`,
+	))
+	rec := httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "flags.go:1") || !strings.Contains(body, "No matches") {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestRepositoryReadRestrictsAndBoundsFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "feature.go"), []byte("one\ntwo\nthree\nfour\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := newApp(config{shelleyURL: "http://example.test", shelleyCWD: root, workspaceRoot: root})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/repository/read", strings.NewReader(
+		`{"path":"feature.go","start_line":2,"end_line":3}`,
+	))
+	rec := httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `2: two\n3: three`) {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/repository/read", strings.NewReader(
+		`{"path":"../outside"}`,
+	))
+	rec = httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("traversal status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRepositorySelectAcceptsOnlyWorkspaceDirectories(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := newApp(config{
+		shelleyURL:    "http://example.test",
+		shelleyCWD:    project,
+		workspaceRoot: root,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/repository/select", strings.NewReader(
+		`{"path":"`+project+`"}`,
+	))
+	rec := httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), project) {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/repository/select", strings.NewReader(
+		`{"path":"/"}`,
+	))
+	rec = httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("outside status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -58,10 +140,12 @@ func TestBuildJobStartsShelleyConversation(t *testing.T) {
 	}))
 	defer shelley.Close()
 
+	workspace := t.TempDir()
 	a, err := newApp(config{
 		openAIBaseURL:    shelley.URL,
 		shelleyURL:       shelley.URL,
-		shelleyCWD:       "/work",
+		shelleyCWD:       workspace,
+		workspaceRoot:    workspace,
 		shelleyPublicURL: "https://example.test",
 		userEmail:        "adam@example.test",
 	})
@@ -79,7 +163,7 @@ func TestBuildJobStartsShelleyConversation(t *testing.T) {
 	if gotPath != "/api/conversations/new" || gotHeader != "1" {
 		t.Fatalf("request = %s, header = %q", gotPath, gotHeader)
 	}
-	if gotBody["cwd"] != "/work" {
+	if gotBody["cwd"] != workspace {
 		t.Fatalf("cwd = %v", gotBody["cwd"])
 	}
 	message := gotBody["message"].(string)
@@ -90,6 +174,55 @@ func TestBuildJobStartsShelleyConversation(t *testing.T) {
 	json.NewDecoder(rec.Body).Decode(&result)
 	if result["shelley_url"] != "https://example.test/c/job123" {
 		t.Fatalf("shelley_url = %v", result["shelley_url"])
+	}
+}
+
+func TestConversationToolsReturnCompactContext(t *testing.T) {
+	shelley := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/conversations/snapshot":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"conversations": []map[string]any{{
+					"conversation_id": "job123",
+					"slug":            "auto-compaction",
+					"cwd":             "/work",
+					"agent_working":   true,
+					"preview":         "Inspecting feature flags",
+				}},
+			})
+		case "/api/conversation/job123":
+			display := `{"type":"text","text":"The threshold belongs in featureflags."}`
+			writeJSON(w, http.StatusOK, map[string]any{
+				"conversation": map[string]any{
+					"slug":          "auto-compaction",
+					"cwd":           "/work",
+					"agent_working": false,
+				},
+				"messages": []map[string]any{{
+					"type":         "agent",
+					"display_data": display,
+					"end_of_turn":  true,
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer shelley.Close()
+	a, _ := newApp(config{shelleyURL: shelley.URL})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	rec := httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Inspecting feature flags") {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/conversations/job123", nil)
+	rec = httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "threshold belongs in featureflags") {
+		t.Fatalf("read status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
