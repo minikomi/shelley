@@ -335,6 +335,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "../composables/i18n";
+import type { Locale } from "../../i18n/types";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
 import { SLASH_COMMANDS, slashCommandsForConversation } from "../../utils/slashCommands";
 import {
@@ -373,6 +374,8 @@ interface SpeechRecognitionAlternative {
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
+  /** Chrome 151+: engine infers punctuation from prosody. Ignored where unsupported. */
+  unspokenPunctuation?: boolean;
   lang: string;
   onresult: ((event: SpeechRecognitionEvent) => void) | null;
   onerror: ((event: Event & { error: string }) => void) | null;
@@ -469,7 +472,7 @@ const emit = defineEmits<{
   (e: "draft-cleared"): void;
 }>();
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const hasQueueHandler = computed(() => props.onQueue !== undefined);
 // The "Compact and send" option is available whenever a compaction handler is
@@ -518,9 +521,54 @@ const slashMenuRef = ref<HTMLDivElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 let recognition: SpeechRecognition | null = null;
-// Track the base text (before speech recognition started) and finalized speech text
+// Text present before the current recognition session started; the message is rebuilt
+// from it plus the session's full results list on every event.
 let baseText = "";
-let finalizedText = "";
+// Android Chrome ignores `continuous` (the session ends at the first pause) and reports
+// every result as the whole cumulative transcript of the session rather than a new
+// segment, so only the last result is meaningful there. Because Android ends the
+// session at every pause, an ended session is restarted while listening.
+//
+// On every platform the mic turns off once no result (Android also emits empty ones)
+// has arrived for SPEECH_SILENCE_MS; the API has no silence timeout of its own.
+const androidSpeech = typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
+const SPEECH_SILENCE_MS = 2000;
+let speechSilenceTimer: ReturnType<typeof setTimeout> | undefined;
+
+function armSpeechSilenceTimer() {
+  clearTimeout(speechSilenceTimer);
+  speechSilenceTimer = setTimeout(stopListening, SPEECH_SILENCE_MS);
+}
+
+// Chrome's engine returns raw words with no punctuation; honour common spoken commands.
+const SPOKEN_PUNCTUATION: [RegExp, string][] = [
+  [/\s*\b(?:full stop|period)\b/gi, "."],
+  [/\s*\bcomma\b/gi, ","],
+  [/\s*\bquestion mark\b/gi, "?"],
+  [/\s*\bexclamation (?:mark|point)\b/gi, "!"],
+  [/\s*\bnew line\b\s*/gi, "\n"],
+];
+
+function punctuateSpoken(text: string): string {
+  const punctuated = SPOKEN_PUNCTUATION.reduce((s, [re, rep]) => s.replace(re, rep), text)
+    // Some engines emit inferred punctuation as its own token ("word .").
+    .replace(/\s+([.,!?])/g, "$1");
+  // Capitalize the first word and the first word after sentence-ending punctuation.
+  return punctuated.replace(/(^|[.!?]\s+|\n)(\p{Ll})/gu, (_, pre, ch) => pre + ch.toUpperCase());
+}
+
+// falling back to the browser language.
+const SPEECH_LANG: Record<Locale, string | undefined> = {
+  en: undefined,
+  upgoer5: undefined,
+  ja: "ja-JP",
+  fr: "fr-FR",
+  ru: "ru-RU",
+  es: "es-ES",
+  "zh-CN": "zh-CN",
+  "zh-TW": "zh-TW",
+  vi: "vi-VN",
+};
 
 const speechRecognitionAvailable =
   typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -544,11 +592,12 @@ function handleResize() {
 }
 
 function stopListening() {
+  clearTimeout(speechSilenceTimer);
+  isListening.value = false;
   if (recognition) {
     recognition.stop();
     recognition = null;
   }
-  isListening.value = false;
 }
 
 function startListening() {
@@ -557,39 +606,36 @@ function startListening() {
   const rec = new SpeechRecognitionClass();
   rec.continuous = true;
   rec.interimResults = true;
-  rec.lang = navigator.language || "en-US";
+  rec.unspokenPunctuation = true;
+  rec.lang = SPEECH_LANG[locale.value] ?? navigator.language ?? "en-US";
 
   // Capture current message as base text
   baseText = message.value;
-  finalizedText = "";
 
   rec.onresult = (event: SpeechRecognitionEvent) => {
-    let finalTranscript = "";
-    let interimTranscript = "";
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript;
-      if (event.results[i].isFinal) {
-        finalTranscript += transcript;
-      } else {
-        interimTranscript += transcript;
-      }
-    }
-    if (finalTranscript) finalizedText += finalTranscript;
+    armSpeechSilenceTimer();
+    const results = Array.from(event.results, (r) => r[0].transcript);
+    const spoken = punctuateSpoken(androidSpeech ? (results.at(-1) ?? "") : results.join(""));
     const base = baseText;
     const needsSpace = base.length > 0 && !/\s$/.test(base);
     const spacer = needsSpace ? " " : "";
-    setMessage(base + spacer + finalizedText + interimTranscript);
+    setMessage(base + spacer + spoken);
   };
   rec.onerror = (event) => {
-    console.error("Speech recognition error:", event.error);
+    if (event.error !== "no-speech") console.error("Speech recognition error:", event.error);
     stopListening();
   };
   rec.onend = () => {
-    isListening.value = false;
     recognition = null;
+    if (!androidSpeech || !isListening.value) {
+      isListening.value = false;
+      return;
+    }
+    startListening();
   };
   recognition = rec;
   rec.start();
+  armSpeechSilenceTimer();
   isListening.value = true;
 }
 
@@ -1221,6 +1267,7 @@ onUnmounted(() => {
   }
   document.removeEventListener("mousedown", onQueueMenuOutside);
   document.removeEventListener("mousedown", onSlashMenuOutside);
+  isListening.value = false;
   if (recognition) recognition.abort();
   attachments.value.forEach((a) => {
     if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
