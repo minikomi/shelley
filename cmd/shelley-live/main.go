@@ -68,6 +68,11 @@ type repositorySelectRequest struct {
 	Path string `json:"path"`
 }
 
+type repositoryPathRequest struct {
+	Path string `json:"path"`
+	Cwd  string `json:"cwd"`
+}
+
 type sessionRequest struct {
 	Cwd string `json:"cwd"`
 }
@@ -145,8 +150,10 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/config", a.handleConfig)
 	mux.HandleFunc("POST /api/session", a.handleSession)
 	mux.HandleFunc("POST /api/repository/select", a.handleRepositorySelect)
+	mux.HandleFunc("POST /api/repository/list", a.handleRepositoryList)
 	mux.HandleFunc("POST /api/repository/search", a.handleRepositorySearch)
 	mux.HandleFunc("POST /api/repository/read", a.handleRepositoryRead)
+	mux.HandleFunc("POST /api/repository/git", a.handleRepositoryGit)
 	mux.HandleFunc("GET /api/conversations", a.handleConversations)
 	mux.HandleFunc("GET /api/conversations/{id}", a.handleConversation)
 	mux.HandleFunc("POST /api/jobs", a.handleJob)
@@ -188,12 +195,13 @@ func (a *app) handleSession(w http.ResponseWriter, r *http.Request) {
 	instructions := fmt.Sprintf(`You coordinate a live conversation with Shelley, an asynchronous coding agent.
 The active working directory is %q. Never ask which project or directory to use unless the user explicitly wants to change it.
 Be concise, practical, and decisive. Do not repeatedly paraphrase the request.
-For any substantive codebase-specific request, start plan_with_shelley promptly so an asynchronous Shelley agent can inspect the repository and prior work while the conversation continues.
-Use search_repository and read_repository_file only for quick follow-up facts while the Shelley agent runs.
+For codebase questions, use your own tools first: list_repository_directory, search_repository, read_repository_file, inspect_git_state, list_shelley_conversations, and read_shelley_conversation.
+Use enough tool calls to form a codebase-specific answer before asking questions.
 Never merely promise to inspect, explore, or check the code. Perform a tool call.
 Use list_shelley_conversations and read_shelley_conversation when earlier work or a current task may contain relevant decisions.
 Ask a clarifying question only for a genuine product decision that cannot be inferred from the request, repository, or prior conversations.
 When reasonable defaults exist, state the assumptions briefly and proceed.
+Reserve plan_with_shelley for explicit requests for a deeper plan or investigations that cannot be answered efficiently with your own tools.
 When the user says "go for it", "build it", "implement it", "do it", or otherwise explicitly approves implementation, call build_with_shelley immediately. Do not ask another setup question.
 Planning and builds run asynchronously. Tell the user when one starts, continue the conversation, and incorporate its findings when the task update arrives.
 Use continue_shelley_job for follow-up instructions on the active task.
@@ -214,6 +222,9 @@ Never claim a Shelley task is complete until a task update says it completed.`, 
 				realtimeTool("set_working_directory", "Change the active project directory for repository inspection and future Shelley plan/build tasks.", map[string]any{
 					"path": stringProperty("Absolute project directory under /home/exedev"),
 				}, []string{"path"}),
+				realtimeTool("list_repository_directory", "List files and directories in the active repository. Use this to learn the project structure before searching.", map[string]any{
+					"path": stringProperty("Repository-relative directory path; use . for the repository root"),
+				}, []string{}),
 				realtimeTool("search_repository", "Search the active repository for relevant symbols, phrases, routes, tests, or concepts. Use this proactively instead of asking the user where code lives.", map[string]any{
 					"terms": map[string]any{
 						"type":        "array",
@@ -228,11 +239,12 @@ Never claim a Shelley task is complete until a task update says it completed.`, 
 					"start_line": map[string]any{"type": "integer", "description": "First line to read, starting at 1"},
 					"end_line":   map[string]any{"type": "integer", "description": "Last line to read, inclusive; at most 200 lines"},
 				}, []string{"path"}),
+				realtimeTool("inspect_git_state", "Inspect the active repository's branch, changed files, diff summary, and recent commits.", map[string]any{}, []string{}),
 				realtimeTool("list_shelley_conversations", "List recent Shelley conversations with their directory, working state, and preview. Use this to find relevant prior work or current tasks.", map[string]any{}, []string{}),
 				realtimeTool("read_shelley_conversation", "Read the recent user and agent messages from a Shelley conversation.", map[string]any{
 					"conversation_id": stringProperty("Conversation ID returned by list_shelley_conversations"),
 				}, []string{"conversation_id"}),
-				realtimeTool("plan_with_shelley", "Start an asynchronous Shelley research and planning agent for a substantive codebase request. Call this early so it can inspect while the live conversation continues.", map[string]any{
+				realtimeTool("plan_with_shelley", "Start an asynchronous Shelley agent only for an explicit deep plan or investigation that exceeds the Live agent's own repository tools.", map[string]any{
 					"goal":                stringProperty("What the user wants to understand or plan"),
 					"details":             stringProperty("Relevant context and constraints"),
 					"acceptance_criteria": stringProperty("How the user will judge the plan"),
@@ -336,6 +348,110 @@ func (a *app) validateWorkspacePath(rawPath string) (string, error) {
 		return "", fmt.Errorf("working directory must be under %s", root)
 	}
 	return resolved, nil
+}
+
+func (a *app) handleRepositoryList(w http.ResponseWriter, r *http.Request) {
+	var input repositoryPathRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	cwd, err := a.validateWorkspacePath(input.Cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	relative := filepath.Clean(strings.TrimSpace(input.Path))
+	if relative == "" {
+		relative = "."
+	}
+	if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		http.Error(w, "path must be a repository-relative directory", http.StatusBadRequest)
+		return
+	}
+	fullPath := filepath.Join(cwd, relative)
+	resolvedPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		http.Error(w, "directory not found", http.StatusNotFound)
+		return
+	}
+	rel, err := filepath.Rel(cwd, resolvedPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		http.Error(w, "path escapes the repository", http.StatusBadRequest)
+		return
+	}
+	entries, err := os.ReadDir(resolvedPath)
+	if err != nil {
+		http.Error(w, "directory read failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(entries) > 200 {
+		entries = entries[:200]
+	}
+	result := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			http.Error(w, "directory entry failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		entryPath := filepath.Join(rel, entry.Name())
+		if rel == "." {
+			entryPath = entry.Name()
+		}
+		result = append(result, map[string]any{
+			"path":      filepath.ToSlash(entryPath),
+			"directory": entry.IsDir(),
+			"size":      info.Size(),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":    filepath.ToSlash(rel),
+		"entries": result,
+	})
+}
+
+func (a *app) handleRepositoryGit(w http.ResponseWriter, r *http.Request) {
+	var input repositoryPathRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	cwd, err := a.validateWorkspacePath(input.Cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	run := func(args ...string) (string, error) {
+		command := append([]string{"-C", cwd}, args...)
+		output, err := exec.CommandContext(ctx, "git", command...).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), err)
+		}
+		return strings.TrimSpace(string(output)), nil
+	}
+	status, err := run("status", "--short", "--branch")
+	if err != nil {
+		http.Error(w, "git status failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	diffStat, err := run("diff", "--stat")
+	if err != nil {
+		http.Error(w, "git diff failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	recent, err := run("log", "-5", "--oneline")
+	if err != nil {
+		http.Error(w, "git log failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         status,
+		"diff_stat":      diffStat,
+		"recent_commits": recent,
+	})
 }
 
 func (a *app) handleRepositorySearch(w http.ResponseWriter, r *http.Request) {

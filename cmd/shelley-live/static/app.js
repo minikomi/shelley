@@ -11,7 +11,6 @@ const state = {
   activeTaskWorking: false,
   buildStarting: false,
   researchStarting: false,
-  researchTimer: null,
   responseActive: false,
   userHistory: [],
   cwd: "",
@@ -189,6 +188,13 @@ async function executeTool(item) {
       const result = await postJSON("/api/repository/search", { terms: args.terms, cwd: state.cwd });
       return toolResult(item.call_id, result);
     }
+    if (item.name === "list_repository_directory") {
+      const result = await postJSON("/api/repository/list", {
+        path: args.path || ".",
+        cwd: state.cwd,
+      });
+      return toolResult(item.call_id, result);
+    }
     if (item.name === "read_repository_file") {
       const result = await postJSON("/api/repository/read", {
         path: args.path,
@@ -196,6 +202,10 @@ async function executeTool(item) {
         end_line: args.end_line || 0,
         cwd: state.cwd,
       });
+      return toolResult(item.call_id, result);
+    }
+    if (item.name === "inspect_git_state") {
+      const result = await postJSON("/api/repository/git", { cwd: state.cwd });
       return toolResult(item.call_id, result);
     }
     if (item.name === "list_shelley_conversations") {
@@ -274,51 +284,14 @@ function rememberUserInput(text) {
 
 function handleUserIntent(text) {
   if (/\b(go for it|build it|implement it|make the change|do it|ship it)\b/i.test(text)) {
-    clearTimeout(state.researchTimer);
-    state.researchTimer = null;
     void startBuildFromConversation();
     return true;
   }
-  scheduleBackgroundResearch(text);
   return false;
-}
-
-function scheduleBackgroundResearch(text) {
-  if (state.activeTaskWorking || state.researchStarting || state.buildStarting) return;
-  const words = text.trim().split(/\s+/);
-  if (words.length < 5 || /^(hi|hello|hey|thanks|thank you)[.!]?$/i.test(text.trim())) return;
-  clearTimeout(state.researchTimer);
-  state.researchTimer = setTimeout(() => {
-    state.researchTimer = null;
-    void startBackgroundResearch();
-  }, 1400);
 }
 
 function liveConversationBrief() {
   return state.userHistory.map((text, index) => `${index + 1}. ${text}`).join("\n");
-}
-
-async function startBackgroundResearch() {
-  if (state.activeTaskWorking || state.researchStarting || state.buildStarting) return;
-  state.researchStarting = true;
-  try {
-    const result = await postJSON("/api/jobs", {
-      kind: "plan",
-      goal: "Investigate the feature or change described in the Live conversation.",
-      details: `Live conversation so far:\n${liveConversationBrief()}`,
-      acceptance_criteria: "Return codebase-specific findings, relevant files and existing behavior, unresolved product decisions, and a concise implementation plan.",
-      cwd: state.cwd,
-      conversation_id: state.activeConversationID || "",
-    });
-    state.activeConversationID = result.conversation_id;
-    state.activeTaskWorking = true;
-    startTask(result, "Background repository research");
-    addMessage("system", "Started a background Shelley agent to inspect the repository.");
-  } catch (error) {
-    addMessage("system", `Could not start background research: ${error.message}`);
-  } finally {
-    state.researchStarting = false;
-  }
 }
 
 async function startBuildFromConversation() {

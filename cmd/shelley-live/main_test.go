@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,10 +47,10 @@ func TestSessionMintsRealtimeClientSecret(t *testing.T) {
 	if session["model"] != "gpt-realtime" {
 		t.Fatalf("model = %v", session["model"])
 	}
-	if len(session["tools"].([]any)) != 8 {
+	if len(session["tools"].([]any)) != 10 {
 		t.Fatalf("tools = %v", session["tools"])
 	}
-	if !strings.Contains(session["instructions"].(string), "asynchronous Shelley agent") ||
+	if !strings.Contains(session["instructions"].(string), "use your own tools first") ||
 		!strings.Contains(session["instructions"].(string), workspace) {
 		t.Fatalf("instructions = %q", session["instructions"])
 	}
@@ -58,6 +59,46 @@ func TestSessionMintsRealtimeClientSecret(t *testing.T) {
 	turnDetection := input["turn_detection"].(map[string]any)
 	if turnDetection["eagerness"] != "low" {
 		t.Fatalf("turn detection = %#v", turnDetection)
+	}
+}
+
+func TestRepositoryListAndGitInspection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		command := append([]string{"-C", root}, args...)
+		if output, err := exec.Command("git", command...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.name", "Test")
+	runGit("config", "user.email", "test@example.com")
+	runGit("add", "README.md")
+	runGit("commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a, _ := newApp(config{shelleyURL: "http://example.test", shelleyCWD: root, workspaceRoot: root})
+	req := httptest.NewRequest(http.MethodPost, "/api/repository/list", strings.NewReader(`{"path":".","cwd":"`+root+`"}`))
+	rec := httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "README.md") || !strings.Contains(rec.Body.String(), "src") {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/repository/git", strings.NewReader(`{"cwd":"`+root+`"}`))
+	rec = httptest.NewRecorder()
+	a.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "README.md") || !strings.Contains(rec.Body.String(), "initial") {
+		t.Fatalf("git status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

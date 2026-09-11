@@ -3,9 +3,10 @@
 A small browser voice interface that uses OpenAI Realtime over WebRTC and starts
 repository-aware planning or implementation work in Shelley.
 
-Substantive coding requests automatically start a background Shelley research
-turn. Explicit approval such as "go for it" promotes that same conversation
-into implementation, preserving the research and spoken product brief.
+The Live model can inspect repository files, search code, check Git state, and
+read prior Shelley conversations directly. Background Shelley agents are
+reserved for deeper planning and implementation. Explicit approval such as "go
+for it" starts implementation with the accumulated spoken product brief.
 
 ## Run
 
