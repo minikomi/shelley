@@ -76,6 +76,19 @@ test.describe("Model picker (PrimeVue)", () => {
     expect(Math.abs(tops.model - tops.cwd)).toBeGreaterThan(2);
   });
 
+  test("does not focus model search when opened on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/new");
+
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible({ timeout: 10000 });
+    await picker.click();
+
+    const searchbox = page.locator(".model-picker-panel").getByRole("searchbox");
+    await expect(searchbox).toBeVisible();
+    await expect(searchbox).not.toBeFocused();
+  });
+
   test("effort pills select a level, persist it, and keep the popover open", async ({ page }) => {
     test.setTimeout(60000);
 
@@ -112,6 +125,69 @@ test.describe("Model picker (PrimeVue)", () => {
     await expect(panel).toBeHidden();
     await expect(picker.locator(".model-picker-value-effort")).toHaveText("· high");
     await page.reload();
+    await expect(picker.locator(".model-picker-value-effort")).toHaveText("· high");
+  });
+
+  test("shows recent combinations, hidden while searching", async ({ page, request }) => {
+    test.setTimeout(60000);
+
+    const response = await request.post("/api/conversations/new", {
+      data: {
+        message: "echo recent model picker",
+        model: "predictable",
+        cwd: "/tmp",
+        conversation_options: { thinking_level: "high" },
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+
+    await page.addInitScript(() => localStorage.setItem("shelley.thinkingLevel.v2", "high"));
+    await page.goto("/new");
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible({ timeout: 10000 });
+    await picker.click();
+
+    const panel = page.locator(".model-picker-panel");
+    await expect(panel.locator(".model-picker-group-label")).toHaveCount(0);
+
+    const recentRow = panel.locator(".p-select-option:has(.model-picker-option-effort)");
+    const modelRow = panel.locator(".p-select-option:not(:has(.model-picker-option-effort))");
+    await expect(modelRow.locator(".model-picker-option-name")).toHaveText("predictable");
+    await expect(modelRow.locator(".model-picker-option-check")).toBeVisible();
+
+    await panel.locator(".model-picker-effort-pill").filter({ hasText: /^low$/ }).click();
+
+    await expect(panel.locator(".model-picker-group-label")).toHaveText("Recent");
+    await expect(panel.locator(".model-picker-group-divider")).toBeVisible();
+    await expect(recentRow.locator(".model-picker-option-name")).toHaveText("predictable");
+    await expect(recentRow.locator(".model-picker-option-effort")).toHaveText("high");
+    await expect(recentRow.locator(".model-picker-option-recent")).toBeVisible();
+    await expect(modelRow.locator(".model-picker-option-recent")).toHaveCount(0);
+    await expect(recentRow.locator(".model-picker-option-check")).toHaveCount(0);
+    await expect(panel.locator(".p-select-option-group").first()).toHaveCSS(
+      "background-color",
+      "rgba(0, 0, 0, 0)",
+    );
+    await expect(recentRow).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(recentRow).toHaveCSS("border-top-width", "1px");
+    const nameBox = await recentRow.locator(".model-picker-option-name").boundingBox();
+    const effortPill = recentRow.locator(".model-picker-option-effort");
+    const effortBox = await effortPill.boundingBox();
+    expect(effortBox!.x).toBeGreaterThan(nameBox!.x + nameBox!.width);
+    await expect(effortPill).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+    await recentRow.hover();
+    await expect(recentRow).not.toHaveClass(/p-focus/);
+
+    await panel.getByRole("searchbox").fill("predictable");
+    await expect(panel.locator(".model-picker-group-label")).toHaveCount(0);
+    await expect(panel.locator(".p-select-option-group:visible")).toHaveCount(0);
+
+    await panel.getByRole("searchbox").fill("");
+    await expect(panel.locator(".model-picker-group-label")).toBeVisible();
+
+    await recentRow.click();
+    await expect(panel).toBeHidden();
     await expect(picker.locator(".model-picker-value-effort")).toHaveText("· high");
   });
 });

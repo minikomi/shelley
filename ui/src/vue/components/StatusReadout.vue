@@ -76,6 +76,7 @@
           :disabled="agentWorking"
           :refreshing="refreshingModels"
           @select-model="onSwitchConversationModel"
+          @select-combination="onSwitchConversationCombination"
           @thinking-change="onSwitchConversationThinkingLevel"
           @manage-models="onManageModels"
           @refresh-models="onRefreshModels"
@@ -113,6 +114,10 @@ const props = defineProps<{
   onUsageNeeded?: () => void;
   onChangeConversationCwd?: () => void;
   onSwitchConversationModel: (model: string) => void;
+  onSwitchConversationCombination: (
+    model: string,
+    level: Exclude<ThinkingLevel, "default"> | null,
+  ) => void;
   onSwitchConversationThinkingLevel: (level: ThinkingLevel) => void;
   onManageModels: () => void;
   onRefreshModels: () => void;

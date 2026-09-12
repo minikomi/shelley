@@ -159,6 +159,7 @@ export const zhCN: TranslationKeys = {
   refreshModels: "刷新",
   refreshingModels: "刷新中...",
   searchModels: "搜索模型",
+  recentModels: "最近使用",
   noModelsFound: "未找到模型",
   notReadyBadge: "未就绪",
   showAllModels: "全部模型",

@@ -159,6 +159,7 @@ export const zhTW: TranslationKeys = {
   refreshModels: "重新整理",
   refreshingModels: "重新整理中...",
   searchModels: "搜尋模型",
+  recentModels: "最近使用",
   noModelsFound: "找不到模型",
   notReadyBadge: "未就緒",
   showAllModels: "全部模型",

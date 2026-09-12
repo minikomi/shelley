@@ -126,6 +126,12 @@
                   :thinking-level="rebaseThinkingLevel"
                   :disabled="startingRebase || !rebaseModel"
                   @select-model="rebaseModel = $event"
+                  @select-combination="
+                    (model, level) => {
+                      rebaseModel = model;
+                      if (level) rebaseThinkingLevel = level;
+                    }
+                  "
                   @thinking-change="rebaseThinkingLevel = $event"
                 />
               </span>

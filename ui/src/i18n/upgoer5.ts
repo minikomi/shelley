@@ -159,6 +159,7 @@ export const upgoer5: TranslationKeys = {
   refreshModels: "Get Again",
   refreshingModels: "Getting again...",
   searchModels: "Look for brains",
+  recentModels: "Used lately",
   noModelsFound: "No brains found",
   notReadyBadge: "not ready",
   showAllModels: "All brains",

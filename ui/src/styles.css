@@ -14304,6 +14304,26 @@ kbd {
   gap: 0.125rem;
   min-width: 0;
 }
+.p-select-overlay.model-picker-panel
+  .p-select-option:has(.model-picker-option-recent):not([data-p-selected="true"]):not(
+    [data-p-focused="true"]
+  ):not(:hover) {
+  background: color-mix(in srgb, var(--blue-bg) 35%, var(--bg-tertiary));
+}
+.dark
+  .p-select-overlay.model-picker-panel
+  .p-select-option:has(.model-picker-option-recent):not([data-p-selected="true"]):not(
+    [data-p-focused="true"]
+  ):not(:hover) {
+  background: color-mix(in srgb, var(--blue-bg) 65%, var(--bg-base));
+}
+.p-select-overlay.model-picker-panel
+  .p-select-option:has(.model-picker-option-recent):not([data-p-selected="true"]):not(
+    [data-p-focused="true"]
+  ):not(:hover)
+  .model-picker-option-name {
+  color: color-mix(in srgb, var(--blue-text) 30%, var(--text-primary));
+}
 .p-select-overlay.model-picker-panel .model-picker-option-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -14328,6 +14348,48 @@ kbd {
   flex: 0 0 auto;
   color: var(--blue-text);
   margin-left: 0.5rem;
+}
+.p-select-overlay.model-picker-panel .model-picker-option-effort {
+  flex: 0 0 auto;
+  margin-left: 0.75rem;
+  padding: 0 0.4rem;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1.3;
+}
+
+/* Option-group rows are only dividers. With no recent group the models
+   divider is first and hidden, so the list is flat. */
+.p-select-overlay.model-picker-panel .p-select-option-group {
+  padding: 0;
+}
+.p-select-overlay.model-picker-panel
+  .p-select-option-group:first-child:has(.model-picker-group-divider) {
+  display: none;
+}
+.p-select-overlay.model-picker-panel .model-picker-group-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem 0.1875rem;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+}
+.p-select-overlay.model-picker-panel .model-picker-group-label::after {
+  display: none;
+}
+.p-select-overlay.model-picker-panel
+  .p-select-option-group:has(.model-picker-group-label)
+  + .p-select-option {
+  border-top: 1px solid var(--border);
+}
+.p-select-overlay.model-picker-panel .model-picker-group-divider {
+  display: block;
+  height: 1px;
+  background: var(--border);
 }
 
 .p-select-overlay.model-picker-panel .model-picker-divider {

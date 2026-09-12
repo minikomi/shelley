@@ -844,6 +844,17 @@ function switchConversationModel(model: string) {
   return sendModelCommand(arg);
 }
 
+function switchConversationCombination(
+  model: string,
+  level: Exclude<ThinkingLevel, "default"> | null,
+) {
+  if (level === null) {
+    return switchConversationModel(model);
+  }
+  if (model === selectedModel.value && level === thinkingLevel.value) return;
+  return sendModelCommand(`${model} ${level}`);
+}
+
 // Reasoning pills in the status readout's picker. Same policy as the model
 // above: don't touch local state, let the server's echo drive the pill, so a
 // rejected level doesn't leave the UI (and the stored default) claiming a
@@ -887,6 +898,14 @@ function setSelectedModel(model: string) {
       ? props.conversationId
       : lazyDraftId.value;
   if (draftId) putDraftModel(draftId, model);
+}
+
+function setSelectedCombination(
+  model: string,
+  level: Exclude<ThinkingLevel, "default"> | null,
+) {
+  if (level !== null) setThinkingLevel(level);
+  setSelectedModel(model);
 }
 
 const selectedCwd = ref<string>("");
@@ -3518,11 +3537,13 @@ const statusContentProps = computed(() => {
     onDistillNewGeneration: contextBarDistill.value,
     onStartNewGeneration: handleStartNewGeneration,
     onSelectModel: setSelectedModel,
+    onSelectCombination: setSelectedCombination,
     // The status readout's inline picker only renders for a conversation that
     // already exists, where the model and reasoning level are server state (see
     // sendModelCommand); the composer's picker only renders before the first
     // send, where they are not. Separate handlers, not shared ones.
     onSwitchConversationModel: switchConversationModel,
+    onSwitchConversationCombination: switchConversationCombination,
     onSwitchConversationThinkingLevel: switchConversationThinkingLevel,
     onManageModels: () => props.onOpenModelsModal?.(),
     onRefreshModels: handleRefreshModels,

@@ -698,7 +698,7 @@ test.describe("Status readout controls", () => {
     // model list, the current selection, and the reasoning pills.
     await model.click();
     await expect(pickerPanel).toBeVisible();
-    await expect(pickerPanel.locator("[role=option]").first()).toBeVisible();
+    await expect(pickerPanel.locator(".p-select-option").first()).toBeVisible();
     await expect(pickerPanel.locator(".model-picker-effort-pills")).toBeVisible();
     await expect(costPopup).toBeHidden();
     await page.keyboard.press("Escape");
@@ -724,7 +724,7 @@ test.describe("Status readout controls", () => {
 
     const panel = page.locator(".model-picker-panel");
     await expect(panel).toBeVisible();
-    await expect(panel.locator("[role=option]").first()).toBeVisible();
+    await expect(panel.locator(".p-select-option").first()).toBeVisible();
     const box = await panel.boundingBox();
     const vp = page.viewportSize()!;
     expect(box, "overlay has no box").not.toBeNull();

@@ -80,6 +80,7 @@
         :disabled="sending"
         :refreshing="refreshingModels"
         @select-model="onSelectModel"
+        @select-combination="onSelectCombination"
         @thinking-change="onThinkingChange"
         @manage-models="onManageModels"
         @refresh-models="onRefreshModels"
@@ -235,11 +236,19 @@ const props = defineProps<{
   onDistillNewGeneration?: () => Promise<void> | void;
   onStartNewGeneration: () => Promise<void> | void;
   onSelectModel: (model: string) => void;
+  onSelectCombination: (
+    model: string,
+    level: Exclude<ThinkingLevel, "default"> | null,
+  ) => void;
   /** Model / reasoning-level picks from the status readout, which only renders
    *  for an existing conversation — different operations from onSelectModel and
    *  onThinkingChange, which are client-side only (see sendModelCommand in
    *  ChatInterface). */
   onSwitchConversationModel: (model: string) => void;
+  onSwitchConversationCombination: (
+    model: string,
+    level: Exclude<ThinkingLevel, "default"> | null,
+  ) => void;
   onSwitchConversationThinkingLevel: (level: ThinkingLevel) => void;
   onManageModels: () => void;
   onRefreshModels: () => void;
@@ -278,6 +287,7 @@ const readoutProps = computed(() => ({
   // server (see applyPickedCwd in ChatInterface).
   onChangeConversationCwd: props.onOpenDirectoryPicker,
   onSwitchConversationModel: props.onSwitchConversationModel,
+  onSwitchConversationCombination: props.onSwitchConversationCombination,
   onSwitchConversationThinkingLevel: props.onSwitchConversationThinkingLevel,
   onManageModels: props.onManageModels,
   onRefreshModels: props.onRefreshModels,

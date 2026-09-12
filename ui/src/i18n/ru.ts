@@ -159,6 +159,7 @@ export const ru: TranslationKeys = {
   refreshModels: "Обновить",
   refreshingModels: "Обновление...",
   searchModels: "Поиск моделей",
+  recentModels: "Недавние",
   noModelsFound: "Модели не найдены",
   notReadyBadge: "не готова",
   showAllModels: "Все модели",

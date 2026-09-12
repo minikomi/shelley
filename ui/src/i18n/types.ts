@@ -159,6 +159,7 @@ export interface TranslationKeys {
   refreshModels: string;
   refreshingModels: string;
   searchModels: string;
+  recentModels: string;
   noModelsFound: string;
   notReadyBadge: string;
   showAllModels: string;

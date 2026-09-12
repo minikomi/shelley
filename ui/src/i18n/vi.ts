@@ -159,6 +159,7 @@ export const vi: TranslationKeys = {
   refreshModels: "Làm mới",
   refreshingModels: "Đang làm mới...",
   searchModels: "Tìm kiếm models",
+  recentModels: "Gần đây",
   noModelsFound: "Không tìm thấy model",
   notReadyBadge: "chưa sẵn sàng",
   showAllModels: "Tất cả models",

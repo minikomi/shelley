@@ -159,6 +159,7 @@ export const ja: TranslationKeys = {
   refreshModels: "更新",
   refreshingModels: "更新中...",
   searchModels: "モデルを検索",
+  recentModels: "最近",
   noModelsFound: "モデルが見つかりません",
   notReadyBadge: "未準備",
   showAllModels: "すべてのモデル",

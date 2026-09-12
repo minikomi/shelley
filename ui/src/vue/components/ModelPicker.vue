@@ -27,11 +27,13 @@
 <template>
   <Select
     ref="selectRef"
-    :model-value="selectedModel"
-    :options="visibleModels"
+    :model-value="selectedPickerValue"
+    :options="optionGroups"
     option-label="label"
-    option-value="id"
-    :option-disabled="(m: PickerModel) => !m.ready"
+    option-value="pickerValue"
+    option-group-label="label"
+    option-group-children="items"
+    :option-disabled="(m: PickerOption) => !m.ready"
     :disabled="disabled"
     fluid
     size="small"
@@ -49,7 +51,8 @@
     :filter-placeholder="t('searchModels')"
     :empty-filter-message="t('noModelsFound')"
     reset-filter-on-hide
-    auto-filter-focus
+    :auto-filter-focus="autoFilterFocus"
+    :focus-on-hover="false"
     @update:model-value="handleSelect"
     @filter="onFilter"
     @hide="filterValue = ''"
@@ -64,8 +67,19 @@
         >
       </span>
     </template>
+    <template #optiongroup="{ option }">
+      <span v-if="option.kind === 'recent'" class="model-picker-group-label">{{
+        t("recentModels")
+      }}</span>
+      <span v-else class="model-picker-group-divider" aria-hidden="true" />
+    </template>
     <template #option="{ option }">
-      <div class="model-picker-option-content">
+      <div
+        :class="[
+          'model-picker-option-content',
+          { 'model-picker-option-recent': option.kind === 'recent' },
+        ]"
+      >
         <span class="model-picker-option-name">{{ option.label }}</span>
         <span
           v-if="option.source && option.source !== dominantSource"
@@ -73,9 +87,15 @@
           >{{ option.source }}</span
         >
       </div>
+      <span
+        v-if="option.kind === 'recent' && option.recentEffortLabel"
+        class="model-picker-option-effort"
+      >
+        {{ option.recentEffortLabel }}
+      </span>
       <span v-if="!option.ready" class="model-picker-option-badge">{{ t("notReadyBadge") }}</span>
       <svg
-        v-else-if="option.id === selectedModel"
+        v-else-if="option.kind === 'model' && option.id === selectedModel"
         class="model-picker-option-check"
         width="14"
         height="14"
@@ -164,15 +184,28 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, onBeforeUnmount, ref } from "vue";
 import Select from "primevue/select";
 import { statusPickerDt } from "./statusPickerDt";
 import { prettyModelLabels } from "../../utils/modelNames";
 import { THINKING_LEVELS, type ThinkingLevel } from "./thinkingLevel";
 import { useI18n } from "../composables/i18n";
 import type { Model } from "../../types";
+import { ConversationsListKey } from "../composables/subagentLive";
+import { recentModelCombinations, type RecentThinkingLevel } from "./recentModelCombinations";
 
 type PickerModel = Model & { label: string };
+type PickerOption = PickerModel & {
+  kind: "model" | "recent";
+  pickerValue: string;
+  recentEffortLabel?: string;
+  recentThinkingLevel?: RecentThinkingLevel;
+};
+type PickerGroup = {
+  kind: "models" | "recent";
+  label: string;
+  items: PickerOption[];
+};
 
 const props = withDefaults(
   defineProps<{
@@ -219,6 +252,7 @@ const props = withDefaults(
 );
 const emit = defineEmits<{
   (e: "selectModel", modelId: string): void;
+  (e: "selectCombination", modelId: string, level: RecentThinkingLevel): void;
   (e: "thinkingChange", level: ThinkingLevel): void;
   (e: "manageModels"): void;
   (e: "refreshModels"): void;
@@ -226,7 +260,16 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const selectRef = ref<InstanceType<typeof Select> | null>(null);
+const mobileMq = window.matchMedia("(max-width: 767px)");
+const autoFilterFocus = ref(!mobileMq.matches);
+const onMobileChange = (event: MediaQueryListEvent) => {
+  autoFilterFocus.value = !event.matches;
+};
+mobileMq.addEventListener("change", onMobileChange);
+onBeforeUnmount(() => mobileMq.removeEventListener("change", onMobileChange));
 const effortLabelId = `model-picker-effort-label-${Math.random().toString(36).slice(2, 8)}`;
+const conversations = inject(ConversationsListKey);
+if (!conversations) throw new Error("ModelPicker requires ConversationsListKey");
 
 // ---- model list -------------------------------------------------------
 
@@ -284,6 +327,52 @@ const visibleModels = computed(() => {
   }
   return base;
 });
+
+const recentOptions = computed<PickerOption[]>(() => {
+  const byId = new Map(decorated.value.map((model) => [model.id, model]));
+  return recentModelCombinations(conversations.value, props.models, Date.now(), 4)
+    .filter((combination) => !isActiveRecentCombination(combination))
+    .slice(0, 3)
+    .flatMap((combination) => {
+      const model = byId.get(combination.modelId);
+      if (!model) return [];
+      return [
+        {
+          ...model,
+          kind: "recent",
+          pickerValue: `recent:${model.id}:${combination.thinkingLevel || ""}`,
+          recentThinkingLevel: combination.thinkingLevel,
+          recentEffortLabel: combination.thinkingLevel || "",
+        },
+      ];
+    });
+});
+
+const modelOptions = computed<PickerOption[]>(() =>
+  visibleModels.value.map((model) => ({
+    ...model,
+    kind: "model",
+    pickerValue: `model:${model.id}`,
+  })),
+);
+
+const optionGroups = computed<PickerGroup[]>(() => {
+  const groups: PickerGroup[] = [];
+  if (recentOptions.value.length && !filterValue.value) {
+    groups.push({ kind: "recent", label: "Recent", items: recentOptions.value });
+  }
+  groups.push({ kind: "models", label: "", items: modelOptions.value });
+  return groups;
+});
+
+const pickerOptionsByValue = computed(
+  () =>
+    new Map(
+      [...recentOptions.value, ...modelOptions.value].map((option) => [option.pickerValue, option]),
+    ),
+);
+
+const selectedPickerValue = computed(() => `model:${props.selectedModel}`);
 
 const selectedModelObj = computed(() => props.models.find((m) => m.id === props.selectedModel));
 // selectedModel is "" when the server serves no models (see
@@ -354,8 +443,26 @@ const ariaLabel = computed(() => {
 
 // ---- actions -----------------------------------------------------------
 
-function handleSelect(modelId: string) {
-  emit("selectModel", modelId);
+function isActiveRecentCombination(combination: {
+  modelId: string;
+  thinkingLevel: RecentThinkingLevel;
+}): boolean {
+  if (combination.modelId !== props.selectedModel) return false;
+  if (selectedModelObj.value?.supports_reasoning === false) {
+    return combination.thinkingLevel === null;
+  }
+  return (combination.thinkingLevel ?? "default") === effectiveEffort.value;
+}
+
+function handleSelect(pickerValue: string) {
+  const option = pickerOptionsByValue.value.get(pickerValue);
+  if (!option) throw new Error(`unknown model picker option: ${pickerValue}`);
+  if (option.kind === "recent") {
+    emit("selectCombination", option.id, option.recentThinkingLevel ?? null);
+    selectRef.value?.hide();
+    return;
+  }
+  emit("selectModel", option.id);
 }
 
 function selectEffort(level: ThinkingLevel) {

@@ -160,6 +160,7 @@ export const es: TranslationKeys = {
   refreshModels: "Actualizar",
   refreshingModels: "Actualizando...",
   searchModels: "Buscar modelos",
+  recentModels: "Recientes",
   noModelsFound: "No se encontraron modelos",
   notReadyBadge: "no listo",
   showAllModels: "Todos los modelos",
