@@ -249,3 +249,19 @@ test("invalid anchors leave follow enabled; removing a fragment cancels retries"
   await page.clock.runFor(1100);
   expect(await scrolls(page)).toEqual([]);
 });
+
+test("scroll-to-bottom button clears the current fragment", async ({ page, request }) => {
+  const conversation = await seed(request);
+  await page.goto(`/c/${conversation.slug}`);
+  await expect(page.locator(".toc-button")).toBeVisible();
+
+  await page.locator(".messages-container").evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect(page.locator(".scroll-to-bottom-button")).toBeVisible();
+  await page.evaluate(() => history.replaceState(null, "", `${window.location.pathname}#current`));
+  await page.locator(".scroll-to-bottom-button").click();
+
+  await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("");
+  await expect(page.locator(".scroll-to-bottom-button")).toBeHidden();
+});

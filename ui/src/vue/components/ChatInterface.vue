@@ -261,7 +261,7 @@
           class="scroll-to-bottom-button"
           aria-label="Scroll to bottom"
           v-tooltip.top="scrollToBottomTooltip"
-          @click="scrollToBottom"
+          @click="handleScrollToBottomClick"
         >
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="chat-scroll-icon">
             <path
@@ -488,6 +488,7 @@ import {
   isVisibleConversationMessage,
 } from "../../utils/conversationView";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
+import { replaceLocationFragment } from "../../utils/locationFragment";
 import { contextUsageLevel } from "../../utils/contextUsage";
 import {
   btwAnchor,
@@ -990,6 +991,12 @@ let sentinelAtBottom = true;
 // first; the ResizeObserver uses these to retroactively undo that misread.
 let inferredScrollUpAt = -Infinity;
 let inferredScrollUpDelta = 0;
+// A persisted bottom restore remains semantic until confirmed user
+// navigation. Transient startup clamps must not replace it with a pixel
+// offset; a bare scroll waits for the bottom sentinel to confirm navigation.
+let savedBottomRestoration: "seeking" | "following" | null = null;
+let pendingBareRestorationScroll = false;
+let restorationConfirmationFrame: number | null = null;
 // Last upward wheel / touch gesture; a scroll-up near a real gesture must
 // never be undone as a clamp misread.
 let lastScrollGestureAt = -Infinity;
@@ -1388,12 +1395,14 @@ function saveScroll(scrollTop: number) {
   // off-screen content, so a saved offset can no longer sit at the bottom
   // after a reload (scrollHeight is inflated) — which silently disarmed
   // auto-follow. Restoring the sentinel re-pins to the real bottom instead.
-  localStorage.setItem(key, atBottom ? "bottom" : String(scrollTop));
+  localStorage.setItem(key, savedBottomRestoration !== null || atBottom ? "bottom" : String(scrollTop));
 }
 function loadScroll(): number | null {
   const key = scrollKey();
   if (!key) return null;
   const v = localStorage.getItem(key);
+  savedBottomRestoration = v === "bottom" ? "seeking" : null;
+  clearPendingRestorationScroll();
   // null (no value) and the "bottom" sentinel both mean "restore to bottom".
   if (v == null || v === "bottom") return null;
   const n = Number(v);
@@ -2120,17 +2129,41 @@ function stopBottomPin() {
   bottomPinFrame = null;
 }
 
+function clearPendingRestorationScroll() {
+  pendingBareRestorationScroll = false;
+  if (restorationConfirmationFrame !== null) {
+    cancelAnimationFrame(restorationConfirmationFrame);
+    restorationConfirmationFrame = null;
+  }
+}
+
+function stopSavedBottomRestoration() {
+  savedBottomRestoration = null;
+  clearPendingRestorationScroll();
+}
+
 function markUserScrolledUp() {
   stopBottomPin();
   followExplicitSelectionToBottom = false;
   suppressExplicitSelectionClamp = false;
+  stopSavedBottomRestoration();
+  userScrolled = true;
+  atBottom = false;
+  showScrollToBottom.value = true;
+}
+
+function inferUserScrolledUp() {
+  stopBottomPin();
+  followExplicitSelectionToBottom = false;
+  suppressExplicitSelectionClamp = false;
+  if (savedBottomRestoration === "following") pendingBareRestorationScroll = true;
   userScrolled = true;
   atBottom = false;
   showScrollToBottom.value = true;
 }
 
 function releaseBottomPinForUser() {
-  if (!bottomPinActive && !followExplicitSelectionToBottom) return;
+  if (!bottomPinActive && !followExplicitSelectionToBottom && savedBottomRestoration === null) return;
   markUserScrolledUp();
 }
 
@@ -2206,6 +2239,11 @@ function scrollToBottom() {
     bottomPinFrame = requestAnimationFrame(step);
   };
   step();
+}
+
+function handleScrollToBottomClick() {
+  replaceLocationFragment("");
+  scrollToBottom();
 }
 
 function requestCurrentConversationBottom() {
@@ -3626,6 +3664,7 @@ watch(
     currentConversationId = id;
     followExplicitSelectionToBottom = explicitlySelected;
     suppressExplicitSelectionClamp = explicitlySelected;
+    stopSavedBottomRestoration();
     pendingScroll = id ? (explicitlySelected ? null : loadScroll()) : undefined;
     teardownSubscriptions();
     // An annotation view belongs to the image it was opened from; switching
@@ -4030,7 +4069,8 @@ function handleScroll() {
         ? inferredScrollUpDelta + upwardDelta
         : upwardDelta;
     inferredScrollUpAt = now;
-    markUserScrolledUp();
+    if (userScrollGestureActive()) markUserScrolledUp();
+    else inferUserScrolledUp();
   }
   // A layout clamp emits its scroll event synchronously right after the resize
   // that caused it, so any unconsumed budget now is stale; drop it so it can't
@@ -4065,6 +4105,8 @@ function setupScrollObservers() {
         // Manual return resumes follow even when touchend was lost or delayed.
         touchScrolling = false;
         userScrolled = false;
+        if (savedBottomRestoration === "seeking") savedBottomRestoration = "following";
+        clearPendingRestorationScroll();
         suppressExplicitSelectionClamp = false;
         stopBottomPin();
         if (!loadingFlag && followExplicitSelectionToBottom) {
@@ -4073,7 +4115,11 @@ function setupScrollObservers() {
       } else if (!bottomPinActive && !touchScrolling) {
         // Growth can move the sentinel while follow is paused. Only handleScroll
         // may disarm an active touch; neither infer scroll-up nor re-pin here.
-        if (!userScrolled && followExplicitSelectionToBottom) {
+        if (savedBottomRestoration !== null && !pendingBareRestorationScroll) {
+          // A saved semantic bottom survives startup/lazy layout that moves the
+          // sentinel without confirmed navigation.
+          scrollToBottom();
+        } else if (!userScrolled && followExplicitSelectionToBottom) {
           // An explicitly selected conversation may grow after its first
           // bottom paint as lazy renderers hydrate. Keep the selection at its
           // promised destination unless the user has tried to scroll away.
@@ -4093,6 +4139,14 @@ function setupScrollObservers() {
           // noticed: its event can race this async observer while
           // sentinelAtBottom is still stale-true.
           userScrolled = true;
+          if (pendingBareRestorationScroll && restorationConfirmationFrame === null) {
+            restorationConfirmationFrame = requestAnimationFrame(() => {
+              restorationConfirmationFrame = null;
+              if (pendingBareRestorationScroll && !sentinelAtBottom) {
+                stopSavedBottomRestoration();
+              }
+            });
+          }
         }
       }
     },
@@ -4151,6 +4205,7 @@ function setupScrollObservers() {
         showScrollToBottom.value = false;
         inferredScrollUpAt = -Infinity;
         inferredScrollUpDelta = 0;
+        clearPendingRestorationScroll();
       } else {
         clampBudget += listShrink;
       }
@@ -4174,6 +4229,7 @@ function setupScrollObservers() {
         showScrollToBottom.value = false;
         inferredScrollUpAt = -Infinity;
         inferredScrollUpDelta = 0;
+        clearPendingRestorationScroll();
       } else {
         clampBudget += containerGrowth;
       }
@@ -4448,6 +4504,7 @@ onUnmounted(() => {
   window.removeEventListener("pointerup", handleScrollPointerUp);
   window.removeEventListener("pointercancel", handleScrollPointerUp);
   if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+  clearPendingRestorationScroll();
   ro?.disconnect();
   bottomObserver?.disconnect();
   document.removeEventListener("visibilitychange", onVisChangeSave);

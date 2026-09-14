@@ -616,6 +616,96 @@ test.describe("Scroll behavior", () => {
       .toBeLessThan(120);
   });
 
+  test("saved-bottom restoration survives clamps but yields to gestures and bare navigation", async ({
+    page,
+    request,
+  }) => {
+    const generated = await request.post("/debug/loremipsum?json=1", {
+      form: { size: "medium", model: "predictable" },
+    });
+    expect(generated.ok()).toBeTruthy();
+    const { conversation_id: conversationId } = await generated.json();
+    const scrollKey = `shelley_scroll_${conversationId}`;
+
+    await page.goto(`/c/${conversationId}`);
+    const container = page.locator(".messages-container");
+    const scrollButton = page.locator(".scroll-to-bottom-button");
+    await expect(container).toBeVisible({ timeout: 30000 });
+    await page.evaluate(
+      ({ key }) => localStorage.setItem(key, "bottom"),
+      { key: scrollKey },
+    );
+    await page.reload();
+    await expect(scrollButton).toBeHidden({ timeout: 10000 });
+    await expect(page.locator(".messages-bottom-sentinel")).toBeAttached({ timeout: 30000 });
+
+    // A list shrink clamps scrollTop while leaving the bottom sentinel in
+    // view. Saving during that startup-style transition must keep the semantic
+    // bottom rather than persist the transient pixel offset.
+    const afterClamp = await container.evaluate(async (element, key) => {
+      const list = element.querySelector(".messages-list");
+      const sentinel = element.querySelector(".messages-bottom-sentinel");
+      if (!list || !sentinel) throw new Error("message list sentinel not found");
+      const spacer = document.createElement("div");
+      spacer.style.height = "600px";
+      list.insertBefore(spacer, sentinel);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      element.scrollTop = element.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      spacer.remove();
+      // Force the clamp and its scroll handler before ResizeObserver can
+      // explain the shrink, matching WebKit's event ordering.
+      void element.scrollTop;
+      element.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("beforeunload"));
+      const immediate = localStorage.getItem(key);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      window.dispatchEvent(new Event("beforeunload"));
+      return { immediate, settled: localStorage.getItem(key) };
+    }, scrollKey);
+    expect(afterClamp).toEqual({ immediate: "bottom", settled: "bottom" });
+
+    // A bare jump (Find/accessibility/programmatic scrolling) is provisional
+    // until the sentinel confirms it left the bottom.
+    const beforeConfirmation = await container.evaluate((element, key) => {
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("beforeunload"));
+      return localStorage.getItem(key);
+    }, scrollKey);
+    expect(beforeConfirmation).toBe("bottom");
+    await expect(scrollButton).toBeVisible({ timeout: 5000 });
+    await expect
+      .poll(async () => {
+        await page.evaluate(() => window.dispatchEvent(new Event("beforeunload")));
+        return page.evaluate((key) => localStorage.getItem(key), scrollKey);
+      })
+      .not.toBe("bottom");
+
+    // Returning to bottom and restoring again re-arms the guard, but an
+    // explicit upward wheel gesture cancels it immediately.
+    await scrollButton.click();
+    await page.evaluate((key) => localStorage.setItem(key, "bottom"), scrollKey);
+    await page.reload();
+    await expect(scrollButton).toBeHidden({ timeout: 10000 });
+    await expect(page.locator(".messages-bottom-sentinel")).toBeAttached({ timeout: 30000 });
+    await container.evaluate(
+      () =>
+        new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    const afterWheel = await container.evaluate((element, key) => {
+      element.dispatchEvent(new WheelEvent("wheel", { deltaY: -200, bubbles: true }));
+      window.dispatchEvent(new Event("beforeunload"));
+      const saved = localStorage.getItem(key);
+      element.scrollTop = 0;
+      return saved;
+    }, scrollKey);
+    expect(afterWheel).not.toBe("bottom");
+    await expect(scrollButton).toBeVisible({ timeout: 5000 });
+    await page.evaluate(() => window.dispatchEvent(new Event("beforeunload")));
+    expect(await page.evaluate((key) => localStorage.getItem(key), scrollKey)).not.toBe("bottom");
+  });
+
   test("a scroll-up the observer has not yet reported still disarms auto-follow", async ({
     page,
     request,
