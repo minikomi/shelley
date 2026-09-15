@@ -1547,6 +1547,18 @@ func TestParseResponsesSSECustomToolCall(t *testing.T) {
 	}
 }
 
+func TestParseResponsesSSEErrorAcceptsNumericCode(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: error`,
+		`data: {"type":"error","error":{"message":"overloaded","type":"server_error","code":500}}`,
+		``,
+	}, "\n")
+	_, err := parseResponsesSSEStream(strings.NewReader(stream), nil)
+	if err == nil || !strings.Contains(err.Error(), "stream error event: overloaded") {
+		t.Fatalf("error = %v, want parsed stream error", err)
+	}
+}
+
 func TestResponsesResponseCreatedAtFractionalJSON(t *testing.T) {
 	tests := []struct {
 		name string

@@ -225,10 +225,10 @@ type responsesOutputTokensDetails struct {
 }
 
 type responsesError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Param   string `json:"param"`
-	Code    string `json:"code"`
+	Message string          `json:"message"`
+	Type    string          `json:"type"`
+	Param   string          `json:"param"`
+	Code    json.RawMessage `json:"code"`
 }
 
 // fromLLMMessageResponses converts llm.Message to Responses API input items
