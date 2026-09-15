@@ -389,6 +389,7 @@ type Server struct {
 	exitDelay         time.Duration
 	exitProcess       func(int)
 	mediaRun          mediaCommandRunner
+	transcriber       recordingTranscriber
 	transcriptionMu   sync.Mutex
 	transcriptionJobs map[string]transcriptionJob
 
@@ -438,6 +439,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		exitDelay:             500 * time.Millisecond,
 		exitProcess:           os.Exit,
 		mediaRun:              runMediaCommand,
+		transcriber:           newOpenAIRecordingTranscriber(),
 		transcriptionJobs:     make(map[string]transcriptionJob),
 	}
 

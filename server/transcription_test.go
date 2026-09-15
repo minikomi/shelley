@@ -19,6 +19,18 @@ import (
 	"shelley.exe.dev/llm"
 )
 
+type recordingTranscriberFunc func(context.Context, string) (transcriptionResult, error)
+
+func (f recordingTranscriberFunc) Transcribe(ctx context.Context, path string) (transcriptionResult, error) {
+	return f(ctx, path)
+}
+
+func successfulRecordingTranscriber(text string) recordingTranscriber {
+	return recordingTranscriberFunc(func(context.Context, string) (transcriptionResult, error) {
+		return transcriptionResult{Text: text, Model: openAITranscriptionModel}, nil
+	})
+}
+
 func transcriptionTestFile(t *testing.T, name string) string {
 	t.Helper()
 	if err := os.MkdirAll(browse.UploadDir, 0o755); err != nil {
@@ -200,8 +212,9 @@ func transcriptionDone(t *testing.T, server *Server, queuedID string) <-chan str
 }
 
 func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
-	server, database, predictable := newTestServer(t)
+	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("predictable spoken words")
 	mediaPath := transcriptionTestFile(t, "audio.webm")
 	cwd := t.TempDir()
 	model := "predictable"
@@ -272,20 +285,20 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 
 	close(release)
 	<-done
-	lastRequest := predictable.GetLastRequest()
-	if lastRequest == nil {
-		t.Fatal("transcription subagent did not call predictable model")
+	messages, err := database.ListMessages(t.Context(), item.Transcription.ChildConversationID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var prompt strings.Builder
-	for _, message := range lastRequest.Messages {
-		for _, content := range message.Content {
-			prompt.WriteString(content.Text)
-		}
+	if len(messages) != 4 {
+		t.Fatalf("child messages = %d, want 4", len(messages))
 	}
-	for _, want := range []string{"<transcribing_audio_skill>", "gpt-transcribe", mediaPath, "return ONLY the user's spoken words"} {
-		if !strings.Contains(prompt.String(), want) {
-			t.Errorf("subagent prompt missing %q: %s", want, prompt.String())
-		}
+	var toolCall llm.Message
+	if messages[1].LlmData == nil || json.Unmarshal([]byte(*messages[1].LlmData), &toolCall) != nil ||
+		len(toolCall.Content) != 1 || toolCall.Content[0].ToolName != "openai_audio_transcription" {
+		t.Fatalf("immediate tool call = %#v", messages[1])
+	}
+	if messages[3].LlmData == nil || !strings.Contains(*messages[3].LlmData, "predictable spoken words") {
+		t.Fatalf("final child message = %#v", messages[3])
 	}
 	parentManager.SetAgentWorking(false)
 	if _, err := parentManager.CancelQueuedMessages(t.Context(), server); err != nil {
@@ -378,6 +391,7 @@ func TestTranscriptionBarrierDoesNotStarveSubagentCompletion(t *testing.T) {
 func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("predictable spoken words")
 	mediaPath := transcriptionTestFile(t, "screen.webm")
 	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
@@ -470,6 +484,7 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("predictable spoken words")
 	mediaPath := transcriptionTestFile(t, "retry.webm")
 	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
@@ -544,39 +559,26 @@ func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 	}
 }
 
-type blockingTranscriptionService struct {
-	inner     llm.Service
+type blockingRecordingTranscriber struct {
 	started   chan struct{}
 	cancelled chan struct{}
 	once      sync.Once
 }
 
-func (s *blockingTranscriptionService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	for _, message := range req.Messages {
-		for _, content := range message.Content {
-			if strings.Contains(content.Text, "<transcribing_audio_skill>") {
-				s.once.Do(func() { close(s.started) })
-				<-ctx.Done()
-				close(s.cancelled)
-				return nil, ctx.Err()
-			}
-		}
-	}
-	return s.inner.Do(ctx, req)
+func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _ string) (transcriptionResult, error) {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	close(s.cancelled)
+	return transcriptionResult{}, ctx.Err()
 }
 
-func (s *blockingTranscriptionService) Provider() string       { return s.inner.Provider() }
-func (s *blockingTranscriptionService) MaxImageDimension() int { return s.inner.MaxImageDimension() }
-func (s *blockingTranscriptionService) MaxImageBytes() int     { return s.inner.MaxImageBytes() }
-func (s *blockingTranscriptionService) SupportsImages() bool   { return s.inner.SupportsImages() }
-
 func TestCancelQueuedTranscriptionCancelsChild(t *testing.T) {
-	server, database, predictable := newTestServer(t)
+	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
-	blocking := &blockingTranscriptionService{
-		inner: predictable, started: make(chan struct{}), cancelled: make(chan struct{}),
+	blocking := &blockingRecordingTranscriber{
+		started: make(chan struct{}), cancelled: make(chan struct{}),
 	}
-	server.llmManager = &testLLMManager{service: blocking}
+	server.transcriber = blocking
 	server.mediaRun = func(_ context.Context, name string, _ ...string) ([]byte, error) {
 		if name != "ffprobe" {
 			return nil, fmt.Errorf("unexpected command %q", name)
@@ -659,6 +661,10 @@ func TestCancelConversationCancelsQueuedTranscriptionWithoutParentLoop(t *testin
 func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("recovered direct words")
+	server.mediaRun = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
 	parent, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -681,7 +687,7 @@ func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
 	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
 		ConversationID: child.ConversationID,
 		Type:           db.MessageTypeUser,
-		LLMData:        llm.UserStringMessage(transcriptionPrompt("/tmp/interrupted.webm", "", "skill")),
+		LLMData:        llm.UserStringMessage(transcriptionPrompt("/tmp/interrupted.webm", "")),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -702,14 +708,15 @@ func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	userCount := 0
+	promptCount := 0
 	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) {
-			userCount++
+		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil &&
+			strings.Contains(*message.LlmData, "Transcribe the recording") {
+			promptCount++
 		}
 	}
-	if userCount != 1 {
-		t.Fatalf("resume added another child prompt: got %d user rows", userCount)
+	if promptCount != 1 {
+		t.Fatalf("resume added another child prompt: got %d prompts", promptCount)
 	}
 }
 

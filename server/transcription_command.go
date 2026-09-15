@@ -19,7 +19,6 @@ import (
 	"shelley.exe.dev/claudetool/browse"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/skills"
 )
 
 const (
@@ -205,15 +204,13 @@ func createVideoContactSheet(ctx context.Context, mediaPath string, media transc
 	return contactPath, nil
 }
 
-func transcriptionPrompt(mediaPath, contactSheetPath, skill string) string {
+func transcriptionPrompt(mediaPath, contactSheetPath string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Transcribe the recording at %s. The transcribing-audio skill is already included below; do not load it again. The server has already validated the file and inspected its media streams. ", strconv.Quote(mediaPath))
+	fmt.Fprintf(&b, "Transcribe the recording at %s. The server has already validated the file and inspected its media streams. ", strconv.Quote(mediaPath))
 	if contactSheetPath != "" {
-		fmt.Fprintf(&b, "This recording contains video. Inspect the JPEG contact sheet at %s before transcribing. ", strconv.Quote(contactSheetPath))
+		fmt.Fprintf(&b, "This recording contains video; its JPEG contact sheet is at %s. ", strconv.Quote(contactSheetPath))
 	}
-	b.WriteString("Follow the included skill and return ONLY the user's spoken words: no preamble, no markdown, no interpretation, and no description of non-speech content.\n\n<transcribing_audio_skill>\n")
-	b.WriteString(skill)
-	b.WriteString("\n</transcribing_audio_skill>")
+	b.WriteString("Return only the user's spoken words.")
 	return b.String()
 }
 
@@ -252,7 +249,7 @@ func (s *Server) queueTranscription(ctx context.Context, w http.ResponseWriter, 
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	s.launchQueuedTranscription(manager.conversationID, queued, cwd, false)
+	s.launchQueuedTranscription(manager.conversationID, queued)
 	writeQueuedTranscription(w)
 }
 
@@ -266,7 +263,7 @@ func transcriptionChildOptions() (slug string, opts db.ConversationOptions) {
 	return "transcription-" + uuid.NewString(), db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"}
 }
 
-func (s *Server) launchQueuedTranscription(parentID string, queued db.QueuedMessage, cwd string, resume bool) {
+func (s *Server) launchQueuedTranscription(parentID string, queued db.QueuedMessage) {
 	if queued.Transcription == nil || queued.Transcription.ChildConversationID == "" {
 		s.logger.Error("Cannot launch invalid queued transcription", "parent", parentID, "queued_id", queued.ID)
 		return
@@ -295,11 +292,7 @@ func (s *Server) launchQueuedTranscription(parentID string, queued db.QueuedMess
 			}
 			s.transcriptionMu.Unlock()
 		}()
-		if resume {
-			s.runResumedQueuedTranscription(ctx, parentID, queued)
-		} else {
-			s.runQueuedTranscription(ctx, parentID, queued, cwd)
-		}
+		s.runQueuedTranscription(ctx, parentID, queued)
 	}()
 }
 
@@ -333,7 +326,7 @@ func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID,
 	return queued, nil
 }
 
-func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage, cwd string) {
+func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage) {
 	childID := queued.Transcription.ChildConversationID
 	mediaPath := queued.Transcription.MediaPath
 	if !s.queuedTranscriptionIsCurrent(ctx, parentID, queued) {
@@ -345,13 +338,13 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("inspect recording: %w", err))
 		return
 	}
-	if media.HasVideo {
+	if media.HasVideo && queued.Transcription.ContactSheetPath == "" {
 		contactSheetPath, err := createVideoContactSheet(ctx, mediaPath, media, s.mediaRun)
 		if err != nil {
 			s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("create contact sheet: %w", err))
 			return
 		}
-		// Persist the sheet before the LLM call so a restart resumes with it.
+		// Persist the sheet before transcription so a restart reuses it.
 		updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, childID, func(current *db.QueuedMessage) {
 			current.Transcription.ContactSheetPath = contactSheetPath
 		})
@@ -362,58 +355,16 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		queued = updated
 	}
 
-	skill, err := skills.FindByName("transcribing-audio", cwd)
+	toolUseID, err := s.startTranscriptionChild(ctx, childID, mediaPath, queued.Transcription.ContactSheetPath)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("load transcription skill: %w", err))
-		return
-	}
-	_, err = NewSubagentRunner(s).RunSubagent(
-		ctx,
-		childID,
-		transcriptionPrompt(mediaPath, queued.Transcription.ContactSheetPath, skill),
-		true,
-		transcriptionTimeout,
-		queued.Model,
-		"low",
-	)
-	if err != nil {
-		s.stopTranscriptionChild(childID)
 		s.failQueuedTranscription(parentID, queued.ID, childID, err)
 		return
 	}
-	s.settleQueuedTranscription(parentID, queued)
-}
-
-// runResumedQueuedTranscription continues a worker whose child already holds
-// the prompt (and possibly a partial turn) from before a server restart.
-func (s *Server) runResumedQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage) {
-	childID := queued.Transcription.ChildConversationID
-	if !s.queuedTranscriptionIsCurrent(ctx, parentID, queued) {
-		return
-	}
-	service, err := s.llmManager.GetService(queued.Model)
-	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("load transcription model: %w", err))
-		return
-	}
-	manager, err := s.getOrCreateSubagentConversationManager(ctx, childID)
-	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("restore transcription worker: %w", err))
-		return
-	}
-	if err := manager.ResumeInterruptedTurn(ctx, service, queued.Model); err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("resume transcription worker: %w", err))
-		return
-	}
-	done, err := NewSubagentRunner(s).waitForIdle(ctx, manager, childID, time.Now().Add(transcriptionTimeout))
-	if err != nil {
-		s.stopTranscriptionChild(childID)
-		s.failQueuedTranscription(parentID, queued.ID, childID, err)
-		return
-	}
-	if !done {
-		s.stopTranscriptionChild(childID)
-		s.failQueuedTranscription(parentID, queued.ID, childID, errors.New("transcription worker timed out"))
+	started := time.Now()
+	result, err := s.transcriber.Transcribe(ctx, mediaPath)
+	finished := time.Now()
+	if recordErr := s.finishTranscriptionChild(context.Background(), childID, toolUseID, result, started, finished, err); recordErr != nil {
+		s.failQueuedTranscription(parentID, queued.ID, childID, recordErr)
 		return
 	}
 	s.settleQueuedTranscription(parentID, queued)
@@ -443,17 +394,131 @@ func (s *Server) settleQueuedTranscription(parentID string, queued db.QueuedMess
 	}
 }
 
-func (s *Server) transcriptionChildStarted(ctx context.Context, childID string) (bool, error) {
+func (s *Server) startTranscriptionChild(ctx context.Context, childID, mediaPath, contactSheetPath string) (string, error) {
 	messages, err := s.db.ListMessages(ctx, childID)
 	if err != nil {
-		return false, err
+		return "", err
 	}
+	hasPrompt := false
 	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) {
-			return true, nil
+		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil {
+			var value llm.Message
+			if json.Unmarshal([]byte(*message.LlmData), &value) == nil {
+				for _, content := range value.Content {
+					if content.Type == llm.ContentTypeText {
+						hasPrompt = true
+					}
+				}
+			}
+		}
+		if message.Type != string(db.MessageTypeAgent) || message.LlmData == nil {
+			continue
+		}
+		var value llm.Message
+		if json.Unmarshal([]byte(*message.LlmData), &value) != nil {
+			continue
+		}
+		for _, content := range value.Content {
+			if content.Type == llm.ContentTypeToolUse && content.ToolName == "openai_audio_transcription" {
+				return content.ID, nil
+			}
 		}
 	}
-	return false, nil
+
+	toolUseID := "transcription_" + uuid.NewString()
+	toolInput, err := json.Marshal(map[string]string{
+		"file":  mediaPath,
+		"model": openAITranscriptionModel,
+	})
+	if err != nil {
+		return "", err
+	}
+	params := make([]db.CreateMessageParams, 0, 2)
+	if !hasPrompt {
+		params = append(params, db.CreateMessageParams{
+			ConversationID: childID,
+			Type:           db.MessageTypeUser,
+			LLMData:        llm.UserStringMessage(transcriptionPrompt(mediaPath, contactSheetPath)),
+			MarkAgentStart: true,
+			BumpTimestamp:  true,
+		})
+	}
+	params = append(params, db.CreateMessageParams{
+		ConversationID: childID,
+		Type:           db.MessageTypeAgent,
+		LLMData: llm.Message{
+			Role: llm.MessageRoleAssistant,
+			Content: []llm.Content{{
+				ID:        toolUseID,
+				Type:      llm.ContentTypeToolUse,
+				ToolName:  "openai_audio_transcription",
+				ToolInput: toolInput,
+			}},
+		},
+		MarkAgentStart: hasPrompt,
+		BumpTimestamp:  true,
+	})
+	_, err = s.db.CreateMessages(ctx, params)
+	return toolUseID, err
+}
+
+func (s *Server) finishTranscriptionChild(ctx context.Context, childID, toolUseID string, result transcriptionResult, started, finished time.Time, failure error) error {
+	toolOutput := map[string]any{
+		"duration_ms": finished.Sub(started).Milliseconds(),
+		"model":       openAITranscriptionModel,
+	}
+	toolError := failure != nil
+	finalType := db.MessageTypeAgent
+	finalText := result.Text
+	if failure != nil {
+		toolOutput["error"] = queuedTranscriptionError(failure)
+		finalType = db.MessageTypeError
+		finalText = queuedTranscriptionError(failure)
+	} else {
+		toolOutput["text"] = result.Text
+		if result.Model != "" {
+			toolOutput["model"] = result.Model
+		}
+	}
+	outputJSON, err := json.Marshal(toolOutput)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.CreateMessages(ctx, []db.CreateMessageParams{
+		{
+			ConversationID: childID,
+			Type:           db.MessageTypeUser,
+			LLMData: llm.Message{
+				Role: llm.MessageRoleUser,
+				Content: []llm.Content{{
+					Type:             llm.ContentTypeToolResult,
+					ToolUseID:        toolUseID,
+					ToolError:        toolError,
+					ToolUseStartTime: &started,
+					ToolUseEndTime:   &finished,
+					ToolResult: []llm.Content{{
+						Type: llm.ContentTypeText,
+						Text: string(outputJSON),
+					}},
+				}},
+			},
+			BumpTimestamp: true,
+		},
+		{
+			ConversationID: childID,
+			Type:           finalType,
+			LLMData: llm.Message{
+				Role:      llm.MessageRoleAssistant,
+				Content:   []llm.Content{{Type: llm.ContentTypeText, Text: finalText}},
+				EndOfTurn: true,
+			},
+			LLMAPIURL:     openAITranscriptionEndpoint,
+			ModelName:     openAITranscriptionModel,
+			MarkAgentDone: true,
+			BumpTimestamp: true,
+		},
+	})
+	return err
 }
 
 func (s *Server) completedTranscriptionChild(ctx context.Context, childID string) (string, bool, error) {
@@ -652,7 +717,7 @@ func (s *Server) handleRetryQueued(w http.ResponseWriter, r *http.Request, paren
 	// durable state and child identity changed.
 	go s.notifySubscribers(context.Background(), parentID)
 	go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: updatedParent})
-	s.launchQueuedTranscription(parentID, queued, cwd, false)
+	s.launchQueuedTranscription(parentID, queued)
 	writeQueuedTranscription(w)
 }
 
@@ -691,14 +756,7 @@ func (s *Server) recoverQueuedTranscriptions(ctx context.Context) {
 					s.settleQueuedTranscription(conversation.ConversationID, queued)
 					continue
 				}
-				// A child that already holds its prompt must be resumed, not
-				// re-prompted, or the transcript would be requested twice.
-				started, err := s.transcriptionChildStarted(ctx, childID)
-				if err != nil {
-					s.failQueuedTranscription(conversation.ConversationID, queued.ID, childID, fmt.Errorf("inspect transcription child: %w", err))
-					continue
-				}
-				s.launchQueuedTranscription(conversation.ConversationID, queued, derefString(conversation.Cwd), started)
+				s.launchQueuedTranscription(conversation.ConversationID, queued)
 			}
 		}
 	}
