@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"shelley.exe.dev/db/generated"
 )
 
 func TestSearchConversationsFTS(t *testing.T) {
@@ -25,6 +27,13 @@ func TestSearchConversationsFTS(t *testing.T) {
 		UserData:       map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "I saw a pelican by the bay"}}},
 	}); err != nil {
 		t.Fatalf("create user msg: %v", err)
+	}
+	if _, err := db.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: active.ConversationID,
+		Type:           MessageTypeAgent,
+		LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "That pelican had a silver beak"}}},
+	}); err != nil {
+		t.Fatalf("create second matching msg: %v", err)
 	}
 
 	// Archived conversation with a message mentioning "pelican" too
@@ -78,6 +87,23 @@ func TestSearchConversationsFTS(t *testing.T) {
 	}
 	if !gotActive || !gotArchived {
 		t.Errorf("missing expected conversations: active=%v archived=%v", gotActive, gotArchived)
+	}
+	var snippets []generated.SearchConversationsFTSSnippetsRow
+	if err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		match := `"pelican"*`
+		var err error
+		snippets, err = generated.New(rx.Conn()).SearchConversationsFTSSnippets(ctx, generated.SearchConversationsFTSSnippetsParams{
+			MarkStart: SnippetMarkStart,
+			MarkEnd:   SnippetMarkEnd,
+			FtsMatch:  &match,
+			ConvIds:   []string{active.ConversationID, archived.ConversationID},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("SearchConversationsFTSSnippets: %v", err)
+	}
+	if len(snippets) != 2 {
+		t.Fatalf("SearchConversationsFTSSnippets returned %d rows, want one per conversation", len(snippets))
 	}
 
 	// Slug match should still work even with no message hits.

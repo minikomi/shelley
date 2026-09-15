@@ -1184,9 +1184,6 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, limit, o
 		}
 		snippets := make(map[string]string, len(convIDs))
 		for _, r := range snipRows {
-			if _, ok := snippets[r.ConversationID]; ok {
-				continue // first row per conv = best rank
-			}
 			// The FTS source column is built from raw message JSON, so
 			// snippets carry citation markup. Strip before centering: the
 			// mark sentinels are outside the marker range, and stripping

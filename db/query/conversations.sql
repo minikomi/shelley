@@ -480,16 +480,27 @@ WHERE agent_working = TRUE
 ORDER BY updated_at DESC;
 
 -- name: SearchConversationsFTSSnippets :many
--- Best snippet per message for the given conversation IDs, ordered by
--- FTS rank so the caller can keep the first row seen per conversation.
+-- Best-ranked snippet per conversation for the given conversation IDs.
 -- snippet(table, columnIndex=-1 (any), start, end, ellipsis, tokenCount).
-SELECT m.conversation_id,
+WITH ranked AS (
+  SELECT m.conversation_id,
+         m.message_id,
+         row_number() OVER (
+           PARTITION BY m.conversation_id
+           ORDER BY hits.rank
+         ) AS rank_in_conversation
+  FROM messages m
+  JOIN messages_fts hits ON hits.rowid = m.rowid
+  WHERE hits.messages_fts MATCH @fts_match
+    AND m.conversation_id IN (sqlc.slice('conv_ids'))
+)
+SELECT ranked.conversation_id,
        snippet(messages_fts, 0, sqlc.arg(mark_start), sqlc.arg(mark_end), '...', 16) AS snippet
-FROM messages m
+FROM ranked
+JOIN messages m ON m.message_id = ranked.message_id
 JOIN messages_fts ON messages_fts.rowid = m.rowid
-WHERE messages_fts MATCH @fts_match
-  AND m.conversation_id IN (sqlc.slice('conv_ids'))
-ORDER BY messages_fts.rank;
+WHERE ranked.rank_in_conversation = 1
+  AND messages_fts.messages_fts MATCH @fts_match;
 
 -- name: UpdateConversationTags :one
 -- Tagging is a metadata-only edit; deliberately does not bump updated_at

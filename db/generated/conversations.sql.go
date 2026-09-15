@@ -1244,13 +1244,25 @@ func (q *Queries) SearchConversationsFTSList(ctx context.Context, arg SearchConv
 }
 
 const searchConversationsFTSSnippets = `-- name: SearchConversationsFTSSnippets :many
-SELECT m.conversation_id,
+WITH ranked AS (
+  SELECT m.conversation_id,
+         m.message_id,
+         row_number() OVER (
+           PARTITION BY m.conversation_id
+           ORDER BY hits.rank
+         ) AS rank_in_conversation
+  FROM messages m
+  JOIN messages_fts hits ON hits.rowid = m.rowid
+  WHERE hits.messages_fts MATCH ?3
+    AND m.conversation_id IN (/*SLICE:conv_ids*/?)
+)
+SELECT ranked.conversation_id,
        snippet(messages_fts, 0, ?1, ?2, '...', 16) AS snippet
-FROM messages m
+FROM ranked
+JOIN messages m ON m.message_id = ranked.message_id
 JOIN messages_fts ON messages_fts.rowid = m.rowid
-WHERE messages_fts MATCH ?3
-  AND m.conversation_id IN (/*SLICE:conv_ids*/?)
-ORDER BY messages_fts.rank
+WHERE ranked.rank_in_conversation = 1
+  AND messages_fts.messages_fts MATCH ?3
 `
 
 type SearchConversationsFTSSnippetsParams struct {
@@ -1265,8 +1277,7 @@ type SearchConversationsFTSSnippetsRow struct {
 	Snippet        string `json:"snippet"`
 }
 
-// Best snippet per message for the given conversation IDs, ordered by
-// FTS rank so the caller can keep the first row seen per conversation.
+// Best-ranked snippet per conversation for the given conversation IDs.
 // snippet(table, columnIndex=-1 (any), start, end, ellipsis, tokenCount).
 func (q *Queries) SearchConversationsFTSSnippets(ctx context.Context, arg SearchConversationsFTSSnippetsParams) ([]SearchConversationsFTSSnippetsRow, error) {
 	query := searchConversationsFTSSnippets
