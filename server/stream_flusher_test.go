@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,64 @@ func TestStreamFlusherBatchesThinkingDeltas(t *testing.T) {
 	}
 }
 
+func TestStreamFlusherBatchesUnifiedStreamQueueEvents(t *testing.T) {
+	t.Parallel()
+	server, database, _ := newTestServer(t)
+
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := server.getOrCreateConversationManager(t.Context(), conversation.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	next := server.streamPub.Subscribe(ctx, -1)
+
+	sf := newStreamFlusher(manager, time.Hour, alwaysPublishStream)
+	sf.Push(llm.StreamDelta{Type: "thinking", Text: "think", Index: 0})
+	sf.Push(llm.StreamDelta{Type: "text", Text: "answer", Index: 1})
+	sf.Flush()
+
+	got, ok := next()
+	if !ok {
+		t.Fatal("unified stream closed")
+	}
+	if got.StreamDelta != nil {
+		t.Fatalf("unified stream received legacy delta: %+v", got.StreamDelta)
+	}
+	if len(got.streamDeltas) != 2 {
+		t.Fatalf("unified stream delta count = %d, want 2", len(got.streamDeltas))
+	}
+	if got.streamDeltas[0].Seq != 1 || got.streamDeltas[1].Seq != 2 {
+		t.Fatalf("unified stream sequences = %d, %d, want 1, 2", got.streamDeltas[0].Seq, got.streamDeltas[1].Seq)
+	}
+}
+
+func TestInternalDeltaBatchUsesLegacySSEFrames(t *testing.T) {
+	frames, err := marshalDeltaBatchFrames("conversation-a", []llm.StreamDelta{
+		{Type: "thinking", Text: "think", Index: 0, Seq: 1},
+		{Type: "text", Text: "answer", Index: 1, Seq: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(frames), "stream_deltas") {
+		t.Fatalf("internal batch leaked onto the wire: %s", frames)
+	}
+	got := decodeSSE(string(frames))
+	if len(got) != 2 {
+		t.Fatalf("wire frame count = %d, want 2: %s", len(got), frames)
+	}
+	if got[0].StreamDelta == nil || got[0].StreamDelta.Seq != 1 ||
+		got[1].StreamDelta == nil || got[1].StreamDelta.Seq != 2 {
+		t.Fatalf("wire deltas = %+v, want ordered legacy frames", got)
+	}
+}
+
 // TestThinkingDeltaFloodDoesNotDisconnectSubscriber reproduces the
 // production freeze: a reasoning model emits thinking deltas one per token
 // (hundreds/second); un-batched, each becomes its own broadcast, and a
@@ -190,7 +249,7 @@ func TestThinkingDeltaFloodDoesNotDisconnectSubscriber(t *testing.T) {
 	// Subscribe and never drain: a stalled client.
 	_, status := manager.subpub.SubscribeWithStatus(subCtx, -1)
 
-	sf := newStreamFlusher(manager, 50*time.Millisecond, alwaysPublishStream)
+	sf := newStreamFlusher(manager, streamFlushInterval, alwaysPublishStream)
 	for range subpub.SubscriberQueueCapacity + 50 {
 		sf.Push(llm.StreamDelta{Type: "thinking", Text: "t", Index: 0})
 	}
@@ -278,7 +337,7 @@ setup:
 	// fast as a provider SSE stream hands them to OnStream. Well beyond the
 	// combined bounded-queue capacity (~400) if broadcast per-token; a
 	// handful of flushes if batched.
-	sf := newStreamFlusher(manager, 50*time.Millisecond, alwaysPublishStream)
+	sf := newStreamFlusher(manager, streamFlushInterval, alwaysPublishStream)
 	for range 2000 {
 		sf.Push(llm.StreamDelta{Type: "thinking", Text: "tok ", Index: 0})
 	}

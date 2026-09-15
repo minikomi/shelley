@@ -339,6 +339,24 @@ func (cm *ConversationManager) broadcastStream(data StreamResponse) {
 	}
 }
 
+func (cm *ConversationManager) broadcastStreamDeltas(deltas []llm.StreamDelta) {
+	if len(deltas) == 0 {
+		return
+	}
+	for i := range deltas {
+		cm.subpub.Broadcast(StreamResponse{
+			ConversationID: cm.conversationID,
+			StreamDelta:    &deltas[i],
+		})
+	}
+	if cm.streamPub != nil {
+		cm.streamPub.Broadcast(StreamResponse{
+			ConversationID: cm.conversationID,
+			streamDeltas:   deltas,
+		})
+	}
+}
+
 // publishStream tags data with the conversation ID and publishes to the
 // per-conversation subpub at the given sequence id, also broadcasting to the
 // server-wide stream. Sequence ids are per-conversation and meaningless on
@@ -2402,7 +2420,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	// streamFlusher batches LLM stream deltas and flushes them periodically
 	// to avoid overwhelming the bounded subpub queue with hundreds
 	// of individual deltas per second from the Anthropic SSE stream.
-	sf := newStreamFlusher(cm, 50*time.Millisecond, func() bool {
+	sf := newStreamFlusher(cm, streamFlushInterval, func() bool {
 		return cm.isCurrentLoopGeneration(generation)
 	})
 

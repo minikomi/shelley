@@ -7,11 +7,13 @@ import (
 	"shelley.exe.dev/llm"
 )
 
+const streamFlushInterval = 50 * time.Millisecond
+
 // streamFlusher batches LLM stream deltas and flushes them periodically.
 // Providers emit hundreds of tiny events per second. Broadcasting each one
 // individually overwhelms the bounded subpub queue, causing subscriber
 // disconnections. Instead, we coalesce adjacent deltas of the same type and
-// index every interval (e.g., 50ms), yielding ~20 updates/second.
+// index every interval, yielding at most 20 updates/second.
 type streamFlusher struct {
 	cm       *ConversationManager
 	interval time.Duration
@@ -77,11 +79,7 @@ func (sf *streamFlusher) flush() {
 	if !sf.shouldPublish() {
 		return
 	}
-	for i := range deltas {
-		sf.cm.broadcastStream(StreamResponse{
-			StreamDelta: &deltas[i],
-		})
-	}
+	sf.cm.broadcastStreamDeltas(deltas)
 }
 
 // Flush forces any buffered deltas to be broadcast immediately.

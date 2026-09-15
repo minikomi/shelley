@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -38,6 +39,24 @@ import (
 	"shelley.exe.dev/ui"
 	"shelley.exe.dev/version"
 )
+
+func marshalDeltaBatchFrames(conversationID string, deltas []llm.StreamDelta) ([]byte, error) {
+	var frames bytes.Buffer
+	for i := range deltas {
+		event := StreamResponse{
+			ConversationID: conversationID,
+			StreamDelta:    &deltas[i],
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			return nil, err
+		}
+		frames.WriteString("data: ")
+		frames.Write(data)
+		frames.WriteString("\n\n")
+	}
+	return frames.Bytes(), nil
+}
 
 // handleRead serves files from limited allowed locations via /api/read?path=
 func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
@@ -2114,14 +2133,26 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 		if !initCompression() {
 			return false
 		}
-		data, err := json.Marshal(streamData)
-		if err != nil {
-			s.logger.Debug("failed to marshal stream response", "error", err)
-			return false
-		}
-		if _, err := fmt.Fprintf(compressedSink, "data: %s\n\n", data); err != nil {
-			s.logger.Debug("conversation stream write failed", "error", err)
-			return false
+		if len(streamData.streamDeltas) > 0 {
+			frames, err := marshalDeltaBatchFrames(streamData.ConversationID, streamData.streamDeltas)
+			if err != nil {
+				s.logger.Debug("failed to marshal stream response", "error", err)
+				return false
+			}
+			if _, err := compressedSink.Write(frames); err != nil {
+				s.logger.Debug("conversation stream write failed", "error", err)
+				return false
+			}
+		} else {
+			data, err := json.Marshal(streamData)
+			if err != nil {
+				s.logger.Debug("failed to marshal stream response", "error", err)
+				return false
+			}
+			if _, err := fmt.Fprintf(compressedSink, "data: %s\n\n", data); err != nil {
+				s.logger.Debug("conversation stream write failed", "error", err)
+				return false
+			}
 		}
 		if err := flushCompressor(); err != nil {
 			s.logger.Debug("conversation stream compressor flush failed", "error", err)

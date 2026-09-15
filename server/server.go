@@ -132,6 +132,9 @@ type StreamResponse struct {
 	ToolProgress *llm.ToolProgress `json:"tool_progress,omitempty"`
 	// StreamDelta is set when the LLM streams partial text content.
 	StreamDelta *llm.StreamDelta `json:"stream_delta,omitempty"`
+	// streamDeltas batches partial updates inside the server. SSE writers
+	// expand it back into the established StreamDelta wire format.
+	streamDeltas []llm.StreamDelta
 	// MaxSequenceID, when non-zero, reports the highest message sequence_id
 	// known for this conversation. Set by the REST GET /api/conversation/<id>
 	// handler (computed from the returned message list) so the client can
