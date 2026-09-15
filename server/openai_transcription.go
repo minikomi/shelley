@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	openAITranscriptionEndpoint = "https://api.openai.com/v1/audio/transcriptions"
+	openAITranscriptionEndpoint = "https://openai.int.exe.xyz/v1/audio/transcriptions"
 	openAITranscriptionModel    = "gpt-4o-transcribe"
 	maxTranscriptionErrorBody   = 64 << 10
 	maxTranscriptionResponse    = 16 << 20
@@ -33,23 +33,16 @@ type recordingTranscriber interface {
 type openAIRecordingTranscriber struct {
 	client   *http.Client
 	endpoint string
-	apiKey   func() string
 }
 
 func newOpenAIRecordingTranscriber() recordingTranscriber {
 	return &openAIRecordingTranscriber{
 		client:   http.DefaultClient,
 		endpoint: openAITranscriptionEndpoint,
-		apiKey:   func() string { return os.Getenv("OPENAI_API_KEY") },
 	}
 }
 
 func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath string) (transcriptionResult, error) {
-	apiKey := strings.TrimSpace(t.apiKey())
-	if apiKey == "" {
-		return transcriptionResult{}, errors.New("OPENAI_API_KEY is required for recording transcription")
-	}
-
 	media, err := os.Open(mediaPath)
 	if err != nil {
 		return transcriptionResult{}, fmt.Errorf("open recording: %w", err)
@@ -79,7 +72,6 @@ func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath s
 	if err != nil {
 		return transcriptionResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := t.client.Do(req)

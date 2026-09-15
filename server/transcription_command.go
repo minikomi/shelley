@@ -427,8 +427,9 @@ func (s *Server) startTranscriptionChild(ctx context.Context, childID, mediaPath
 
 	toolUseID := "transcription_" + uuid.NewString()
 	toolInput, err := json.Marshal(map[string]string{
-		"file":  mediaPath,
-		"model": openAITranscriptionModel,
+		"endpoint": openAITranscriptionEndpoint,
+		"file":     mediaPath,
+		"model":    openAITranscriptionModel,
 	})
 	if err != nil {
 		return "", err

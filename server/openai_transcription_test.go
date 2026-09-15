@@ -15,8 +15,8 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s", r.Method)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Errorf("authorization = %q", got)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("authorization should be injected by the proxy, got %q", got)
 		}
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatal(err)
@@ -47,25 +47,13 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{
-		client: api.Client(), endpoint: api.URL, apiKey: func() string { return "test-key" },
-	}
+	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoint: api.URL}
 	result, err := transcriber.Transcribe(t.Context(), mediaPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Text != "immediate words" || result.Model != openAITranscriptionModel {
 		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestOpenAIRecordingTranscriberRequiresAPIKey(t *testing.T) {
-	transcriber := &openAIRecordingTranscriber{
-		client: http.DefaultClient, endpoint: "unused", apiKey: func() string { return "" },
-	}
-	_, err := transcriber.Transcribe(t.Context(), "unused")
-	if err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
-		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -77,9 +65,7 @@ func TestOpenAIRecordingTranscriberReportsAPIError(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{
-		client: api.Client(), endpoint: api.URL, apiKey: func() string { return "test-key" },
-	}
+	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoint: api.URL}
 	_, err := transcriber.Transcribe(context.Background(), mediaPath)
 	if err == nil || !strings.Contains(err.Error(), "unsupported recording") {
 		t.Fatalf("error = %v", err)
