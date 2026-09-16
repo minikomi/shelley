@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -336,7 +337,12 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		queued = updated
 	}
 
-	toolUseID, toolUse, err := transcriptionToolUse(mediaPath)
+	prompt, err := s.transcriptionPrompt(ctx, parentID)
+	if err != nil {
+		s.failQueuedTranscription(parentID, queued.ID, nil, fmt.Errorf("build transcription prompt: %w", err))
+		return
+	}
+	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt)
 	if err != nil {
 		s.failQueuedTranscription(parentID, queued.ID, nil, err)
 		return
@@ -357,7 +363,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 	queued = updated
 
 	started := time.Now()
-	result, err := s.transcriber.Transcribe(ctx, mediaPath)
+	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt)
 	finished := time.Now()
 	if err == nil && strings.TrimSpace(result.Text) == "" {
 		err = errors.New("transcription returned an empty transcript")
@@ -382,12 +388,21 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 	return err == nil && validateCurrentQueuedTranscription(&current) == nil
 }
 
-func transcriptionToolUse(mediaPath string) (string, llm.Message, error) {
+func transcriptionToolUse(mediaPath, prompt string) (string, llm.Message, error) {
 	toolUseID := "transcription_" + uuid.NewString()
-	toolInput, err := json.Marshal(map[string]string{
-		"endpoint": openAITranscriptionEndpoint,
-		"file":     mediaPath,
-		"model":    openAITranscriptionModel,
+	toolInput, err := json.Marshal(map[string]any{
+		"endpoint":      openAITranscriptionEndpoint,
+		"file":          mediaPath,
+		"model":         openAITranscriptionModel,
+		"prompt_chars":  utf8.RuneCountInString(prompt),
+		"composer_text": false,
+		"prompt_context": []string{
+			"Shelley/exe.dev task instructions",
+			"VM hostname",
+			"project and working directory",
+			"conversation title",
+			"up to 4 recent user/assistant messages",
+		},
 	})
 	if err != nil {
 		return "", llm.Message{}, err

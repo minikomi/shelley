@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"shelley.exe.dev/claudetool/browse"
 	"shelley.exe.dev/db"
@@ -21,7 +22,7 @@ import (
 
 type recordingTranscriberFunc func(context.Context, string) (transcriptionResult, error)
 
-func (f recordingTranscriberFunc) Transcribe(ctx context.Context, path string) (transcriptionResult, error) {
+func (f recordingTranscriberFunc) Transcribe(ctx context.Context, path, _ string) (transcriptionResult, error) {
 	return f(ctx, path)
 }
 
@@ -29,6 +30,16 @@ func successfulRecordingTranscriber(text string) recordingTranscriber {
 	return recordingTranscriberFunc(func(context.Context, string) (transcriptionResult, error) {
 		return transcriptionResult{Text: text, Model: openAITranscriptionModel}, nil
 	})
+}
+
+type promptCapturingTranscriber struct {
+	prompt chan string
+	text   string
+}
+
+func (t *promptCapturingTranscriber) Transcribe(_ context.Context, _, prompt string) (transcriptionResult, error) {
+	t.prompt <- prompt
+	return transcriptionResult{Text: t.text, Model: openAITranscriptionModel}, nil
 }
 
 func transcriptionTestFile(t *testing.T, name string) string {
@@ -214,7 +225,11 @@ func transcriptionDone(t *testing.T, server *Server, queuedID string) <-chan str
 func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
-	server.transcriber = successfulRecordingTranscriber("predictable spoken words")
+	transcriber := &promptCapturingTranscriber{
+		prompt: make(chan string, 1),
+		text:   "predictable spoken words",
+	}
+	server.transcriber = transcriber
 	mediaPath := transcriptionTestFile(t, "audio.webm")
 	cwd := t.TempDir()
 	model := "predictable"
@@ -281,6 +296,15 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 
 	close(release)
 	<-done
+	prompt := <-transcriber.prompt
+	if !strings.Contains(prompt, "Application: Shelley") ||
+		!strings.Contains(prompt, "Project: "+filepath.Base(cwd)) ||
+		!strings.Contains(prompt, "Working directory: "+cwd) {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	if strings.Contains(prompt, "Keep draft") {
+		t.Fatalf("prompt contains composer text: %q", prompt)
+	}
 	queued = queuedMessages(t, database, draft.ConversationID)
 	if len(queued) != 1 || queued[0].State != db.QueuedMessageStateReady {
 		t.Fatalf("completed queue = %#v", queued)
@@ -293,6 +317,13 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 		audit[0].Content[0].ToolName != "openai_audio_transcription" ||
 		len(audit[1].Content) != 1 || !strings.Contains(audit[1].Content[0].ToolResult[0].Text, "predictable spoken words") {
 		t.Fatalf("parent audit = %#v", audit)
+	}
+	var auditedInput map[string]any
+	if err := json.Unmarshal(audit[0].Content[0].ToolInput, &auditedInput); err != nil {
+		t.Fatal(err)
+	}
+	if auditedInput["composer_text"] != false || auditedInput["prompt_chars"] != float64(utf8.RuneCountInString(prompt)) {
+		t.Fatalf("audited input = %#v", auditedInput)
 	}
 	parentManager.SetAgentWorking(false)
 	if _, err := parentManager.CancelQueuedMessages(t.Context(), server); err != nil {
@@ -588,7 +619,7 @@ type blockingRecordingTranscriber struct {
 	once      sync.Once
 }
 
-func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _ string) (transcriptionResult, error) {
+func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _, _ string) (transcriptionResult, error) {
 	s.once.Do(func() { close(s.started) })
 	<-ctx.Done()
 	close(s.cancelled)

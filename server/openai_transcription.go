@@ -27,7 +27,7 @@ type transcriptionResult struct {
 }
 
 type recordingTranscriber interface {
-	Transcribe(context.Context, string) (transcriptionResult, error)
+	Transcribe(context.Context, string, string) (transcriptionResult, error)
 }
 
 type openAIRecordingTranscriber struct {
@@ -42,7 +42,7 @@ func newOpenAIRecordingTranscriber() recordingTranscriber {
 	}
 }
 
-func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath string) (transcriptionResult, error) {
+func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, prompt string) (transcriptionResult, error) {
 	media, err := os.Open(mediaPath)
 	if err != nil {
 		return transcriptionResult{}, fmt.Errorf("open recording: %w", err)
@@ -55,6 +55,9 @@ func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath s
 		return transcriptionResult{}, err
 	}
 	if err := writer.WriteField("response_format", "json"); err != nil {
+		return transcriptionResult{}, err
+	}
+	if err := writer.WriteField("prompt", prompt); err != nil {
 		return transcriptionResult{}, err
 	}
 	part, err := writer.CreateFormFile("file", filepath.Base(mediaPath))

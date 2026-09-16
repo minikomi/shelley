@@ -27,6 +27,9 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 		if got := r.FormValue("response_format"); got != "json" {
 			t.Errorf("response_format = %q", got)
 		}
+		if got := r.FormValue("prompt"); got != "Shelley on example-vm" {
+			t.Errorf("prompt = %q", got)
+		}
 		file, header, err := r.FormFile("file")
 		if err != nil {
 			t.Fatal(err)
@@ -48,7 +51,7 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	defer api.Close()
 
 	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoint: api.URL}
-	result, err := transcriber.Transcribe(t.Context(), mediaPath)
+	result, err := transcriber.Transcribe(t.Context(), mediaPath, "Shelley on example-vm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +69,7 @@ func TestOpenAIRecordingTranscriberReportsAPIError(t *testing.T) {
 	defer api.Close()
 
 	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoint: api.URL}
-	_, err := transcriber.Transcribe(context.Background(), mediaPath)
+	_, err := transcriber.Transcribe(context.Background(), mediaPath, "context")
 	if err == nil || !strings.Contains(err.Error(), "unsupported recording") {
 		t.Fatalf("error = %v", err)
 	}
