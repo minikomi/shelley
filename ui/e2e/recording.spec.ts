@@ -11,6 +11,8 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       displayError: "",
       meterPeak: 4,
       recorderStarts: 0,
+      deferRecorderData: false,
+      releaseRecorderData: () => {},
     };
 
     class MockTrack extends EventTarget {
@@ -57,7 +59,9 @@ async function installMediaMocks(page: Page, screenCapture = true) {
         if (timeslice !== 1000) throw new Error(`unexpected timeslice ${timeslice}`);
         mock.recorderStarts++;
         this.state = "recording";
-        queueMicrotask(() => this.emitChunk("first"));
+        mock.releaseRecorderData = () => this.emitChunk("encoded", true);
+        if (mock.deferRecorderData) return;
+        queueMicrotask(() => this.emitChunk("first", true));
         queueMicrotask(() => this.emitChunk("second"));
       }
       stop() {
@@ -65,10 +69,13 @@ async function installMediaMocks(page: Page, screenCapture = true) {
         this.emitChunk("last");
         queueMicrotask(() => this.onstop?.());
       }
-      emitChunk(value: string) {
+      emitChunk(value: string, withWebMHeader = false) {
         const event = new Event("dataavailable") as BlobEvent;
         Object.defineProperty(event, "data", {
-          value: new Blob([value], { type: this.mimeType }),
+          value: new Blob(
+            [withWebMHeader ? new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]) : new Uint8Array(), value],
+            { type: this.mimeType },
+          ),
         });
         this.ondataavailable?.(event);
       }
@@ -252,7 +259,7 @@ test.describe("media recording composer", () => {
     page,
   }) => {
     let uploadedFilename = "";
-    let uploadedBody = "";
+    let uploadedBody = Buffer.alloc(0);
     const chatBodies: Record<string, unknown>[] = [];
     const transcriptionRequested = deferred();
     const releaseAcceptance = deferred();
@@ -260,7 +267,7 @@ test.describe("media recording composer", () => {
     await page.route("**/api/upload/raw?filename=*", async (route) => {
       expect(route.request().method()).toBe("POST");
       uploadedFilename = new URL(route.request().url()).searchParams.get("filename") ?? "";
-      uploadedBody = route.request().postDataBuffer()?.toString() ?? "";
+      uploadedBody = route.request().postDataBuffer() ?? Buffer.alloc(0);
       await fulfillJSON(route, { path: "/tmp/shelley-uploads/recording.webm" });
     });
     await page.route("**/api/conversation/*/chat", async (route) => {
@@ -346,7 +353,8 @@ test.describe("media recording composer", () => {
     await expect(page.getByTestId("transcription-task")).toHaveCount(0);
     await expect(input).toHaveValue("I can keep typing while the server transcribes.");
     expect(uploadedFilename).toMatch(/^rec-\d{8}-\d{6}\.webm$/);
-    expect(uploadedBody).toBe("firstsecondlast");
+    expect([...uploadedBody.subarray(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
+    expect(uploadedBody.subarray(4).toString()).toBe("firstsecondlast");
     expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBeGreaterThan(0);
   });
 
@@ -627,6 +635,34 @@ test.describe("media recording composer", () => {
     expect(uploadCount).toBe(0);
     expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBeGreaterThan(0);
   });
+
+  test("waits for encoded data before stopping a short recording", async ({ page }) => {
+    let uploadedBody = Buffer.alloc(0);
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploadedBody = route.request().postDataBuffer() ?? Buffer.alloc(0);
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/short.webm" });
+    });
+    await page.route("**/api/conversation/*/chat", async (route) => {
+      await fulfillJSON(route, { status: "queued" }, 202);
+    });
+
+    await page.goto("/new");
+    await page.evaluate(() => {
+      window.__recordingMock.deferRecorderData = true;
+    });
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
+    await page.getByTestId("recording-stop-button").click();
+    await expect(page.getByTestId("recording-status")).toHaveText("Finishing recording…");
+    expect(uploadedBody).toHaveLength(0);
+
+    await page.evaluate(() => {
+      window.__recordingMock.releaseRecorderData();
+    });
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    expect([...uploadedBody.subarray(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
+    expect(uploadedBody.subarray(4).toString()).toBe("encodedlast");
+  });
 });
 
 test("uses a microphone icon when screen capture is unavailable", async ({ page }) => {
@@ -647,6 +683,8 @@ declare global {
       displayError: string;
       meterPeak: number;
       recorderStarts: number;
+      deferRecorderData: boolean;
+      releaseRecorderData: () => void;
     };
   }
 }

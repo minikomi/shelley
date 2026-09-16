@@ -144,6 +144,7 @@ export const zhTW: TranslationKeys = {
   recordingInProgress: "正在錄製…",
   recordingScreenInProgress: "正在錄製螢幕和麥克風…",
   recordingStopping: "正在完成錄製…",
+  recordingTooShort: "錄音太短，無法編碼。請再試一次。",
   recordingFailed: "錄製失敗",
   recordingInvalidResponse: "錄製伺服器傳回了無效回應",
   recordingScreenEnded: "螢幕分享在錄製開始前已結束",

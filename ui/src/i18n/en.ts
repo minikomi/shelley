@@ -144,6 +144,7 @@ export const en: TranslationKeys = {
   recordingInProgress: "Recording…",
   recordingScreenInProgress: "Recording screen + microphone…",
   recordingStopping: "Finishing recording…",
+  recordingTooShort: "The recording was too short to encode. Please try again.",
   recordingFailed: "Recording failed",
   recordingInvalidResponse: "The recording server returned an invalid response",
   recordingScreenEnded: "Screen sharing ended before recording started",

@@ -144,6 +144,7 @@ export const upgoer5: TranslationKeys = {
   recordingInProgress: "Recording…",
   recordingScreenInProgress: "Recording screen and voice…",
   recordingStopping: "Finishing recording…",
+  recordingTooShort: "The recording was too short to save. Please try again.",
   recordingFailed: "Recording did not work",
   recordingInvalidResponse: "The recording computer sent a bad answer",
   recordingScreenEnded: "Screen sharing stopped before recording started",

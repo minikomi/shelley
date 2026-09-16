@@ -144,6 +144,7 @@ export interface TranslationKeys {
   recordingInProgress: string;
   recordingScreenInProgress: string;
   recordingStopping: string;
+  recordingTooShort: string;
   recordingFailed: string;
   recordingInvalidResponse: string;
   recordingScreenAction: string;

@@ -145,6 +145,7 @@ const previewElement = ref<HTMLVideoElement | null>(null);
 const waveformLevels = ref<number[]>(Array.from({ length: 16 }, () => 0.15));
 const screenCaptureAvailable =
   typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function";
+const minimumEncodedRecordingBytes = 8;
 
 let microphoneStream: MediaStream | null = null;
 let recordingStream: MediaStream | null = null;
@@ -155,6 +156,9 @@ let meterAnalyser: AnalyserNode | null = null;
 let meterFrame: number | null = null;
 let recorder: MediaRecorder | null = null;
 let recordedChunks: Blob[] = [];
+let recordedBytes = 0;
+let recorderDataPromise: Promise<void> | null = null;
+let resolveRecorderData: (() => void) | null = null;
 let startedAt = 0;
 let timerId: number | null = null;
 let prerollTimerId: number | null = null;
@@ -281,6 +285,9 @@ async function cleanupMedia() {
   displayStream.value = null;
   recordingStream = null;
   recorder = null;
+  recorderDataPromise = null;
+  resolveRecorderData = null;
+  recordedBytes = 0;
   resolveRecorderStop = null;
   recorderStopPromise = null;
   if (audioContext) {
@@ -364,12 +371,37 @@ function afterNextPaint(): Promise<void> {
 }
 
 function collectChunk(blob: Blob) {
-  if (blob.size > 0) recordedChunks.push(blob);
+  if (blob.size === 0) return;
+  recordedChunks.push(blob);
+  recordedBytes += blob.size;
+  if (recordedBytes >= minimumEncodedRecordingBytes) {
+    resolveRecorderData?.();
+    resolveRecorderData = null;
+  }
 }
 
-async function stopRecorder() {
+async function waitForRecorderData() {
+  if (recordedBytes >= minimumEncodedRecordingBytes || !recorderDataPromise) return;
+  let timeoutId: number | null = null;
+  try {
+    await Promise.race([
+      recorderDataPromise,
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(
+          () => reject(new Error(t("recordingTooShort"))),
+          3000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) window.clearTimeout(timeoutId);
+  }
+}
+
+async function stopRecorder(waitForData = false) {
   const current = recorder;
   if (!current || current.state === "inactive") return;
+  if (waitForData) await waitForRecorderData();
   current.stop();
   await recorderStopPromise;
 }
@@ -414,6 +446,10 @@ async function startRecording(recordingMode: RecordingMode, selectedScreen?: Med
   elapsedMs.value = 0;
   startedAt = 0;
   recordedChunks = [];
+  recordedBytes = 0;
+  recorderDataPromise = new Promise<void>((resolve) => {
+    resolveRecorderData = resolve;
+  });
 
   try {
     await afterNextPaint();
@@ -488,6 +524,20 @@ async function uploadVideoMetadata(path: string) {
   await uploadRecording(filename, body);
 }
 
+async function validateRecording(recording: Blob, mimeType: string) {
+  if (recording.size < minimumEncodedRecordingBytes) throw new Error(t("recordingTooShort"));
+  if (!mimeType.includes("webm")) return;
+  const header = new Uint8Array(await recording.slice(0, 4).arrayBuffer());
+  if (
+    header[0] !== 0x1a ||
+    header[1] !== 0x45 ||
+    header[2] !== 0xdf ||
+    header[3] !== 0xa3
+  ) {
+    throw new Error(t("recordingTooShort"));
+  }
+}
+
 function handleStopPointerDown(event: PointerEvent) {
   if (event.pointerType === "mouse") return;
   event.preventDefault();
@@ -500,8 +550,9 @@ async function stopRecording() {
   stopTimer();
   const mimeType = recorder.mimeType || "application/octet-stream";
   try {
-    await stopRecorder();
+    await stopRecorder(true);
     const recording = new Blob(recordedChunks, { type: mimeType });
+    await validateRecording(recording, mimeType);
     const filename = recordingFilename(extensionForMimeType(mimeType));
     const path = await uploadRecording(filename, recording);
     if (mode.value === "screen") await uploadVideoMetadata(path);

@@ -145,6 +145,7 @@ export const es: TranslationKeys = {
   recordingInProgress: "Grabando…",
   recordingScreenInProgress: "Grabando pantalla y micrófono…",
   recordingStopping: "Finalizando grabación…",
+  recordingTooShort: "La grabación fue demasiado corta para codificarse. Inténtalo de nuevo.",
   recordingFailed: "Error de grabación",
   recordingInvalidResponse: "El servidor de grabación devolvió una respuesta no válida",
   recordingScreenEnded: "La pantalla dejó de compartirse antes de iniciar la grabación",
