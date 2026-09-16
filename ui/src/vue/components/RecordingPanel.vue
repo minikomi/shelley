@@ -211,9 +211,15 @@ function startAudioMeter(stream: MediaStream) {
   const draw = () => {
     if (meterAnalyser !== analyser) return;
     analyser.getByteTimeDomainData(samples);
-    waveformLevels.value = waveformLevels.value.map((_, index, levels) => {
-      const sample = samples[Math.floor((index / levels.length) * samples.length)] ?? 128;
-      return Math.max(0.12, Math.min(1, Math.abs(sample - 128) / 42));
+    waveformLevels.value = waveformLevels.value.map((level, index, levels) => {
+      const start = Math.floor((index / levels.length) * samples.length);
+      const end = Math.floor(((index + 1) / levels.length) * samples.length);
+      let peak = 0;
+      for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
+        peak = Math.max(peak, Math.abs((samples[sampleIndex] ?? 128) - 128));
+      }
+      const target = Math.max(0.1, Math.min(1, Math.pow(peak / 128, 0.65) * 2));
+      return target >= level ? target : Math.max(0.1, level * 0.8 + target * 0.2);
     });
     meterFrame = requestAnimationFrame(draw);
   };

@@ -3474,6 +3474,7 @@ diffs-container {
 }
 
 .recording-waveform {
+  position: relative;
   display: flex;
   width: 42px;
   height: 20px;
@@ -3483,7 +3484,18 @@ diffs-container {
   gap: 2px;
 }
 
+.recording-waveform::before {
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 50%;
+  height: 1px;
+  background: color-mix(in srgb, #dc2626 20%, transparent);
+  content: "";
+}
+
 .recording-waveform-bar {
+  position: relative;
   width: 2px;
   max-height: 18px;
   border-radius: 1px;

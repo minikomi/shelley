@@ -9,6 +9,7 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       audioSources: 0,
       stoppedTracks: 0,
       displayError: "",
+      meterPeak: 4,
     };
 
     class MockTrack extends EventTarget {
@@ -78,7 +79,22 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       }
       createMediaStreamSource() {
         mock.audioSources++;
-        return { connect() {} };
+        return { connect() {}, disconnect() {} };
+      }
+      createAnalyser() {
+        return {
+          fftSize: 64,
+          smoothingTimeConstant: 0,
+          disconnect() {},
+          getByteTimeDomainData(samples: Uint8Array) {
+            const profile = [0.1, 0.25, 0.45, 0.7, 1, 0.65, 0.85, 0.5];
+            for (let index = 0; index < samples.length; index++) {
+              const multiplier = profile[Math.floor(index / 4) % profile.length] ?? 0.1;
+              const peak = Math.max(1, Math.round(mock.meterPeak * multiplier));
+              samples[index] = 128 + (index % 2 === 0 ? peak : -peak);
+            }
+          },
+        };
       }
       async resume() {}
       async close() {}
@@ -283,6 +299,22 @@ test.describe("media recording composer", () => {
       "Keep this note with the recording.",
     );
     await expect(page.getByTestId("recording-waveform")).toBeVisible();
+    const waveformHeights = await page.locator(".recording-waveform-bar").evaluateAll((bars) =>
+      bars.map((bar) => getComputedStyle(bar).height),
+    );
+    expect(new Set(waveformHeights).size).toBeGreaterThan(1);
+    await page.evaluate(() => {
+      window.__recordingMock.meterPeak = 48;
+    });
+    await expect
+      .poll(async () =>
+        Math.max(
+          ...(await page.locator(".recording-waveform-bar").evaluateAll((bars) =>
+            bars.map((bar) => Number.parseFloat(getComputedStyle(bar).height)),
+          )),
+        ),
+      )
+      .toBeGreaterThan(Math.max(...waveformHeights.map(Number.parseFloat)) * 2);
     await expect.poll(() => page.evaluate(() => window.__recordingMock.microphoneRequests)).toBe(1);
 
     await page.getByTestId("recording-stop-button").click();
@@ -344,7 +376,7 @@ test.describe("media recording composer", () => {
         microphone: window.__recordingMock.microphoneRequests,
         sources: window.__recordingMock.audioSources,
       })),
-    ).toEqual({ display: 1, microphone: 2, sources: 2 });
+    ).toEqual({ display: 1, microphone: 2, sources: 4 });
 
     await page.getByTestId("recording-stop-button").dispatchEvent("pointerdown", {
       pointerType: "touch",
@@ -596,6 +628,7 @@ declare global {
       audioSources: number;
       stoppedTracks: number;
       displayError: string;
+      meterPeak: number;
     };
   }
 }
