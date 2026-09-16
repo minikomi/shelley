@@ -164,7 +164,6 @@ interface QueuedMessageFixture {
   state?: "working" | "ready" | "failed";
   transcription?: {
     media_path: string;
-    child_conversation_id: string;
     context?: string;
   };
   error?: string;
@@ -404,28 +403,21 @@ test.describe("media recording composer", () => {
         state: "working",
         transcription: {
           media_path: "/tmp/shelley-uploads/working.webm",
-          child_conversation_id: "cWORKING",
           context: "Keep this image [/tmp/shelley-uploads/context.png]",
         },
       }),
-      queuedMessage(
-        "q-ready",
-        "Finished spoken words.\n\n(transcribed by subagent cREADY from ready.webm)",
-        {
-          kind: "transcription",
-          state: "ready",
-          transcription: {
-            media_path: "/tmp/shelley-uploads/ready.webm",
-            child_conversation_id: "cREADY",
-          },
+      queuedMessage("q-ready", "Finished spoken words.", {
+        kind: "transcription",
+        state: "ready",
+        transcription: {
+          media_path: "/tmp/shelley-uploads/ready.webm",
         },
-      ),
+      }),
       queuedMessage("q-failed", "", {
         kind: "transcription",
         state: "failed",
         transcription: {
           media_path: "/tmp/shelley-uploads/failed.webm",
-          child_conversation_id: "cFAILED",
         },
         error: "transcription unavailable",
       }),
@@ -490,7 +482,6 @@ test.describe("media recording composer", () => {
         state: "working",
         transcription: {
           media_path: "/tmp/shelley-uploads/working.webm",
-          child_conversation_id: "cWORKING",
           context: "Keep working draft",
         },
       }),
@@ -499,7 +490,6 @@ test.describe("media recording composer", () => {
         state: "failed",
         transcription: {
           media_path: "/tmp/shelley-uploads/failed.webm",
-          child_conversation_id: "cFAILED",
           context: "Keep failed draft",
         },
         error: "transcription unavailable",

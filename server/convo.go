@@ -1379,10 +1379,10 @@ func (cm *ConversationManager) hasPersistedQueuedBatchesLocked() bool {
 	return false
 }
 
-// QueueTranscription atomically persists a transcription item and its hidden
-// child, then installs an in-memory FIFO blocker. Unlike QueueMessage it never
-// drains immediately: only a ready transition can make it deliverable.
-func (cm *ConversationManager) QueueTranscription(ctx context.Context, s *Server, qm db.QueuedMessage, cwd *string) (db.QueuedMessage, error) {
+// QueueTranscription atomically persists a transcription item, then installs
+// an in-memory FIFO blocker. Unlike QueueMessage it never drains immediately:
+// only a ready transition can make it deliverable.
+func (cm *ConversationManager) QueueTranscription(ctx context.Context, s *Server, qm db.QueuedMessage) (db.QueuedMessage, error) {
 	cm.waitDistillingSetup()
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
@@ -1391,8 +1391,7 @@ func (cm *ConversationManager) QueueTranscription(ctx context.Context, s *Server
 		return db.QueuedMessage{}, err
 	}
 
-	childSlug, childOptions := transcriptionChildOptions()
-	_, _, queued, err := s.db.CreateQueuedTranscription(ctx, cm.conversationID, childSlug, cwd, qm, childOptions)
+	_, queued, err := s.db.CreateQueuedTranscription(ctx, cm.conversationID, qm)
 	if err != nil {
 		return db.QueuedMessage{}, err
 	}

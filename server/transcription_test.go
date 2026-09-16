@@ -253,7 +253,7 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 	if item.Kind != db.QueuedMessageKindTranscription || item.State != db.QueuedMessageStateWorking || item.Transcription == nil {
 		t.Fatalf("queued item = %#v", item)
 	}
-	if item.Transcription.MediaPath != mediaPath || item.Transcription.ChildConversationID == "" {
+	if item.Transcription.MediaPath != mediaPath {
 		t.Fatalf("transcription = %#v", item.Transcription)
 	}
 	if item.Model != "predictable" || item.CreatedAt.IsZero() || len(item.Llm) != 0 {
@@ -271,12 +271,8 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(children) != 1 || children[0].ConversationID != item.Transcription.ChildConversationID {
+	if len(children) != 0 {
 		t.Fatalf("children = %#v", children)
-	}
-	childOptions := db.ParseConversationOptions(children[0].ConversationOptions)
-	if childOptions.Kind != transcriptionKind || childOptions.ThinkingLevel != "low" {
-		t.Fatalf("child options = %#v", childOptions)
 	}
 	server.mu.Lock()
 	parentManager := server.activeConversations[draft.ConversationID]
@@ -285,20 +281,18 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 
 	close(release)
 	<-done
-	messages, err := database.ListMessages(t.Context(), item.Transcription.ChildConversationID)
-	if err != nil {
+	queued = queuedMessages(t, database, draft.ConversationID)
+	if len(queued) != 1 || queued[0].State != db.QueuedMessageStateReady {
+		t.Fatalf("completed queue = %#v", queued)
+	}
+	var audit []llm.Message
+	if err := json.Unmarshal(queued[0].Transcription.Audit, &audit); err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 4 {
-		t.Fatalf("child messages = %d, want 4", len(messages))
-	}
-	var toolCall llm.Message
-	if messages[1].LlmData == nil || json.Unmarshal([]byte(*messages[1].LlmData), &toolCall) != nil ||
-		len(toolCall.Content) != 1 || toolCall.Content[0].ToolName != "openai_audio_transcription" {
-		t.Fatalf("immediate tool call = %#v", messages[1])
-	}
-	if messages[3].LlmData == nil || !strings.Contains(*messages[3].LlmData, "predictable spoken words") {
-		t.Fatalf("final child message = %#v", messages[3])
+	if len(audit) != 2 || len(audit[0].Content) != 1 ||
+		audit[0].Content[0].ToolName != "openai_audio_transcription" ||
+		len(audit[1].Content) != 1 || !strings.Contains(audit[1].Content[0].ToolResult[0].Text, "predictable spoken words") {
+		t.Fatalf("parent audit = %#v", audit)
 	}
 	parentManager.SetAgentWorking(false)
 	if _, err := parentManager.CancelQueuedMessages(t.Context(), server); err != nil {
@@ -349,7 +343,7 @@ func TestTranscriptionBarrierDoesNotStarveSubagentCompletion(t *testing.T) {
 	if _, err := database.AppendQueuedMessage(t.Context(), conversation.ConversationID, db.QueuedMessage{
 		ID: "failed-transcription", CreatedAt: time.Now().UTC(), Model: "predictable",
 		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateFailed,
-		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/failed.webm", ChildConversationID: "cFAILED"},
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/failed.webm"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +535,6 @@ func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 	if len(queued) != 1 || queued[0].State != db.QueuedMessageStateFailed || !strings.Contains(queued[0].Error, "broken media") {
 		t.Fatalf("failed queue = %#v", queued)
 	}
-	firstChild := queued[0].Transcription.ChildConversationID
 
 	ordinaryW := httptest.NewRecorder()
 	server.handleChatConversation(ordinaryW, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"message":"echo: held behind failure","model":"predictable"}`)), conversation.ConversationID)
@@ -570,7 +563,7 @@ func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
 	}
 	retryReceipt := queuedTranscriptionReceipt(t, retryW, database, conversation.ConversationID)
-	if retryReceipt.ID != receipt.ID || retryReceipt.Transcription.ChildConversationID == firstChild {
+	if retryReceipt.ID != receipt.ID || retryReceipt.State != db.QueuedMessageStateWorking {
 		t.Fatalf("retry receipt = %#v", retryReceipt)
 	}
 	secondDone := transcriptionDone(t, server, receipt.ID)
@@ -602,7 +595,7 @@ func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _ string)
 	return transcriptionResult{}, ctx.Err()
 }
 
-func TestCancelQueuedTranscriptionCancelsChild(t *testing.T) {
+func TestCancelQueuedTranscriptionCancelsWorker(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
 	blocking := &blockingRecordingTranscriber{
@@ -641,11 +634,11 @@ func TestCancelQueuedTranscriptionCancelsChild(t *testing.T) {
 	if queued := queuedMessages(t, database, conversation.ConversationID); len(queued) != 0 {
 		t.Fatalf("queue after cancel = %#v", queued)
 	}
-	server.mu.Lock()
-	childManager := server.activeConversations[receipt.Transcription.ChildConversationID]
-	server.mu.Unlock()
-	if childManager != nil && childManager.IsAgentWorking() {
-		t.Fatal("transcription child still working after queue cancellation")
+	server.transcriptionMu.Lock()
+	_, stillRunning := server.transcriptionJobs[receipt.ID]
+	server.transcriptionMu.Unlock()
+	if stillRunning {
+		t.Fatal("transcription worker still registered after queue cancellation")
 	}
 }
 
@@ -688,7 +681,7 @@ func TestCancelConversationCancelsQueuedTranscriptionWithoutParentLoop(t *testin
 	}
 }
 
-func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
+func TestQueuedTranscriptionRecoveryResumesInterruptedWork(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
 	server.transcriber = successfulRecordingTranscriber("recovered direct words")
@@ -699,29 +692,12 @@ func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, queued, err := database.CreateQueuedTranscription(
-		t.Context(),
-		parent.ConversationID,
-		"transcription-interrupted",
-		nil,
-		db.QueuedMessage{
-			ID: "interrupted-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
-			Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
-			Transcription: &db.QueuedTranscription{MediaPath: "/tmp/interrupted.webm"},
-		},
-		db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"},
-	)
+	_, queued, err := database.CreateQueuedTranscription(t.Context(), parent.ConversationID, db.QueuedMessage{
+		ID: "interrupted-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
+		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/interrupted.webm"},
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        llm.UserStringMessage(transcriptionPrompt("/tmp/interrupted.webm", "")),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.SetConversationAgentWorking(t.Context(), child.ConversationID, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SetConversationAgentWorking(t.Context(), parent.ConversationID, true); err != nil {
@@ -734,48 +710,29 @@ func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
 	if len(persisted) != 1 || persisted[0].State != db.QueuedMessageStateReady {
 		t.Fatalf("resumed queue = %#v", persisted)
 	}
-	messages, err := database.ListMessages(t.Context(), child.ConversationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	promptCount := 0
-	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil &&
-			strings.Contains(*message.LlmData, "Transcribe the recording") {
-			promptCount++
-		}
-	}
-	if promptCount != 1 {
-		t.Fatalf("resume added another child prompt: got %d prompts", promptCount)
+	var audit []llm.Message
+	if err := json.Unmarshal(persisted[0].Transcription.Audit, &audit); err != nil || len(audit) != 2 {
+		t.Fatalf("recovered audit = %#v, err = %v", audit, err)
 	}
 }
 
 func TestQueuedTranscriptionRecoveryIncludesArchivedParents(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("archived words")
+	server.mediaRun = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
 	parent, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, queued, err := database.CreateQueuedTranscription(
-		t.Context(), parent.ConversationID, "transcription-archived", nil,
-		db.QueuedMessage{
-			ID: "archived-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
-			Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
-			Transcription: &db.QueuedTranscription{MediaPath: "/tmp/archived.webm"},
-		},
-		db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"},
-	)
+	_, queued, err := database.CreateQueuedTranscription(t.Context(), parent.ConversationID, db.QueuedMessage{
+		ID: "archived-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
+		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/archived.webm"},
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData: llm.Message{
-			Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "archived words"}}, EndOfTurn: true,
-		},
-	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SetConversationAgentWorking(t.Context(), parent.ConversationID, true); err != nil {
@@ -786,6 +743,7 @@ func TestQueuedTranscriptionRecoveryIncludesArchivedParents(t *testing.T) {
 	}
 
 	server.recoverQueuedTranscriptions(t.Context())
+	<-transcriptionDone(t, server, queued.ID)
 	persisted := queuedMessages(t, database, parent.ConversationID)
 	if len(persisted) != 1 || persisted[0].ID != queued.ID || persisted[0].State != db.QueuedMessageStateReady {
 		t.Fatalf("archived recovered queue = %#v", persisted)
@@ -795,34 +753,20 @@ func TestQueuedTranscriptionRecoveryIncludesArchivedParents(t *testing.T) {
 func TestQueuedTranscriptionRecoveryIsIdempotent(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("recovered words")
+	server.mediaRun = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
 	parent, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, queued, err := database.CreateQueuedTranscription(
-		t.Context(),
-		parent.ConversationID,
-		"transcription-recovery",
-		nil,
-		db.QueuedMessage{
-			ID: "recovery-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
-			Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
-			Transcription: &db.QueuedTranscription{MediaPath: "/tmp/recovery.webm"},
-		},
-		db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"},
-	)
+	_, queued, err := database.CreateQueuedTranscription(t.Context(), parent.ConversationID, db.QueuedMessage{
+		ID: "recovery-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
+		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/recovery.webm"},
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData: llm.Message{
-			Role:      llm.MessageRoleAssistant,
-			Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "recovered words"}},
-			EndOfTurn: true,
-		},
-	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SetConversationAgentWorking(t.Context(), parent.ConversationID, true); err != nil {
@@ -831,6 +775,7 @@ func TestQueuedTranscriptionRecoveryIsIdempotent(t *testing.T) {
 
 	server.recoverQueuedTranscriptions(t.Context())
 	server.recoverQueuedTranscriptions(t.Context())
+	<-transcriptionDone(t, server, queued.ID)
 	persisted := queuedMessages(t, database, parent.ConversationID)
 	if len(persisted) != 1 || persisted[0].ID != queued.ID || persisted[0].State != db.QueuedMessageStateReady {
 		t.Fatalf("recovered queue = %#v", persisted)
@@ -853,8 +798,17 @@ func TestQueuedTranscriptionRecoveryIsIdempotent(t *testing.T) {
 	}
 	count := 0
 	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil && strings.Contains(*message.LlmData, "recovered words") {
-			count++
+		if message.Type != string(db.MessageTypeUser) || message.LlmData == nil {
+			continue
+		}
+		var value llm.Message
+		if err := json.Unmarshal([]byte(*message.LlmData), &value); err != nil {
+			t.Fatal(err)
+		}
+		for _, content := range value.Content {
+			if content.Type == llm.ContentTypeText && strings.Contains(content.Text, "recovered words") {
+				count++
+			}
 		}
 	}
 	if count != 1 {
