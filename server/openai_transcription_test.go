@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -24,8 +25,11 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 		if got := r.FormValue("model"); got != openAITranscriptionModel {
 			t.Errorf("model = %q", got)
 		}
-		if got := r.FormValue("response_format"); got != "json" {
+		if got := r.FormValue("response_format"); got != "verbose_json" {
 			t.Errorf("response_format = %q", got)
+		}
+		if got := r.MultipartForm.Value["timestamp_granularities[]"]; len(got) != 2 || got[0] != "word" || got[1] != "segment" {
+			t.Errorf("timestamp granularities = %#v", got)
 		}
 		if got := r.FormValue("prompt"); got != "Shelley on example-vm" {
 			t.Errorf("prompt = %q", got)
@@ -46,7 +50,7 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 			t.Errorf("file = %q", data)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"text":" immediate words "}`)
+		_, _ = io.WriteString(w, `{"text":" immediate words ","words":[{"word":"immediate","start":0.0,"end":0.4}],"segments":[{"text":"immediate words","start":0.0,"end":0.8}]}`)
 	}))
 	defer api.Close()
 
@@ -57,6 +61,17 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	}
 	if result.Text != "immediate words" || result.Model != openAITranscriptionModel {
 		t.Fatalf("result = %#v", result)
+	}
+	wantTimestampsPath := mediaPath + ".timestamps.json"
+	if result.TimestampsPath != wantTimestampsPath {
+		t.Fatalf("timestamps path = %q, want %q", result.TimestampsPath, wantTimestampsPath)
+	}
+	timestamps, err := os.ReadFile(wantTimestampsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(timestamps), `"words"`) || !strings.Contains(string(timestamps), `"segments"`) {
+		t.Fatalf("timestamps = %s", timestamps)
 	}
 }
 

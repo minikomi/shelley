@@ -37,9 +37,13 @@ type promptCapturingTranscriber struct {
 	text   string
 }
 
-func (t *promptCapturingTranscriber) Transcribe(_ context.Context, _, prompt string) (transcriptionResult, error) {
+func (t *promptCapturingTranscriber) Transcribe(_ context.Context, mediaPath, prompt string) (transcriptionResult, error) {
 	t.prompt <- prompt
-	return transcriptionResult{Text: t.text, Model: openAITranscriptionModel}, nil
+	return transcriptionResult{
+		Text:           t.text,
+		Model:          openAITranscriptionModel,
+		TimestampsPath: mediaPath + ".timestamps.json",
+	}, nil
 }
 
 func transcriptionTestFile(t *testing.T, name string) string {
@@ -324,6 +328,16 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 	}
 	if auditedInput["composer_text"] != false || auditedInput["prompt_chars"] != float64(utf8.RuneCountInString(prompt)) {
 		t.Fatalf("audited input = %#v", auditedInput)
+	}
+	if auditedInput["model"] != "whisper-1" || auditedInput["response_format"] != "verbose_json" {
+		t.Fatalf("audited timestamp request = %#v", auditedInput)
+	}
+	granularities, ok := auditedInput["timestamp_granularities"].([]any)
+	if !ok || len(granularities) != 2 || granularities[0] != "word" || granularities[1] != "segment" {
+		t.Fatalf("audited timestamp granularities = %#v", auditedInput["timestamp_granularities"])
+	}
+	if !strings.Contains(audit[1].Content[0].ToolResult[0].Text, mediaPath+".timestamps.json") {
+		t.Fatalf("audited timestamp result = %#v", audit[1])
 	}
 	parentManager.SetAgentWorking(false)
 	if _, err := parentManager.CancelQueuedMessages(t.Context(), server); err != nil {

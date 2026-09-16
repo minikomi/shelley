@@ -391,11 +391,13 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 func transcriptionToolUse(mediaPath, prompt string) (string, llm.Message, error) {
 	toolUseID := "transcription_" + uuid.NewString()
 	toolInput, err := json.Marshal(map[string]any{
-		"endpoint":      openAITranscriptionEndpoint,
-		"file":          mediaPath,
-		"model":         openAITranscriptionModel,
-		"prompt_chars":  utf8.RuneCountInString(prompt),
-		"composer_text": false,
+		"endpoint":                openAITranscriptionEndpoint,
+		"file":                    mediaPath,
+		"model":                   openAITranscriptionModel,
+		"response_format":         "verbose_json",
+		"timestamp_granularities": []string{"word", "segment"},
+		"prompt_chars":            utf8.RuneCountInString(prompt),
+		"composer_text":           false,
 		"prompt_context": []string{
 			"Shelley/exe.dev task instructions",
 			"VM hostname",
@@ -431,6 +433,9 @@ func transcriptionToolResult(toolUseID string, result transcriptionResult, start
 		toolOutput["text"] = result.Text
 		if result.Model != "" {
 			toolOutput["model"] = result.Model
+		}
+		if result.TimestampsPath != "" {
+			toolOutput["timestamps_path"] = result.TimestampsPath
 		}
 	}
 	outputJSON, err := json.Marshal(toolOutput)
