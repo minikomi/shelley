@@ -218,7 +218,7 @@ function startAudioMeter(stream: MediaStream) {
       for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
         peak = Math.max(peak, Math.abs((samples[sampleIndex] ?? 128) - 128));
       }
-      const target = Math.max(0.1, Math.min(1, Math.pow(peak / 128, 0.65) * 2));
+      const target = Math.max(0.1, Math.min(1, Math.pow(peak / 128, 0.65) * 2.3));
       return target >= level ? target : Math.max(0.1, level * 0.8 + target * 0.2);
     });
     meterFrame = requestAnimationFrame(draw);
