@@ -3503,6 +3503,19 @@ diffs-container {
   transition: height 80ms linear;
 }
 
+.recording-waveform-preroll {
+  opacity: 0.18;
+  transform: scaleY(0.4);
+}
+
+.recording-waveform-preroll,
+.recording-waveform-preroll .recording-waveform-bar {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease,
+    height 80ms linear;
+}
+
 .recording-status {
   display: flex;
   min-width: 0;
@@ -3540,6 +3553,11 @@ diffs-container {
 .recording-status-dot.recording {
   background: #dc2626;
   animation: recording-pulse 1.5s ease-in-out infinite;
+}
+
+.recording-status-dot.preroll {
+  background: #dc2626;
+  opacity: 0.45;
 }
 
 .recording-status-dot.error {
@@ -3645,6 +3663,7 @@ diffs-container {
     display: none;
   }
 
+  .recording-status[data-state="preroll"] .recording-status-label,
   .recording-status[data-state="recording"] .recording-status-label {
     position: absolute;
     width: 1px;

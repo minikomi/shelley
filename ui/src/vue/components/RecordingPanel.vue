@@ -18,8 +18,11 @@
         data-testid="recording-preview"
       />
       <div
-        v-if="state === 'recording'"
-        class="recording-waveform"
+        v-if="state === 'preroll' || state === 'recording'"
+        :class="[
+          'recording-waveform',
+          { 'recording-waveform-preroll': state === 'preroll' },
+        ]"
         aria-hidden="true"
         data-testid="recording-waveform"
       >
@@ -53,7 +56,7 @@
           data-testid="recording-preserved-text"
         >{{ preservedText }}</span>
         <time
-          v-if="state === 'recording' || state === 'stopping'"
+          v-if="state === 'preroll' || state === 'recording' || state === 'stopping'"
           class="recording-timer"
           data-testid="recording-timer"
           :datetime="`PT${Math.floor(elapsedMs / 1000)}S`"
@@ -78,7 +81,7 @@
         <span class="recording-action-label">{{ t("recordingScreenAction") }}</span>
       </button>
       <button
-        v-if="state === 'recording'"
+        v-if="state === 'preroll' || state === 'recording'"
         type="button"
         class="btn btn-primary recording-stop-btn"
         :aria-label="t('recordingStop')"
@@ -122,7 +125,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "../composables/i18n";
 
 type RecordingMode = "microphone" | "screen";
-type RecordingState = "starting" | "recording" | "stopping" | "error";
+type RecordingState = "starting" | "preroll" | "recording" | "stopping" | "error";
 
 const props = defineProps<{
   preservedText?: string;
@@ -154,6 +157,8 @@ let recorder: MediaRecorder | null = null;
 let recordedChunks: Blob[] = [];
 let startedAt = 0;
 let timerId: number | null = null;
+let prerollTimerId: number | null = null;
+let resolvePreroll: (() => void) | null = null;
 let requestController: AbortController | null = null;
 let resolveRecorderStop: (() => void) | null = null;
 let recorderStopPromise: Promise<void> | null = null;
@@ -163,7 +168,7 @@ let failureInProgress = false;
 
 const statusText = computed(() => {
   if (state.value === "starting") return t("recordingStarting");
-  if (state.value === "recording") {
+  if (state.value === "preroll" || state.value === "recording") {
     return mode.value === "screen" ? t("recordingScreenInProgress") : t("recordingInProgress");
   }
   if (state.value === "stopping") return t("recordingStopping");
@@ -244,7 +249,27 @@ function stopTimer() {
   updateElapsed();
 }
 
+function cancelPreroll() {
+  if (prerollTimerId !== null) window.clearTimeout(prerollTimerId);
+  prerollTimerId = null;
+  const resolve = resolvePreroll;
+  resolvePreroll = null;
+  resolve?.();
+}
+
+function waitForPreroll(): Promise<void> {
+  return new Promise((resolve) => {
+    resolvePreroll = resolve;
+    prerollTimerId = window.setTimeout(() => {
+      prerollTimerId = null;
+      resolvePreroll = null;
+      resolve();
+    }, 500);
+  });
+}
+
 async function cleanupMedia() {
+  cancelPreroll();
   stopTimer();
   stopAudioMeter();
   const tracks = new Set<MediaStreamTrack>();
@@ -416,6 +441,9 @@ async function startRecording(recordingMode: RecordingMode, selectedScreen?: Med
       void presentFailure(cause ?? new Error(t("recordingFailed")));
     };
     recorder.start(1000);
+    state.value = "preroll";
+    await waitForPreroll();
+    if (discarding || disposed || state.value !== "preroll") return;
     startedAt = Date.now();
     timerId = window.setInterval(updateElapsed, 250);
     state.value = "recording";
@@ -467,7 +495,7 @@ function handleStopPointerDown(event: PointerEvent) {
 }
 
 async function stopRecording() {
-  if (state.value !== "recording" || !recorder) return;
+  if ((state.value !== "preroll" && state.value !== "recording") || !recorder) return;
   state.value = "stopping";
   stopTimer();
   const mimeType = recorder.mimeType || "application/octet-stream";

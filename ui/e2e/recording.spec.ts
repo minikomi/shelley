@@ -10,6 +10,7 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       stoppedTracks: 0,
       displayError: "",
       meterPeak: 4,
+      recorderStarts: 0,
     };
 
     class MockTrack extends EventTarget {
@@ -54,6 +55,7 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       }
       start(timeslice?: number) {
         if (timeslice !== 1000) throw new Error(`unexpected timeslice ${timeslice}`);
+        mock.recorderStarts++;
         this.state = "recording";
         queueMicrotask(() => this.emitChunk("first"));
         queueMicrotask(() => this.emitChunk("second"));
@@ -293,6 +295,13 @@ test.describe("media recording composer", () => {
     expect(recordingHeight).toBeLessThan(composerHeight ?? Number.POSITIVE_INFINITY);
     await expect(page.getByRole("dialog", { name: "Record media" })).toHaveCount(0);
     await expect(page.getByTestId("message-input")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+    await expect(page.getByTestId("recording-status")).toHaveText("Recording…");
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
+    await expect(page.getByTestId("recording-waveform")).toHaveClass(
+      /recording-waveform-preroll/,
+    );
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
     await expect(page.getByTestId("recording-status")).toHaveText("Recording…");
     await expect(page.getByTestId("recording-preserved-text")).toHaveText(
       "Keep this note with the recording.",
@@ -600,6 +609,24 @@ test.describe("media recording composer", () => {
     await expect(page.getByTestId("message-input")).toHaveValue("");
     expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBeGreaterThan(0);
   });
+
+  test("cancels captured pre-roll without uploading", async ({ page }) => {
+    let uploadCount = 0;
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploadCount++;
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/unexpected.webm" });
+    });
+
+    await page.goto("/new");
+    await page.getByTestId("voice-button").click();
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
+    await page.getByTestId("recording-cancel-button").click();
+
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    expect(uploadCount).toBe(0);
+    expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBeGreaterThan(0);
+  });
 });
 
 test("uses a microphone icon when screen capture is unavailable", async ({ page }) => {
@@ -619,6 +646,7 @@ declare global {
       stoppedTracks: number;
       displayError: string;
       meterPeak: number;
+      recorderStarts: number;
     };
   }
 }
