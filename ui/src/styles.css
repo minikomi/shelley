@@ -3511,7 +3511,16 @@ diffs-container {
 }
 
 .recording-status-dot.starting,
-.recording-status-dot.stopping,
+.recording-status-dot.stopping {
+  width: 0.75rem;
+  height: 0.75rem;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--orange-500, #f97316) 30%, transparent);
+  border-top-color: var(--orange-500, #f97316);
+  background: transparent;
+  animation: recording-start-spin 0.65s linear infinite;
+}
+
 .recording-status-dot.transcribing {
   background: var(--orange-500, #f97316);
 }
@@ -3528,6 +3537,12 @@ diffs-container {
 @keyframes recording-pulse {
   50% {
     opacity: 0.35;
+  }
+}
+
+@keyframes recording-start-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -14907,6 +14922,8 @@ kbd {
   .message-voice-btn.listening,
   .patch-tool-running,
   .recording-status-dot.recording,
+  .recording-status-dot.starting,
+  .recording-status-dot.stopping,
   .reconnecting-dots,
   .screencast-tool-emoji,
   .screenshot-tool-running,
