@@ -351,7 +351,7 @@
          re-seed from a stale draft seed. Text sync across conversation
          switches is handled by MessageInput's draftSeed watch. -->
     <MessageInput
-      v-if="!currentConversation?.archived"
+      v-show="!currentConversation?.archived"
       :on-send="sendMessage"
       :on-recording-complete="startRecordingTranscription"
       :on-queue="queueMessage"
