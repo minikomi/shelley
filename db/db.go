@@ -547,10 +547,11 @@ const (
 // QueuedTranscription contains the durable inputs and worker identity for a
 // transcription queue item.
 type QueuedTranscription struct {
-	MediaPath           string `json:"media_path"`
-	ContactSheetPath    string `json:"contact_sheet_path,omitempty"`
-	ChildConversationID string `json:"child_conversation_id"`
-	Context             string `json:"context,omitempty"`
+	MediaPath           string          `json:"media_path"`
+	ContactSheetPath    string          `json:"contact_sheet_path,omitempty"`
+	ChildConversationID string          `json:"child_conversation_id"`
+	Context             string          `json:"context,omitempty"`
+	Audit               json.RawMessage `json:"audit,omitempty"`
 }
 
 // QueuedMessage is one user message held in a conversation's queued_messages
@@ -806,6 +807,7 @@ func (db *DB) RetryQueuedTranscription(ctx context.Context, parentID, queuedID, 
 		qm.Error = ""
 		qm.Transcription.ChildConversationID = child.ConversationID
 		qm.Transcription.ContactSheetPath = ""
+		qm.Transcription.Audit = nil
 		updated = *qm
 		return msgs, nil
 	})

@@ -1270,6 +1270,37 @@ func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID,
 	return nil
 }
 
+func (s *Server) recordDrainedQueuedMessages(ctx context.Context, conversationID, queuedID string, messages []llm.Message, userEmail string) error {
+	paramsList := make([]db.CreateMessageParams, 0, len(messages))
+	for i, message := range messages {
+		params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{}, nil)
+		if err != nil {
+			return err
+		}
+		params.BumpTimestamp = true
+		if i == 0 {
+			params.RemoveQueuedID = queuedID
+		}
+		if i == len(messages)-1 {
+			params.UserEmail = userEmail
+		}
+		paramsList = append(paramsList, params)
+	}
+	created, err := s.db.CreateMessages(ctx, paramsList)
+	if err != nil {
+		return fmt.Errorf("failed to create drained queued messages: %w", err)
+	}
+
+	s.mu.Lock()
+	mgr, ok := s.activeConversations[conversationID]
+	s.mu.Unlock()
+	if ok {
+		mgr.Touch()
+	}
+	go s.notifySubscribersNewMessages(context.WithoutCancel(ctx), conversationID, created)
+	return nil
+}
+
 // userEmailContextKey carries the authenticated exe.dev account (from the
 // X-ExeDev-Email header the HTTPS proxy stamps) from an HTTP handler down to
 // the message recorder, so a user turn's row can be attributed to its author.

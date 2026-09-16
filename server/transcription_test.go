@@ -452,13 +452,19 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	for _, want := range []string{
 		"Keep this note. [/tmp/shelley-uploads/context.png]",
 		"predictable spoken words",
-		"(transcribed by subagent " + queued[0].Transcription.ChildConversationID + " from " + filepath.Base(mediaPath) + ")",
+
 		"[" + mediaPath + "]",
 		"[" + mediaPath + ".contact-sheet.jpg]",
 	} {
 		if !strings.Contains(finalText, want) {
 			t.Errorf("final text missing %q: %s", want, finalText)
 		}
+	}
+	if strings.Contains(finalText, "transcribed by subagent") {
+		t.Fatalf("final text has misleading attribution: %s", finalText)
+	}
+	if len(queued[0].Transcription.Audit) == 0 {
+		t.Fatal("ready transcription is missing inline audit messages")
 	}
 
 	manager.SetAgentWorking(false)
@@ -470,14 +476,38 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var users []string
-	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil {
-			users = append(users, *message.LlmData)
+	positions := map[string]int{}
+	for i, row := range messages {
+		if row.LlmData == nil {
+			continue
+		}
+		var message llm.Message
+		if err := json.Unmarshal([]byte(*row.LlmData), &message); err != nil {
+			t.Fatal(err)
+		}
+		for _, content := range message.Content {
+			switch {
+			case content.Type == llm.ContentTypeToolUse && content.ToolName == "openai_audio_transcription":
+				positions["tool_use"] = i
+				if !message.ExcludedFromContext {
+					t.Error("inline transcription tool use is not excluded from model context")
+				}
+			case content.Type == llm.ContentTypeToolResult:
+				positions["tool_result"] = i
+				if !message.ExcludedFromContext {
+					t.Error("inline transcription tool result is not excluded from model context")
+				}
+			case strings.Contains(content.Text, "predictable spoken words"):
+				positions["transcript"] = i
+			case strings.Contains(content.Text, "after transcription"):
+				positions["after"] = i
+			}
 		}
 	}
-	if len(users) < 2 || !strings.Contains(users[0], "transcribed by subagent") || !strings.Contains(users[1], "after transcription") {
-		t.Fatalf("user message order = %#v", users)
+	if !(positions["tool_use"] < positions["tool_result"] &&
+		positions["tool_result"] < positions["transcript"] &&
+		positions["transcript"] < positions["after"]) {
+		t.Fatalf("inline transcription order = %#v", positions)
 	}
 }
 

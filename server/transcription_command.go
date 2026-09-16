@@ -563,12 +563,12 @@ func (s *Server) completedTranscriptionChild(ctx context.Context, childID string
 	return "", false, nil
 }
 
-func transcriptionParentMessage(text, childID, mediaPath, contactSheetPath, transcriptionContext string) llm.Message {
+func transcriptionParentMessage(text, mediaPath, contactSheetPath, transcriptionContext string) llm.Message {
 	parts := make([]string, 0, 5)
 	if transcriptionContext = strings.TrimSpace(transcriptionContext); transcriptionContext != "" {
 		parts = append(parts, transcriptionContext)
 	}
-	parts = append(parts, strings.TrimSpace(text), fmt.Sprintf("(transcribed by subagent %s from %s)", childID, filepath.Base(mediaPath)))
+	parts = append(parts, strings.TrimSpace(text))
 	if contactSheetPath != "" {
 		parts = append(parts, "["+mediaPath+"]", "["+contactSheetPath+"]")
 	}
@@ -577,15 +577,29 @@ func transcriptionParentMessage(text, childID, mediaPath, contactSheetPath, tran
 
 func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMessage, text string) {
 	childID := queued.Transcription.ChildConversationID
-	message := transcriptionParentMessage(text, childID, queued.Transcription.MediaPath, queued.Transcription.ContactSheetPath, queued.Transcription.Context)
+	message := transcriptionParentMessage(text, queued.Transcription.MediaPath, queued.Transcription.ContactSheetPath, queued.Transcription.Context)
 	llmJSON, err := json.Marshal(message)
 	if err != nil {
 		s.failQueuedTranscription(parentID, queued.ID, childID, err)
 		return
 	}
+	audit, err := s.transcriptionChildAuditMessages(context.Background(), childID)
+	if err != nil {
+		s.failQueuedTranscription(parentID, queued.ID, childID, err)
+		return
+	}
+	var auditJSON json.RawMessage
+	if len(audit) > 0 {
+		auditJSON, err = json.Marshal(audit)
+		if err != nil {
+			s.failQueuedTranscription(parentID, queued.ID, childID, err)
+			return
+		}
+	}
 	ready, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, childID, func(current *db.QueuedMessage) {
 		current.State = db.QueuedMessageStateReady
 		current.Llm = llmJSON
+		current.Transcription.Audit = auditJSON
 		current.Error = ""
 	})
 	if err != nil {
@@ -597,7 +611,59 @@ func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMe
 		s.logger.Error("Failed to resume parent queue after transcription", "parent", parentID, "queued_id", queued.ID, "error", err)
 		return
 	}
-	manager.ResolveQueuedTranscription(s, ready.ID, message, ready.Model, ready.UserEmail)
+	messages, err := readyTranscriptionMessages(ready)
+	if err != nil {
+		s.logger.Error("Failed to decode finalized transcription", "parent", parentID, "queued_id", queued.ID, "error", err)
+		return
+	}
+	manager.ResolveQueuedTranscription(s, ready.ID, messages, ready.Model, ready.UserEmail)
+}
+
+func (s *Server) transcriptionChildAuditMessages(ctx context.Context, childID string) ([]llm.Message, error) {
+	rows, err := s.db.ListMessages(ctx, childID)
+	if err != nil {
+		return nil, err
+	}
+	var toolUse llm.Message
+	var toolUseID string
+	for _, row := range rows {
+		if row.LlmData == nil {
+			continue
+		}
+		var message llm.Message
+		if err := json.Unmarshal([]byte(*row.LlmData), &message); err != nil {
+			return nil, err
+		}
+		for _, content := range message.Content {
+			switch {
+			case content.Type == llm.ContentTypeToolUse && content.ToolName == "openai_audio_transcription":
+				toolUse = message
+				toolUse.ExcludedFromContext = true
+				toolUseID = content.ID
+			case toolUseID != "" && content.Type == llm.ContentTypeToolResult && content.ToolUseID == toolUseID:
+				message.ExcludedFromContext = true
+				return []llm.Message{toolUse, message}, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func readyTranscriptionMessages(queued db.QueuedMessage) ([]llm.Message, error) {
+	var transcript llm.Message
+	if err := json.Unmarshal(queued.Llm, &transcript); err != nil {
+		return nil, err
+	}
+	var messages []llm.Message
+	if queued.Transcription != nil && len(queued.Transcription.Audit) > 0 {
+		if err := json.Unmarshal(queued.Transcription.Audit, &messages); err != nil {
+			return nil, err
+		}
+		for i := range messages {
+			messages[i].ExcludedFromContext = true
+		}
+	}
+	return append(messages, transcript), nil
 }
 
 // logQueuedTranscriptionError logs a state-transition failure unless the item
@@ -740,8 +806,8 @@ func (s *Server) recoverQueuedTranscriptions(ctx context.Context) {
 			}
 			switch queued.State {
 			case db.QueuedMessageStateReady:
-				var message llm.Message
-				if err := json.Unmarshal(queued.Llm, &message); err != nil {
+				messages, err := readyTranscriptionMessages(queued)
+				if err != nil {
 					s.logger.Error("Failed to restore ready transcription", "conversationID", conversation.ConversationID, "queued_id", queued.ID, "error", err)
 					continue
 				}
@@ -750,7 +816,7 @@ func (s *Server) recoverQueuedTranscriptions(ctx context.Context) {
 					s.logger.Error("Failed to restore transcription parent", "conversationID", conversation.ConversationID, "error", err)
 					continue
 				}
-				manager.ResolveQueuedTranscription(s, queued.ID, message, queued.Model, queued.UserEmail)
+				manager.ResolveQueuedTranscription(s, queued.ID, messages, queued.Model, queued.UserEmail)
 			case db.QueuedMessageStateWorking:
 				childID := queued.Transcription.ChildConversationID
 				if _, done, _ := s.completedTranscriptionChild(ctx, childID); done {
