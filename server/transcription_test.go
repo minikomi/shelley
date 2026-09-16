@@ -59,10 +59,10 @@ func transcriptionTestFile(t *testing.T, name string) string {
 	return path
 }
 
-func TestTranscriptionParentMessageIncludesAudioFilename(t *testing.T) {
-	message := transcriptionParentMessage("Spoken words.", "c2BZBGH", "/tmp/shelley-uploads/voice memo.webm", "", "")
+func TestTranscriptionParentMessageOmitsWorkerMetadata(t *testing.T) {
+	message := transcriptionParentMessage("Spoken words.", "/tmp/shelley-uploads/voice memo.webm", "", "")
 	got := message.Content[0].Text
-	want := "Spoken words.\n\n(transcribed by subagent c2BZBGH from voice memo.webm)"
+	want := "Spoken words."
 	if got != want {
 		t.Fatalf("parent message = %q, want %q", got, want)
 	}

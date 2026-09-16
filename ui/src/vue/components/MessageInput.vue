@@ -595,7 +595,9 @@ function handleRecordingComplete(path: string) {
     .onRecordingComplete(path, submission.context)
     .then(() => {
       if (message.value === submission.message) setMessage("");
-      for (const id of submission.attachmentIDs) removeAttachment(id, submission.attachmentSession);
+      for (const id of submission.attachmentIDs) {
+        removeAttachmentFromSessions(id, submission.attachmentSession);
+      }
     })
     .catch(() => {});
 }
@@ -680,6 +682,11 @@ function removeAttachment(id: string, session = activeAttachmentSession) {
   const found = session.attachments.find((a) => a.id === id);
   if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
   updateAttachments(session, (current) => current.filter((a) => a.id !== id));
+}
+
+function removeAttachmentFromSessions(id: string, originatingSession: AttachmentSession) {
+  const sessions = new Set([...attachmentSessions.values(), originatingSession]);
+  for (const session of sessions) removeAttachment(id, session);
 }
 
 /** Compose final message text by appending `[path]` tokens for ready attachments. */
