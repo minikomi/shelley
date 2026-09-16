@@ -227,7 +227,9 @@
               v-else
               :queued="qm"
               :on-send-now="
-                conversationId && queuedIndex === 0 ? sendQueuedMessageNow : undefined
+                conversationId && queuedIndex === 0 && !isDistilling
+                  ? sendQueuedMessageNow
+                  : undefined
               "
               :send-now-pending="sendingQueuedNow === qm.id"
               :on-cancel="conversationId ? cancelQueuedMessage : undefined"

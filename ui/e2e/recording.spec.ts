@@ -172,6 +172,7 @@ async function openQueuedConversation(
   page: Page,
   request: APIRequestContext,
   queued: QueuedMessageFixture[],
+  distilling = false,
 ): Promise<string> {
   const { conversationId, slug } = await createConversationViaAPIWithDetails(
     request,
@@ -198,8 +199,26 @@ async function openQueuedConversation(
     const response = await route.fetch();
     const body = (await response.json()) as {
       conversation?: { queued_messages?: string };
+      messages?: Array<Record<string, unknown>>;
     };
     if (body.conversation) body.conversation.queued_messages = JSON.stringify(queued);
+    if (distilling) {
+      body.messages = [
+        ...(body.messages ?? []),
+        {
+          message_id: "distill-in-progress",
+          conversation_id: conversationId,
+          sequence_id: 999,
+          type: "agent",
+          user_data: JSON.stringify({
+            distill_status: "in_progress",
+            distill_method: "compact",
+          }),
+          created_at: "2026-09-12T00:00:00Z",
+          generation: 1,
+        },
+      ];
+    }
     await route.fulfill({ response, json: body });
   });
   await page.goto(`/c/${slug}`);
@@ -406,6 +425,23 @@ test.describe("media recording composer", () => {
     await expect(items.nth(1)).toContainText("working.webm");
     await expect(items.nth(2)).toContainText("Finished spoken words.");
     await expect(items.nth(3)).toContainText("failed.webm");
+  });
+
+  test("hides Send now on queued messages while compaction is in progress", async ({
+    page,
+    request,
+  }) => {
+    await openQueuedConversation(
+      page,
+      request,
+      [queuedMessage("q-compacting", "queued during compaction")],
+      true,
+    );
+
+    await expect(page.getByTestId("distill-in-progress")).toContainText("Compacting");
+    await expect(page.getByTestId("queued-badge")).toBeVisible();
+    await expect(page.getByTestId("send-queued-now")).toHaveCount(0);
+    await expect(page.getByTestId("cancel-queued")).toBeVisible();
   });
 
   test("uses queued-message cancel and retry RPCs for transcription cards", async ({
