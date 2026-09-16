@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -23,9 +25,10 @@ const (
 )
 
 type transcriptionResult struct {
-	Text           string
-	Model          string
-	TimestampsPath string
+	Text            string
+	Model           string
+	TimestampsModel string
+	TimestampsPath  string
 }
 
 type transcriptionAPIOptions struct {
@@ -57,6 +60,11 @@ type openAIRecordingTranscriber struct {
 	endpoint string
 }
 
+type transcriptionAPIResponse struct {
+	Text string
+	Body []byte
+}
+
 func newOpenAIRecordingTranscriber() recordingTranscriber {
 	return &openAIRecordingTranscriber{
 		client:   http.DefaultClient,
@@ -65,59 +73,96 @@ func newOpenAIRecordingTranscriber() recordingTranscriber {
 }
 
 func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, prompt string, timestamps bool) (transcriptionResult, error) {
+	transcriptOptions := directTranscriptionOptions(false)
+	if !timestamps {
+		response, err := t.transcribe(ctx, mediaPath, prompt, transcriptOptions)
+		if err != nil {
+			return transcriptionResult{}, err
+		}
+		return transcriptionResult{Text: response.Text, Model: transcriptOptions.Model}, nil
+	}
+
+	timestampOptions := directTranscriptionOptions(true)
+	var transcriptResponse, timestampResponse transcriptionAPIResponse
+	group, groupContext := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		transcriptResponse, err = t.transcribe(groupContext, mediaPath, prompt, transcriptOptions)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		timestampResponse, err = t.transcribe(groupContext, mediaPath, prompt, timestampOptions)
+		return err
+	})
+	if err := group.Wait(); err != nil {
+		return transcriptionResult{}, err
+	}
+
+	timestampsPath := mediaPath + ".timestamps.json"
+	if err := os.WriteFile(timestampsPath, timestampResponse.Body, 0o600); err != nil {
+		return transcriptionResult{}, fmt.Errorf("write transcription timestamps: %w", err)
+	}
+	return transcriptionResult{
+		Text:            transcriptResponse.Text,
+		Model:           transcriptOptions.Model,
+		TimestampsModel: timestampOptions.Model,
+		TimestampsPath:  timestampsPath,
+	}, nil
+}
+
+func (t *openAIRecordingTranscriber) transcribe(ctx context.Context, mediaPath, prompt string, options transcriptionAPIOptions) (transcriptionAPIResponse, error) {
 	media, err := os.Open(mediaPath)
 	if err != nil {
-		return transcriptionResult{}, fmt.Errorf("open recording: %w", err)
+		return transcriptionAPIResponse{}, fmt.Errorf("open recording: %w", err)
 	}
 	defer media.Close()
-
-	options := directTranscriptionOptions(timestamps)
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	if err := writer.WriteField("model", options.Model); err != nil {
-		return transcriptionResult{}, err
+		return transcriptionAPIResponse{}, err
 	}
 	if err := writer.WriteField("response_format", options.ResponseFormat); err != nil {
-		return transcriptionResult{}, err
+		return transcriptionAPIResponse{}, err
 	}
 	for _, granularity := range options.TimestampGranularities {
 		if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
-			return transcriptionResult{}, err
+			return transcriptionAPIResponse{}, err
 		}
 	}
 	if err := writer.WriteField("prompt", prompt); err != nil {
-		return transcriptionResult{}, err
+		return transcriptionAPIResponse{}, err
 	}
 	part, err := writer.CreateFormFile("file", filepath.Base(mediaPath))
 	if err != nil {
-		return transcriptionResult{}, err
+		return transcriptionAPIResponse{}, err
 	}
 	if _, err := io.Copy(part, media); err != nil {
-		return transcriptionResult{}, fmt.Errorf("read recording: %w", err)
+		return transcriptionAPIResponse{}, fmt.Errorf("read recording: %w", err)
 	}
 	if err := writer.Close(); err != nil {
-		return transcriptionResult{}, err
+		return transcriptionAPIResponse{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint, &body)
 	if err != nil {
-		return transcriptionResult{}, err
+		return transcriptionAPIResponse{}, err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return transcriptionResult{}, fmt.Errorf("OpenAI transcription request: %w", err)
+		return transcriptionAPIResponse{}, fmt.Errorf("OpenAI transcription request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxTranscriptionResponse+1))
 	if err != nil {
-		return transcriptionResult{}, fmt.Errorf("read OpenAI transcription response: %w", err)
+		return transcriptionAPIResponse{}, fmt.Errorf("read OpenAI transcription response: %w", err)
 	}
 	if len(responseBody) > maxTranscriptionResponse {
-		return transcriptionResult{}, errors.New("OpenAI transcription response exceeded 16 MiB")
+		return transcriptionAPIResponse{}, errors.New("OpenAI transcription response exceeded 16 MiB")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errorBody := responseBody
@@ -136,25 +181,18 @@ func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, 
 		if message == "" {
 			message = resp.Status
 		}
-		return transcriptionResult{}, fmt.Errorf("OpenAI transcription failed (%s): %s", resp.Status, message)
+		return transcriptionAPIResponse{}, fmt.Errorf("OpenAI transcription failed (%s): %s", resp.Status, message)
 	}
 
 	var decoded struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(responseBody, &decoded); err != nil {
-		return transcriptionResult{}, fmt.Errorf("decode OpenAI transcription response: %w", err)
+		return transcriptionAPIResponse{}, fmt.Errorf("decode OpenAI transcription response: %w", err)
 	}
 	decoded.Text = strings.TrimSpace(decoded.Text)
 	if decoded.Text == "" {
-		return transcriptionResult{}, errors.New("OpenAI transcription returned an empty transcript")
+		return transcriptionAPIResponse{}, errors.New("OpenAI transcription returned an empty transcript")
 	}
-	result := transcriptionResult{Text: decoded.Text, Model: options.Model}
-	if timestamps {
-		result.TimestampsPath = mediaPath + ".timestamps.json"
-		if err := os.WriteFile(result.TimestampsPath, responseBody, 0o600); err != nil {
-			return transcriptionResult{}, fmt.Errorf("write transcription timestamps: %w", err)
-		}
-	}
-	return result, nil
+	return transcriptionAPIResponse{Text: decoded.Text, Body: responseBody}, nil
 }

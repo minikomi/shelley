@@ -390,7 +390,7 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 
 func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, llm.Message, error) {
 	toolUseID := "transcription_" + uuid.NewString()
-	options := directTranscriptionOptions(timestamps)
+	options := directTranscriptionOptions(false)
 	toolInputFields := map[string]any{
 		"endpoint":        openAITranscriptionEndpoint,
 		"file":            mediaPath,
@@ -406,8 +406,11 @@ func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, ll
 			"up to 4 recent user/assistant messages",
 		},
 	}
-	if len(options.TimestampGranularities) > 0 {
-		toolInputFields["timestamp_granularities"] = options.TimestampGranularities
+	if timestamps {
+		timestampOptions := directTranscriptionOptions(true)
+		toolInputFields["timestamps_model"] = timestampOptions.Model
+		toolInputFields["timestamps_response_format"] = timestampOptions.ResponseFormat
+		toolInputFields["timestamp_granularities"] = timestampOptions.TimestampGranularities
 	}
 	toolInput, err := json.Marshal(toolInputFields)
 	if err != nil {
@@ -437,6 +440,9 @@ func transcriptionToolResult(toolUseID string, result transcriptionResult, start
 		toolOutput["text"] = result.Text
 		if result.Model != "" {
 			toolOutput["model"] = result.Model
+		}
+		if result.TimestampsModel != "" {
+			toolOutput["timestamps_model"] = result.TimestampsModel
 		}
 		if result.TimestampsPath != "" {
 			toolOutput["timestamps_path"] = result.TimestampsPath

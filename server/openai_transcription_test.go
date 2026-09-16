@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -62,28 +63,41 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	if result.Text != "immediate words" || result.Model != openAITranscriptionModel {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.TimestampsPath != "" {
-		t.Fatalf("unexpected timestamps path = %q", result.TimestampsPath)
+	if result.TimestampsModel != "" || result.TimestampsPath != "" {
+		t.Fatalf("unexpected timestamps result = %#v", result)
 	}
 }
 
 func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 	mediaPath := transcriptionTestFile(t, "screen.webm")
+	var gptRequests, whisperRequests atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatal(err)
 		}
-		if got := r.FormValue("model"); got != openAITimestampedTranscriptionModel {
-			t.Errorf("model = %q", got)
-		}
-		if got := r.FormValue("response_format"); got != "verbose_json" {
-			t.Errorf("response_format = %q", got)
-		}
-		if got := r.MultipartForm.Value["timestamp_granularities[]"]; len(got) != 2 || got[0] != "word" || got[1] != "segment" {
-			t.Errorf("timestamp granularities = %#v", got)
+		switch model := r.FormValue("model"); model {
+		case openAITranscriptionModel:
+			gptRequests.Add(1)
+			if got := r.FormValue("response_format"); got != "json" {
+				t.Errorf("GPT response_format = %q", got)
+			}
+			if got := r.MultipartForm.Value["timestamp_granularities[]"]; len(got) != 0 {
+				t.Errorf("GPT timestamp granularities = %#v", got)
+			}
+			_, _ = io.WriteString(w, `{"text":" adjusted GPT words "}`)
+		case openAITimestampedTranscriptionModel:
+			whisperRequests.Add(1)
+			if got := r.FormValue("response_format"); got != "verbose_json" {
+				t.Errorf("Whisper response_format = %q", got)
+			}
+			if got := r.MultipartForm.Value["timestamp_granularities[]"]; len(got) != 2 || got[0] != "word" || got[1] != "segment" {
+				t.Errorf("Whisper timestamp granularities = %#v", got)
+			}
+			_, _ = io.WriteString(w, `{"text":" literal whisper words ","words":[{"word":"literal","start":0.0,"end":0.4}],"segments":[{"text":"literal whisper words","start":0.0,"end":0.8}]}`)
+		default:
+			t.Errorf("unexpected model = %q", model)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"text":" screen words ","words":[{"word":"screen","start":0.0,"end":0.4}],"segments":[{"text":"screen words","start":0.0,"end":0.8}]}`)
 	}))
 	defer api.Close()
 
@@ -92,8 +106,13 @@ func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "screen words" || result.Model != openAITimestampedTranscriptionModel {
+	if result.Text != "adjusted GPT words" ||
+		result.Model != openAITranscriptionModel ||
+		result.TimestampsModel != openAITimestampedTranscriptionModel {
 		t.Fatalf("result = %#v", result)
+	}
+	if gptRequests.Load() != 1 || whisperRequests.Load() != 1 {
+		t.Fatalf("requests: GPT=%d Whisper=%d", gptRequests.Load(), whisperRequests.Load())
 	}
 	wantTimestampsPath := mediaPath + ".timestamps.json"
 	if result.TimestampsPath != wantTimestampsPath {
@@ -103,7 +122,9 @@ func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(timestamps), `"words"`) || !strings.Contains(string(timestamps), `"segments"`) {
+	if !strings.Contains(string(timestamps), `"literal whisper words"`) ||
+		!strings.Contains(string(timestamps), `"words"`) ||
+		!strings.Contains(string(timestamps), `"segments"`) {
 		t.Fatalf("timestamps = %s", timestamps)
 	}
 }

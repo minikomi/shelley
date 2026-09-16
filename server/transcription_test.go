@@ -30,7 +30,7 @@ func successfulRecordingTranscriber(text string) recordingTranscriber {
 	return recordingTranscriberFunc(func(_ context.Context, mediaPath string, timestamps bool) (transcriptionResult, error) {
 		result := transcriptionResult{Text: text, Model: openAITranscriptionModel}
 		if timestamps {
-			result.Model = openAITimestampedTranscriptionModel
+			result.TimestampsModel = openAITimestampedTranscriptionModel
 			result.TimestampsPath = mediaPath + ".timestamps.json"
 		}
 		return result, nil
@@ -46,7 +46,7 @@ func (t *promptCapturingTranscriber) Transcribe(_ context.Context, mediaPath, pr
 	t.prompt <- prompt
 	result := transcriptionResult{Text: t.text, Model: openAITranscriptionModel}
 	if timestamps {
-		result.Model = openAITimestampedTranscriptionModel
+		result.TimestampsModel = openAITimestampedTranscriptionModel
 		result.TimestampsPath = mediaPath + ".timestamps.json"
 	}
 	return result, nil
@@ -531,10 +531,16 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	if err := json.Unmarshal(audit[0].Content[0].ToolInput, &auditedInput); err != nil {
 		t.Fatal(err)
 	}
-	if auditedInput["model"] != "whisper-1" || auditedInput["response_format"] != "verbose_json" {
+	if auditedInput["model"] != "gpt-4o-transcribe" || auditedInput["response_format"] != "json" {
 		t.Fatalf("audited video request = %#v", auditedInput)
 	}
-	if !strings.Contains(audit[1].Content[0].ToolResult[0].Text, mediaPath+".timestamps.json") {
+	if auditedInput["timestamps_model"] != "whisper-1" ||
+		auditedInput["timestamps_response_format"] != "verbose_json" {
+		t.Fatalf("audited video timestamps = %#v", auditedInput)
+	}
+	if !strings.Contains(audit[1].Content[0].ToolResult[0].Text, `"model":"gpt-4o-transcribe"`) ||
+		!strings.Contains(audit[1].Content[0].ToolResult[0].Text, `"timestamps_model":"whisper-1"`) ||
+		!strings.Contains(audit[1].Content[0].ToolResult[0].Text, mediaPath+".timestamps.json") {
 		t.Fatalf("audited video result = %#v", audit[1])
 	}
 

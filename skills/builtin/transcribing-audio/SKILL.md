@@ -20,11 +20,12 @@ when: exe.dev
    jq -er '.text | select(type == "string")' "$tmpdir/response.json" > "$out"
    ```
 
-   When the user asks for word or segment timestamps, use Whisper's verbose
-   JSON response instead; do not default to Whisper for ordinary transcription.
-   Whisper accepts `prompt` and singular `language`, rather than the
-   `gpt-transcribe`-specific keyword and language arrays. Preserve the full JSON
-   beside the transcript so the timing data is not lost.
+   When the user asks for word or segment timestamps, keep the GPT transcript
+   above as the canonical transcript and additionally use Whisper's verbose
+   JSON response for timing. Whisper accepts `prompt` and singular `language`,
+   rather than the `gpt-transcribe`-specific keyword and language arrays.
+   Preserve the full JSON beside the transcript so the timing data is not lost;
+   do not replace the GPT transcript with Whisper's text.
    ```
    timestamp_out="${out%.transcript.txt}.timestamps.json"
    curl -sS --fail-with-body "$base/v1/audio/transcriptions" \
@@ -34,7 +35,6 @@ when: exe.dev
      -F 'timestamp_granularities[]=segment' \
      -F "file=@$upload" \
      -o "$timestamp_out"
-   jq -er '.text | select(type == "string")' "$timestamp_out" > "$out"
    ```
 
 ## Errors
