@@ -342,7 +342,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		s.failQueuedTranscription(parentID, queued.ID, nil, fmt.Errorf("build transcription prompt: %w", err))
 		return
 	}
-	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt)
+	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt, media.HasVideo)
 	if err != nil {
 		s.failQueuedTranscription(parentID, queued.ID, nil, err)
 		return
@@ -363,7 +363,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 	queued = updated
 
 	started := time.Now()
-	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt)
+	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt, media.HasVideo)
 	finished := time.Now()
 	if err == nil && strings.TrimSpace(result.Text) == "" {
 		err = errors.New("transcription returned an empty transcript")
@@ -388,16 +388,15 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 	return err == nil && validateCurrentQueuedTranscription(&current) == nil
 }
 
-func transcriptionToolUse(mediaPath, prompt string) (string, llm.Message, error) {
+func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, llm.Message, error) {
 	toolUseID := "transcription_" + uuid.NewString()
-	toolInput, err := json.Marshal(map[string]any{
-		"endpoint":                openAITranscriptionEndpoint,
-		"file":                    mediaPath,
-		"model":                   openAITranscriptionModel,
-		"response_format":         "verbose_json",
-		"timestamp_granularities": []string{"word", "segment"},
-		"prompt_chars":            utf8.RuneCountInString(prompt),
-		"composer_text":           false,
+	model := openAITranscriptionModel
+	responseFormat := "json"
+	toolInputFields := map[string]any{
+		"endpoint":      openAITranscriptionEndpoint,
+		"file":          mediaPath,
+		"prompt_chars":  utf8.RuneCountInString(prompt),
+		"composer_text": false,
 		"prompt_context": []string{
 			"Shelley/exe.dev task instructions",
 			"VM hostname",
@@ -405,7 +404,15 @@ func transcriptionToolUse(mediaPath, prompt string) (string, llm.Message, error)
 			"conversation title",
 			"up to 4 recent user/assistant messages",
 		},
-	})
+	}
+	if timestamps {
+		model = openAITimestampedTranscriptionModel
+		responseFormat = "verbose_json"
+		toolInputFields["timestamp_granularities"] = []string{"word", "segment"}
+	}
+	toolInputFields["model"] = model
+	toolInputFields["response_format"] = responseFormat
+	toolInput, err := json.Marshal(toolInputFields)
 	if err != nil {
 		return "", llm.Message{}, err
 	}
