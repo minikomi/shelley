@@ -15,21 +15,19 @@ import (
 )
 
 const (
-	openAITranscriptionEndpoint         = "https://openai.int.exe.xyz/v1/audio/transcriptions"
-	openAITranscriptionModel            = "gpt-4o-transcribe"
-	openAITimestampedTranscriptionModel = "whisper-1"
-	maxTranscriptionErrorBody           = 64 << 10
-	maxTranscriptionResponse            = 16 << 20
+	openAITranscriptionEndpoint = "https://openai.int.exe.xyz/v1/audio/transcriptions"
+	openAITranscriptionModel    = "gpt-4o-transcribe"
+	maxTranscriptionErrorBody   = 64 << 10
+	maxTranscriptionResponse    = 16 << 20
 )
 
 type transcriptionResult struct {
-	Text           string
-	Model          string
-	TimestampsPath string
+	Text  string
+	Model string
 }
 
 type recordingTranscriber interface {
-	Transcribe(context.Context, string, string, bool) (transcriptionResult, error)
+	Transcribe(context.Context, string, string) (transcriptionResult, error)
 }
 
 type openAIRecordingTranscriber struct {
@@ -44,35 +42,20 @@ func newOpenAIRecordingTranscriber() recordingTranscriber {
 	}
 }
 
-func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, prompt string, timestamps bool) (transcriptionResult, error) {
+func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, prompt string) (transcriptionResult, error) {
 	media, err := os.Open(mediaPath)
 	if err != nil {
 		return transcriptionResult{}, fmt.Errorf("open recording: %w", err)
 	}
 	defer media.Close()
 
-	model := openAITranscriptionModel
-	responseFormat := "json"
-	if timestamps {
-		model = openAITimestampedTranscriptionModel
-		responseFormat = "verbose_json"
-	}
-
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("model", model); err != nil {
+	if err := writer.WriteField("model", openAITranscriptionModel); err != nil {
 		return transcriptionResult{}, err
 	}
-	if err := writer.WriteField("response_format", responseFormat); err != nil {
+	if err := writer.WriteField("response_format", "json"); err != nil {
 		return transcriptionResult{}, err
-	}
-	if timestamps {
-		if err := writer.WriteField("timestamp_granularities[]", "word"); err != nil {
-			return transcriptionResult{}, err
-		}
-		if err := writer.WriteField("timestamp_granularities[]", "segment"); err != nil {
-			return transcriptionResult{}, err
-		}
 	}
 	if err := writer.WriteField("prompt", prompt); err != nil {
 		return transcriptionResult{}, err
@@ -137,12 +120,5 @@ func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, 
 	if decoded.Text == "" {
 		return transcriptionResult{}, errors.New("OpenAI transcription returned an empty transcript")
 	}
-	result := transcriptionResult{Text: decoded.Text, Model: model}
-	if timestamps {
-		result.TimestampsPath = mediaPath + ".timestamps.json"
-		if err := os.WriteFile(result.TimestampsPath, responseBody, 0o600); err != nil {
-			return transcriptionResult{}, fmt.Errorf("write transcription timestamps: %w", err)
-		}
-	}
-	return result, nil
+	return transcriptionResult{Text: decoded.Text, Model: openAITranscriptionModel}, nil
 }

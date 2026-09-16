@@ -20,20 +20,15 @@ import (
 	"shelley.exe.dev/llm"
 )
 
-type recordingTranscriberFunc func(context.Context, string, bool) (transcriptionResult, error)
+type recordingTranscriberFunc func(context.Context, string) (transcriptionResult, error)
 
-func (f recordingTranscriberFunc) Transcribe(ctx context.Context, path, _ string, timestamps bool) (transcriptionResult, error) {
-	return f(ctx, path, timestamps)
+func (f recordingTranscriberFunc) Transcribe(ctx context.Context, path, _ string) (transcriptionResult, error) {
+	return f(ctx, path)
 }
 
 func successfulRecordingTranscriber(text string) recordingTranscriber {
-	return recordingTranscriberFunc(func(_ context.Context, mediaPath string, timestamps bool) (transcriptionResult, error) {
-		result := transcriptionResult{Text: text, Model: openAITranscriptionModel}
-		if timestamps {
-			result.Model = openAITimestampedTranscriptionModel
-			result.TimestampsPath = mediaPath + ".timestamps.json"
-		}
-		return result, nil
+	return recordingTranscriberFunc(func(context.Context, string) (transcriptionResult, error) {
+		return transcriptionResult{Text: text, Model: openAITranscriptionModel}, nil
 	})
 }
 
@@ -42,14 +37,9 @@ type promptCapturingTranscriber struct {
 	text   string
 }
 
-func (t *promptCapturingTranscriber) Transcribe(_ context.Context, mediaPath, prompt string, timestamps bool) (transcriptionResult, error) {
+func (t *promptCapturingTranscriber) Transcribe(_ context.Context, _, prompt string) (transcriptionResult, error) {
 	t.prompt <- prompt
-	result := transcriptionResult{Text: t.text, Model: openAITranscriptionModel}
-	if timestamps {
-		result.Model = openAITimestampedTranscriptionModel
-		result.TimestampsPath = mediaPath + ".timestamps.json"
-	}
-	return result, nil
+	return transcriptionResult{Text: t.text, Model: openAITranscriptionModel}, nil
 }
 
 func transcriptionTestFile(t *testing.T, name string) string {
@@ -335,15 +325,6 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 	if auditedInput["composer_text"] != false || auditedInput["prompt_chars"] != float64(utf8.RuneCountInString(prompt)) {
 		t.Fatalf("audited input = %#v", auditedInput)
 	}
-	if auditedInput["model"] != "gpt-4o-transcribe" || auditedInput["response_format"] != "json" {
-		t.Fatalf("audited audio request = %#v", auditedInput)
-	}
-	if _, ok := auditedInput["timestamp_granularities"]; ok {
-		t.Fatalf("audited audio request has timestamp granularities: %#v", auditedInput)
-	}
-	if strings.Contains(audit[1].Content[0].ToolResult[0].Text, "timestamps_path") {
-		t.Fatalf("audited audio result has timestamps: %#v", audit[1])
-	}
 	parentManager.SetAgentWorking(false)
 	if _, err := parentManager.CancelQueuedMessages(t.Context(), server); err != nil {
 		t.Fatal(err)
@@ -510,20 +491,6 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	if len(queued[0].Transcription.Audit) == 0 {
 		t.Fatal("ready transcription is missing inline audit messages")
 	}
-	var audit []llm.Message
-	if err := json.Unmarshal(queued[0].Transcription.Audit, &audit); err != nil {
-		t.Fatal(err)
-	}
-	var auditedInput map[string]any
-	if err := json.Unmarshal(audit[0].Content[0].ToolInput, &auditedInput); err != nil {
-		t.Fatal(err)
-	}
-	if auditedInput["model"] != "whisper-1" || auditedInput["response_format"] != "verbose_json" {
-		t.Fatalf("audited video request = %#v", auditedInput)
-	}
-	if !strings.Contains(audit[1].Content[0].ToolResult[0].Text, mediaPath+".timestamps.json") {
-		t.Fatalf("audited video result = %#v", audit[1])
-	}
 
 	manager.SetAgentWorking(false)
 	manager.drainPendingMessages(server)
@@ -652,7 +619,7 @@ type blockingRecordingTranscriber struct {
 	once      sync.Once
 }
 
-func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _, _ string, _ bool) (transcriptionResult, error) {
+func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _, _ string) (transcriptionResult, error) {
 	s.once.Do(func() { close(s.started) })
 	<-ctx.Done()
 	close(s.cancelled)

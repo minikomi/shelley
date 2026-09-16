@@ -342,7 +342,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		s.failQueuedTranscription(parentID, queued.ID, nil, fmt.Errorf("build transcription prompt: %w", err))
 		return
 	}
-	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt, media.HasVideo)
+	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt)
 	if err != nil {
 		s.failQueuedTranscription(parentID, queued.ID, nil, err)
 		return
@@ -363,7 +363,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 	queued = updated
 
 	started := time.Now()
-	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt, media.HasVideo)
+	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt)
 	finished := time.Now()
 	if err == nil && strings.TrimSpace(result.Text) == "" {
 		err = errors.New("transcription returned an empty transcript")
@@ -388,13 +388,12 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 	return err == nil && validateCurrentQueuedTranscription(&current) == nil
 }
 
-func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, llm.Message, error) {
+func transcriptionToolUse(mediaPath, prompt string) (string, llm.Message, error) {
 	toolUseID := "transcription_" + uuid.NewString()
-	model := openAITranscriptionModel
-	responseFormat := "json"
-	toolInputFields := map[string]any{
+	toolInput, err := json.Marshal(map[string]any{
 		"endpoint":      openAITranscriptionEndpoint,
 		"file":          mediaPath,
+		"model":         openAITranscriptionModel,
 		"prompt_chars":  utf8.RuneCountInString(prompt),
 		"composer_text": false,
 		"prompt_context": []string{
@@ -404,15 +403,7 @@ func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, ll
 			"conversation title",
 			"up to 4 recent user/assistant messages",
 		},
-	}
-	if timestamps {
-		model = openAITimestampedTranscriptionModel
-		responseFormat = "verbose_json"
-		toolInputFields["timestamp_granularities"] = []string{"word", "segment"}
-	}
-	toolInputFields["model"] = model
-	toolInputFields["response_format"] = responseFormat
-	toolInput, err := json.Marshal(toolInputFields)
+	})
 	if err != nil {
 		return "", llm.Message{}, err
 	}
@@ -440,9 +431,6 @@ func transcriptionToolResult(toolUseID string, result transcriptionResult, start
 		toolOutput["text"] = result.Text
 		if result.Model != "" {
 			toolOutput["model"] = result.Model
-		}
-		if result.TimestampsPath != "" {
-			toolOutput["timestamps_path"] = result.TimestampsPath
 		}
 	}
 	outputJSON, err := json.Marshal(toolOutput)
