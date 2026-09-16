@@ -342,7 +342,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		s.failQueuedTranscription(parentID, queued.ID, nil, fmt.Errorf("build transcription prompt: %w", err))
 		return
 	}
-	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt)
+	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt, media.HasVideo)
 	if err != nil {
 		s.failQueuedTranscription(parentID, queued.ID, nil, err)
 		return
@@ -363,7 +363,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 	queued = updated
 
 	started := time.Now()
-	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt)
+	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt, media.HasVideo)
 	finished := time.Now()
 	if err == nil && strings.TrimSpace(result.Text) == "" {
 		err = errors.New("transcription returned an empty transcript")
@@ -378,7 +378,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		s.failQueuedTranscription(parentID, queued.ID, audit, err)
 		return
 	}
-	s.finalizeQueuedTranscription(parentID, queued, result.Text, audit)
+	s.finalizeQueuedTranscription(parentID, queued, result, audit)
 }
 
 // queuedTranscriptionIsCurrent reports whether the durable item is still in
@@ -388,14 +388,16 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 	return err == nil && validateCurrentQueuedTranscription(&current) == nil
 }
 
-func transcriptionToolUse(mediaPath, prompt string) (string, llm.Message, error) {
+func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, llm.Message, error) {
 	toolUseID := "transcription_" + uuid.NewString()
-	toolInput, err := json.Marshal(map[string]any{
-		"endpoint":      openAITranscriptionEndpoint,
-		"file":          mediaPath,
-		"model":         openAITranscriptionModel,
-		"prompt_chars":  utf8.RuneCountInString(prompt),
-		"composer_text": false,
+	options := directTranscriptionOptions(timestamps)
+	toolInputFields := map[string]any{
+		"endpoint":        openAITranscriptionEndpoint,
+		"file":            mediaPath,
+		"model":           options.Model,
+		"response_format": options.ResponseFormat,
+		"prompt_chars":    utf8.RuneCountInString(prompt),
+		"composer_text":   false,
 		"prompt_context": []string{
 			"Shelley/exe.dev task instructions",
 			"VM hostname",
@@ -403,7 +405,11 @@ func transcriptionToolUse(mediaPath, prompt string) (string, llm.Message, error)
 			"conversation title",
 			"up to 4 recent user/assistant messages",
 		},
-	})
+	}
+	if len(options.TimestampGranularities) > 0 {
+		toolInputFields["timestamp_granularities"] = options.TimestampGranularities
+	}
+	toolInput, err := json.Marshal(toolInputFields)
 	if err != nil {
 		return "", llm.Message{}, err
 	}
@@ -432,6 +438,9 @@ func transcriptionToolResult(toolUseID string, result transcriptionResult, start
 		if result.Model != "" {
 			toolOutput["model"] = result.Model
 		}
+		if result.TimestampsPath != "" {
+			toolOutput["timestamps_path"] = result.TimestampsPath
+		}
 	}
 	outputJSON, err := json.Marshal(toolOutput)
 	if err != nil {
@@ -454,8 +463,8 @@ func transcriptionToolResult(toolUseID string, result transcriptionResult, start
 	}, nil
 }
 
-func transcriptionParentMessage(text, mediaPath, contactSheetPath, transcriptionContext string) llm.Message {
-	parts := make([]string, 0, 5)
+func transcriptionParentMessage(text, mediaPath, contactSheetPath, timestampsPath, metadataPath, transcriptionContext string) llm.Message {
+	parts := make([]string, 0, 7)
 	if transcriptionContext = strings.TrimSpace(transcriptionContext); transcriptionContext != "" {
 		parts = append(parts, transcriptionContext)
 	}
@@ -463,11 +472,31 @@ func transcriptionParentMessage(text, mediaPath, contactSheetPath, transcription
 	if contactSheetPath != "" {
 		parts = append(parts, "["+mediaPath+"]", "["+contactSheetPath+"]")
 	}
+	if timestampsPath != "" {
+		parts = append(parts, "["+timestampsPath+"]")
+	}
+	if metadataPath != "" {
+		parts = append(parts, "["+metadataPath+"]")
+	}
 	return llm.UserStringMessage(strings.Join(parts, "\n\n"))
 }
 
-func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMessage, text string, audit []llm.Message) {
-	message := transcriptionParentMessage(text, queued.Transcription.MediaPath, queued.Transcription.ContactSheetPath, queued.Transcription.Context)
+func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMessage, result transcriptionResult, audit []llm.Message) {
+	var metadataPath string
+	if result.TimestampsPath != "" {
+		metadataPath = queued.Transcription.MediaPath + ".json"
+		if info, err := os.Stat(metadataPath); err != nil || !info.Mode().IsRegular() {
+			metadataPath = ""
+		}
+	}
+	message := transcriptionParentMessage(
+		result.Text,
+		queued.Transcription.MediaPath,
+		queued.Transcription.ContactSheetPath,
+		result.TimestampsPath,
+		metadataPath,
+		queued.Transcription.Context,
+	)
 	llmJSON, err := json.Marshal(message)
 	if err != nil {
 		s.failQueuedTranscription(parentID, queued.ID, audit, err)
