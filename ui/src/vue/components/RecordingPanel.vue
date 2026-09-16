@@ -326,6 +326,12 @@ async function createRecordingStream(
   return microphoneStream;
 }
 
+function afterNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => window.setTimeout(resolve, 0));
+  });
+}
+
 function collectChunk(blob: Blob) {
   if (blob.size > 0) recordedChunks.push(blob);
 }
@@ -379,6 +385,9 @@ async function startRecording(recordingMode: RecordingMode, selectedScreen?: Med
   recordedChunks = [];
 
   try {
+    await afterNextPaint();
+    if (discarding || disposed) return;
+
     recordingStream = await createRecordingStream(recordingMode, selectedScreen);
     if (discarding || disposed) {
       await cleanupMedia();
