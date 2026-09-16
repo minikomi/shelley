@@ -58,7 +58,7 @@
       >
         <summary class="tool-result-summary">
           <div class="tool-result-meta">
-            <div class="flex items-center space-x-2">
+            <div class="tool-result-primary flex items-center space-x-2">
               <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="chat-tool-icon">
                 <path
                   stroke-linecap="round"
@@ -73,7 +73,7 @@
                   d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
                 />
               </svg>
-              <span class="text-sm font-medium text-blue">{{ toolName }}</span>
+              <span class="tool-result-name text-sm font-medium text-blue">{{ toolName }}</span>
               <span :class="`tool-result-status text-xs ${toolError ? 'error' : 'success'}`">
                 {{ toolError ? "\u2717" : "\u2713" }} {{ summary }}
               </span>

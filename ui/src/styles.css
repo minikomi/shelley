@@ -1766,8 +1766,15 @@ body {
   justify-content: space-between;
 }
 
+.tool-result-primary {
+  min-width: 0;
+}
+
+.tool-result-name,
 .tool-result-status {
+  min-width: 0;
   font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }
 
 .tool-result-status.success {
@@ -1781,6 +1788,22 @@ body {
 .tool-result-time {
   font-size: 0.75rem;
   color: var(--text-tertiary);
+}
+
+@media (max-width: 640px) {
+  .tool-result-meta {
+    align-items: flex-start;
+  }
+
+  .tool-result-primary {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .tool-result-primary .tool-result-status {
+    grid-column: 2;
+  }
 }
 
 /* Tool running state */
