@@ -55,7 +55,7 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoint: api.URL}
+	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
 	result, err := transcriber.Transcribe(t.Context(), mediaPath, "Shelley on example-vm", false)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoint: api.URL}
+	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
 	result, err := transcriber.Transcribe(t.Context(), mediaPath, "Shelley on example-vm", true)
 	if err != nil {
 		t.Fatal(err)
@@ -137,9 +137,31 @@ func TestOpenAIRecordingTranscriberReportsAPIError(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoint: api.URL}
+	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
 	_, err := transcriber.Transcribe(context.Background(), mediaPath, "context", false)
 	if err == nil || !strings.Contains(err.Error(), "unsupported recording") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestOpenAIRecordingTranscriberTriesEndpointsInOrder(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "order.webm")
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `ChatGPT subscriptions do not support transcription`)
+	}))
+	defer rejecting.Close()
+	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"text":"second gateway"}`)
+	}))
+	defer accepting.Close()
+
+	transcriber := &openAIRecordingTranscriber{client: rejecting.Client(), endpoints: []string{rejecting.URL, accepting.URL}}
+	result, err := transcriber.Transcribe(context.Background(), mediaPath, "context", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "second gateway" {
+		t.Fatalf("text = %q", result.Text)
 	}
 }

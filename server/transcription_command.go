@@ -389,7 +389,7 @@ func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, ll
 	toolUseID := "transcription_" + uuid.NewString()
 	options := directTranscriptionOptions(false)
 	toolInputFields := map[string]any{
-		"endpoint":        openAITranscriptionEndpoint,
+		"endpoints":       transcriptionEndpoints,
 		"file":            mediaPath,
 		"model":           options.Model,
 		"response_format": options.ResponseFormat,

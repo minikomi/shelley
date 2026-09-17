@@ -12,12 +12,12 @@ when: exe.dev
 
    Transcode unsupported or larger inputs using ffmpeg. Split and transcribe piecemeal if necessary; for better results, slightly overlap the chunks and then manually stitch together the overlapped outputs. Shelley browser recordings have a sibling `<recording-path>.json` sidecar with `started_at`, `duration_ms`, and `timeslice_ms`. Preserve each split chunk's media start offset so any chunk-relative timestamps can be rolled up to the original recording timeline; `started_at` anchors that timeline to wall-clock time.
 
-3. Transcribe. Try the OpenAI-compatible gateways in this fixed order and keep the first that succeeds: `https://openai.int.exe.xyz`, then `https://llm.int.exe.xyz`. Do not look up integrations first; the transcription response is the only reliable signal.
+3. Transcribe. Try the OpenAI-compatible gateways in this fixed order and keep the first that succeeds: `https://llm.int.exe.xyz`, then `https://openai.int.exe.xyz`. Do not look up integrations first; the transcription response is the only reliable signal.
 
    A JSON response format is required. For `gpt-transcribe`, optional `prompt`, `keywords[]`, and `languages[]` fields can supply known context, names, and language codes.
    ```
    transcribe() {
-     for base in https://openai.int.exe.xyz https://llm.int.exe.xyz; do
+     for base in https://llm.int.exe.xyz https://openai.int.exe.xyz; do
        curl -sS --fail-with-body "$base/v1/audio/transcriptions" "$@" && return
      done
      return 1

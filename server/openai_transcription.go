@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	openAITranscriptionEndpoint         = "https://openai.int.exe.xyz/v1/audio/transcriptions"
 	openAITranscriptionModel            = "gpt-4o-transcribe"
 	openAITimestampedTranscriptionModel = "whisper-1"
 	maxTranscriptionErrorBody           = 64 << 10
@@ -55,9 +54,17 @@ type recordingTranscriber interface {
 	Transcribe(context.Context, string, string, bool) (transcriptionResult, error)
 }
 
+// transcriptionEndpoints are tried in order; the first successful response
+// wins. Reflection cannot tell whether llm.int is managed OpenAI or a ChatGPT
+// subscription, so the response is the only reliable signal.
+var transcriptionEndpoints = []string{
+	"https://llm.int.exe.xyz/v1/audio/transcriptions",
+	"https://openai.int.exe.xyz/v1/audio/transcriptions",
+}
+
 type openAIRecordingTranscriber struct {
-	client   *http.Client
-	endpoint string
+	client    *http.Client
+	endpoints []string
 }
 
 type transcriptionAPIResponse struct {
@@ -67,8 +74,8 @@ type transcriptionAPIResponse struct {
 
 func newOpenAIRecordingTranscriber() recordingTranscriber {
 	return &openAIRecordingTranscriber{
-		client:   http.DefaultClient,
-		endpoint: openAITranscriptionEndpoint,
+		client:    http.DefaultClient,
+		endpoints: transcriptionEndpoints,
 	}
 }
 
@@ -145,11 +152,23 @@ func (t *openAIRecordingTranscriber) transcribe(ctx context.Context, mediaPath, 
 		return transcriptionAPIResponse{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint, &body)
+	contentType := writer.FormDataContentType()
+	var response transcriptionAPIResponse
+	for _, endpoint := range t.endpoints {
+		response, err = t.request(ctx, endpoint, contentType, body.Bytes())
+		if err == nil {
+			break
+		}
+	}
+	return response, err
+}
+
+func (t *openAIRecordingTranscriber) request(ctx context.Context, endpoint, contentType string, body []byte) (transcriptionAPIResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return transcriptionAPIResponse{}, err
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
