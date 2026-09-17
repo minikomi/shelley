@@ -390,7 +390,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
 import type { ContextUsageLevel } from "../../utils/contextUsage";
@@ -508,7 +508,7 @@ type RecordingSubmission = {
   attachmentIDs: string[];
   attachmentSession: AttachmentSession;
 };
-const recordingSubmission = ref<RecordingSubmission | null>(null);
+const recordingSubmission = shallowRef<RecordingSubmission | null>(null);
 // setMessage mirrors the React controlled-value path: surfaces every change via
 // draft-change so the parent can persist it.
 function setMessage(next: string | ((prev: string) => string)) {

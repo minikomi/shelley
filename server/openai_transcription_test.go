@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -148,7 +152,7 @@ func TestOpenAIRecordingTranscriberTriesEndpointsInOrder(t *testing.T) {
 	mediaPath := transcriptionTestFile(t, "order.webm")
 	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `ChatGPT subscriptions do not support transcription`)
+		_, _ = io.WriteString(w, transcriptionRoutingRejection)
 	}))
 	defer rejecting.Close()
 	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -163,5 +167,296 @@ func TestOpenAIRecordingTranscriberTriesEndpointsInOrder(t *testing.T) {
 	}
 	if result.Text != "second gateway" {
 		t.Fatalf("text = %q", result.Text)
+	}
+}
+
+func TestOpenAIRecordingTranscriberRetriesMissingIntegration(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "missing-integration.webm")
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, transcriptionIntegrationMissing+"test-trace)")
+	}))
+	defer rejecting.Close()
+	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"text":"attached gateway"}`)
+	}))
+	defer accepting.Close()
+
+	transcriber := &openAIRecordingTranscriber{client: rejecting.Client(), endpoints: []string{rejecting.URL, accepting.URL}}
+	result, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "attached gateway" {
+		t.Fatalf("text = %q", result.Text)
+	}
+}
+
+func TestOpenAIRecordingTranscriberReturnsErrorAfterRoutingFallback(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "routing-then-credits.webm")
+	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, transcriptionRoutingRejection)
+	}))
+	defer rejecting.Close()
+	credits := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = io.WriteString(w, `{"error":{"message":"credits exhausted"}}`)
+	}))
+	defer credits.Close()
+
+	transcriber := &openAIRecordingTranscriber{client: rejecting.Client(), endpoints: []string{rejecting.URL, credits.URL}}
+	if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false); err == nil ||
+		!strings.Contains(err.Error(), "credits exhausted") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestOpenAIRecordingTranscriberDoesNotRetryOrdinaryErrors(t *testing.T) {
+	for name, response := range map[string]struct {
+		status  int
+		body    string
+		wantErr string
+	}{
+		"credits":     {http.StatusPaymentRequired, `{"error":{"message":"credits exhausted"}}`, "credits exhausted"},
+		"bad_request": {http.StatusBadRequest, `{"error":{"message":"unsupported recording"}}`, "unsupported recording"},
+		"forbidden":   {http.StatusForbidden, `{"error":{"message":"access forbidden"}}`, "access forbidden"},
+		"empty":       {http.StatusOK, `{"text":""}`, "empty transcript"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mediaPath := transcriptionTestFile(t, name+".webm")
+			first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(response.status)
+				_, _ = io.WriteString(w, response.body)
+			}))
+			defer first.Close()
+			var secondCalls atomic.Int32
+			second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				secondCalls.Add(1)
+				_, _ = io.WriteString(w, `{"text":"must not run"}`)
+			}))
+			defer second.Close()
+
+			transcriber := &openAIRecordingTranscriber{client: first.Client(), endpoints: []string{first.URL, second.URL}}
+			_, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false)
+			if err == nil || !strings.Contains(err.Error(), response.wantErr) {
+				t.Fatalf("error = %v", err)
+			}
+			if secondCalls.Load() != 0 {
+				t.Fatalf("second gateway requests = %d, want 0", secondCalls.Load())
+			}
+		})
+	}
+}
+
+func TestOpenAIRecordingTranscriberDoesNotRetryCancelledRequest(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "cancelled-request.webm")
+	var requests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"text":"must not run"}`)
+	}))
+	defer api.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL, api.URL}}
+	if _, err := transcriber.Transcribe(ctx, mediaPath, "context", false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d, want 0", requests.Load())
+	}
+}
+
+func TestOpenAIRecordingTranscriberRequiresTimestampArrays(t *testing.T) {
+	for name, response := range map[string]string{
+		"missing":    `{"text":"words without timings"}`,
+		"null":       `{"text":"","words":null,"segments":[]}`,
+		"wrong_type": `{"text":"","words":[],"segments":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			mediaPath := transcriptionTestFile(t, name+".webm")
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Fatal(err)
+				}
+				if r.FormValue("model") == openAITranscriptionModel {
+					_, _ = io.WriteString(w, `{"text":"canonical GPT words"}`)
+					return
+				}
+				_, _ = io.WriteString(w, response)
+			}))
+			defer api.Close()
+
+			transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+			if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", true); err == nil ||
+				(!strings.Contains(err.Error(), "must be an array") &&
+					!strings.Contains(err.Error(), "cannot unmarshal")) {
+				t.Fatalf("error = %v", err)
+			}
+			if _, err := os.Stat(mediaPath + ".timestamps.json"); !os.IsNotExist(err) {
+				t.Fatalf("timestamp artifact should not exist: %v", err)
+			}
+		})
+	}
+}
+
+func TestOpenAIRecordingTranscriberAcceptsEmptyTimingArraysForSilence(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "silence.webm")
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		if r.FormValue("model") == openAITranscriptionModel {
+			_, _ = io.WriteString(w, `{"text":"canonical GPT words"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"text":"","words":[],"segments":[]}`)
+	}))
+	defer api.Close()
+
+	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+	if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenAIRecordingTranscriberPreparesOversizedRecording(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "large.webm")
+	if err := os.Truncate(mediaPath, maxTranscriptionUpload+1); err != nil {
+		t.Fatal(err)
+	}
+	var uploaded atomic.Int64
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = file.Close()
+		uploaded.Store(header.Size)
+		if filepath.Ext(header.Filename) != ".m4a" {
+			t.Errorf("prepared filename = %q", header.Filename)
+		}
+		_, _ = io.WriteString(w, `{"text":"prepared words"}`)
+	}))
+	defer api.Close()
+
+	transcriber := &openAIRecordingTranscriber{
+		client:    api.Client(),
+		endpoints: []string{api.URL},
+		mediaRun: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffmpeg" {
+				return nil, fmt.Errorf("command = %q", name)
+			}
+			return nil, os.WriteFile(args[len(args)-1], []byte("compressed audio"), 0o600)
+		},
+	}
+	result, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "prepared words" || uploaded.Load() != int64(len("compressed audio")) {
+		t.Fatalf("result = %#v, uploaded = %d", result, uploaded.Load())
+	}
+}
+
+func TestOpenAIRecordingTranscriberPreparesOversizedScreenRecordingOnce(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "large-screen.webm")
+	if err := os.Truncate(mediaPath, maxTranscriptionUpload+1); err != nil {
+		t.Fatal(err)
+	}
+	var preparationCalls atomic.Int32
+	var preparedPath string
+	var mu sync.Mutex
+	uploadedFiles := make(map[string]string)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(file)
+		_ = file.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		model := r.FormValue("model")
+		mu.Lock()
+		uploadedFiles[model] = header.Filename
+		mu.Unlock()
+		if string(data) != "compressed screen audio" {
+			t.Errorf("%s upload = %q", model, data)
+		}
+		if model == openAITranscriptionModel {
+			_, _ = io.WriteString(w, `{"text":"canonical screen words"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"text":"","words":[],"segments":[]}`)
+	}))
+	defer api.Close()
+
+	transcriber := &openAIRecordingTranscriber{
+		client:    api.Client(),
+		endpoints: []string{api.URL},
+		mediaRun: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffmpeg" {
+				return nil, fmt.Errorf("command = %q", name)
+			}
+			preparationCalls.Add(1)
+			preparedPath = args[len(args)-1]
+			return nil, os.WriteFile(preparedPath, []byte("compressed screen audio"), 0o600)
+		},
+	}
+	result, err := transcriber.Transcribe(t.Context(), mediaPath, "context", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparationCalls.Load() != 1 {
+		t.Fatalf("preparation calls = %d, want 1", preparationCalls.Load())
+	}
+	if result.Text != "canonical screen words" || result.TimestampsPath != mediaPath+".timestamps.json" {
+		t.Fatalf("result = %#v", result)
+	}
+	mu.Lock()
+	gptFile := uploadedFiles[openAITranscriptionModel]
+	whisperFile := uploadedFiles[openAITimestampedTranscriptionModel]
+	mu.Unlock()
+	if filepath.Ext(gptFile) != ".m4a" || gptFile != whisperFile {
+		t.Fatalf("uploaded files: GPT=%q Whisper=%q", gptFile, whisperFile)
+	}
+	if _, err := os.Stat(result.TimestampsPath); err != nil {
+		t.Fatalf("timestamps missing beside original media: %v", err)
+	}
+	if _, err := os.Stat(preparedPath); !os.IsNotExist(err) {
+		t.Fatalf("prepared audio was not removed: %v", err)
+	}
+}
+
+func TestOpenAIRecordingTranscriberRejectsStillOversizedPreparedAudio(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "still-large.webm")
+	if err := os.Truncate(mediaPath, maxTranscriptionUpload+1); err != nil {
+		t.Fatal(err)
+	}
+	var preparedPath string
+	transcriber := &openAIRecordingTranscriber{
+		client:    http.DefaultClient,
+		endpoints: []string{"http://unused.invalid"},
+		mediaRun: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			preparedPath = args[len(args)-1]
+			return nil, os.Truncate(preparedPath, maxTranscriptionUpload+1)
+		},
+	}
+	if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false); err == nil ||
+		!strings.Contains(err.Error(), "split it or use the transcribing-audio skill") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := os.Stat(preparedPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected prepared audio was not removed: %v", err)
 	}
 }

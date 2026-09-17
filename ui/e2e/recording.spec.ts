@@ -13,6 +13,7 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       recorderStarts: 0,
       deferRecorderData: false,
       releaseRecorderData: () => {},
+      endDisplay: () => {},
     };
 
     class MockTrack extends EventTarget {
@@ -141,7 +142,9 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       mediaDevices.getDisplayMedia = async () => {
         mock.displayRequests++;
         if (mock.displayError) throw new DOMException(mock.displayError, "NotAllowedError");
-        return new MockStream([new MockTrack("video"), new MockTrack("audio")]);
+        const video = new MockTrack("video");
+        mock.endDisplay = () => video.dispatchEvent(new Event("ended"));
+        return new MockStream([video, new MockTrack("audio")]);
       };
     }
     Object.defineProperty(navigator, "mediaDevices", {
@@ -407,6 +410,43 @@ test.describe("media recording composer", () => {
     expect(uploadedFilenames).toHaveLength(2);
     expect(uploadedFilenames[0]).toMatch(/^rec-\d{8}-\d{6}\.webm$/);
     expect(uploadedFilenames[1]).toBe("screen.webm.json");
+  });
+
+  test("uses the recorder lifetime when screen sharing ends during pre-roll", async ({ page }) => {
+    const captureStartedAt = new Date("2026-09-17T12:00:00Z");
+    await page.clock.setFixedTime(captureStartedAt);
+    let metadata: { duration_ms?: number } | null = null;
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      const filename = new URL(route.request().url()).searchParams.get("filename") ?? "";
+      if (filename.endsWith(".json")) {
+        metadata = JSON.parse(route.request().postData() ?? "{}") as { duration_ms?: number };
+      }
+      await fulfillJSON(route, {
+        path: filename.endsWith(".json")
+          ? "/tmp/shelley-uploads/preroll.webm.json"
+          : "/tmp/shelley-uploads/preroll.webm",
+      });
+    });
+    await page.route("**/api/conversation/*/chat", (route) =>
+      fulfillJSON(route, { status: "queued" }, 202),
+    );
+
+    await page.goto("/new");
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    await page.getByTestId("recording-screen-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
+    await page.clock.setFixedTime(new Date(captureStartedAt.getTime() + 1000));
+    await page.evaluate(() => {
+      window.__recordingMock.endDisplay();
+    });
+
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    expect(metadata).toEqual(
+      expect.objectContaining({
+        duration_ms: 1000,
+      }),
+    );
   });
 
   test("renders durable transcription queue states in exact order after reload", async ({
@@ -685,6 +725,7 @@ declare global {
       recorderStarts: number;
       deferRecorderData: boolean;
       releaseRecorderData: () => void;
+      endDisplay: () => void;
     };
   }
 }

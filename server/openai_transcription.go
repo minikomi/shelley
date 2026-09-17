@@ -19,8 +19,11 @@ import (
 const (
 	openAITranscriptionModel            = "gpt-4o-transcribe"
 	openAITimestampedTranscriptionModel = "whisper-1"
+	maxTranscriptionUpload              = 25_000_000
 	maxTranscriptionErrorBody           = 64 << 10
 	maxTranscriptionResponse            = 16 << 20
+	transcriptionRoutingRejection       = "ChatGPT subscriptions do not support transcription; use an LLM integration with managed OpenAI or BYOK"
+	transcriptionIntegrationMissing     = "integration not found or not attached to this VM (trace: "
 )
 
 type transcriptionResult struct {
@@ -54,9 +57,7 @@ type recordingTranscriber interface {
 	Transcribe(context.Context, string, string, bool) (transcriptionResult, error)
 }
 
-// transcriptionEndpoints are tried in order; the first successful response
-// wins. Reflection cannot tell whether llm.int is managed OpenAI or a ChatGPT
-// subscription, so the response is the only reliable signal.
+// transcriptionEndpoints are tried in fixed order.
 var transcriptionEndpoints = []string{
 	"https://llm.int.exe.xyz/v1/audio/transcriptions",
 	"https://openai.int.exe.xyz/v1/audio/transcriptions",
@@ -65,6 +66,7 @@ var transcriptionEndpoints = []string{
 type openAIRecordingTranscriber struct {
 	client    *http.Client
 	endpoints []string
+	mediaRun  mediaCommandRunner
 }
 
 type transcriptionAPIResponse struct {
@@ -72,17 +74,34 @@ type transcriptionAPIResponse struct {
 	Body []byte
 }
 
+type transcriptionHTTPError struct {
+	StatusCode int
+	Status     string
+	Message    string
+}
+
+func (e *transcriptionHTTPError) Error() string {
+	return fmt.Sprintf("OpenAI transcription failed (%s): %s", e.Status, e.Message)
+}
+
 func newOpenAIRecordingTranscriber() recordingTranscriber {
 	return &openAIRecordingTranscriber{
 		client:    http.DefaultClient,
 		endpoints: transcriptionEndpoints,
+		mediaRun:  runMediaCommand,
 	}
 }
 
 func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, prompt string, timestamps bool) (transcriptionResult, error) {
+	uploadPath, cleanup, err := t.prepareUpload(ctx, mediaPath)
+	if err != nil {
+		return transcriptionResult{}, err
+	}
+	defer cleanup()
+
 	transcriptOptions := directTranscriptionOptions(false)
 	if !timestamps {
-		response, err := t.transcribe(ctx, mediaPath, prompt, transcriptOptions)
+		response, err := t.transcribe(ctx, uploadPath, prompt, transcriptOptions)
 		if err != nil {
 			return transcriptionResult{}, err
 		}
@@ -94,15 +113,18 @@ func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, 
 	group, groupContext := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		var err error
-		transcriptResponse, err = t.transcribe(groupContext, mediaPath, prompt, transcriptOptions)
+		transcriptResponse, err = t.transcribe(groupContext, uploadPath, prompt, transcriptOptions)
 		return err
 	})
 	group.Go(func() error {
 		var err error
-		timestampResponse, err = t.transcribe(groupContext, mediaPath, prompt, timestampOptions)
+		timestampResponse, err = t.transcribe(groupContext, uploadPath, prompt, timestampOptions)
 		return err
 	})
 	if err := group.Wait(); err != nil {
+		return transcriptionResult{}, err
+	}
+	if err := validateTimestampResponse(timestampResponse.Body); err != nil {
 		return transcriptionResult{}, err
 	}
 
@@ -116,6 +138,61 @@ func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, 
 		TimestampsModel: timestampOptions.Model,
 		TimestampsPath:  timestampsPath,
 	}, nil
+}
+
+func (t *openAIRecordingTranscriber) prepareUpload(ctx context.Context, mediaPath string) (string, func(), error) {
+	info, err := os.Stat(mediaPath)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("inspect recording upload: %w", err)
+	}
+	if info.Size() <= maxTranscriptionUpload {
+		return mediaPath, func() {}, nil
+	}
+	if t.mediaRun == nil {
+		return "", func() {}, errors.New("oversized recording preparation requires a media command runner")
+	}
+
+	file, err := os.CreateTemp("", "shelley-transcription-*.m4a")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create prepared transcription audio: %w", err)
+	}
+	preparedPath := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(preparedPath)
+		return "", func() {}, fmt.Errorf("close prepared transcription audio: %w", err)
+	}
+	cleanup := func() { _ = os.Remove(preparedPath) }
+	if _, err := t.mediaRun(ctx, "ffmpeg", "-y", "-i", mediaPath, "-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "64k", preparedPath); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("prepare oversized recording audio: %w", err)
+	}
+	preparedInfo, err := os.Stat(preparedPath)
+	if err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("inspect prepared transcription audio: %w", err)
+	}
+	if preparedInfo.Size() > maxTranscriptionUpload {
+		cleanup()
+		return "", func() {}, errors.New("prepared recording is still larger than 25 MB; split it or use the transcribing-audio skill for chunked transcription")
+	}
+	return preparedPath, cleanup, nil
+}
+
+func validateTimestampResponse(body []byte) error {
+	var decoded struct {
+		Words    []json.RawMessage `json:"words"`
+		Segments []json.RawMessage `json:"segments"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("decode Whisper timestamp response: %w", err)
+	}
+	if decoded.Words == nil {
+		return errors.New(`Whisper timestamp response field "words" must be an array`)
+	}
+	if decoded.Segments == nil {
+		return errors.New(`Whisper timestamp response field "segments" must be an array`)
+	}
+	return nil
 }
 
 func (t *openAIRecordingTranscriber) transcribe(ctx context.Context, mediaPath, prompt string, options transcriptionAPIOptions) (transcriptionAPIResponse, error) {
@@ -154,16 +231,30 @@ func (t *openAIRecordingTranscriber) transcribe(ctx context.Context, mediaPath, 
 
 	contentType := writer.FormDataContentType()
 	var response transcriptionAPIResponse
-	for _, endpoint := range t.endpoints {
-		response, err = t.request(ctx, endpoint, contentType, body.Bytes())
+	for index, endpoint := range t.endpoints {
+		response, err = t.request(ctx, endpoint, contentType, body.Bytes(), options.ResponseFormat != "verbose_json")
 		if err == nil {
 			break
+		}
+		if index == len(t.endpoints)-1 || !isTranscriptionRoutingError(err) {
+			return transcriptionAPIResponse{}, err
 		}
 	}
 	return response, err
 }
 
-func (t *openAIRecordingTranscriber) request(ctx context.Context, endpoint, contentType string, body []byte) (transcriptionAPIResponse, error) {
+func isTranscriptionRoutingError(err error) bool {
+	var httpError *transcriptionHTTPError
+	if !errors.As(err, &httpError) {
+		return false
+	}
+	return (httpError.StatusCode == http.StatusBadRequest &&
+		strings.HasPrefix(httpError.Message, transcriptionRoutingRejection)) ||
+		(httpError.StatusCode == http.StatusForbidden &&
+			strings.HasPrefix(httpError.Message, transcriptionIntegrationMissing))
+}
+
+func (t *openAIRecordingTranscriber) request(ctx context.Context, endpoint, contentType string, body []byte, requireText bool) (transcriptionAPIResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return transcriptionAPIResponse{}, err
@@ -200,7 +291,11 @@ func (t *openAIRecordingTranscriber) request(ctx context.Context, endpoint, cont
 		if message == "" {
 			message = resp.Status
 		}
-		return transcriptionAPIResponse{}, fmt.Errorf("OpenAI transcription failed (%s): %s", resp.Status, message)
+		return transcriptionAPIResponse{}, &transcriptionHTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Message:    message,
+		}
 	}
 
 	var decoded struct {
@@ -210,7 +305,7 @@ func (t *openAIRecordingTranscriber) request(ctx context.Context, endpoint, cont
 		return transcriptionAPIResponse{}, fmt.Errorf("decode OpenAI transcription response: %w", err)
 	}
 	decoded.Text = strings.TrimSpace(decoded.Text)
-	if decoded.Text == "" {
+	if requireText && decoded.Text == "" {
 		return transcriptionAPIResponse{}, errors.New("OpenAI transcription returned an empty transcript")
 	}
 	return transcriptionAPIResponse{Text: decoded.Text, Body: responseBody}, nil

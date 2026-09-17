@@ -678,6 +678,167 @@ func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _, _ stri
 	return transcriptionResult{}, ctx.Err()
 }
 
+func TestRetryWorkingTranscriptionDoesNotCancelWorker(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	blocking := &blockingRecordingTranscriber{
+		started: make(chan struct{}), cancelled: make(chan struct{}),
+	}
+	server.transcriber = blocking
+	server.mediaRun = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name != "ffprobe" {
+			return nil, fmt.Errorf("unexpected command %q", name)
+		}
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
+	mediaPath := transcriptionTestFile(t, "duplicate-retry.webm")
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/transcription "+mediaPath)
+	w := httptest.NewRecorder()
+	server.handleChatConversation(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), conversation.ConversationID)
+	receipt := queuedTranscriptionReceipt(t, w, database, conversation.ConversationID)
+	done := transcriptionDone(t, server, receipt.ID)
+	<-blocking.started
+	defer func() {
+		server.cancelQueuedTranscriptions(t.Context(), conversation.ConversationID, receipt.ID, func() error { return nil })
+		<-done
+	}()
+
+	retryW := httptest.NewRecorder()
+	server.handleRetryQueued(
+		retryW,
+		httptest.NewRequest(http.MethodPost, "/retry-queued?queued_id="+receipt.ID, nil),
+		conversation.ConversationID,
+	)
+	if retryW.Code != http.StatusConflict {
+		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
+	}
+	select {
+	case <-blocking.cancelled:
+		t.Fatal("duplicate retry cancelled active worker")
+	default:
+	}
+	server.transcriptionMu.Lock()
+	_, registered := server.transcriptionJobs[receipt.ID]
+	server.transcriptionMu.Unlock()
+	if !registered {
+		t.Fatal("duplicate retry removed active worker")
+	}
+}
+
+func TestRetryTranscriptionWithWrongParentDoesNotCancelWorker(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	blocking := &blockingRecordingTranscriber{
+		started: make(chan struct{}), cancelled: make(chan struct{}),
+	}
+	server.transcriber = blocking
+	server.mediaRun = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
+	owner, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := transcriptionTestFile(t, "wrong-parent-retry.webm")
+	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/transcription "+mediaPath)
+	w := httptest.NewRecorder()
+	server.handleChatConversation(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), owner.ConversationID)
+	receipt := queuedTranscriptionReceipt(t, w, database, owner.ConversationID)
+	done := transcriptionDone(t, server, receipt.ID)
+	<-blocking.started
+	defer func() {
+		server.cancelQueuedTranscriptions(t.Context(), owner.ConversationID, receipt.ID, func() error { return nil })
+		<-done
+	}()
+
+	retryW := httptest.NewRecorder()
+	server.handleRetryQueued(
+		retryW,
+		httptest.NewRequest(http.MethodPost, "/retry-queued?queued_id="+receipt.ID, nil),
+		other.ConversationID,
+	)
+	if retryW.Code != http.StatusNotFound {
+		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
+	}
+	select {
+	case <-blocking.cancelled:
+		t.Fatal("wrong-parent retry cancelled active worker")
+	default:
+	}
+}
+
+func TestRetryTranscriptionRejectsStaleAttemptUpdates(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := transcriptionTestFile(t, "stale-attempt.webm")
+	queued := db.QueuedMessage{
+		ID:        "stale-attempt",
+		Llm:       json.RawMessage(`{"Role":0}`),
+		CreatedAt: time.Now().UTC(),
+		Model:     "predictable",
+		Kind:      db.QueuedMessageKindTranscription,
+		State:     db.QueuedMessageStateFailed,
+		Error:     "old failure",
+		Transcription: &db.QueuedTranscription{
+			MediaPath: mediaPath,
+		},
+	}
+	if _, err := database.AppendQueuedMessage(t.Context(), conversation.ConversationID, queued); err != nil {
+		t.Fatal(err)
+	}
+	server.transcriptionMu.Lock()
+	server.transcriptionJobs[queued.ID] = transcriptionJob{
+		parentID: conversation.ConversationID, attemptID: "old-attempt", cancel: func() {}, done: make(chan struct{}),
+	}
+	server.transcriptionMu.Unlock()
+	probeStarted := make(chan struct{})
+	server.mediaRun = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		close(probeStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	retryW := httptest.NewRecorder()
+	server.handleRetryQueued(
+		retryW,
+		httptest.NewRequest(http.MethodPost, "/retry-queued?queued_id="+queued.ID, nil),
+		conversation.ConversationID,
+	)
+	if retryW.Code != http.StatusAccepted {
+		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
+	}
+	done := transcriptionDone(t, server, queued.ID)
+	<-probeStarted
+	server.failQueuedTranscription(
+		conversation.ConversationID,
+		queued.ID,
+		"old-attempt",
+		nil,
+		context.Canceled,
+	)
+	current, err := database.GetQueuedMessage(t.Context(), conversation.ConversationID, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != db.QueuedMessageStateWorking || current.Error != "" {
+		t.Fatalf("stale attempt changed queue = %#v", current)
+	}
+	server.cancelQueuedTranscriptions(t.Context(), conversation.ConversationID, queued.ID, func() error { return nil })
+	<-done
+}
+
 func TestCancelQueuedTranscriptionCancelsWorker(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)

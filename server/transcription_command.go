@@ -276,7 +276,7 @@ func (s *Server) launchQueuedTranscription(parentID string, queued db.QueuedMess
 			}
 			s.transcriptionMu.Unlock()
 		}()
-		s.runQueuedTranscription(ctx, parentID, queued)
+		s.runQueuedTranscription(ctx, parentID, queued, attemptID)
 	}()
 }
 
@@ -289,8 +289,12 @@ func validateCurrentQueuedTranscription(queued *db.QueuedMessage) error {
 	return nil
 }
 
-func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID, queuedID string, update func(*db.QueuedMessage)) (db.QueuedMessage, error) {
+func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID, queuedID, attemptID string, update func(*db.QueuedMessage)) (db.QueuedMessage, error) {
 	s.transcriptionMu.Lock()
+	if current, ok := s.transcriptionJobs[queuedID]; !ok || current.attemptID != attemptID {
+		s.transcriptionMu.Unlock()
+		return db.QueuedMessage{}, errQueuedTranscriptionSuperseded
+	}
 	conv, queued, err := s.db.UpdateQueuedMessage(ctx, parentID, queuedID, func(current *db.QueuedMessage) error {
 		if err := validateCurrentQueuedTranscription(current); err != nil {
 			return err
@@ -309,25 +313,25 @@ func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID,
 	return queued, nil
 }
 
-func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage) {
+func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage, attemptID string) {
 	mediaPath := queued.Transcription.MediaPath
-	if !s.queuedTranscriptionIsCurrent(ctx, parentID, queued) {
+	if !s.queuedTranscriptionIsCurrent(ctx, parentID, queued, attemptID) {
 		return
 	}
 
 	media, err := probeTranscriptionMedia(ctx, mediaPath, s.mediaRun)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, nil, fmt.Errorf("inspect recording: %w", err))
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("inspect recording: %w", err))
 		return
 	}
 	if media.HasVideo && queued.Transcription.ContactSheetPath == "" {
 		contactSheetPath, err := createVideoContactSheet(ctx, mediaPath, media, s.mediaRun)
 		if err != nil {
-			s.failQueuedTranscription(parentID, queued.ID, nil, fmt.Errorf("create contact sheet: %w", err))
+			s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("create contact sheet: %w", err))
 			return
 		}
 		// Persist the sheet before transcription so a restart reuses it.
-		updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, func(current *db.QueuedMessage) {
+		updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, attemptID, func(current *db.QueuedMessage) {
 			current.Transcription.ContactSheetPath = contactSheetPath
 		})
 		if err != nil {
@@ -339,21 +343,21 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 
 	prompt, err := s.transcriptionPrompt(ctx, parentID)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, nil, fmt.Errorf("build transcription prompt: %w", err))
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("build transcription prompt: %w", err))
 		return
 	}
 	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt, media.HasVideo)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, nil, err)
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, err)
 		return
 	}
 	audit := []llm.Message{toolUse}
 	auditJSON, err := json.Marshal(audit)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, nil, err)
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, err)
 		return
 	}
-	updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, func(current *db.QueuedMessage) {
+	updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, attemptID, func(current *db.QueuedMessage) {
 		current.Transcription.Audit = auditJSON
 	})
 	if err != nil {
@@ -367,20 +371,26 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 	finished := time.Now()
 	toolResult, auditErr := transcriptionToolResult(toolUseID, result, started, finished, err)
 	if auditErr != nil {
-		s.failQueuedTranscription(parentID, queued.ID, audit, auditErr)
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, auditErr)
 		return
 	}
 	audit = append(audit, toolResult)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, audit, err)
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, err)
 		return
 	}
-	s.finalizeQueuedTranscription(parentID, queued, result, audit)
+	s.finalizeQueuedTranscription(parentID, queued, attemptID, result, audit)
 }
 
 // queuedTranscriptionIsCurrent reports whether the durable item is still in
 // the working state; anything else means it was cancelled or already settled.
-func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID string, queued db.QueuedMessage) bool {
+func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID string, queued db.QueuedMessage, attemptID string) bool {
+	s.transcriptionMu.Lock()
+	defer s.transcriptionMu.Unlock()
+	job, ok := s.transcriptionJobs[queued.ID]
+	if !ok || job.attemptID != attemptID {
+		return false
+	}
 	current, err := s.db.GetQueuedMessage(ctx, parentID, queued.ID)
 	return err == nil && validateCurrentQueuedTranscription(&current) == nil
 }
@@ -485,7 +495,7 @@ func transcriptionParentMessage(text, mediaPath, contactSheetPath, timestampsPat
 	return llm.UserStringMessage(strings.Join(parts, "\n\n"))
 }
 
-func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMessage, result transcriptionResult, audit []llm.Message) {
+func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMessage, attemptID string, result transcriptionResult, audit []llm.Message) {
 	var metadataPath string
 	if result.TimestampsPath != "" {
 		metadataPath = queued.Transcription.MediaPath + ".json"
@@ -503,18 +513,18 @@ func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMe
 	)
 	llmJSON, err := json.Marshal(message)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, audit, err)
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, err)
 		return
 	}
 	var auditJSON json.RawMessage
 	if len(audit) > 0 {
 		auditJSON, err = json.Marshal(audit)
 		if err != nil {
-			s.failQueuedTranscription(parentID, queued.ID, audit, err)
+			s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, err)
 			return
 		}
 	}
-	ready, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, func(current *db.QueuedMessage) {
+	ready, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, attemptID, func(current *db.QueuedMessage) {
 		current.State = db.QueuedMessageStateReady
 		current.Llm = llmJSON
 		current.Transcription.Audit = auditJSON
@@ -568,7 +578,7 @@ func queuedTranscriptionError(err error) string {
 	return string(runes)
 }
 
-func (s *Server) failQueuedTranscription(parentID, queuedID string, audit []llm.Message, failure error) {
+func (s *Server) failQueuedTranscription(parentID, queuedID, attemptID string, audit []llm.Message, failure error) {
 	var auditJSON json.RawMessage
 	if len(audit) > 0 {
 		var err error
@@ -577,7 +587,7 @@ func (s *Server) failQueuedTranscription(parentID, queuedID string, audit []llm.
 			s.logger.Error("Failed to marshal transcription audit", "parent", parentID, "queued_id", queuedID, "error", err)
 		}
 	}
-	_, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queuedID, func(current *db.QueuedMessage) {
+	_, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queuedID, attemptID, func(current *db.QueuedMessage) {
 		current.State = db.QueuedMessageStateFailed
 		current.Error = queuedTranscriptionError(failure)
 		current.Transcription.Audit = auditJSON
@@ -618,24 +628,25 @@ func (s *Server) handleRetryQueued(w http.ResponseWriter, r *http.Request, paren
 	}
 
 	s.transcriptionMu.Lock()
+	updatedParent, queued, err := s.db.RetryQueuedTranscription(r.Context(), parentID, queuedID)
+	if err != nil {
+		s.transcriptionMu.Unlock()
+		switch {
+		case errors.Is(err, db.ErrQueuedMessageNotFound):
+			http.Error(w, "Queued message not found", http.StatusNotFound)
+		case errors.Is(err, db.ErrQueuedMessageNotRetryable):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			s.logger.Error("Failed to retry queued transcription", "parent", parentID, "queued_id", queuedID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return
+	}
 	if job, ok := s.transcriptionJobs[queuedID]; ok {
 		job.cancel()
 		delete(s.transcriptionJobs, queuedID)
 	}
-	updatedParent, queued, err := s.db.RetryQueuedTranscription(r.Context(), parentID, queuedID)
 	s.transcriptionMu.Unlock()
-	switch {
-	case errors.Is(err, db.ErrQueuedMessageNotFound):
-		http.Error(w, "Queued message not found", http.StatusNotFound)
-		return
-	case errors.Is(err, db.ErrQueuedMessageNotRetryable):
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	case err != nil:
-		s.logger.Error("Failed to retry queued transcription", "parent", parentID, "queued_id", queuedID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
 
 	// The failed in-memory blocker remains in the same FIFO position; only its
 	// durable state changed.

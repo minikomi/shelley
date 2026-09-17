@@ -12,17 +12,29 @@ when: exe.dev
 
    Transcode unsupported or larger inputs using ffmpeg. Split and transcribe piecemeal if necessary; for better results, slightly overlap the chunks and then manually stitch together the overlapped outputs. Shelley browser recordings have a sibling `<recording-path>.json` sidecar with `started_at`, `duration_ms`, and `timeslice_ms`. Preserve each split chunk's media start offset so any chunk-relative timestamps can be rolled up to the original recording timeline; `started_at` anchors that timeline to wall-clock time.
 
-3. Transcribe. Try the OpenAI-compatible gateways in this fixed order and keep the first that succeeds: `https://llm.int.exe.xyz`, then `https://openai.int.exe.xyz`. Do not look up integrations first; the transcription response is the only reliable signal.
+3. Transcribe. Try `https://llm.int.exe.xyz`, then `https://openai.int.exe.xyz` only when the first returns one of the two recognized routing rejections shown below. Otherwise surface the error and stop. Do not look up integrations first.
 
    A JSON response format is required. For `gpt-transcribe`, optional `prompt`, `keywords[]`, and `languages[]` fields can supply known context, names, and language codes.
    ```
    transcribe() {
+     output=$1
+     shift
      for base in https://llm.int.exe.xyz https://openai.int.exe.xyz; do
-       curl -sS --fail-with-body "$base/v1/audio/transcriptions" "$@" && return
+       : > "$output"
+       if status=$(curl -sS --fail-with-body -w '%{http_code}' "$base/v1/audio/transcriptions" "$@" -o "$output"); then
+         return
+       fi
+       if { [ "$status" = 400 ] && grep -Fq 'ChatGPT subscriptions do not support transcription; use an LLM integration with managed OpenAI or BYOK' "$output"; } ||
+          { [ "$status" = 403 ] && grep -Fq 'integration not found or not attached to this VM (trace: ' "$output"; }; then
+         continue
+       fi
+       cat "$output" >&2
+       return 1
      done
+     cat "$output" >&2
      return 1
    }
-   transcribe -F model=gpt-transcribe -F response_format=json -F "file=@$upload" -o "$tmpdir/response.json"
+   transcribe "$tmpdir/response.json" -F model=gpt-transcribe -F response_format=json -F "file=@$upload"
    jq -er '.text | select(type == "string")' "$tmpdir/response.json" > "$out"
    ```
 
@@ -34,9 +46,9 @@ when: exe.dev
    keyword and language arrays.
    ```
    timestamp_out="${out%.transcript.txt}.timestamps.json"
-   transcribe -F model=whisper-1 -F response_format=verbose_json \
+   transcribe "$timestamp_out" -F model=whisper-1 -F response_format=verbose_json \
      -F 'timestamp_granularities[]=word' -F 'timestamp_granularities[]=segment' \
-     -F "file=@$upload" -o "$timestamp_out"
+     -F "file=@$upload"
    jq -e '(.words | type == "array") and (.segments | type == "array")' "$timestamp_out" >/dev/null
    ```
 
@@ -46,4 +58,4 @@ when: exe.dev
 
 - `402`: LLM credits exhausted; https://exe.dev/user/shelley.
 - Transcription requires managed OpenAI or OpenAI BYOK; ChatGPT subscriptions return `400` on this path.
-- If every gateway fails, show the last error. If it reports a missing integration, use `request-integration` to provide the connect link and stop. Never ask the user to paste a secret.
+- For a recognized routing rejection, try the next gateway and surface its error if it fails. For any other error, stop immediately. If the error reports a missing integration, use `request-integration` to provide the connect link and stop. Never ask the user to paste a secret.

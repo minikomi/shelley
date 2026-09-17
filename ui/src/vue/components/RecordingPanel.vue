@@ -434,7 +434,7 @@ async function presentFailure(error: Error) {
 }
 
 function onDisplayEnded() {
-  if (state.value === "recording") void stopRecording();
+  if (state.value === "preroll" || state.value === "recording") void stopRecording();
   else if (state.value === "starting") void presentFailure(new Error(t("recordingScreenEnded")));
 }
 
@@ -477,11 +477,12 @@ async function startRecording(recordingMode: RecordingMode, selectedScreen?: Med
       void presentFailure(cause ?? new Error(t("recordingFailed")));
     };
     recorder.start(1000);
+    startedAt = Date.now();
     state.value = "preroll";
     await waitForPreroll();
     if (discarding || disposed || state.value !== "preroll") return;
-    startedAt = Date.now();
     timerId = window.setInterval(updateElapsed, 250);
+    updateElapsed();
     state.value = "recording";
   } catch (error) {
     requestController = null;
@@ -551,6 +552,7 @@ async function stopRecording() {
   const mimeType = recorder.mimeType || "application/octet-stream";
   try {
     await stopRecorder(true);
+    updateElapsed();
     const recording = new Blob(recordedChunks, { type: mimeType });
     await validateRecording(recording, mimeType);
     const filename = recordingFilename(extensionForMimeType(mimeType));
