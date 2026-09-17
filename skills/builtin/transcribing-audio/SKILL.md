@@ -10,8 +10,11 @@ when: exe.dev
 
 2. Check the input. The gpt-transcribe endpoint accepts mp3, mp4, mpeg, mpga, m4a, wav, webm, flac, and ogg, up to 25 MB. Transcode unsupported or larger inputs first using ffmpeg. Split and transcribe piecemeal if necessary; for better results, slightly overlap the chunks and then manually stitch together the overlapped outputs. Shelley browser recordings have a sibling `<recording-path>.json` sidecar with `started_at`, `duration_ms`, and `timeslice_ms`. Preserve each split chunk's media start offset so any chunk-relative timestamps can be rolled up to the original recording timeline; `started_at` anchors that timeline to wall-clock time.
 
-3. Transcribe. Let `$base` be the attached integration's URL (normally `https://llm.int.exe.xyz`). A JSON response format is required. For `gpt-transcribe`, optional `prompt`, `keywords[]`, and `languages[]` fields can supply known context, names, and language codes.
+3. Transcribe through the OpenAI integration at `https://openai.int.exe.xyz`. Before making the request, use `reflection-integration` to verify that the OpenAI integration is attached. If it is absent, stop and use `request-integration` to emit the integration-connect link. Do not try `https://llm.int.exe.xyz` or a ChatGPT-backed gateway as a fallback.
+
+   A JSON response format is required. For `gpt-transcribe`, optional `prompt`, `keywords[]`, and `languages[]` fields can supply known context, names, and language codes.
    ```
+   base=https://openai.int.exe.xyz
    curl -sS --fail-with-body "$base/v1/audio/transcriptions" \
      -F model=gpt-transcribe \
      -F response_format=json \
@@ -40,5 +43,5 @@ when: exe.dev
 ## Errors
 
 - `402`: LLM credits exhausted; https://exe.dev/user/shelley.
-- Transcription requires managed OpenAI or OpenAI BYOK; ChatGPT subscriptions don't support it. A separate integration can provide transcription without changing the existing chat source.
-- To find or connect a suitable integration, use `reflection-integration` and `request-integration`.
+- Transcription requires managed OpenAI or OpenAI BYOK; ChatGPT subscriptions and ChatGPT-backed gateways don't support this path.
+- If the OpenAI integration is absent, use `request-integration` to provide the integration-connect link and stop. Never ask the user to paste a secret.
