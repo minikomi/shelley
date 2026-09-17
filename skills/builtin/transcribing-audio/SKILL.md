@@ -12,34 +12,31 @@ when: exe.dev
 
    Transcode unsupported or larger inputs using ffmpeg. Split and transcribe piecemeal if necessary; for better results, slightly overlap the chunks and then manually stitch together the overlapped outputs. Shelley browser recordings have a sibling `<recording-path>.json` sidecar with `started_at`, `duration_ms`, and `timeslice_ms`. Preserve each split chunk's media start offset so any chunk-relative timestamps can be rolled up to the original recording timeline; `started_at` anchors that timeline to wall-clock time.
 
-3. Transcribe through the OpenAI integration at `https://openai.int.exe.xyz`. Call it directly. Do not try `https://llm.int.exe.xyz` or a ChatGPT-backed gateway as a fallback.
+3. Transcribe. Try the OpenAI-compatible gateways in this fixed order and keep the first that succeeds: `https://openai.int.exe.xyz`, then `https://llm.int.exe.xyz`. Do not look up integrations first; the transcription response is the only reliable signal.
 
    A JSON response format is required. For `gpt-transcribe`, optional `prompt`, `keywords[]`, and `languages[]` fields can supply known context, names, and language codes.
    ```
-   base=https://openai.int.exe.xyz
-   curl -sS --fail-with-body "$base/v1/audio/transcriptions" \
-     -F model=gpt-transcribe \
-     -F response_format=json \
-     -F "file=@$upload" \
-     -o "$tmpdir/response.json"
+   transcribe() {
+     for base in https://openai.int.exe.xyz https://llm.int.exe.xyz; do
+       curl -sS --fail-with-body "$base/v1/audio/transcriptions" "$@" && return
+     done
+     return 1
+   }
+   transcribe -F model=gpt-transcribe -F response_format=json -F "file=@$upload" -o "$tmpdir/response.json"
    jq -er '.text | select(type == "string")' "$tmpdir/response.json" > "$out"
    ```
 
    When the user asks for word or segment timestamps, run the GPT command
    above and the Whisper command below as two parallel bash tool calls in one
-   response; each call sets its own variables. The GPT transcript stays
-   canonical; Whisper's verbose JSON supplies timing only. Whisper accepts
-   `prompt` and singular `language`, not the `gpt-transcribe` keyword and
-   language arrays.
+   response; each call defines `transcribe` and its own variables. The GPT
+   transcript stays canonical; Whisper's verbose JSON supplies timing only.
+   Whisper accepts `prompt` and singular `language`, not the `gpt-transcribe`
+   keyword and language arrays.
    ```
    timestamp_out="${out%.transcript.txt}.timestamps.json"
-   curl -sS --fail-with-body "$base/v1/audio/transcriptions" \
-     -F model=whisper-1 \
-     -F response_format=verbose_json \
-     -F 'timestamp_granularities[]=word' \
-     -F 'timestamp_granularities[]=segment' \
-     -F "file=@$upload" \
-     -o "$timestamp_out"
+   transcribe -F model=whisper-1 -F response_format=verbose_json \
+     -F 'timestamp_granularities[]=word' -F 'timestamp_granularities[]=segment' \
+     -F "file=@$upload" -o "$timestamp_out"
    jq -e '(.words | type == "array") and (.segments | type == "array")' "$timestamp_out" >/dev/null
    ```
 
@@ -48,5 +45,5 @@ when: exe.dev
 ## Errors
 
 - `402`: LLM credits exhausted; https://exe.dev/user/shelley.
-- Transcription requires managed OpenAI or OpenAI BYOK; ChatGPT subscriptions and ChatGPT-backed gateways don't support this path.
-- If the request reports the OpenAI integration is absent, use `request-integration` to provide the connect link and stop. Never ask the user to paste a secret.
+- Transcription requires managed OpenAI or OpenAI BYOK; ChatGPT subscriptions return `400` on this path.
+- If every gateway fails, show the last error. If it reports a missing integration, use `request-integration` to provide the connect link and stop. Never ask the user to paste a secret.
