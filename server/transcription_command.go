@@ -476,13 +476,17 @@ func transcriptionParentMessage(text, mediaPath, contactSheetPath, timestampsPat
 	}
 	parts = append(parts, strings.TrimSpace(text))
 	if contactSheetPath != "" {
-		parts = append(parts, "["+mediaPath+"]", "["+contactSheetPath+"]")
+		parts = append(
+			parts,
+			"Screen recording: ["+mediaPath+"]",
+			"Contact sheet: ["+contactSheetPath+"]",
+		)
 	}
 	if timestampsPath != "" {
-		parts = append(parts, "["+timestampsPath+"]")
+		parts = append(parts, "Transcript timestamps: ["+timestampsPath+"]")
 	}
 	if metadataPath != "" {
-		parts = append(parts, "["+metadataPath+"]")
+		parts = append(parts, "Recording metadata: ["+metadataPath+"]")
 	}
 	return llm.UserStringMessage(strings.Join(parts, "\n\n"))
 }

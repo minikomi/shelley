@@ -508,10 +508,10 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 		"Keep this note. [/tmp/shelley-uploads/context.png]",
 		"predictable spoken words",
 
-		"[" + mediaPath + "]",
-		"[" + mediaPath + ".contact-sheet.jpg]",
-		"[" + mediaPath + ".timestamps.json]",
-		"[" + metadataPath + "]",
+		"Screen recording: [" + mediaPath + "]",
+		"Contact sheet: [" + mediaPath + ".contact-sheet.jpg]",
+		"Transcript timestamps: [" + mediaPath + ".timestamps.json]",
+		"Recording metadata: [" + metadataPath + "]",
 	} {
 		if !strings.Contains(finalText, want) {
 			t.Errorf("final text missing %q: %s", want, finalText)
