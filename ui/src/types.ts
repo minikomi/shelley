@@ -399,7 +399,6 @@ export function isCompactionCarried(message: Message): boolean {
 export interface QueuedTranscription {
   media_path: string;
   contact_sheet_path?: string;
-  child_conversation_id: string;
   context?: string;
 }
 

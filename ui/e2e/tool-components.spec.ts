@@ -159,6 +159,46 @@ test.describe('Tool Component Verification', () => {
     expect(await genericPills.count()).toBe(0);
   });
 
+  test('generic tool audit stays inside its card on mobile', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 800 });
+    await page.goto('/new');
+    await page.locator('body').evaluate((body) => {
+      body.innerHTML = `
+        <div style="padding: 16px">
+          <details class="tool-result-details">
+            <summary class="tool-result-summary">
+              <div class="tool-result-meta">
+                <div class="tool-result-primary flex items-center space-x-2">
+                  <svg class="chat-tool-icon"></svg>
+                  <span class="tool-result-name text-sm font-medium text-blue">
+                    openai_audio_transcription
+                  </span>
+                  <span class="tool-result-status text-xs success">
+                    ✓ {"duration_ms":1731,"model":"gpt-transcribe"}...
+                  </span>
+                </div>
+                <div class="tool-result-time"></div>
+              </div>
+            </summary>
+          </details>
+        </div>
+      `;
+    });
+
+    const card = page.locator('.tool-result-details');
+    const summary = page.locator('.tool-result-summary');
+    const status = page.locator('.tool-result-status');
+    await expect(card).toBeVisible();
+    expect(await summary.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    );
+    const statusBox = await status.boundingBox();
+    const summaryBox = await summary.boundingBox();
+    expect((statusBox?.x ?? 0) + (statusBox?.width ?? 0)).toBeLessThanOrEqual(
+      (summaryBox?.x ?? 0) + (summaryBox?.width ?? 0),
+    );
+  });
+
   test('bash tool shows command in header', async ({ page, request }) => {
     const slug = await createConversationViaAPI(request, 'bash: unique-test-command-xyz123');
     await page.goto(`/c/${slug}`);

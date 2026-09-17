@@ -1039,28 +1039,12 @@ func TestQueuedTranscriptionLifecycle(t *testing.T) {
 			MediaPath: "/tmp/a.webm",
 		},
 	}
-	updatedParent, child, created, err := database.CreateQueuedTranscription(
-		ctx,
-		parent.ConversationID,
-		"transcription-child",
-		nil,
-		queued,
-		ConversationOptions{Kind: "transcription", ThinkingLevel: "low"},
-	)
+	updatedParent, created, err := database.CreateQueuedTranscription(ctx, parent.ConversationID, queued)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child.ParentConversationID == nil || *child.ParentConversationID != parent.ConversationID {
-		t.Fatalf("child parent = %v", child.ParentConversationID)
-	}
-	if child.Model == nil || *child.Model != "predictable" {
-		t.Fatalf("child model = %v", child.Model)
-	}
-	if opts := ParseConversationOptions(child.ConversationOptions); opts.Kind != "transcription" || opts.ThinkingLevel != "low" {
-		t.Fatalf("child options = %#v", opts)
-	}
-	if created.Transcription.ChildConversationID != child.ConversationID {
-		t.Fatalf("queued child = %q, child = %q", created.Transcription.ChildConversationID, child.ConversationID)
+	if created.Transcription.MediaPath != "/tmp/a.webm" {
+		t.Fatalf("created transcription = %#v", created.Transcription)
 	}
 	persisted := ParseQueuedMessages(updatedParent.QueuedMessages)
 	if len(persisted) != 1 || persisted[0].Kind != QueuedMessageKindTranscription || persisted[0].State != QueuedMessageStateWorking {
@@ -1108,41 +1092,25 @@ func TestRetryQueuedTranscriptionIsAtomic(t *testing.T) {
 		State:     QueuedMessageStateFailed,
 		Error:     "first attempt failed",
 		Transcription: &QueuedTranscription{
-			MediaPath:           "/tmp/a.webm",
-			ContactSheetPath:    "/tmp/old.jpg",
-			ChildConversationID: "old-child",
+			MediaPath:        "/tmp/a.webm",
+			ContactSheetPath: "/tmp/old.jpg",
+			Audit:            json.RawMessage(`[{"Role":1}]`),
 		},
 	}
 	if _, err := database.AppendQueuedMessage(ctx, parent.ConversationID, queued); err != nil {
 		t.Fatal(err)
 	}
 
-	_, child, retried, err := database.RetryQueuedTranscription(
-		ctx,
-		parent.ConversationID,
-		queued.ID,
-		"retry-child",
-		nil,
-		ConversationOptions{Kind: "transcription", ThinkingLevel: "low"},
-	)
+	_, retried, err := database.RetryQueuedTranscription(ctx, parent.ConversationID, queued.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retried.State != QueuedMessageStateWorking || retried.Error != "" || retried.Transcription.ContactSheetPath != "" {
+	if retried.State != QueuedMessageStateWorking || retried.Error != "" ||
+		retried.Transcription.ContactSheetPath != "" || len(retried.Transcription.Audit) != 0 {
 		t.Fatalf("retried item = %#v", retried)
 	}
-	if retried.Transcription.ChildConversationID != child.ConversationID || child.ConversationID == "old-child" {
-		t.Fatalf("replacement child: item=%q child=%q", retried.Transcription.ChildConversationID, child.ConversationID)
-	}
 
-	_, _, _, err = database.RetryQueuedTranscription(
-		ctx,
-		parent.ConversationID,
-		queued.ID,
-		"duplicate-child",
-		nil,
-		ConversationOptions{Kind: "transcription", ThinkingLevel: "low"},
-	)
+	_, _, err = database.RetryQueuedTranscription(ctx, parent.ConversationID, queued.ID)
 	if !errors.Is(err, ErrQueuedMessageNotRetryable) {
 		t.Fatalf("duplicate retry error = %v", err)
 	}
@@ -1150,8 +1118,8 @@ func TestRetryQueuedTranscriptionIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(children) != 1 {
-		t.Fatalf("children after duplicate retry = %d, want 1", len(children))
+	if len(children) != 0 {
+		t.Fatalf("children after duplicate retry = %d, want 0", len(children))
 	}
 }
 
@@ -1663,7 +1631,7 @@ func TestListConversationsWithQueuedTranscriptions(t *testing.T) {
 	if _, err := database.AppendQueuedMessage(ctx, parent.ConversationID, QueuedMessage{
 		ID: "t", Llm: json.RawMessage(`{}`), CreatedAt: time.Now().UTC(),
 		Kind: QueuedMessageKindTranscription, State: QueuedMessageStateFailed,
-		Transcription: &QueuedTranscription{MediaPath: "/tmp/a.webm", ChildConversationID: "child"},
+		Transcription: &QueuedTranscription{MediaPath: "/tmp/a.webm"},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -60,7 +60,10 @@ const (
 type pendingBatch struct {
 	Kind     pendingBatchKind
 	Messages []llm.Message
-	ModelID  string
+	// TranscriptionReady marks an audit pair plus transcript that must be
+	// persisted atomically, while only the transcript is fed to the model.
+	TranscriptionReady bool
+	ModelID            string
 	// MessageIDs holds QueuedMessage ids in the conversation's durable JSON
 	// array. User batches index them parallel to Messages; transcription
 	// blockers carry one id and no Messages until resolution.
@@ -778,8 +781,19 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 			UserEmail:    qm.UserEmail,
 			GenerateSlug: qm.Kind == db.QueuedMessageKindTranscription,
 		}
-		if qm.Kind == db.QueuedMessageKindTranscription && qm.State != db.QueuedMessageStateReady {
-			batch.Kind = pendingBatchTranscription
+		if qm.Kind == db.QueuedMessageKindTranscription {
+			if qm.State != db.QueuedMessageStateReady {
+				batch.Kind = pendingBatchTranscription
+				restored = append(restored, batch)
+				continue
+			}
+			ready, err := readyTranscriptionMessages(qm)
+			if err != nil {
+				cm.logger.Error("Failed to parse persisted transcription; dropping", "queued_id", qm.ID, "error", err)
+				continue
+			}
+			batch.Messages = ready
+			batch.TranscriptionReady = true
 		} else {
 			var msg llm.Message
 			if err := json.Unmarshal(qm.Llm, &msg); err != nil {
@@ -1365,10 +1379,10 @@ func (cm *ConversationManager) hasPersistedQueuedBatchesLocked() bool {
 	return false
 }
 
-// QueueTranscription atomically persists a transcription item and its hidden
-// child, then installs an in-memory FIFO blocker. Unlike QueueMessage it never
-// drains immediately: only a ready transition can make it deliverable.
-func (cm *ConversationManager) QueueTranscription(ctx context.Context, s *Server, qm db.QueuedMessage, cwd *string) (db.QueuedMessage, error) {
+// QueueTranscription atomically persists a transcription item, then installs
+// an in-memory FIFO blocker. Unlike QueueMessage it never drains immediately:
+// only a ready transition can make it deliverable.
+func (cm *ConversationManager) QueueTranscription(ctx context.Context, s *Server, qm db.QueuedMessage) (db.QueuedMessage, error) {
 	cm.waitDistillingSetup()
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
@@ -1377,8 +1391,7 @@ func (cm *ConversationManager) QueueTranscription(ctx context.Context, s *Server
 		return db.QueuedMessage{}, err
 	}
 
-	childSlug, childOptions := transcriptionChildOptions()
-	_, _, queued, err := s.db.CreateQueuedTranscription(ctx, cm.conversationID, childSlug, cwd, qm, childOptions)
+	_, queued, err := s.db.CreateQueuedTranscription(ctx, cm.conversationID, qm)
 	if err != nil {
 		return db.QueuedMessage{}, err
 	}
@@ -1411,9 +1424,9 @@ func (cm *ConversationManager) QueueTranscription(ctx context.Context, s *Server
 
 // ResolveQueuedTranscription replaces its in-memory blocker with the ready
 // user message and invokes the ordinary queue drainer when the parent is idle.
-func (cm *ConversationManager) ResolveQueuedTranscription(s *Server, queuedID string, message llm.Message, modelID, userEmail string) {
+func (cm *ConversationManager) ResolveQueuedTranscription(s *Server, queuedID string, messages []llm.Message, modelID, userEmail string) {
 	cm.mu.Lock()
-	cm.resolveTranscriptionBatchLocked(queuedID, message, modelID, userEmail)
+	cm.resolveTranscriptionBatchLocked(queuedID, messages, modelID, userEmail)
 	needsDrain := !cm.agentWorking && !cm.distilling
 	cm.mu.Unlock()
 	if needsDrain {
@@ -1431,14 +1444,15 @@ func (cm *ConversationManager) transcriptionBatchIndexLocked(queuedID string) in
 
 // resolveTranscriptionBatchLocked converts the transcription blocker for
 // queuedID, if still present, into a deliverable user batch in place.
-func (cm *ConversationManager) resolveTranscriptionBatchLocked(queuedID string, message llm.Message, modelID, userEmail string) {
+func (cm *ConversationManager) resolveTranscriptionBatchLocked(queuedID string, messages []llm.Message, modelID, userEmail string) {
 	i := cm.transcriptionBatchIndexLocked(queuedID)
 	if i < 0 {
 		return
 	}
 	batch := &cm.pendingBatches[i]
 	batch.Kind = pendingBatchUser
-	batch.Messages = []llm.Message{message}
+	batch.Messages = messages
+	batch.TranscriptionReady = true
 	batch.ModelID = modelID
 	batch.UserEmail = userEmail
 }
@@ -1810,6 +1824,25 @@ func (cm *ConversationManager) CancelQueuedMessage(ctx context.Context, s *Serve
 // actually delivered to the loop; a concurrently cancelled queue item is
 // successfully discarded with ok=true, fed=false.
 func (cm *ConversationManager) processBatch(ctx context.Context, s *Server, loopInstance *loop.Loop, b pendingBatch) (ok, fed bool) {
+	if b.Kind == pendingBatchUser && b.TranscriptionReady {
+		if len(b.Messages) == 0 || len(b.MessageIDs) != 1 {
+			cm.logger.Error("Invalid ready transcription batch")
+			return true, false
+		}
+		if err := s.recordDrainedQueuedMessages(ctx, cm.conversationID, b.MessageIDs[0], b.Messages, b.UserEmail); err != nil {
+			if errors.Is(err, db.ErrQueuedMessageNotFound) {
+				cm.logger.Info("Skipping cancelled queued transcription", "queued_id", b.MessageIDs[0])
+				return true, false
+			}
+			cm.logger.Error("Failed to record drained transcription; will retry", "error", err)
+			return false, false
+		}
+		if b.GenerateSlug {
+			s.generateSlugAsync(cm.conversationID, messageText(b.Messages[len(b.Messages)-1]), b.ModelID)
+		}
+		loopInstance.QueueMessages(b.Messages[len(b.Messages)-1])
+		return true, true
+	}
 	switch b.Kind {
 	case pendingBatchUser:
 		// User batches: no DB row exists yet — the message lives only in the
@@ -2001,13 +2034,13 @@ restart:
 			cm.logger.Error("Failed to reconcile transcription queue barrier", "queued_id", barrierID, "error", err)
 			return
 		case queued.State == db.QueuedMessageStateReady:
-			var message llm.Message
-			if err := json.Unmarshal(queued.Llm, &message); err != nil {
+			messages, err := readyTranscriptionMessages(queued)
+			if err != nil {
 				cm.logger.Error("Failed to decode ready transcription queue barrier", "queued_id", barrierID, "error", err)
 				return
 			}
 			cm.mu.Lock()
-			cm.resolveTranscriptionBatchLocked(barrierID, message, queued.Model, queued.UserEmail)
+			cm.resolveTranscriptionBatchLocked(barrierID, messages, queued.Model, queued.UserEmail)
 			cm.mu.Unlock()
 			goto restart
 		default:

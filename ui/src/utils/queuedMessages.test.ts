@@ -25,20 +25,19 @@ const items = [
     state: "working",
     transcription: {
       media_path: "/tmp/working.webm",
-      child_conversation_id: "cWORK",
       context: "Keep this [/tmp/context.png]",
     },
   }),
   queued("ready", "spoken words", {
     kind: "transcription",
     state: "ready",
-    transcription: { media_path: "/tmp/ready.webm", child_conversation_id: "cREADY" },
+    transcription: { media_path: "/tmp/ready.webm" },
   }),
   queued("failed", "", {
     kind: "transcription",
     state: "failed",
     error: "transcription unavailable",
-    transcription: { media_path: "/tmp/failed.webm", child_conversation_id: "cFAILED" },
+    transcription: { media_path: "/tmp/failed.webm" },
   }),
 ];
 

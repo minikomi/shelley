@@ -13,13 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
 	"shelley.exe.dev/claudetool/browse"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/skills"
 )
 
 const (
@@ -40,10 +40,10 @@ type recordingMetadata struct {
 }
 
 type transcriptionJob struct {
-	parentID string
-	childID  string
-	cancel   context.CancelFunc
-	done     chan struct{}
+	parentID  string
+	attemptID string
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 var errQueuedTranscriptionSuperseded = errors.New("queued transcription was cancelled or superseded")
@@ -205,18 +205,6 @@ func createVideoContactSheet(ctx context.Context, mediaPath string, media transc
 	return contactPath, nil
 }
 
-func transcriptionPrompt(mediaPath, contactSheetPath, skill string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Transcribe the recording at %s. The transcribing-audio skill is already included below; do not load it again. The server has already validated the file and inspected its media streams. ", strconv.Quote(mediaPath))
-	if contactSheetPath != "" {
-		fmt.Fprintf(&b, "This recording contains video. Inspect the JPEG contact sheet at %s before transcribing. ", strconv.Quote(contactSheetPath))
-	}
-	b.WriteString("Follow the included skill and return ONLY the user's spoken words: no preamble, no markdown, no interpretation, and no description of non-speech content.\n\n<transcribing_audio_skill>\n")
-	b.WriteString(skill)
-	b.WriteString("\n</transcribing_audio_skill>")
-	return b.String()
-}
-
 // validateTranscriptionCommand reports whether message is a built-in
 // /transcription command and, if so, validates its uploaded media path.
 func validateTranscriptionCommand(message string) (mediaPath, context string, isTranscription bool, err error) {
@@ -245,14 +233,13 @@ func (s *Server) queueTranscription(ctx context.Context, w http.ResponseWriter, 
 			Context:   strings.TrimSpace(transcriptionContext),
 		},
 	}
-	cwd := manager.Cwd()
-	queued, err := manager.QueueTranscription(ctx, s, queued, &cwd)
+	queued, err := manager.QueueTranscription(ctx, s, queued)
 	if err != nil {
 		s.logger.Error("Failed to queue transcription", "conversationID", manager.conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	s.launchQueuedTranscription(manager.conversationID, queued, cwd, false)
+	s.launchQueuedTranscription(manager.conversationID, queued)
 	writeQueuedTranscription(w)
 }
 
@@ -262,27 +249,21 @@ func writeQueuedTranscription(w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
 }
 
-func transcriptionChildOptions() (slug string, opts db.ConversationOptions) {
-	return "transcription-" + uuid.NewString(), db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"}
-}
-
-func (s *Server) launchQueuedTranscription(parentID string, queued db.QueuedMessage, cwd string, resume bool) {
-	if queued.Transcription == nil || queued.Transcription.ChildConversationID == "" {
+func (s *Server) launchQueuedTranscription(parentID string, queued db.QueuedMessage) {
+	if queued.Transcription == nil {
 		s.logger.Error("Cannot launch invalid queued transcription", "parent", parentID, "queued_id", queued.ID)
 		return
 	}
 
 	s.transcriptionMu.Lock()
-	if existing, ok := s.transcriptionJobs[queued.ID]; ok {
-		if existing.childID == queued.Transcription.ChildConversationID {
-			s.transcriptionMu.Unlock()
-			return
-		}
-		existing.cancel()
+	if _, ok := s.transcriptionJobs[queued.ID]; ok {
+		s.transcriptionMu.Unlock()
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), transcriptionTimeout)
 	done := make(chan struct{})
-	s.transcriptionJobs[queued.ID] = transcriptionJob{parentID: parentID, childID: queued.Transcription.ChildConversationID, cancel: cancel, done: done}
+	attemptID := uuid.NewString()
+	s.transcriptionJobs[queued.ID] = transcriptionJob{parentID: parentID, attemptID: attemptID, cancel: cancel, done: done}
 	s.transcriptionMu.Unlock()
 
 	go func() {
@@ -290,33 +271,32 @@ func (s *Server) launchQueuedTranscription(parentID string, queued db.QueuedMess
 		defer close(done)
 		defer func() {
 			s.transcriptionMu.Lock()
-			if current, ok := s.transcriptionJobs[queued.ID]; ok && current.childID == queued.Transcription.ChildConversationID {
+			if current, ok := s.transcriptionJobs[queued.ID]; ok && current.attemptID == attemptID {
 				delete(s.transcriptionJobs, queued.ID)
 			}
 			s.transcriptionMu.Unlock()
 		}()
-		if resume {
-			s.runResumedQueuedTranscription(ctx, parentID, queued)
-		} else {
-			s.runQueuedTranscription(ctx, parentID, queued, cwd)
-		}
+		s.runQueuedTranscription(ctx, parentID, queued, attemptID)
 	}()
 }
 
-func validateCurrentQueuedTranscription(queued *db.QueuedMessage, childID string) error {
+func validateCurrentQueuedTranscription(queued *db.QueuedMessage) error {
 	if queued.Kind != db.QueuedMessageKindTranscription ||
 		queued.State != db.QueuedMessageStateWorking ||
-		queued.Transcription == nil ||
-		queued.Transcription.ChildConversationID != childID {
+		queued.Transcription == nil {
 		return errQueuedTranscriptionSuperseded
 	}
 	return nil
 }
 
-func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID, queuedID, childID string, update func(*db.QueuedMessage)) (db.QueuedMessage, error) {
+func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID, queuedID, attemptID string, update func(*db.QueuedMessage)) (db.QueuedMessage, error) {
 	s.transcriptionMu.Lock()
+	if current, ok := s.transcriptionJobs[queuedID]; !ok || current.attemptID != attemptID {
+		s.transcriptionMu.Unlock()
+		return db.QueuedMessage{}, errQueuedTranscriptionSuperseded
+	}
 	conv, queued, err := s.db.UpdateQueuedMessage(ctx, parentID, queuedID, func(current *db.QueuedMessage) error {
-		if err := validateCurrentQueuedTranscription(current, childID); err != nil {
+		if err := validateCurrentQueuedTranscription(current); err != nil {
 			return err
 		}
 		update(current)
@@ -333,26 +313,25 @@ func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID,
 	return queued, nil
 }
 
-func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage, cwd string) {
-	childID := queued.Transcription.ChildConversationID
+func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage, attemptID string) {
 	mediaPath := queued.Transcription.MediaPath
-	if !s.queuedTranscriptionIsCurrent(ctx, parentID, queued) {
+	if !s.queuedTranscriptionIsCurrent(ctx, parentID, queued, attemptID) {
 		return
 	}
 
 	media, err := probeTranscriptionMedia(ctx, mediaPath, s.mediaRun)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("inspect recording: %w", err))
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("inspect recording: %w", err))
 		return
 	}
-	if media.HasVideo {
+	if media.HasVideo && queued.Transcription.ContactSheetPath == "" {
 		contactSheetPath, err := createVideoContactSheet(ctx, mediaPath, media, s.mediaRun)
 		if err != nil {
-			s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("create contact sheet: %w", err))
+			s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("create contact sheet: %w", err))
 			return
 		}
-		// Persist the sheet before the LLM call so a restart resumes with it.
-		updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, childID, func(current *db.QueuedMessage) {
+		// Persist the sheet before transcription so a restart reuses it.
+		updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, attemptID, func(current *db.QueuedMessage) {
 			current.Transcription.ContactSheetPath = contactSheetPath
 		})
 		if err != nil {
@@ -362,164 +341,183 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		queued = updated
 	}
 
-	skill, err := skills.FindByName("transcribing-audio", cwd)
+	prompt, err := s.transcriptionPrompt(ctx, parentID)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("load transcription skill: %w", err))
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("build transcription prompt: %w", err))
 		return
 	}
-	_, err = NewSubagentRunner(s).RunSubagent(
-		ctx,
-		childID,
-		transcriptionPrompt(mediaPath, queued.Transcription.ContactSheetPath, skill),
-		true,
-		transcriptionTimeout,
-		queued.Model,
-		"low",
-	)
+	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt, media.HasVideo)
 	if err != nil {
-		s.stopTranscriptionChild(childID)
-		s.failQueuedTranscription(parentID, queued.ID, childID, err)
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, err)
 		return
 	}
-	s.settleQueuedTranscription(parentID, queued)
+	audit := []llm.Message{toolUse}
+	auditJSON, err := json.Marshal(audit)
+	if err != nil {
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, err)
+		return
+	}
+	updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, attemptID, func(current *db.QueuedMessage) {
+		current.Transcription.Audit = auditJSON
+	})
+	if err != nil {
+		s.logQueuedTranscriptionError("Failed to persist transcription tool call", parentID, queued.ID, err)
+		return
+	}
+	queued = updated
+
+	started := time.Now()
+	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt, media.HasVideo)
+	finished := time.Now()
+	toolResult, auditErr := transcriptionToolResult(toolUseID, result, started, finished, err)
+	if auditErr != nil {
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, auditErr)
+		return
+	}
+	audit = append(audit, toolResult)
+	if err != nil {
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, err)
+		return
+	}
+	s.finalizeQueuedTranscription(parentID, queued, attemptID, result, audit)
 }
 
-// runResumedQueuedTranscription continues a worker whose child already holds
-// the prompt (and possibly a partial turn) from before a server restart.
-func (s *Server) runResumedQueuedTranscription(ctx context.Context, parentID string, queued db.QueuedMessage) {
-	childID := queued.Transcription.ChildConversationID
-	if !s.queuedTranscriptionIsCurrent(ctx, parentID, queued) {
-		return
+// queuedTranscriptionIsCurrent reports whether the durable item is still in
+// the working state; anything else means it was cancelled or already settled.
+func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID string, queued db.QueuedMessage, attemptID string) bool {
+	s.transcriptionMu.Lock()
+	defer s.transcriptionMu.Unlock()
+	job, ok := s.transcriptionJobs[queued.ID]
+	if !ok || job.attemptID != attemptID {
+		return false
 	}
-	service, err := s.llmManager.GetService(queued.Model)
-	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("load transcription model: %w", err))
-		return
-	}
-	manager, err := s.getOrCreateSubagentConversationManager(ctx, childID)
-	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("restore transcription worker: %w", err))
-		return
-	}
-	if err := manager.ResumeInterruptedTurn(ctx, service, queued.Model); err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, fmt.Errorf("resume transcription worker: %w", err))
-		return
-	}
-	done, err := NewSubagentRunner(s).waitForIdle(ctx, manager, childID, time.Now().Add(transcriptionTimeout))
-	if err != nil {
-		s.stopTranscriptionChild(childID)
-		s.failQueuedTranscription(parentID, queued.ID, childID, err)
-		return
-	}
-	if !done {
-		s.stopTranscriptionChild(childID)
-		s.failQueuedTranscription(parentID, queued.ID, childID, errors.New("transcription worker timed out"))
-		return
-	}
-	s.settleQueuedTranscription(parentID, queued)
-}
-
-// queuedTranscriptionIsCurrent reports whether the durable item still names
-// this worker's child in the working state; anything else means it was
-// cancelled, retried, or already settled.
-func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID string, queued db.QueuedMessage) bool {
 	current, err := s.db.GetQueuedMessage(ctx, parentID, queued.ID)
-	return err == nil && validateCurrentQueuedTranscription(&current, queued.Transcription.ChildConversationID) == nil
+	return err == nil && validateCurrentQueuedTranscription(&current) == nil
 }
 
-// settleQueuedTranscription reads the child's finished turn and moves the item
-// to ready or failed. A child that is still mid-turn is stopped and failed.
-func (s *Server) settleQueuedTranscription(parentID string, queued db.QueuedMessage) {
-	childID := queued.Transcription.ChildConversationID
-	text, done, err := s.completedTranscriptionChild(context.Background(), childID)
-	switch {
-	case !done:
-		s.stopTranscriptionChild(childID)
-		s.failQueuedTranscription(parentID, queued.ID, childID, errors.New("transcription worker did not finish"))
-	case err != nil:
-		s.failQueuedTranscription(parentID, queued.ID, childID, err)
-	default:
-		s.finalizeQueuedTranscription(parentID, queued, text)
+func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, llm.Message, error) {
+	toolUseID := "transcription_" + uuid.NewString()
+	toolInputFields := map[string]any{
+		"endpoints":       transcriptionEndpoints,
+		"file":            mediaPath,
+		"model":           textTranscription.Model,
+		"response_format": textTranscription.ResponseFormat,
+		"prompt_chars":    utf8.RuneCountInString(prompt),
 	}
-}
-
-func (s *Server) transcriptionChildStarted(ctx context.Context, childID string) (bool, error) {
-	messages, err := s.db.ListMessages(ctx, childID)
+	if timestamps {
+		toolInputFields["timestamps_model"] = timestampTranscription.Model
+		toolInputFields["timestamps_response_format"] = timestampTranscription.ResponseFormat
+		toolInputFields["timestamp_granularities"] = timestampTranscription.TimestampGranularities
+	}
+	toolInput, err := json.Marshal(toolInputFields)
 	if err != nil {
-		return false, err
+		return "", llm.Message{}, err
 	}
-	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return toolUseID, llm.Message{
+		Role:                llm.MessageRoleAssistant,
+		ExcludedFromContext: true,
+		Content: []llm.Content{{
+			ID:        toolUseID,
+			Type:      llm.ContentTypeToolUse,
+			ToolName:  "openai_audio_transcription",
+			ToolInput: toolInput,
+		}},
+	}, nil
 }
 
-func (s *Server) completedTranscriptionChild(ctx context.Context, childID string) (string, bool, error) {
-	messages, err := s.db.ListMessages(ctx, childID)
+func transcriptionToolResult(toolUseID string, result transcriptionResult, started, finished time.Time, failure error) (llm.Message, error) {
+	toolOutput := map[string]any{
+		"duration_ms": finished.Sub(started).Milliseconds(),
+	}
+	if failure != nil {
+		var modelError *transcriptionModelError
+		if errors.As(failure, &modelError) {
+			toolOutput["model"] = modelError.Model
+		}
+		toolOutput["error"] = queuedTranscriptionError(failure)
+	} else {
+		toolOutput["model"] = result.Model
+		toolOutput["text"] = result.Text
+		if result.TimestampsModel != "" {
+			toolOutput["timestamps_model"] = result.TimestampsModel
+		}
+		if result.TimestampsPath != "" {
+			toolOutput["timestamps_path"] = result.TimestampsPath
+		}
+	}
+	outputJSON, err := json.Marshal(toolOutput)
 	if err != nil {
-		return "", false, err
+		return llm.Message{}, err
 	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := &messages[i]
-		if message.Type != string(db.MessageTypeAgent) && message.Type != string(db.MessageTypeError) {
-			continue
-		}
-		if !isAgentEndOfTurn(message) {
-			return "", false, nil
-		}
-		if message.LlmData == nil {
-			return "", true, errors.New("transcription worker returned no result")
-		}
-		var value llm.Message
-		if err := json.Unmarshal([]byte(*message.LlmData), &value); err != nil {
-			return "", true, err
-		}
-		var parts []string
-		for _, content := range value.Content {
-			if content.Type == llm.ContentTypeText && strings.TrimSpace(content.Text) != "" {
-				parts = append(parts, content.Text)
-			}
-		}
-		text := strings.TrimSpace(llm.StripInlineCitationMarkers(strings.Join(parts, "\n")))
-		if message.Type == string(db.MessageTypeError) {
-			if text == "" {
-				text = "transcription worker failed"
-			}
-			return "", true, errors.New(text)
-		}
-		if text == "" {
-			return "", true, errors.New("transcription worker returned an empty transcript")
-		}
-		return text, true, nil
-	}
-	return "", false, nil
+	return llm.Message{
+		Role:                llm.MessageRoleUser,
+		ExcludedFromContext: true,
+		Content: []llm.Content{{
+			Type:             llm.ContentTypeToolResult,
+			ToolUseID:        toolUseID,
+			ToolError:        failure != nil,
+			ToolUseStartTime: &started,
+			ToolUseEndTime:   &finished,
+			ToolResult: []llm.Content{{
+				Type: llm.ContentTypeText,
+				Text: string(outputJSON),
+			}},
+		}},
+	}, nil
 }
 
-func transcriptionParentMessage(text, childID, mediaPath, contactSheetPath, transcriptionContext string) llm.Message {
-	parts := make([]string, 0, 5)
+func transcriptionParentMessage(text, mediaPath, contactSheetPath, timestampsPath, metadataPath, transcriptionContext string) llm.Message {
+	parts := make([]string, 0, 7)
 	if transcriptionContext = strings.TrimSpace(transcriptionContext); transcriptionContext != "" {
 		parts = append(parts, transcriptionContext)
 	}
-	parts = append(parts, strings.TrimSpace(text), fmt.Sprintf("(transcribed by subagent %s from %s)", childID, filepath.Base(mediaPath)))
+	parts = append(parts, strings.TrimSpace(text))
 	if contactSheetPath != "" {
-		parts = append(parts, "["+mediaPath+"]", "["+contactSheetPath+"]")
+		parts = append(
+			parts,
+			"Screen recording: ["+mediaPath+"]",
+			"Contact sheet: ["+contactSheetPath+"]",
+		)
+	}
+	if timestampsPath != "" {
+		parts = append(parts, "Transcript timestamps: ["+timestampsPath+"]")
+	}
+	if metadataPath != "" {
+		parts = append(parts, "Recording metadata: ["+metadataPath+"]")
 	}
 	return llm.UserStringMessage(strings.Join(parts, "\n\n"))
 }
 
-func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMessage, text string) {
-	childID := queued.Transcription.ChildConversationID
-	message := transcriptionParentMessage(text, childID, queued.Transcription.MediaPath, queued.Transcription.ContactSheetPath, queued.Transcription.Context)
+func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMessage, attemptID string, result transcriptionResult, audit []llm.Message) {
+	var metadataPath string
+	if result.TimestampsPath != "" {
+		metadataPath = queued.Transcription.MediaPath + ".json"
+		if info, err := os.Stat(metadataPath); err != nil || !info.Mode().IsRegular() {
+			metadataPath = ""
+		}
+	}
+	message := transcriptionParentMessage(
+		result.Text,
+		queued.Transcription.MediaPath,
+		queued.Transcription.ContactSheetPath,
+		result.TimestampsPath,
+		metadataPath,
+		queued.Transcription.Context,
+	)
 	llmJSON, err := json.Marshal(message)
 	if err != nil {
-		s.failQueuedTranscription(parentID, queued.ID, childID, err)
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, err)
 		return
 	}
-	ready, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, childID, func(current *db.QueuedMessage) {
+	auditJSON, err := json.Marshal(audit)
+	if err != nil {
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, err)
+		return
+	}
+	ready, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, attemptID, func(current *db.QueuedMessage) {
 		current.State = db.QueuedMessageStateReady
 		current.Llm = llmJSON
+		current.Transcription.Audit = auditJSON
 		current.Error = ""
 	})
 	if err != nil {
@@ -531,7 +529,26 @@ func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMe
 		s.logger.Error("Failed to resume parent queue after transcription", "parent", parentID, "queued_id", queued.ID, "error", err)
 		return
 	}
-	manager.ResolveQueuedTranscription(s, ready.ID, message, ready.Model, ready.UserEmail)
+	messages, err := readyTranscriptionMessages(ready)
+	if err != nil {
+		s.logger.Error("Failed to decode finalized transcription", "parent", parentID, "queued_id", queued.ID, "error", err)
+		return
+	}
+	manager.ResolveQueuedTranscription(s, ready.ID, messages, ready.Model, ready.UserEmail)
+}
+
+func readyTranscriptionMessages(queued db.QueuedMessage) ([]llm.Message, error) {
+	var transcript llm.Message
+	if err := json.Unmarshal(queued.Llm, &transcript); err != nil {
+		return nil, err
+	}
+	var messages []llm.Message
+	if queued.Transcription != nil && len(queued.Transcription.Audit) > 0 {
+		if err := json.Unmarshal(queued.Transcription.Audit, &messages); err != nil {
+			return nil, err
+		}
+	}
+	return append(messages, transcript), nil
 }
 
 // logQueuedTranscriptionError logs a state-transition failure unless the item
@@ -551,10 +568,19 @@ func queuedTranscriptionError(err error) string {
 	return string(runes)
 }
 
-func (s *Server) failQueuedTranscription(parentID, queuedID, childID string, failure error) {
-	_, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queuedID, childID, func(current *db.QueuedMessage) {
+func (s *Server) failQueuedTranscription(parentID, queuedID, attemptID string, audit []llm.Message, failure error) {
+	var auditJSON json.RawMessage
+	if len(audit) > 0 {
+		var err error
+		auditJSON, err = json.Marshal(audit)
+		if err != nil {
+			s.logger.Error("Failed to marshal transcription audit", "parent", parentID, "queued_id", queuedID, "error", err)
+		}
+	}
+	_, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queuedID, attemptID, func(current *db.QueuedMessage) {
 		current.State = db.QueuedMessageStateFailed
 		current.Error = queuedTranscriptionError(failure)
+		current.Transcription.Audit = auditJSON
 	})
 	if err != nil {
 		s.logQueuedTranscriptionError("Failed to mark queued transcription failed", parentID, queuedID, err)
@@ -564,53 +590,18 @@ func (s *Server) failQueuedTranscription(parentID, queuedID, childID string, fai
 // cancelQueuedTranscriptions cancels the detached workers of the matching
 // queue items (every item of the parent when queuedID is empty), runs persist
 // under the same mutex so no worker state transition can interleave with the
-// removal, and finally tears down the workers' still-running children. Both
-// the durable queue and the in-memory registry are consulted so a worker
-// launched concurrently with a cancel-all cannot escape.
+// removal.
 func (s *Server) cancelQueuedTranscriptions(ctx context.Context, parentID, queuedID string, persist func() error) error {
-	queuedMessages, err := s.db.GetQueuedMessages(ctx, parentID)
-	if err != nil {
-		return err
-	}
-	children := make(map[string]bool)
-	for _, queued := range queuedMessages {
-		if (queuedID == "" || queued.ID == queuedID) && queued.Kind == db.QueuedMessageKindTranscription && queued.Transcription != nil {
-			children[queued.Transcription.ChildConversationID] = true
-		}
-	}
 	s.transcriptionMu.Lock()
 	for id, job := range s.transcriptionJobs {
 		if job.parentID == parentID && (queuedID == "" || id == queuedID) {
 			job.cancel()
 			delete(s.transcriptionJobs, id)
-			children[job.childID] = true
 		}
 	}
-	err = persist()
+	err := persist()
 	s.transcriptionMu.Unlock()
-	if err != nil {
-		return err
-	}
-	for childID := range children {
-		if childID != "" {
-			s.stopTranscriptionChild(childID)
-		}
-	}
-	return nil
-}
-
-func (s *Server) stopTranscriptionChild(childID string) {
-	s.mu.Lock()
-	manager := s.activeConversations[childID]
-	s.mu.Unlock()
-	if manager == nil || !manager.IsAgentWorking() {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := manager.CancelConversation(ctx); err != nil {
-		s.logger.Error("Failed to cancel transcription child", "child", childID, "error", err)
-	}
+	return err
 }
 
 func (s *Server) handleRetryQueued(w http.ResponseWriter, r *http.Request, parentID string) {
@@ -619,40 +610,38 @@ func (s *Server) handleRetryQueued(w http.ResponseWriter, r *http.Request, paren
 		http.Error(w, "queued_id is required", http.StatusBadRequest)
 		return
 	}
-	parent, err := s.db.GetConversationByID(r.Context(), parentID)
-	if err != nil {
-		http.Error(w, "Conversation not found", http.StatusNotFound)
-		return
-	}
 	if _, err := s.getOrCreateConversationManager(r.Context(), parentID, r.Header.Get("X-ExeDev-Email")); err != nil {
 		s.logger.Error("Failed to initialize transcription parent for retry", "parent", parentID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	cwd := derefString(parent.Cwd)
-	childSlug, childOptions := transcriptionChildOptions()
 	s.transcriptionMu.Lock()
-	updatedParent, _, queued, err := s.db.RetryQueuedTranscription(r.Context(), parentID, queuedID, childSlug, &cwd, childOptions)
-	s.transcriptionMu.Unlock()
-	switch {
-	case errors.Is(err, db.ErrQueuedMessageNotFound):
-		http.Error(w, "Queued message not found", http.StatusNotFound)
-		return
-	case errors.Is(err, db.ErrQueuedMessageNotRetryable):
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	case err != nil:
-		s.logger.Error("Failed to retry queued transcription", "parent", parentID, "queued_id", queuedID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	updatedParent, queued, err := s.db.RetryQueuedTranscription(r.Context(), parentID, queuedID)
+	if err != nil {
+		s.transcriptionMu.Unlock()
+		switch {
+		case errors.Is(err, db.ErrQueuedMessageNotFound):
+			http.Error(w, "Queued message not found", http.StatusNotFound)
+		case errors.Is(err, db.ErrQueuedMessageNotRetryable):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			s.logger.Error("Failed to retry queued transcription", "parent", parentID, "queued_id", queuedID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
 		return
 	}
+	if job, ok := s.transcriptionJobs[queuedID]; ok {
+		job.cancel()
+		delete(s.transcriptionJobs, queuedID)
+	}
+	s.transcriptionMu.Unlock()
 
 	// The failed in-memory blocker remains in the same FIFO position; only its
-	// durable state and child identity changed.
+	// durable state changed.
 	go s.notifySubscribers(context.Background(), parentID)
 	go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: updatedParent})
-	s.launchQueuedTranscription(parentID, queued, cwd, false)
+	s.launchQueuedTranscription(parentID, queued)
 	writeQueuedTranscription(w)
 }
 
@@ -674,8 +663,8 @@ func (s *Server) recoverQueuedTranscriptions(ctx context.Context) {
 			}
 			switch queued.State {
 			case db.QueuedMessageStateReady:
-				var message llm.Message
-				if err := json.Unmarshal(queued.Llm, &message); err != nil {
+				messages, err := readyTranscriptionMessages(queued)
+				if err != nil {
 					s.logger.Error("Failed to restore ready transcription", "conversationID", conversation.ConversationID, "queued_id", queued.ID, "error", err)
 					continue
 				}
@@ -684,21 +673,9 @@ func (s *Server) recoverQueuedTranscriptions(ctx context.Context) {
 					s.logger.Error("Failed to restore transcription parent", "conversationID", conversation.ConversationID, "error", err)
 					continue
 				}
-				manager.ResolveQueuedTranscription(s, queued.ID, message, queued.Model, queued.UserEmail)
+				manager.ResolveQueuedTranscription(s, queued.ID, messages, queued.Model, queued.UserEmail)
 			case db.QueuedMessageStateWorking:
-				childID := queued.Transcription.ChildConversationID
-				if _, done, _ := s.completedTranscriptionChild(ctx, childID); done {
-					s.settleQueuedTranscription(conversation.ConversationID, queued)
-					continue
-				}
-				// A child that already holds its prompt must be resumed, not
-				// re-prompted, or the transcript would be requested twice.
-				started, err := s.transcriptionChildStarted(ctx, childID)
-				if err != nil {
-					s.failQueuedTranscription(conversation.ConversationID, queued.ID, childID, fmt.Errorf("inspect transcription child: %w", err))
-					continue
-				}
-				s.launchQueuedTranscription(conversation.ConversationID, queued, derefString(conversation.Cwd), started)
+				s.launchQueuedTranscription(conversation.ConversationID, queued)
 			}
 		}
 	}

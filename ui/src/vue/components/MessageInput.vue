@@ -390,7 +390,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
 import type { ContextUsageLevel } from "../../utils/contextUsage";
@@ -419,6 +419,10 @@ interface Attachment {
   /** Server-returned path; only present once status === "ready". */
   path?: string;
   error?: string;
+}
+
+interface AttachmentSession {
+  attachments: Attachment[];
 }
 
 const props = withDefaults(
@@ -455,18 +459,9 @@ const props = withDefaults(
      * draft-change emit instead. */
     draftSeed?: { value: string } | null;
     initialRows?: number;
-    /** Id of the focused conversation. MessageInput is intentionally NOT keyed
-     * by this in the parent (remounting would break the first-message
-     * conversationId flip), so we watch it here to reset per-conversation
-     * transient state — chiefly pending attachments — that React got for free
-     * via its keyed remount. Without this, a file attached but not sent in one
-     * conversation would be carried into (and sent to) the next. */
+    /** Id of the focused conversation, used to scope pending attachments. */
     conversationId?: string | null;
-    /** Id of a lazily-created draft for the *current* input session. When a
-     * new conversation auto-saves a draft, conversationId flips null→draftId
-     * mid-typing; that is the same session, not a switch, so we must NOT clear
-     * attachments. React encodes this exact carve-out in its key:
-     * `(conversationId === lazyDraftId ? null : conversationId) || "new"`. */
+    /** Id assigned while the current new-conversation session is being saved. */
     lazyDraftId?: string | null;
     /** Ready models (id + reasoning capabilities), used to autocomplete the
      * /model command arguments with only the levels the target model accepts. */
@@ -511,8 +506,9 @@ type RecordingSubmission = {
   message: string;
   context: string;
   attachmentIDs: string[];
+  attachmentSession: AttachmentSession;
 };
-const recordingSubmission = ref<RecordingSubmission | null>(null);
+const recordingSubmission = shallowRef<RecordingSubmission | null>(null);
 // setMessage mirrors the React controlled-value path: surfaces every change via
 // draft-change so the parent can persist it.
 function setMessage(next: string | ((prev: string) => string)) {
@@ -531,7 +527,10 @@ watch(
 );
 
 const submitting = ref(false);
-const attachments = ref<Attachment[]>([]);
+const attachmentSessions = new Map<string | null, AttachmentSession>();
+let activeAttachmentSession: AttachmentSession = { attachments: [] };
+attachmentSessions.set(props.conversationId ?? null, activeAttachmentSession);
+const attachments = ref<Attachment[]>(activeAttachmentSession.attachments);
 const uploadsInProgress = computed(
   () => attachments.value.filter((a) => a.status === "uploading").length,
 );
@@ -582,6 +581,7 @@ function beginRecording() {
     message: message.value,
     context: composeMessageWithAttachments(message.value),
     attachmentIDs: readyAttachments.value.map(({ id }) => id),
+    attachmentSession: activeAttachmentSession,
   };
   recordingActive.value = true;
 }
@@ -595,7 +595,9 @@ function handleRecordingComplete(path: string) {
     .onRecordingComplete(path, submission.context)
     .then(() => {
       if (message.value === submission.message) setMessage("");
-      for (const id of submission.attachmentIDs) removeAttachment(id);
+      for (const id of submission.attachmentIDs) {
+        removeAttachment(id, submission.attachmentSession);
+      }
     })
     .catch(() => {});
 }
@@ -627,13 +629,14 @@ watch(
 );
 
 async function uploadFile(file: File) {
+  const session = activeAttachmentSession;
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const isImage = file.type.startsWith("image/");
   const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
-  attachments.value = [
-    ...attachments.value,
+  updateAttachments(session, (current) => [
+    ...current,
     { id, name: file.name, isImage, previewUrl, status: "uploading" },
-  ];
+  ]);
 
   try {
     const formData = new FormData();
@@ -655,22 +658,30 @@ async function uploadFile(file: File) {
       throw new Error(`Upload failed: ${msg}`);
     }
     const data = await response.json();
-    attachments.value = attachments.value.map((a) =>
-      a.id === id ? { ...a, status: "ready", path: data.path } : a,
+    updateAttachments(session, (current) =>
+      current.map((a) => (a.id === id ? { ...a, status: "ready", path: data.path } : a)),
     );
   } catch (error) {
     console.error("Failed to upload file:", error);
     const msg = error instanceof Error ? error.message : "unknown error";
-    attachments.value = attachments.value.map((a) =>
-      a.id === id ? { ...a, status: "error", error: msg } : a,
+    updateAttachments(session, (current) =>
+      current.map((a) => (a.id === id ? { ...a, status: "error", error: msg } : a)),
     );
   }
 }
 
-function removeAttachment(id: string) {
-  const found = attachments.value.find((a) => a.id === id);
+function updateAttachments(
+  session: AttachmentSession,
+  update: (current: Attachment[]) => Attachment[],
+) {
+  session.attachments = update(session.attachments);
+  if (session === activeAttachmentSession) attachments.value = session.attachments;
+}
+
+function removeAttachment(id: string, session = activeAttachmentSession) {
+  const found = session.attachments.find((a) => a.id === id);
   if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
-  attachments.value = attachments.value.filter((a) => a.id !== id);
+  updateAttachments(session, (current) => current.filter((a) => a.id !== id));
 }
 
 /** Compose final message text by appending `[path]` tokens for ready attachments. */
@@ -681,30 +692,33 @@ function composeMessageWithAttachments(text: string): string {
   return trimmed.length > 0 ? `${trimmed} ${tokens}` : tokens;
 }
 
-function clearAttachments() {
-  attachments.value.forEach((a) => {
+function clearAttachments(session = activeAttachmentSession) {
+  session.attachments.forEach((a) => {
     if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   });
-  attachments.value = [];
+  updateAttachments(session, () => []);
 }
 
-// Reset pending attachments when the focused conversation changes. React gets
-// this for free by keying MessageInput on conversationId (the keyed remount
-// throws away component state); Vue keeps a single instance alive across
-// switches, so without this an unsent attachment would leak into — and be sent
-// to — the next conversation.
-//
-// Mirror React's key carve-out for lazy drafts: when a brand-new conversation
-// auto-saves a draft, conversationId flips null→draftId mid-typing. That is the
-// same input session (React keeps the key "new", so no remount), and the user
-// may have already attached a file they're about to send — don't clear it.
 watch(
   () => props.conversationId,
-  (newId) => {
-    if (newId != null && newId === props.lazyDraftId) return;
+  (newId, oldId) => {
+    const key = newId ?? null;
+    if (newId != null && newId === props.lazyDraftId) {
+      attachmentSessions.delete(oldId ?? null);
+      attachmentSessions.set(key, activeAttachmentSession);
+      return;
+    }
+
+    if (oldId == null && newId != null) {
+      const abandoned = attachmentSessions.get(null);
+      if (abandoned) clearAttachments(abandoned);
+      attachmentSessions.delete(null);
+    }
+    activeAttachmentSession = attachmentSessions.get(key) ?? { attachments: [] };
+    attachmentSessions.set(key, activeAttachmentSession);
+    attachments.value = activeAttachmentSession.attachments;
     recordingActive.value = false;
     recordingSubmission.value = null;
-    if (attachments.value.length > 0) clearAttachments();
   },
 );
 
@@ -1025,6 +1039,7 @@ async function handleSubmit(e: Event) {
     }
 
     const messageToSend = composeMessageWithAttachments(message.value);
+    const attachmentSession = activeAttachmentSession;
     // Pause autosave before awaiting onSend so a trailing PUT can't race the
     // chat POST. Don't clear the draft yet — if send fails the textarea stays.
     emit("draft-send-started");
@@ -1033,9 +1048,9 @@ async function handleSubmit(e: Event) {
     submitting.value = true;
     try {
       await props.onSend(messageToSend);
+      clearAttachments(attachmentSession);
       guardComposerClear(origin, composerOrigin, () => {
         setMessage("");
-        clearAttachments();
         emit("draft-cleared");
       });
     } catch {
@@ -1249,8 +1264,6 @@ onUnmounted(() => {
   }
   document.removeEventListener("mousedown", onQueueMenuOutside);
   document.removeEventListener("mousedown", onSlashMenuOutside);
-  attachments.value.forEach((a) => {
-    if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-  });
+  for (const session of new Set(attachmentSessions.values())) clearAttachments(session);
 });
 </script>

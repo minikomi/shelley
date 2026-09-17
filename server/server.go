@@ -389,6 +389,7 @@ type Server struct {
 	exitDelay         time.Duration
 	exitProcess       func(int)
 	mediaRun          mediaCommandRunner
+	transcriber       recordingTranscriber
 	transcriptionMu   sync.Mutex
 	transcriptionJobs map[string]transcriptionJob
 
@@ -438,6 +439,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		exitDelay:             500 * time.Millisecond,
 		exitProcess:           os.Exit,
 		mediaRun:              runMediaCommand,
+		transcriber:           newOpenAIRecordingTranscriber(),
 		transcriptionJobs:     make(map[string]transcriptionJob),
 	}
 
@@ -1245,16 +1247,30 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 // background context, so it can't be read from the request here); it is
 // stamped onto the new row. Empty when the queuing request carried no header.
 func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID, queuedID string, message llm.Message, userEmail string) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{}, nil)
-	if err != nil {
-		return err
+	return s.recordDrainedQueuedMessages(ctx, conversationID, queuedID, []llm.Message{message}, userEmail)
+}
+
+// recordDrainedQueuedMessages writes the batch in one Tx; the first row removes
+// the queued entry and the last row carries the author.
+func (s *Server) recordDrainedQueuedMessages(ctx context.Context, conversationID, queuedID string, messages []llm.Message, userEmail string) error {
+	paramsList := make([]db.CreateMessageParams, 0, len(messages))
+	for i, message := range messages {
+		params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{}, nil)
+		if err != nil {
+			return err
+		}
+		params.BumpTimestamp = true
+		if i == 0 {
+			params.RemoveQueuedID = queuedID
+		}
+		if i == len(messages)-1 {
+			params.UserEmail = userEmail
+		}
+		paramsList = append(paramsList, params)
 	}
-	params.BumpTimestamp = true
-	params.RemoveQueuedID = queuedID
-	params.UserEmail = userEmail
-	createdMsg, err := s.db.CreateMessage(ctx, params)
+	created, err := s.db.CreateMessages(ctx, paramsList)
 	if err != nil {
-		return fmt.Errorf("failed to create drained queued message: %w", err)
+		return fmt.Errorf("failed to create drained queued messages: %w", err)
 	}
 
 	s.mu.Lock()
@@ -1263,8 +1279,7 @@ func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID,
 	if ok {
 		mgr.Touch()
 	}
-
-	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, createdMsg)
+	go s.notifySubscribersNewMessages(context.WithoutCancel(ctx), conversationID, created)
 	return nil
 }
 

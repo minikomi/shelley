@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { createConversationViaAPIWithDetails } from './helpers';
 
 test.describe('File Upload via Paste and Drag', () => {
   let testImagePath: string;
@@ -227,6 +228,85 @@ test.describe('File Upload via Paste and Drag', () => {
 
     // All three files should produce attachment chips.
     await expect(page.locator('.message-attachment')).toHaveCount(3);
+  });
+
+  test('preserves unsent attachments in their conversation', async ({ page, request }) => {
+    const first = await createConversationViaAPIWithDetails(request, 'attachment draft first');
+    const second = await createConversationViaAPIWithDetails(request, 'attachment draft second');
+    const archiveResponse = await request.post(
+      `/api/conversation/${second.conversationId}/archive`,
+    );
+    expect(archiveResponse.ok()).toBeTruthy();
+    let releaseUpload!: () => void;
+    const uploadReleased = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    await page.route('**/api/upload', async (route) => {
+      await uploadReleased;
+      await route.continue();
+    });
+
+    await page.goto(`/c/${first.slug}`);
+    await expect(page.getByTestId('message-input')).toBeVisible({ timeout: 30000 });
+
+    await page.evaluate(() => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(
+        new File([new Blob(['draft attachment'], { type: 'text/plain' })], 'draft.txt', {
+          type: 'text/plain',
+        }),
+      );
+      document.querySelector('.message-input-container')?.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer,
+        }),
+      );
+    });
+    await expect(page.locator('.message-attachment-uploading')).toHaveCount(1);
+
+    const openDrawer = page.locator('button[aria-label="Open conversations"]');
+    if (await openDrawer.isVisible()) await openDrawer.click();
+    await page.getByRole('button', { name: 'View archived' }).click();
+    await page.locator(`[data-conversation-id="${second.conversationId}"]`).click();
+    await expect(page.getByTestId('message-input')).toBeHidden();
+    await expect(page.locator('.message-attachment')).toHaveCount(0);
+    releaseUpload();
+
+    if (await openDrawer.isVisible()) await openDrawer.click();
+    await page.getByRole('button', { name: 'Back to conversations' }).click();
+    await page.locator(`[data-conversation-id="${first.conversationId}"]`).click();
+    await expect(page.locator('.message-attachment-ready')).toHaveCount(1);
+    await expect(page.locator('.message-attachment-name')).toHaveText('draft.txt');
+  });
+
+  test('discards attachments from an abandoned new conversation', async ({ page, request }) => {
+    const existing = await createConversationViaAPIWithDetails(request, 'attachment destination');
+    await page.goto('/new');
+    await page.waitForLoadState('domcontentloaded');
+
+    await page.evaluate(() => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(new File([new Blob(['stale'])], 'stale.txt', {
+        type: 'text/plain',
+      }));
+      document.querySelector('.message-input-container')?.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer,
+        }),
+      );
+    });
+    await expect(page.locator('.message-attachment-ready')).toHaveCount(1);
+
+    const openDrawer = page.locator('button[aria-label="Open conversations"]');
+    if (await openDrawer.isVisible()) await openDrawer.click();
+    await page.locator(`[data-conversation-id="${existing.conversationId}"]`).click();
+    await page.locator('.btn-new').click();
+
+    await expect(page.locator('.message-attachment')).toHaveCount(0);
   });
 
   test('focus is retained in input after pasting image', async ({ page }) => {

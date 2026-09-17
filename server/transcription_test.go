@@ -13,11 +13,65 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"shelley.exe.dev/claudetool/browse"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
 )
+
+type recordingTranscriberFunc func(context.Context, string, bool) (transcriptionResult, error)
+
+func (f recordingTranscriberFunc) Transcribe(ctx context.Context, path, _ string, timestamps bool) (transcriptionResult, error) {
+	return f(ctx, path, timestamps)
+}
+
+func successfulRecordingTranscriber(text string) recordingTranscriber {
+	return recordingTranscriberFunc(func(_ context.Context, mediaPath string, timestamps bool) (transcriptionResult, error) {
+		result := transcriptionResult{Text: text, Model: openAITranscriptionModel}
+		if timestamps {
+			result.TimestampsModel = openAITimestampedTranscriptionModel
+			result.TimestampsPath = mediaPath + ".timestamps.json"
+		}
+		return result, nil
+	})
+}
+
+func TestTranscriptionToolResultAttributesModelFailure(t *testing.T) {
+	now := time.Now()
+	message, err := transcriptionToolResult(
+		"transcription_test",
+		transcriptionResult{},
+		now,
+		now,
+		&transcriptionModelError{Model: openAITimestampedTranscriptionModel, Err: errors.New("failed")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal([]byte(message.Content[0].ToolResult[0].Text), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output["model"] != openAITimestampedTranscriptionModel {
+		t.Fatalf("output = %#v", output)
+	}
+}
+
+type promptCapturingTranscriber struct {
+	prompt chan string
+	text   string
+}
+
+func (t *promptCapturingTranscriber) Transcribe(_ context.Context, mediaPath, prompt string, timestamps bool) (transcriptionResult, error) {
+	t.prompt <- prompt
+	result := transcriptionResult{Text: t.text, Model: openAITranscriptionModel}
+	if timestamps {
+		result.TimestampsModel = openAITimestampedTranscriptionModel
+		result.TimestampsPath = mediaPath + ".timestamps.json"
+	}
+	return result, nil
+}
 
 func transcriptionTestFile(t *testing.T, name string) string {
 	t.Helper()
@@ -36,10 +90,10 @@ func transcriptionTestFile(t *testing.T, name string) string {
 	return path
 }
 
-func TestTranscriptionParentMessageIncludesAudioFilename(t *testing.T) {
-	message := transcriptionParentMessage("Spoken words.", "c2BZBGH", "/tmp/shelley-uploads/voice memo.webm", "", "")
+func TestTranscriptionParentMessageOmitsWorkerMetadata(t *testing.T) {
+	message := transcriptionParentMessage("Spoken words.", "/tmp/shelley-uploads/voice memo.webm", "", "", "", "")
 	got := message.Content[0].Text
-	want := "Spoken words.\n\n(transcribed by subagent c2BZBGH from voice memo.webm)"
+	want := "Spoken words."
 	if got != want {
 		t.Fatalf("parent message = %q, want %q", got, want)
 	}
@@ -200,9 +254,18 @@ func transcriptionDone(t *testing.T, server *Server, queuedID string) <-chan str
 }
 
 func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
-	server, database, predictable := newTestServer(t)
+	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	transcriber := &promptCapturingTranscriber{
+		prompt: make(chan string, 1),
+		text:   "predictable spoken words",
+	}
+	server.transcriber = transcriber
 	mediaPath := transcriptionTestFile(t, "audio.webm")
+	metadataPath := mediaPath + ".json"
+	if err := os.WriteFile(metadataPath, []byte(`{"started_at":"2026-09-16T22:00:00Z","duration_ms":2000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cwd := t.TempDir()
 	model := "predictable"
 	draft, err := database.CreateDraftConversation(t.Context(), &cwd, &model, db.ConversationOptions{}, "Keep draft")
@@ -240,7 +303,7 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 	if item.Kind != db.QueuedMessageKindTranscription || item.State != db.QueuedMessageStateWorking || item.Transcription == nil {
 		t.Fatalf("queued item = %#v", item)
 	}
-	if item.Transcription.MediaPath != mediaPath || item.Transcription.ChildConversationID == "" {
+	if item.Transcription.MediaPath != mediaPath {
 		t.Fatalf("transcription = %#v", item.Transcription)
 	}
 	if item.Model != "predictable" || item.CreatedAt.IsZero() || len(item.Llm) != 0 {
@@ -258,12 +321,8 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(children) != 1 || children[0].ConversationID != item.Transcription.ChildConversationID {
+	if len(children) != 0 {
 		t.Fatalf("children = %#v", children)
-	}
-	childOptions := db.ParseConversationOptions(children[0].ConversationOptions)
-	if childOptions.Kind != transcriptionKind || childOptions.ThinkingLevel != "low" {
-		t.Fatalf("child options = %#v", childOptions)
 	}
 	server.mu.Lock()
 	parentManager := server.activeConversations[draft.ConversationID]
@@ -272,20 +331,46 @@ func TestTranscriptionCommandPersistsBeforeDetachedWork(t *testing.T) {
 
 	close(release)
 	<-done
-	lastRequest := predictable.GetLastRequest()
-	if lastRequest == nil {
-		t.Fatal("transcription subagent did not call predictable model")
+	prompt := <-transcriber.prompt
+	if !strings.Contains(prompt, "Application: Shelley") ||
+		!strings.Contains(prompt, "Project: "+filepath.Base(cwd)) ||
+		!strings.Contains(prompt, "Working directory: "+cwd) {
+		t.Fatalf("prompt = %q", prompt)
 	}
-	var prompt strings.Builder
-	for _, message := range lastRequest.Messages {
-		for _, content := range message.Content {
-			prompt.WriteString(content.Text)
-		}
+	if strings.Contains(prompt, "Keep draft") {
+		t.Fatalf("prompt contains composer text: %q", prompt)
 	}
-	for _, want := range []string{"<transcribing_audio_skill>", "gpt-transcribe", mediaPath, "return ONLY the user's spoken words"} {
-		if !strings.Contains(prompt.String(), want) {
-			t.Errorf("subagent prompt missing %q: %s", want, prompt.String())
-		}
+	queued = queuedMessages(t, database, draft.ConversationID)
+	if len(queued) != 1 || queued[0].State != db.QueuedMessageStateReady {
+		t.Fatalf("completed queue = %#v", queued)
+	}
+	if strings.Contains(string(queued[0].Llm), metadataPath) {
+		t.Fatalf("audio transcript includes timing metadata: %s", queued[0].Llm)
+	}
+	var audit []llm.Message
+	if err := json.Unmarshal(queued[0].Transcription.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit) != 2 || len(audit[0].Content) != 1 ||
+		audit[0].Content[0].ToolName != "openai_audio_transcription" ||
+		len(audit[1].Content) != 1 || !strings.Contains(audit[1].Content[0].ToolResult[0].Text, "predictable spoken words") {
+		t.Fatalf("parent audit = %#v", audit)
+	}
+	var auditedInput map[string]any
+	if err := json.Unmarshal(audit[0].Content[0].ToolInput, &auditedInput); err != nil {
+		t.Fatal(err)
+	}
+	if auditedInput["prompt_chars"] != float64(utf8.RuneCountInString(prompt)) {
+		t.Fatalf("audited input = %#v", auditedInput)
+	}
+	if auditedInput["model"] != "gpt-transcribe" || auditedInput["response_format"] != "json" {
+		t.Fatalf("audited audio request = %#v", auditedInput)
+	}
+	if _, ok := auditedInput["timestamp_granularities"]; ok {
+		t.Fatalf("audited audio request has timestamp granularities: %#v", auditedInput)
+	}
+	if strings.Contains(audit[1].Content[0].ToolResult[0].Text, "timestamps_path") {
+		t.Fatalf("audited audio result has timestamps: %#v", audit[1])
 	}
 	parentManager.SetAgentWorking(false)
 	if _, err := parentManager.CancelQueuedMessages(t.Context(), server); err != nil {
@@ -336,7 +421,7 @@ func TestTranscriptionBarrierDoesNotStarveSubagentCompletion(t *testing.T) {
 	if _, err := database.AppendQueuedMessage(t.Context(), conversation.ConversationID, db.QueuedMessage{
 		ID: "failed-transcription", CreatedAt: time.Now().UTC(), Model: "predictable",
 		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateFailed,
-		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/failed.webm", ChildConversationID: "cFAILED"},
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/failed.webm"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +463,12 @@ func TestTranscriptionBarrierDoesNotStarveSubagentCompletion(t *testing.T) {
 func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("predictable spoken words")
 	mediaPath := transcriptionTestFile(t, "screen.webm")
+	metadataPath := mediaPath + ".json"
+	if err := os.WriteFile(metadataPath, []byte(`{"started_at":"2026-09-16T22:00:00Z","duration_ms":12000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -438,13 +528,41 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	for _, want := range []string{
 		"Keep this note. [/tmp/shelley-uploads/context.png]",
 		"predictable spoken words",
-		"(transcribed by subagent " + queued[0].Transcription.ChildConversationID + " from " + filepath.Base(mediaPath) + ")",
-		"[" + mediaPath + "]",
-		"[" + mediaPath + ".contact-sheet.jpg]",
+
+		"Screen recording: [" + mediaPath + "]",
+		"Contact sheet: [" + mediaPath + ".contact-sheet.jpg]",
+		"Transcript timestamps: [" + mediaPath + ".timestamps.json]",
+		"Recording metadata: [" + metadataPath + "]",
 	} {
 		if !strings.Contains(finalText, want) {
 			t.Errorf("final text missing %q: %s", want, finalText)
 		}
+	}
+	if strings.Contains(finalText, "transcribed by subagent") {
+		t.Fatalf("final text has misleading attribution: %s", finalText)
+	}
+	if len(queued[0].Transcription.Audit) == 0 {
+		t.Fatal("ready transcription is missing inline audit messages")
+	}
+	var audit []llm.Message
+	if err := json.Unmarshal(queued[0].Transcription.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	var auditedInput map[string]any
+	if err := json.Unmarshal(audit[0].Content[0].ToolInput, &auditedInput); err != nil {
+		t.Fatal(err)
+	}
+	if auditedInput["model"] != "gpt-transcribe" || auditedInput["response_format"] != "json" {
+		t.Fatalf("audited video request = %#v", auditedInput)
+	}
+	if auditedInput["timestamps_model"] != "whisper-1" ||
+		auditedInput["timestamps_response_format"] != "verbose_json" {
+		t.Fatalf("audited video timestamps = %#v", auditedInput)
+	}
+	if !strings.Contains(audit[1].Content[0].ToolResult[0].Text, `"model":"gpt-transcribe"`) ||
+		!strings.Contains(audit[1].Content[0].ToolResult[0].Text, `"timestamps_model":"whisper-1"`) ||
+		!strings.Contains(audit[1].Content[0].ToolResult[0].Text, mediaPath+".timestamps.json") {
+		t.Fatalf("audited video result = %#v", audit[1])
 	}
 
 	manager.SetAgentWorking(false)
@@ -456,20 +574,45 @@ func TestQueuedTranscriptionPreservesFIFOAndVideoPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var users []string
-	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil {
-			users = append(users, *message.LlmData)
+	positions := map[string]int{}
+	for i, row := range messages {
+		if row.LlmData == nil {
+			continue
+		}
+		var message llm.Message
+		if err := json.Unmarshal([]byte(*row.LlmData), &message); err != nil {
+			t.Fatal(err)
+		}
+		for _, content := range message.Content {
+			switch {
+			case content.Type == llm.ContentTypeToolUse && content.ToolName == "openai_audio_transcription":
+				positions["tool_use"] = i
+				if !message.ExcludedFromContext {
+					t.Error("inline transcription tool use is not excluded from model context")
+				}
+			case content.Type == llm.ContentTypeToolResult:
+				positions["tool_result"] = i
+				if !message.ExcludedFromContext {
+					t.Error("inline transcription tool result is not excluded from model context")
+				}
+			case strings.Contains(content.Text, "predictable spoken words"):
+				positions["transcript"] = i
+			case strings.Contains(content.Text, "after transcription"):
+				positions["after"] = i
+			}
 		}
 	}
-	if len(users) < 2 || !strings.Contains(users[0], "transcribed by subagent") || !strings.Contains(users[1], "after transcription") {
-		t.Fatalf("user message order = %#v", users)
+	if !(positions["tool_use"] < positions["tool_result"] &&
+		positions["tool_result"] < positions["transcript"] &&
+		positions["transcript"] < positions["after"]) {
+		t.Fatalf("inline transcription order = %#v", positions)
 	}
 }
 
 func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("predictable spoken words")
 	mediaPath := transcriptionTestFile(t, "retry.webm")
 	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
@@ -496,7 +639,6 @@ func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 	if len(queued) != 1 || queued[0].State != db.QueuedMessageStateFailed || !strings.Contains(queued[0].Error, "broken media") {
 		t.Fatalf("failed queue = %#v", queued)
 	}
-	firstChild := queued[0].Transcription.ChildConversationID
 
 	ordinaryW := httptest.NewRecorder()
 	server.handleChatConversation(ordinaryW, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"message":"echo: held behind failure","model":"predictable"}`)), conversation.ConversationID)
@@ -525,7 +667,7 @@ func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
 	}
 	retryReceipt := queuedTranscriptionReceipt(t, retryW, database, conversation.ConversationID)
-	if retryReceipt.ID != receipt.ID || retryReceipt.Transcription.ChildConversationID == firstChild {
+	if retryReceipt.ID != receipt.ID || retryReceipt.State != db.QueuedMessageStateWorking {
 		t.Fatalf("retry receipt = %#v", retryReceipt)
 	}
 	secondDone := transcriptionDone(t, server, receipt.ID)
@@ -544,39 +686,187 @@ func TestFailedTranscriptionBlocksUntilRetry(t *testing.T) {
 	}
 }
 
-type blockingTranscriptionService struct {
-	inner     llm.Service
+type blockingRecordingTranscriber struct {
 	started   chan struct{}
 	cancelled chan struct{}
 	once      sync.Once
 }
 
-func (s *blockingTranscriptionService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	for _, message := range req.Messages {
-		for _, content := range message.Content {
-			if strings.Contains(content.Text, "<transcribing_audio_skill>") {
-				s.once.Do(func() { close(s.started) })
-				<-ctx.Done()
-				close(s.cancelled)
-				return nil, ctx.Err()
-			}
-		}
-	}
-	return s.inner.Do(ctx, req)
+func (s *blockingRecordingTranscriber) Transcribe(ctx context.Context, _, _ string, _ bool) (transcriptionResult, error) {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	close(s.cancelled)
+	return transcriptionResult{}, ctx.Err()
 }
 
-func (s *blockingTranscriptionService) Provider() string       { return s.inner.Provider() }
-func (s *blockingTranscriptionService) MaxImageDimension() int { return s.inner.MaxImageDimension() }
-func (s *blockingTranscriptionService) MaxImageBytes() int     { return s.inner.MaxImageBytes() }
-func (s *blockingTranscriptionService) SupportsImages() bool   { return s.inner.SupportsImages() }
-
-func TestCancelQueuedTranscriptionCancelsChild(t *testing.T) {
-	server, database, predictable := newTestServer(t)
+func TestRetryWorkingTranscriptionDoesNotCancelWorker(t *testing.T) {
+	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
-	blocking := &blockingTranscriptionService{
-		inner: predictable, started: make(chan struct{}), cancelled: make(chan struct{}),
+	blocking := &blockingRecordingTranscriber{
+		started: make(chan struct{}), cancelled: make(chan struct{}),
 	}
-	server.llmManager = &testLLMManager{service: blocking}
+	server.transcriber = blocking
+	server.mediaRun = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name != "ffprobe" {
+			return nil, fmt.Errorf("unexpected command %q", name)
+		}
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
+	mediaPath := transcriptionTestFile(t, "duplicate-retry.webm")
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/transcription "+mediaPath)
+	w := httptest.NewRecorder()
+	server.handleChatConversation(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), conversation.ConversationID)
+	receipt := queuedTranscriptionReceipt(t, w, database, conversation.ConversationID)
+	done := transcriptionDone(t, server, receipt.ID)
+	<-blocking.started
+	defer func() {
+		server.cancelQueuedTranscriptions(t.Context(), conversation.ConversationID, receipt.ID, func() error { return nil })
+		<-done
+	}()
+
+	retryW := httptest.NewRecorder()
+	server.handleRetryQueued(
+		retryW,
+		httptest.NewRequest(http.MethodPost, "/retry-queued?queued_id="+receipt.ID, nil),
+		conversation.ConversationID,
+	)
+	if retryW.Code != http.StatusConflict {
+		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
+	}
+	select {
+	case <-blocking.cancelled:
+		t.Fatal("duplicate retry cancelled active worker")
+	default:
+	}
+	server.transcriptionMu.Lock()
+	_, registered := server.transcriptionJobs[receipt.ID]
+	server.transcriptionMu.Unlock()
+	if !registered {
+		t.Fatal("duplicate retry removed active worker")
+	}
+}
+
+func TestRetryTranscriptionWithWrongParentDoesNotCancelWorker(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	blocking := &blockingRecordingTranscriber{
+		started: make(chan struct{}), cancelled: make(chan struct{}),
+	}
+	server.transcriber = blocking
+	server.mediaRun = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
+	owner, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := transcriptionTestFile(t, "wrong-parent-retry.webm")
+	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/transcription "+mediaPath)
+	w := httptest.NewRecorder()
+	server.handleChatConversation(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), owner.ConversationID)
+	receipt := queuedTranscriptionReceipt(t, w, database, owner.ConversationID)
+	done := transcriptionDone(t, server, receipt.ID)
+	<-blocking.started
+	defer func() {
+		server.cancelQueuedTranscriptions(t.Context(), owner.ConversationID, receipt.ID, func() error { return nil })
+		<-done
+	}()
+
+	retryW := httptest.NewRecorder()
+	server.handleRetryQueued(
+		retryW,
+		httptest.NewRequest(http.MethodPost, "/retry-queued?queued_id="+receipt.ID, nil),
+		other.ConversationID,
+	)
+	if retryW.Code != http.StatusNotFound {
+		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
+	}
+	select {
+	case <-blocking.cancelled:
+		t.Fatal("wrong-parent retry cancelled active worker")
+	default:
+	}
+}
+
+func TestRetryTranscriptionRejectsStaleAttemptUpdates(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := transcriptionTestFile(t, "stale-attempt.webm")
+	queued := db.QueuedMessage{
+		ID:        "stale-attempt",
+		Llm:       json.RawMessage(`{"Role":0}`),
+		CreatedAt: time.Now().UTC(),
+		Model:     "predictable",
+		Kind:      db.QueuedMessageKindTranscription,
+		State:     db.QueuedMessageStateFailed,
+		Error:     "old failure",
+		Transcription: &db.QueuedTranscription{
+			MediaPath: mediaPath,
+		},
+	}
+	if _, err := database.AppendQueuedMessage(t.Context(), conversation.ConversationID, queued); err != nil {
+		t.Fatal(err)
+	}
+	server.transcriptionMu.Lock()
+	server.transcriptionJobs[queued.ID] = transcriptionJob{
+		parentID: conversation.ConversationID, attemptID: "old-attempt", cancel: func() {}, done: make(chan struct{}),
+	}
+	server.transcriptionMu.Unlock()
+	probeStarted := make(chan struct{})
+	server.mediaRun = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		close(probeStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	retryW := httptest.NewRecorder()
+	server.handleRetryQueued(
+		retryW,
+		httptest.NewRequest(http.MethodPost, "/retry-queued?queued_id="+queued.ID, nil),
+		conversation.ConversationID,
+	)
+	if retryW.Code != http.StatusAccepted {
+		t.Fatalf("retry = %d: %s", retryW.Code, retryW.Body.String())
+	}
+	done := transcriptionDone(t, server, queued.ID)
+	<-probeStarted
+	server.failQueuedTranscription(
+		conversation.ConversationID,
+		queued.ID,
+		"old-attempt",
+		nil,
+		context.Canceled,
+	)
+	current, err := database.GetQueuedMessage(t.Context(), conversation.ConversationID, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != db.QueuedMessageStateWorking || current.Error != "" {
+		t.Fatalf("stale attempt changed queue = %#v", current)
+	}
+	server.cancelQueuedTranscriptions(t.Context(), conversation.ConversationID, queued.ID, func() error { return nil })
+	<-done
+}
+
+func TestCancelQueuedTranscriptionCancelsWorker(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	blocking := &blockingRecordingTranscriber{
+		started: make(chan struct{}), cancelled: make(chan struct{}),
+	}
+	server.transcriber = blocking
 	server.mediaRun = func(_ context.Context, name string, _ ...string) ([]byte, error) {
 		if name != "ffprobe" {
 			return nil, fmt.Errorf("unexpected command %q", name)
@@ -609,11 +899,11 @@ func TestCancelQueuedTranscriptionCancelsChild(t *testing.T) {
 	if queued := queuedMessages(t, database, conversation.ConversationID); len(queued) != 0 {
 		t.Fatalf("queue after cancel = %#v", queued)
 	}
-	server.mu.Lock()
-	childManager := server.activeConversations[receipt.Transcription.ChildConversationID]
-	server.mu.Unlock()
-	if childManager != nil && childManager.IsAgentWorking() {
-		t.Fatal("transcription child still working after queue cancellation")
+	server.transcriptionMu.Lock()
+	_, stillRunning := server.transcriptionJobs[receipt.ID]
+	server.transcriptionMu.Unlock()
+	if stillRunning {
+		t.Fatal("transcription worker still registered after queue cancellation")
 	}
 }
 
@@ -656,36 +946,23 @@ func TestCancelConversationCancelsQueuedTranscriptionWithoutParentLoop(t *testin
 	}
 }
 
-func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
+func TestQueuedTranscriptionRecoveryResumesInterruptedWork(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("recovered direct words")
+	server.mediaRun = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
 	parent, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, queued, err := database.CreateQueuedTranscription(
-		t.Context(),
-		parent.ConversationID,
-		"transcription-interrupted",
-		nil,
-		db.QueuedMessage{
-			ID: "interrupted-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
-			Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
-			Transcription: &db.QueuedTranscription{MediaPath: "/tmp/interrupted.webm"},
-		},
-		db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"},
-	)
+	_, queued, err := database.CreateQueuedTranscription(t.Context(), parent.ConversationID, db.QueuedMessage{
+		ID: "interrupted-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
+		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/interrupted.webm"},
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        llm.UserStringMessage(transcriptionPrompt("/tmp/interrupted.webm", "", "skill")),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.SetConversationAgentWorking(t.Context(), child.ConversationID, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SetConversationAgentWorking(t.Context(), parent.ConversationID, true); err != nil {
@@ -698,47 +975,29 @@ func TestQueuedTranscriptionRecoveryResumesInterruptedChild(t *testing.T) {
 	if len(persisted) != 1 || persisted[0].State != db.QueuedMessageStateReady {
 		t.Fatalf("resumed queue = %#v", persisted)
 	}
-	messages, err := database.ListMessages(t.Context(), child.ConversationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	userCount := 0
-	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) {
-			userCount++
-		}
-	}
-	if userCount != 1 {
-		t.Fatalf("resume added another child prompt: got %d user rows", userCount)
+	var audit []llm.Message
+	if err := json.Unmarshal(persisted[0].Transcription.Audit, &audit); err != nil || len(audit) != 2 {
+		t.Fatalf("recovered audit = %#v, err = %v", audit, err)
 	}
 }
 
 func TestQueuedTranscriptionRecoveryIncludesArchivedParents(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("archived words")
+	server.mediaRun = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
 	parent, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, queued, err := database.CreateQueuedTranscription(
-		t.Context(), parent.ConversationID, "transcription-archived", nil,
-		db.QueuedMessage{
-			ID: "archived-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
-			Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
-			Transcription: &db.QueuedTranscription{MediaPath: "/tmp/archived.webm"},
-		},
-		db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"},
-	)
+	_, queued, err := database.CreateQueuedTranscription(t.Context(), parent.ConversationID, db.QueuedMessage{
+		ID: "archived-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
+		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/archived.webm"},
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData: llm.Message{
-			Role: llm.MessageRoleAssistant, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "archived words"}}, EndOfTurn: true,
-		},
-	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SetConversationAgentWorking(t.Context(), parent.ConversationID, true); err != nil {
@@ -749,6 +1008,7 @@ func TestQueuedTranscriptionRecoveryIncludesArchivedParents(t *testing.T) {
 	}
 
 	server.recoverQueuedTranscriptions(t.Context())
+	<-transcriptionDone(t, server, queued.ID)
 	persisted := queuedMessages(t, database, parent.ConversationID)
 	if len(persisted) != 1 || persisted[0].ID != queued.ID || persisted[0].State != db.QueuedMessageStateReady {
 		t.Fatalf("archived recovered queue = %#v", persisted)
@@ -758,34 +1018,20 @@ func TestQueuedTranscriptionRecoveryIncludesArchivedParents(t *testing.T) {
 func TestQueuedTranscriptionRecoveryIsIdempotent(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
+	server.transcriber = successfulRecordingTranscriber("recovered words")
+	server.mediaRun = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(`{"streams":[{"codec_type":"audio"}],"format":{"duration":"2"}}`), nil
+	}
 	parent, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, child, queued, err := database.CreateQueuedTranscription(
-		t.Context(),
-		parent.ConversationID,
-		"transcription-recovery",
-		nil,
-		db.QueuedMessage{
-			ID: "recovery-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
-			Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
-			Transcription: &db.QueuedTranscription{MediaPath: "/tmp/recovery.webm"},
-		},
-		db.ConversationOptions{Kind: transcriptionKind, ThinkingLevel: "low"},
-	)
+	_, queued, err := database.CreateQueuedTranscription(t.Context(), parent.ConversationID, db.QueuedMessage{
+		ID: "recovery-queued", CreatedAt: time.Now().UTC(), Model: "predictable",
+		Kind: db.QueuedMessageKindTranscription, State: db.QueuedMessageStateWorking,
+		Transcription: &db.QueuedTranscription{MediaPath: "/tmp/recovery.webm"},
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
-		ConversationID: child.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData: llm.Message{
-			Role:      llm.MessageRoleAssistant,
-			Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "recovered words"}},
-			EndOfTurn: true,
-		},
-	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SetConversationAgentWorking(t.Context(), parent.ConversationID, true); err != nil {
@@ -794,6 +1040,7 @@ func TestQueuedTranscriptionRecoveryIsIdempotent(t *testing.T) {
 
 	server.recoverQueuedTranscriptions(t.Context())
 	server.recoverQueuedTranscriptions(t.Context())
+	<-transcriptionDone(t, server, queued.ID)
 	persisted := queuedMessages(t, database, parent.ConversationID)
 	if len(persisted) != 1 || persisted[0].ID != queued.ID || persisted[0].State != db.QueuedMessageStateReady {
 		t.Fatalf("recovered queue = %#v", persisted)
@@ -816,8 +1063,17 @@ func TestQueuedTranscriptionRecoveryIsIdempotent(t *testing.T) {
 	}
 	count := 0
 	for _, message := range messages {
-		if message.Type == string(db.MessageTypeUser) && message.LlmData != nil && strings.Contains(*message.LlmData, "recovered words") {
-			count++
+		if message.Type != string(db.MessageTypeUser) || message.LlmData == nil {
+			continue
+		}
+		var value llm.Message
+		if err := json.Unmarshal([]byte(*message.LlmData), &value); err != nil {
+			t.Fatal(err)
+		}
+		for _, content := range value.Content {
+			if content.Type == llm.ContentTypeText && strings.Contains(content.Text, "recovered words") {
+				count++
+			}
 		}
 	}
 	if count != 1 {

@@ -544,13 +544,13 @@ const (
 	QueuedMessageStateFailed  QueuedMessageState = "failed"
 )
 
-// QueuedTranscription contains the durable inputs and worker identity for a
+// QueuedTranscription contains the durable inputs and audit for a
 // transcription queue item.
 type QueuedTranscription struct {
-	MediaPath           string `json:"media_path"`
-	ContactSheetPath    string `json:"contact_sheet_path,omitempty"`
-	ChildConversationID string `json:"child_conversation_id"`
-	Context             string `json:"context,omitempty"`
+	MediaPath        string          `json:"media_path"`
+	ContactSheetPath string          `json:"contact_sheet_path,omitempty"`
+	Context          string          `json:"context,omitempty"`
+	Audit            json.RawMessage `json:"audit,omitempty"`
 }
 
 // QueuedMessage is one user message held in a conversation's queued_messages
@@ -630,7 +630,7 @@ func MarshalQueuedMessages(msgs []QueuedMessage) (string, error) {
 // inside one transaction, persists the result (bumping updated_at, which
 // re-sorts the conversation and triggers a list-patch recompute), and returns
 // the conversation row after the update so callers can broadcast it.
-func (db *DB) mutateQueuedMessages(ctx context.Context, conversationID string, mutate func(ctx context.Context, q *generated.Queries, msgs []QueuedMessage) ([]QueuedMessage, error)) (*generated.Conversation, error) {
+func (db *DB) mutateQueuedMessages(ctx context.Context, conversationID string, mutate func(msgs []QueuedMessage) ([]QueuedMessage, error)) (*generated.Conversation, error) {
 	var conv generated.Conversation
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
@@ -642,7 +642,7 @@ func (db *DB) mutateQueuedMessages(ctx context.Context, conversationID string, m
 		if err != nil {
 			return err
 		}
-		if msgs, err = mutate(ctx, q, msgs); err != nil {
+		if msgs, err = mutate(msgs); err != nil {
 			return err
 		}
 		jsonStr, err := MarshalQueuedMessages(msgs)
@@ -664,7 +664,7 @@ func (db *DB) mutateQueuedMessages(ctx context.Context, conversationID string, m
 // AppendQueuedMessage atomically appends qm to a conversation's
 // queued_messages array.
 func (db *DB) AppendQueuedMessage(ctx context.Context, conversationID string, qm QueuedMessage) (*generated.Conversation, error) {
-	return db.mutateQueuedMessages(ctx, conversationID, func(_ context.Context, _ *generated.Queries, msgs []QueuedMessage) ([]QueuedMessage, error) {
+	return db.mutateQueuedMessages(ctx, conversationID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
 		return append(msgs, qm), nil
 	})
 }
@@ -715,7 +715,7 @@ func (db *DB) GetQueuedMessage(ctx context.Context, conversationID, queuedID str
 // must not perform database work.
 func (db *DB) UpdateQueuedMessage(ctx context.Context, conversationID, queuedID string, update func(*QueuedMessage) error) (*generated.Conversation, QueuedMessage, error) {
 	var updated QueuedMessage
-	conv, err := db.mutateQueuedMessages(ctx, conversationID, func(_ context.Context, _ *generated.Queries, msgs []QueuedMessage) ([]QueuedMessage, error) {
+	conv, err := db.mutateQueuedMessages(ctx, conversationID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
 		qm, err := findQueuedMessage(msgs, queuedID)
 		if err != nil {
 			return nil, err
@@ -729,69 +729,23 @@ func (db *DB) UpdateQueuedMessage(ctx context.Context, conversationID, queuedID 
 	return conv, updated, err
 }
 
-// createQueuedTranscriptionChild inserts the hidden worker child for a
-// transcription item inside the caller's transaction.
-func createQueuedTranscriptionChild(ctx context.Context, q *generated.Queries, slug, parentID string, cwd *string, model string, opts ConversationOptions) (generated.Conversation, error) {
-	childID, err := GenerateConversationID()
-	if err != nil {
-		return generated.Conversation{}, fmt.Errorf("failed to generate transcription child id: %w", err)
-	}
-	child, err := q.CreateSubagentConversation(ctx, generated.CreateSubagentConversationParams{
-		ConversationID:       childID,
-		Slug:                 &slug,
-		Cwd:                  cwd,
-		ParentConversationID: &parentID,
-	})
-	if err != nil {
-		return generated.Conversation{}, err
-	}
-	optsJSON, err := json.Marshal(opts)
-	if err != nil {
-		return generated.Conversation{}, fmt.Errorf("failed to marshal transcription child options: %w", err)
-	}
-	if err := q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
-		ConversationID:      childID,
-		ConversationOptions: string(optsJSON),
-	}); err != nil {
-		return generated.Conversation{}, err
-	}
-	if model != "" {
-		if err := q.UpdateConversationModel(ctx, generated.UpdateConversationModelParams{
-			ConversationID: childID,
-			Model:          &model,
-		}); err != nil {
-			return generated.Conversation{}, err
-		}
-		child.Model = &model
-	}
-	child.ConversationOptions = string(optsJSON)
-	return child, nil
-}
-
-// CreateQueuedTranscription atomically creates the hidden worker child and
-// appends its working item to the parent queue.
-func (db *DB) CreateQueuedTranscription(ctx context.Context, parentID, childSlug string, cwd *string, qm QueuedMessage, childOptions ConversationOptions) (*generated.Conversation, *generated.Conversation, QueuedMessage, error) {
+// CreateQueuedTranscription atomically appends a working transcription item
+// to the parent queue.
+func (db *DB) CreateQueuedTranscription(ctx context.Context, parentID string, qm QueuedMessage) (*generated.Conversation, QueuedMessage, error) {
 	if qm.Kind != QueuedMessageKindTranscription || qm.State != QueuedMessageStateWorking || qm.Transcription == nil {
-		return nil, nil, QueuedMessage{}, fmt.Errorf("invalid queued transcription")
+		return nil, QueuedMessage{}, fmt.Errorf("invalid queued transcription")
 	}
-	var child generated.Conversation
-	parent, err := db.mutateQueuedMessages(ctx, parentID, func(ctx context.Context, q *generated.Queries, msgs []QueuedMessage) ([]QueuedMessage, error) {
-		var err error
-		if child, err = createQueuedTranscriptionChild(ctx, q, childSlug, parentID, cwd, qm.Model, childOptions); err != nil {
-			return nil, err
-		}
-		qm.Transcription.ChildConversationID = child.ConversationID
+	parent, err := db.mutateQueuedMessages(ctx, parentID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
 		return append(msgs, qm), nil
 	})
-	return parent, &child, qm, err
+	return parent, qm, err
 }
 
-// RetryQueuedTranscription atomically replaces a failed item's hidden child
-// and moves the item back to working. Concurrent retries serialize on state.
-func (db *DB) RetryQueuedTranscription(ctx context.Context, parentID, queuedID, childSlug string, cwd *string, childOptions ConversationOptions) (*generated.Conversation, *generated.Conversation, QueuedMessage, error) {
-	var child generated.Conversation
+// RetryQueuedTranscription atomically moves a failed item back to working.
+// Concurrent retries serialize on state.
+func (db *DB) RetryQueuedTranscription(ctx context.Context, parentID, queuedID string) (*generated.Conversation, QueuedMessage, error) {
 	var updated QueuedMessage
-	parent, err := db.mutateQueuedMessages(ctx, parentID, func(ctx context.Context, q *generated.Queries, msgs []QueuedMessage) ([]QueuedMessage, error) {
+	parent, err := db.mutateQueuedMessages(ctx, parentID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
 		qm, err := findQueuedMessage(msgs, queuedID)
 		if err != nil {
 			return nil, err
@@ -799,17 +753,14 @@ func (db *DB) RetryQueuedTranscription(ctx context.Context, parentID, queuedID, 
 		if qm.Kind != QueuedMessageKindTranscription || qm.State != QueuedMessageStateFailed || qm.Transcription == nil {
 			return nil, ErrQueuedMessageNotRetryable
 		}
-		if child, err = createQueuedTranscriptionChild(ctx, q, childSlug, parentID, cwd, qm.Model, childOptions); err != nil {
-			return nil, err
-		}
 		qm.State = QueuedMessageStateWorking
 		qm.Error = ""
-		qm.Transcription.ChildConversationID = child.ConversationID
 		qm.Transcription.ContactSheetPath = ""
+		qm.Transcription.Audit = nil
 		updated = *qm
 		return msgs, nil
 	})
-	return parent, &child, updated, err
+	return parent, updated, err
 }
 
 // RemoveQueuedMessages atomically removes the queued messages whose IDs are in
@@ -819,7 +770,7 @@ func (db *DB) RemoveQueuedMessages(ctx context.Context, conversationID string, i
 	for _, id := range ids {
 		remove[id] = true
 	}
-	return db.mutateQueuedMessages(ctx, conversationID, func(_ context.Context, _ *generated.Queries, msgs []QueuedMessage) ([]QueuedMessage, error) {
+	return db.mutateQueuedMessages(ctx, conversationID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
 		kept := msgs[:0]
 		for _, m := range msgs {
 			if !remove[m.ID] {

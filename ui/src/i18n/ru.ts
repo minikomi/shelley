@@ -144,6 +144,7 @@ export const ru: TranslationKeys = {
   recordingInProgress: "Идёт запись…",
   recordingScreenInProgress: "Запись экрана и микрофона…",
   recordingStopping: "Завершение записи…",
+  recordingTooShort: "Запись слишком короткая для кодирования. Попробуйте ещё раз.",
   recordingFailed: "Не удалось записать",
   recordingInvalidResponse: "Сервер записи вернул неверный ответ",
   recordingScreenEnded: "Демонстрация экрана завершилась до начала записи",

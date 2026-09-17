@@ -1766,8 +1766,15 @@ body {
   justify-content: space-between;
 }
 
+.tool-result-primary {
+  min-width: 0;
+}
+
+.tool-result-name,
 .tool-result-status {
+  min-width: 0;
   font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }
 
 .tool-result-status.success {
@@ -1781,6 +1788,22 @@ body {
 .tool-result-time {
   font-size: 0.75rem;
   color: var(--text-tertiary);
+}
+
+@media (max-width: 640px) {
+  .tool-result-meta {
+    align-items: flex-start;
+  }
+
+  .tool-result-primary {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .tool-result-primary .tool-result-status {
+    grid-column: 2;
+  }
 }
 
 /* Tool running state */
@@ -3474,6 +3497,7 @@ diffs-container {
 }
 
 .recording-waveform {
+  position: relative;
   display: flex;
   width: 42px;
   height: 20px;
@@ -3483,12 +3507,36 @@ diffs-container {
   gap: 2px;
 }
 
+.recording-waveform::before {
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 50%;
+  height: 1px;
+  background: color-mix(in srgb, #dc2626 20%, transparent);
+  content: "";
+}
+
 .recording-waveform-bar {
+  position: relative;
   width: 2px;
   max-height: 18px;
   border-radius: 1px;
   background: #dc2626;
   transition: height 80ms linear;
+}
+
+.recording-waveform-preroll {
+  opacity: 0.18;
+  transform: scaleY(0.4);
+}
+
+.recording-waveform-preroll,
+.recording-waveform-preroll .recording-waveform-bar {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease,
+    height 80ms linear;
 }
 
 .recording-status {
@@ -3511,7 +3559,16 @@ diffs-container {
 }
 
 .recording-status-dot.starting,
-.recording-status-dot.stopping,
+.recording-status-dot.stopping {
+  width: 0.75rem;
+  height: 0.75rem;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--orange-500, #f97316) 30%, transparent);
+  border-top-color: var(--orange-500, #f97316);
+  background: transparent;
+  animation: recording-start-spin 0.65s linear infinite;
+}
+
 .recording-status-dot.transcribing {
   background: var(--orange-500, #f97316);
 }
@@ -3521,6 +3578,11 @@ diffs-container {
   animation: recording-pulse 1.5s ease-in-out infinite;
 }
 
+.recording-status-dot.preroll {
+  background: #dc2626;
+  opacity: 0.45;
+}
+
 .recording-status-dot.error {
   background: var(--error-text);
 }
@@ -3528,6 +3590,12 @@ diffs-container {
 @keyframes recording-pulse {
   50% {
     opacity: 0.35;
+  }
+}
+
+@keyframes recording-start-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -3618,6 +3686,7 @@ diffs-container {
     display: none;
   }
 
+  .recording-status[data-state="preroll"] .recording-status-label,
   .recording-status[data-state="recording"] .recording-status-label {
     position: absolute;
     width: 1px;
@@ -14907,6 +14976,8 @@ kbd {
   .message-voice-btn.listening,
   .patch-tool-running,
   .recording-status-dot.recording,
+  .recording-status-dot.starting,
+  .recording-status-dot.stopping,
   .reconnecting-dots,
   .screencast-tool-emoji,
   .screenshot-tool-running,

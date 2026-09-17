@@ -144,6 +144,7 @@ export const zhCN: TranslationKeys = {
   recordingInProgress: "正在录制…",
   recordingScreenInProgress: "正在录制屏幕和麦克风…",
   recordingStopping: "正在完成录制…",
+  recordingTooShort: "录音太短，无法编码。请重试。",
   recordingFailed: "录制失败",
   recordingInvalidResponse: "录制服务器返回了无效响应",
   recordingScreenEnded: "屏幕共享在录制开始前已结束",
