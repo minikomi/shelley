@@ -365,9 +365,6 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 	started := time.Now()
 	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt, media.HasVideo)
 	finished := time.Now()
-	if err == nil && strings.TrimSpace(result.Text) == "" {
-		err = errors.New("transcription returned an empty transcript")
-	}
 	toolResult, auditErr := transcriptionToolResult(toolUseID, result, started, finished, err)
 	if auditErr != nil {
 		s.failQueuedTranscription(parentID, queued.ID, audit, auditErr)
@@ -431,16 +428,13 @@ func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, ll
 func transcriptionToolResult(toolUseID string, result transcriptionResult, started, finished time.Time, failure error) (llm.Message, error) {
 	toolOutput := map[string]any{
 		"duration_ms": finished.Sub(started).Milliseconds(),
-		"model":       openAITranscriptionModel,
 	}
-	toolError := failure != nil
 	if failure != nil {
+		toolOutput["model"] = openAITranscriptionModel
 		toolOutput["error"] = queuedTranscriptionError(failure)
 	} else {
+		toolOutput["model"] = result.Model
 		toolOutput["text"] = result.Text
-		if result.Model != "" {
-			toolOutput["model"] = result.Model
-		}
 		if result.TimestampsModel != "" {
 			toolOutput["timestamps_model"] = result.TimestampsModel
 		}
@@ -458,7 +452,7 @@ func transcriptionToolResult(toolUseID string, result transcriptionResult, start
 		Content: []llm.Content{{
 			Type:             llm.ContentTypeToolResult,
 			ToolUseID:        toolUseID,
-			ToolError:        toolError,
+			ToolError:        failure != nil,
 			ToolUseStartTime: &started,
 			ToolUseEndTime:   &finished,
 			ToolResult: []llm.Content{{
@@ -552,9 +546,6 @@ func readyTranscriptionMessages(queued db.QueuedMessage) ([]llm.Message, error) 
 	if queued.Transcription != nil && len(queued.Transcription.Audit) > 0 {
 		if err := json.Unmarshal(queued.Transcription.Audit, &messages); err != nil {
 			return nil, err
-		}
-		for i := range messages {
-			messages[i].ExcludedFromContext = true
 		}
 	}
 	return append(messages, transcript), nil

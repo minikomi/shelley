@@ -68,7 +68,7 @@ func buildTranscriptionPrompt(hostname, cwd, slug string, messages []llm.Message
 		lines = append(lines, "VM: "+hostname)
 	}
 	if cwd = cleanTranscriptionMetadata(cwd); cwd != "" {
-		if project := cleanTranscriptionMetadata(filepath.Base(cwd)); project != "" && project != "." && project != string(filepath.Separator) {
+		if project := filepath.Base(cwd); project != "." && project != string(filepath.Separator) {
 			lines = append(lines, "Project: "+project)
 		}
 		lines = append(lines, "Working directory: "+cwd)
