@@ -8,15 +8,12 @@ when: exe.dev
 
 1. By default, save the transcript beside the original audio with the extension replaced by `.transcript.txt` (`notes/review.m4a` → `notes/review.transcript.txt`).
 
-2. Check the input. The OpenAI transcription endpoint accepts mp3, mp4, mpeg, mpga, m4a, wav, webm, flac, and ogg, up to 25 MB. Transcode unsupported or larger inputs first using ffmpeg. Split and transcribe piecemeal if necessary; for better results, slightly overlap the chunks and then manually stitch together the overlapped outputs. Shelley browser recordings have a sibling `<recording-path>.json` sidecar with `started_at`, `duration_ms`, and `timeslice_ms`. Preserve each split chunk's media start offset so any chunk-relative timestamps can be rolled up to the original recording timeline; `started_at` anchors that timeline to wall-clock time.
+2. Check the input. The gpt-transcribe endpoint accepts mp3, mp4, mpeg, mpga, m4a, wav, webm, flac, and ogg, up to 25 MB. Transcode unsupported or larger inputs first using ffmpeg. Split and transcribe piecemeal if necessary; for better results, slightly overlap the chunks and then manually stitch together the overlapped outputs. Shelley browser recordings have a sibling `<recording-path>.json` sidecar with `started_at`, `duration_ms`, and `timeslice_ms`. Preserve each split chunk's media start offset so any chunk-relative timestamps can be rolled up to the original recording timeline; `started_at` anchors that timeline to wall-clock time.
 
-3. Transcribe through the OpenAI integration at `https://openai.int.exe.xyz`. Before making the request, use `reflection-integration` to verify that the OpenAI integration is attached. If it is absent, stop and use `request-integration` to emit the integration-connect link. Do not try `https://llm.int.exe.xyz`, a ChatGPT-backed gateway, or another provider as a fallback.
-
-   Use `gpt-4o-transcribe` for the canonical transcript. A JSON response format is required. The optional `prompt` field can supply known context, names, and technical terms.
+3. Transcribe. Let `$base` be the attached integration's URL (normally `https://llm.int.exe.xyz`). A JSON response format is required. For `gpt-transcribe`, optional `prompt`, `keywords[]`, and `languages[]` fields can supply known context, names, and language codes.
    ```
-   base=https://openai.int.exe.xyz
    curl -sS --fail-with-body "$base/v1/audio/transcriptions" \
-     -F model=gpt-4o-transcribe \
+     -F model=gpt-transcribe \
      -F response_format=json \
      -F "file=@$upload" \
      -o "$tmpdir/response.json"
@@ -25,9 +22,10 @@ when: exe.dev
 
    When the user asks for word or segment timestamps, keep the GPT transcript
    above as the canonical transcript and additionally use Whisper's verbose
-   JSON response for timing. Preserve the full JSON beside the transcript so
-   the timing data is not lost; do not replace the GPT transcript with
-   Whisper's text.
+   JSON response for timing. Whisper accepts `prompt` and singular `language`,
+   rather than the `gpt-transcribe`-specific keyword and language arrays.
+   Preserve the full JSON beside the transcript so the timing data is not lost;
+   do not replace the GPT transcript with Whisper's text.
    ```
    timestamp_out="${out%.transcript.txt}.timestamps.json"
    curl -sS --fail-with-body "$base/v1/audio/transcriptions" \
@@ -42,5 +40,5 @@ when: exe.dev
 ## Errors
 
 - `402`: LLM credits exhausted; https://exe.dev/user/shelley.
-- Transcription requires managed OpenAI or OpenAI BYOK; ChatGPT subscriptions and ChatGPT-backed gateways don't support this path.
-- If the OpenAI integration is absent, use `request-integration` to provide the integration-connect link and stop. Never ask the user to paste a secret.
+- Transcription requires managed OpenAI or OpenAI BYOK; ChatGPT subscriptions don't support it. A separate integration can provide transcription without changing the existing chat source.
+- To find or connect a suitable integration, use `reflection-integration` and `request-integration`.
