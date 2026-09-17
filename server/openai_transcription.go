@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	openAITranscriptionModel            = "gpt-4o-transcribe"
+	openAITranscriptionModel            = "gpt-transcribe"
 	openAITimestampedTranscriptionModel = "whisper-1"
 	maxTranscriptionUpload              = 25_000_000
 	maxTranscriptionErrorBody           = 64 << 10

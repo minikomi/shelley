@@ -27,7 +27,7 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatal(err)
 		}
-		if got := r.FormValue("model"); got != openAITranscriptionModel {
+		if got := r.FormValue("model"); got != "gpt-transcribe" {
 			t.Errorf("model = %q", got)
 		}
 		if got := r.FormValue("response_format"); got != "json" {
@@ -64,7 +64,7 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "immediate words" || result.Model != openAITranscriptionModel {
+	if result.Text != "immediate words" || result.Model != "gpt-transcribe" {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.TimestampsModel != "" || result.TimestampsPath != "" {
@@ -80,7 +80,7 @@ func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 			t.Fatal(err)
 		}
 		switch model := r.FormValue("model"); model {
-		case openAITranscriptionModel:
+		case "gpt-transcribe":
 			gptRequests.Add(1)
 			if got := r.FormValue("response_format"); got != "json" {
 				t.Errorf("GPT response_format = %q", got)
@@ -111,7 +111,7 @@ func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Text != "adjusted GPT words" ||
-		result.Model != openAITranscriptionModel ||
+		result.Model != "gpt-transcribe" ||
 		result.TimestampsModel != openAITimestampedTranscriptionModel {
 		t.Fatalf("result = %#v", result)
 	}
