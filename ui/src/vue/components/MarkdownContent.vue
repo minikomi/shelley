@@ -50,6 +50,10 @@ const props = defineProps<{
   runKey?: string;
   // Rewrite VM-local links for user-clickable assistant content only.
   rewriteLocalhostLinks?: boolean;
+  // Streaming replaces the v-html subtree on every delta. Highlighting those
+  // short-lived revisions makes fenced blocks alternate between plain text and
+  // tokens, so callers can defer tokenization until their text is stable.
+  deferCodeHighlighting?: boolean;
 }>();
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -134,6 +138,7 @@ function languageFor(code: HTMLElement): string | undefined {
 }
 
 function highlightFencedCode(root: HTMLElement): void {
+  if (props.deferCodeHighlighting) return;
   for (const code of root.querySelectorAll<HTMLElement>("pre > code")) {
     const state = code.dataset.shelleyCodeHighlight;
     if (state && state !== "deferred") continue;
