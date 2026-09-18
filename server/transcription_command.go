@@ -398,7 +398,6 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, llm.Message, error) {
 	toolUseID := "transcription_" + uuid.NewString()
 	toolInputFields := map[string]any{
-		"endpoints":       transcriptionEndpoints,
 		"file":            mediaPath,
 		"model":           textTranscription.Model,
 		"response_format": textTranscription.ResponseFormat,
