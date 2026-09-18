@@ -13,7 +13,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"shelley.exe.dev/models"
 )
+
+func testOpenAIRecordingTranscriber(client *http.Client, endpoint string) *openAIRecordingTranscriber {
+	return &openAIRecordingTranscriber{
+		client: client,
+		resolveModel: func(modelName string) (models.TranscriptionModel, error) {
+			return models.TranscriptionModel{Model: modelName, Endpoint: endpoint}, nil
+		},
+	}
+}
 
 func TestOpenAIRecordingTranscriber(t *testing.T) {
 	mediaPath := transcriptionTestFile(t, "direct.webm")
@@ -59,7 +70,7 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+	transcriber := testOpenAIRecordingTranscriber(api.Client(), api.URL)
 	result, err := transcriber.Transcribe(t.Context(), mediaPath, "Shelley on example-vm", false)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +80,27 @@ func TestOpenAIRecordingTranscriber(t *testing.T) {
 	}
 	if result.TimestampsModel != "" || result.TimestampsPath != "" {
 		t.Fatalf("unexpected timestamps result = %#v", result)
+	}
+}
+
+func TestOpenAIRecordingTranscriberUsesModelAPIKey(t *testing.T) {
+	mediaPath := transcriptionTestFile(t, "authenticated.webm")
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+			t.Errorf("authorization = %q", got)
+		}
+		_, _ = io.WriteString(w, `{"text":"authenticated words"}`)
+	}))
+	defer api.Close()
+
+	transcriber := &openAIRecordingTranscriber{
+		client: api.Client(),
+		resolveModel: func(modelName string) (models.TranscriptionModel, error) {
+			return models.TranscriptionModel{Model: modelName, Endpoint: api.URL, APIKey: "secret"}, nil
+		},
+	}
+	if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -105,7 +137,7 @@ func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+	transcriber := testOpenAIRecordingTranscriber(api.Client(), api.URL)
 	result, err := transcriber.Transcribe(t.Context(), mediaPath, "Shelley on example-vm", true)
 	if err != nil {
 		t.Fatal(err)
@@ -141,73 +173,31 @@ func TestOpenAIRecordingTranscriberReportsAPIError(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+	transcriber := testOpenAIRecordingTranscriber(api.Client(), api.URL)
 	_, err := transcriber.Transcribe(context.Background(), mediaPath, "context", false)
 	if err == nil || !strings.Contains(err.Error(), "unsupported recording") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestOpenAIRecordingTranscriberTriesEndpointsInOrder(t *testing.T) {
-	mediaPath := transcriptionTestFile(t, "order.webm")
-	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, transcriptionRoutingRejection)
-	}))
-	defer rejecting.Close()
-	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"text":"second gateway"}`)
-	}))
-	defer accepting.Close()
-
-	transcriber := &openAIRecordingTranscriber{client: rejecting.Client(), endpoints: []string{rejecting.URL, accepting.URL}}
-	result, err := transcriber.Transcribe(context.Background(), mediaPath, "context", false)
+func TestSelectTranscriptionModelPrefersLLMIntegration(t *testing.T) {
+	selected, err := selectTranscriptionModel(openAITranscriptionModel, []models.TranscriptionModel{
+		{Model: openAITranscriptionModel, Endpoint: "https://custom.example/v1/audio/transcriptions"},
+		{Model: openAITranscriptionModel, Endpoint: "https://llm.int.exe.xyz/v1/audio/transcriptions"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "second gateway" {
-		t.Fatalf("text = %q", result.Text)
+	if selected.Endpoint != "https://llm.int.exe.xyz/v1/audio/transcriptions" {
+		t.Fatalf("endpoint = %q", selected.Endpoint)
 	}
 }
 
-func TestOpenAIRecordingTranscriberRetriesMissingIntegration(t *testing.T) {
-	mediaPath := transcriptionTestFile(t, "missing-integration.webm")
-	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, transcriptionIntegrationMissing+"test-trace)")
-	}))
-	defer rejecting.Close()
-	accepting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"text":"attached gateway"}`)
-	}))
-	defer accepting.Close()
-
-	transcriber := &openAIRecordingTranscriber{client: rejecting.Client(), endpoints: []string{rejecting.URL, accepting.URL}}
-	result, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Text != "attached gateway" {
-		t.Fatalf("text = %q", result.Text)
-	}
-}
-
-func TestOpenAIRecordingTranscriberReturnsErrorAfterRoutingFallback(t *testing.T) {
-	mediaPath := transcriptionTestFile(t, "routing-then-credits.webm")
-	rejecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, transcriptionRoutingRejection)
-	}))
-	defer rejecting.Close()
-	credits := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusPaymentRequired)
-		_, _ = io.WriteString(w, `{"error":{"message":"credits exhausted"}}`)
-	}))
-	defer credits.Close()
-
-	transcriber := &openAIRecordingTranscriber{client: rejecting.Client(), endpoints: []string{rejecting.URL, credits.URL}}
-	if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false); err == nil ||
-		!strings.Contains(err.Error(), "credits exhausted") {
+func TestSelectTranscriptionModelRequiresExactKnownModel(t *testing.T) {
+	_, err := selectTranscriptionModel(openAITranscriptionModel, []models.TranscriptionModel{
+		{Model: "some-other-model", Endpoint: "https://llm.int.exe.xyz/v1/audio/transcriptions"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not available") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -237,7 +227,7 @@ func TestOpenAIRecordingTranscriberDoesNotRetryOrdinaryErrors(t *testing.T) {
 			}))
 			defer second.Close()
 
-			transcriber := &openAIRecordingTranscriber{client: first.Client(), endpoints: []string{first.URL, second.URL}}
+			transcriber := testOpenAIRecordingTranscriber(first.Client(), first.URL)
 			_, err := transcriber.Transcribe(t.Context(), mediaPath, "context", false)
 			if err == nil || !strings.Contains(err.Error(), response.wantErr) {
 				t.Fatalf("error = %v", err)
@@ -260,7 +250,7 @@ func TestOpenAIRecordingTranscriberDoesNotRetryCancelledRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL, api.URL}}
+	transcriber := testOpenAIRecordingTranscriber(api.Client(), api.URL)
 	if _, err := transcriber.Transcribe(ctx, mediaPath, "context", false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v", err)
 	}
@@ -289,7 +279,7 @@ func TestOpenAIRecordingTranscriberRequiresTimestampArrays(t *testing.T) {
 			}))
 			defer api.Close()
 
-			transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+			transcriber := testOpenAIRecordingTranscriber(api.Client(), api.URL)
 			if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", true); err == nil ||
 				(!strings.Contains(err.Error(), "must be an array") &&
 					!strings.Contains(err.Error(), "cannot unmarshal")) {
@@ -316,7 +306,7 @@ func TestOpenAIRecordingTranscriberAcceptsEmptyTimingArraysForSilence(t *testing
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+	transcriber := testOpenAIRecordingTranscriber(api.Client(), api.URL)
 	if _, err := transcriber.Transcribe(t.Context(), mediaPath, "context", true); err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +326,7 @@ func TestOpenAIRecordingTranscriberAttributesTimestampFailure(t *testing.T) {
 	}))
 	defer api.Close()
 
-	transcriber := &openAIRecordingTranscriber{client: api.Client(), endpoints: []string{api.URL}}
+	transcriber := testOpenAIRecordingTranscriber(api.Client(), api.URL)
 	_, err := transcriber.Transcribe(t.Context(), mediaPath, "context", true)
 	var modelError *transcriptionModelError
 	if !errors.As(err, &modelError) || modelError.Model != openAITimestampedTranscriptionModel {
@@ -368,8 +358,10 @@ func TestOpenAIRecordingTranscriberPreparesOversizedRecording(t *testing.T) {
 	defer api.Close()
 
 	transcriber := &openAIRecordingTranscriber{
-		client:    api.Client(),
-		endpoints: []string{api.URL},
+		client: api.Client(),
+		resolveModel: func(modelName string) (models.TranscriptionModel, error) {
+			return models.TranscriptionModel{Model: modelName, Endpoint: api.URL}, nil
+		},
 		mediaRun: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name != "ffmpeg" {
 				return nil, fmt.Errorf("command = %q", name)
@@ -424,8 +416,10 @@ func TestOpenAIRecordingTranscriberPreparesOversizedScreenRecordingOnce(t *testi
 	defer api.Close()
 
 	transcriber := &openAIRecordingTranscriber{
-		client:    api.Client(),
-		endpoints: []string{api.URL},
+		client: api.Client(),
+		resolveModel: func(modelName string) (models.TranscriptionModel, error) {
+			return models.TranscriptionModel{Model: modelName, Endpoint: api.URL}, nil
+		},
 		mediaRun: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name != "ffmpeg" {
 				return nil, fmt.Errorf("command = %q", name)
@@ -467,8 +461,10 @@ func TestOpenAIRecordingTranscriberRejectsStillOversizedPreparedAudio(t *testing
 	}
 	var preparedPath string
 	transcriber := &openAIRecordingTranscriber{
-		client:    http.DefaultClient,
-		endpoints: []string{"http://unused.invalid"},
+		client: http.DefaultClient,
+		resolveModel: func(modelName string) (models.TranscriptionModel, error) {
+			return models.TranscriptionModel{Model: modelName, Endpoint: "http://unused.invalid"}, nil
+		},
 		mediaRun: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			preparedPath = args[len(args)-1]
 			return nil, os.Truncate(preparedPath, maxTranscriptionUpload+1)

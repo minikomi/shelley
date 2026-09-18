@@ -162,10 +162,11 @@ type LLMProvider interface {
 // NewLLMServiceManager creates a new LLM service manager from config.
 func NewLLMServiceManager(cfg *LLMConfig) LLMProvider {
 	manager, err := models.NewManager(&models.Config{
-		Models: cfg.Models,
-		Logger: cfg.Logger,
-		DB:     cfg.DB,
-		HTTPC:  cfg.HTTPC,
+		Models:              cfg.Models,
+		TranscriptionModels: cfg.TranscriptionModels,
+		Logger:              cfg.Logger,
+		DB:                  cfg.DB,
+		HTTPC:               cfg.HTTPC,
 	})
 	if err != nil {
 		cfg.Logger.Error("Failed to create models manager", "error", err)
@@ -442,7 +443,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		exitDelay:             500 * time.Millisecond,
 		exitProcess:           os.Exit,
 		mediaRun:              runMediaCommand,
-		transcriber:           newOpenAIRecordingTranscriber(),
+		transcriber:           newOpenAIRecordingTranscriber(llmManager),
 		transcriptionJobs:     make(map[string]transcriptionJob),
 		reflectionEmoji:       cachedReflectionEmoji,
 	}
