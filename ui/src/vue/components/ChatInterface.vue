@@ -204,7 +204,11 @@
                 >
               </div>
               <div v-else-if="showStreamingPreview" class="streaming-markdown">
-                <MarkdownContent :text="streamingText" rewrite-localhost-links />
+                <MarkdownContent
+                  :text="streamingText"
+                  rewrite-localhost-links
+                  defer-code-highlighting
+                />
                 <span class="streaming-cursor">▊</span>
               </div>
             </div>
