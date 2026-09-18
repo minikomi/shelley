@@ -934,6 +934,18 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 	}
 
 	toolResults := make([]llm.Content, len(toolUses))
+	serialPredecessors := make([]<-chan struct{}, len(toolUses))
+	serialDone := make([]chan struct{}, len(toolUses))
+	lastSerialCall := make(map[string]chan struct{})
+	for i, c := range toolUses {
+		tool := l.findTool(c.ToolName)
+		if tool == nil || !tool.Sequential {
+			continue
+		}
+		serialPredecessors[i] = lastSerialCall[c.ToolName]
+		serialDone[i] = make(chan struct{})
+		lastSerialCall[c.ToolName] = serialDone[i]
+	}
 
 	// Do not let goroutine scheduling decide which siblings were "never
 	// started." Every worker first reaches this barrier. If cancellation won
@@ -948,6 +960,9 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 	for i, c := range toolUses {
 		go func(i int, c llm.Content) {
 			defer finished.Done()
+			if serialDone[i] != nil {
+				defer close(serialDone[i])
+			}
 			ready.Done()
 			<-start
 			if !run {
@@ -958,6 +973,9 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 					ToolResult: llm.TextContent(notExecutedToolResultText),
 				}
 				return
+			}
+			if serialPredecessors[i] != nil {
+				<-serialPredecessors[i]
 			}
 			toolResults[i] = l.executeToolCall(ctx, c)
 		}(i, c)

@@ -1483,11 +1483,8 @@ func TestResponsesServiceStallTimeout(t *testing.T) {
 }
 
 func TestResponsesServicePatchProfile(t *testing.T) {
-	if got := (&ResponsesService{ProviderName: "openai", Model: Model{SupportsApplyPatch: true}}).PatchProfile(); got != "codex_apply_patch" {
+	if got := (&ResponsesService{ProviderName: "openai"}).PatchProfile(); got != llm.PatchProfileNativeOpenAIApplyPatch {
 		t.Fatalf("capable OpenAI Responses profile = %q", got)
-	}
-	if got := (&ResponsesService{ProviderName: "openai"}).PatchProfile(); got != "flat" {
-		t.Fatalf("uncatalogued OpenAI Responses profile = %q", got)
 	}
 	if got := (&ResponsesService{ProviderName: "xai", Model: Model{SupportsApplyPatch: true}}).PatchProfile(); got != "flat" {
 		t.Fatalf("non-OpenAI Responses profile = %q", got)
@@ -1617,5 +1614,124 @@ func TestParseResponsesSSETimestamps(t *testing.T) {
 	}
 	if len(deltas) != 1 || deltas[0].Type != "text" || deltas[0].Text != "hello" || deltas[0].Index != 0 {
 		t.Fatalf("deltas = %+v", deltas)
+	}
+}
+
+func TestResponsesNativeApplyPatchToolWireFormat(t *testing.T) {
+	tool := fromLLMToolResponses(&llm.Tool{Name: "apply_patch", Type: "apply_patch", Description: "not sent"})
+	got, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"type":"apply_patch"}`; string(got) != want {
+		t.Fatalf("apply_patch tool = %s, want %s", got, want)
+	}
+}
+
+func TestResponsesApplyPatchNameAloneKeepsCustomProtocol(t *testing.T) {
+	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+		ID: "call_1", Type: llm.ContentTypeToolUse, ToolName: "apply_patch",
+		ToolInput: json.RawMessage(`{"input":"*** Begin Patch\n*** End Patch"}`),
+	}}})
+	if len(items) != 1 || items[0].Type != "custom_tool_call" {
+		t.Fatalf("unmarked apply_patch call = %+v", items)
+	}
+}
+
+func TestResponsesApplyPatchCallConversionAndReplay(t *testing.T) {
+	service := &ResponsesService{}
+	diff := "@@\n-old\n+new"
+	operation := &responsesPatchOperation{Type: "update_file", Path: "main.go", Diff: &diff}
+	response := service.toLLMResponseFromResponses(&responsesResponse{Output: []responsesOutputItem{{
+		ID: "apc_1", Type: "apply_patch_call", Status: "completed", CallID: "call_1", Operation: operation,
+	}}}, nil)
+	if len(response.Content) != 1 || response.Content[0].ToolName != "apply_patch" || response.Content[0].ID != "call_1" ||
+		response.Content[0].OpenAIResponsesToolCallType != "apply_patch_call" ||
+		response.Content[0].OpenAIResponsesToolCallStatus != "completed" {
+		t.Fatalf("content = %+v", response.Content)
+	}
+
+	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleAssistant, Content: response.Content})
+	if len(items) != 1 || items[0].Type != "apply_patch_call" || items[0].Status != "completed" ||
+		items[0].Operation == nil || items[0].Operation.Type != operation.Type || items[0].Operation.Path != operation.Path ||
+		items[0].Operation.Diff == nil || *items[0].Operation.Diff != diff {
+		t.Fatalf("replayed items = %+v", items)
+	}
+}
+
+func TestResponsesIncompleteApplyPatchCallIsNotExecuted(t *testing.T) {
+	service := &ResponsesService{}
+	diff := "+partial"
+	response := service.toLLMResponseFromResponses(&responsesResponse{Output: []responsesOutputItem{{
+		Type: "apply_patch_call", Status: "in_progress", CallID: "call_1",
+		Operation: &responsesPatchOperation{Type: "create_file", Path: "partial.txt", Diff: &diff},
+	}}}, nil)
+	if response.StopReason == llm.StopReasonToolUse {
+		t.Fatalf("in-progress apply_patch became a tool call: %+v", response.Content)
+	}
+	for _, content := range response.Content {
+		if content.Type == llm.ContentTypeToolUse {
+			t.Fatalf("in-progress apply_patch became a tool call: %+v", response.Content)
+		}
+	}
+}
+
+func TestResponsesApplyPatchCallOutputStatus(t *testing.T) {
+	for _, tt := range []struct {
+		failed bool
+		status string
+	}{
+		{status: "completed"},
+		{failed: true, status: "failed"},
+	} {
+		t.Run(tt.status, func(t *testing.T) {
+			toolCallTypes := make(map[string]string)
+			fromLLMMessageResponsesWithToolCallTypes(llm.Message{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+				ID: "call_1", Type: llm.ContentTypeToolUse, ToolName: "apply_patch",
+				ToolInput: json.RawMessage(`{"type":"delete_file","path":"old.txt"}`), OpenAIResponsesToolCallType: "apply_patch_call",
+				OpenAIResponsesToolCallStatus: "completed",
+			}}}, toolCallTypes)
+			items := fromLLMMessageResponsesWithToolCallTypes(llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{
+				Type: llm.ContentTypeToolResult, ToolUseID: "call_1", ToolError: tt.failed, ToolResult: llm.TextContent("result"),
+			}}}, toolCallTypes)
+			if len(items) != 1 || items[0].Type != "apply_patch_call_output" || items[0].CallID != "call_1" || items[0].Status != tt.status || items[0].Output != "result" {
+				t.Fatalf("failed=%v items = %+v", tt.failed, items)
+			}
+		})
+	}
+}
+
+func TestParseResponsesSSEApplyPatchCall(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"apc_1","type":"apply_patch_call","status":"completed","call_id":"call_1","operation":{"type":"create_file","path":"new.txt","diff":"+hello"}}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		``,
+	}, "\n")
+	response, err := parseResponsesSSEStream(strings.NewReader(stream), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 1 || response.Output[0].Type != "apply_patch_call" || response.Output[0].Operation == nil || response.Output[0].Operation.Type != "create_file" {
+		t.Fatalf("output = %+v", response.Output)
+	}
+}
+
+func TestResponsesApplyPatchReplayPreservesEmptyRequiredDiff(t *testing.T) {
+	empty := ""
+	item := responsesInputItem{
+		Type:      "apply_patch_call",
+		CallID:    "call_1",
+		Status:    "completed",
+		Operation: &responsesPatchOperation{Type: "create_file", Path: "empty.txt", Diff: &empty},
+	}
+	got, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"type":"apply_patch_call","call_id":"call_1","status":"completed","operation":{"type":"create_file","path":"empty.txt","diff":""}}`; string(got) != want {
+		t.Fatalf("apply_patch replay = %s, want %s", got, want)
 	}
 }

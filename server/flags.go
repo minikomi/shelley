@@ -31,11 +31,10 @@ var FlagPatchSimple = featureflags.Register(featureflags.Flag{
 	Default:     false,
 })
 
-// FlagPatchOpenAIRaw lets capable direct OpenAI Responses models use the raw,
-// grammar-constrained Codex apply_patch tool. It overrides patch-simple when
-// both flags are enabled and has no effect on unsupported providers.
+// FlagPatchOpenAIRaw makes OpenAI Responses services use the native apply_patch
+// tool. It overrides patch-simple when both flags are enabled.
 var FlagPatchOpenAIRaw = featureflags.Register(featureflags.Flag{
 	Name:        "patch-openai-raw",
-	Description: "Use raw grammar-constrained apply_patch for capable direct OpenAI Responses models, overriding the full or simplified nested patch schema.",
+	Description: "Use the native OpenAI Responses apply_patch tool. Enable only when the selected endpoint supports tools with type apply_patch.",
 	Default:     false,
 })
