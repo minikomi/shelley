@@ -95,6 +95,7 @@ export interface LLMContent {
   ToolUseStartTime?: string | null;
   ToolUseEndTime?: string | null;
   Display?: unknown;
+  OpenAIResponsesToolCallType?: string;
   Cache?: boolean;
   // Web search result fields
   Title?: string;

@@ -2586,6 +2586,16 @@ diffs-container {
   color: var(--error-text);
 }
 
+.patch-file-error {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--error-text);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+}
+
 /* Screenshot Tool */
 .screenshot-tool {
   background: var(--gray-100);

@@ -27,6 +27,18 @@ export interface CoalescedItem {
   toolEndTime?: string | null;
   hasResult?: boolean;
   display?: unknown;
+  toolCalls?: CoalescedToolCall[];
+}
+
+export interface CoalescedToolCall {
+  toolUseId?: string;
+  toolInput?: unknown;
+  toolResult?: LLMContent[];
+  toolError?: boolean;
+  toolStartTime?: string | null;
+  toolEndTime?: string | null;
+  hasResult?: boolean;
+  display?: unknown;
 }
 
 export function coalesceMessages(messages: Message[]): CoalescedItem[] {
@@ -196,11 +208,51 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
 
           const wasTruncated = llmData.ExcludedFromContext === true;
 
-          toolUses.forEach((toolUse) => {
+          const makeToolCall = (toolUse: LLMContent): CoalescedToolCall => {
             const resultData = toolUse.ID ? toolResultMap[toolUse.ID] : undefined;
             const serverResult = toolUse.ID ? serverToolResults[toolUse.ID] : undefined;
             const displayData = toolUse.ID ? displayDataMap[toolUse.ID] : undefined;
             const isServerSideToolUse = toolUse.Type === 7;
+            return {
+              toolUseId: toolUse.ID,
+              toolInput: toolUse.ToolInput,
+              toolResult: resultData?.result || serverResult,
+              toolError: resultData?.error || (wasTruncated && !resultData && !serverResult),
+              toolStartTime: resultData?.startTime,
+              toolEndTime: resultData?.endTime,
+              hasResult: !!resultData || !!serverResult || wasTruncated || isServerSideToolUse,
+              display: displayData,
+            };
+          };
+
+          for (let index = 0; index < toolUses.length; index++) {
+            const toolUse = toolUses[index];
+            const call = makeToolCall(toolUse);
+            if (toolUse.OpenAIResponsesToolCallType === "apply_patch_call") {
+              const toolCalls = [call];
+              while (
+                index + 1 < toolUses.length &&
+                toolUses[index + 1].OpenAIResponsesToolCallType === "apply_patch_call"
+              ) {
+                index++;
+                toolCalls.push(makeToolCall(toolUses[index]));
+              }
+              if (toolCalls.length > 1) {
+                items.push({
+                  type: "tool",
+                  generation: message.generation,
+                  carried,
+                  sourceSequenceID: message.sequence_id,
+                  anchorKey: `tool:${toolCalls[0].toolUseId}`,
+                  toolUseId: toolCalls[0].toolUseId,
+                  toolName: "apply_patch",
+                  toolError: toolCalls.some((item) => item.toolError),
+                  hasResult: toolCalls.every((item) => item.hasResult),
+                  toolCalls,
+                });
+                continue;
+              }
+            }
             items.push({
               type: "tool",
               generation: message.generation,
@@ -209,17 +261,17 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
               // arrives; the tool begins at its assistant invocation.
               sourceSequenceID: message.sequence_id,
               anchorKey: `tool:${toolUse.ID || `${message.message_id}-${toolUse.ToolName || "unknown"}`}`,
-              toolUseId: toolUse.ID,
+              toolUseId: call.toolUseId,
               toolName: toolUse.ToolName,
-              toolInput: toolUse.ToolInput,
-              toolResult: resultData?.result || serverResult,
-              toolError: resultData?.error || (wasTruncated && !resultData && !serverResult),
-              toolStartTime: resultData?.startTime,
-              toolEndTime: resultData?.endTime,
-              hasResult: !!resultData || !!serverResult || wasTruncated || isServerSideToolUse,
-              display: displayData,
+              toolInput: call.toolInput,
+              toolResult: call.toolResult,
+              toolError: call.toolError,
+              toolStartTime: call.toolStartTime,
+              toolEndTime: call.toolEndTime,
+              hasResult: call.hasResult,
+              display: call.display,
             });
-          });
+          }
 
           if (needsMessageItem && textFollowsTools) {
             items.push(messageItem(message, carried));

@@ -23,16 +23,16 @@
   <div class="patch-tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
     <div class="patch-tool-header" @click="isExpanded = !isExpanded">
       <div class="patch-tool-summary">
-        <span class="patch-tool-emoji" :class="{ running: isRunning }">🖋️</span>
+        <span class="patch-tool-emoji" :class="{ running }">🖋️</span>
         <span class="patch-tool-filename" :title="filename">{{ filename }}</span>
         <ToolStatusIcon
-          v-if="isComplete && hasError"
+          v-if="isComplete && hasAnyError"
           state="error"
           class="patch-tool-error"
           label="Patch failed"
         />
         <ToolStatusIcon
-          v-if="isComplete && !hasError"
+          v-if="isComplete && !hasAnyError"
           state="ok"
           class="patch-tool-success"
           label="Patch applied"
@@ -100,8 +100,32 @@
     </div>
 
     <div v-if="isExpanded" class="patch-tool-details">
-      <div v-if="isComplete && !hasError && hasDiff" class="patch-tool-section">
-        <div v-if="patchFiles.length > 1" class="patch-tool-diffs-container patch-tool-file-list">
+      <div v-if="isComplete && (hasDiff || groupedRows.length)" class="patch-tool-section">
+        <div v-if="isGrouped" class="patch-tool-diffs-container patch-tool-file-list">
+          <template v-for="row in groupedRows" :key="row.key">
+            <PatchFileDiff
+              v-if="row.diff"
+              :path="row.path"
+              :diff="row.diff"
+              :status="row.status"
+              :additions="row.additions"
+              :deletions="row.deletions"
+              :side-by-side="sideBySide"
+              :theme-type="themeType"
+            />
+            <article v-else class="patch-file-diff patch-file-diff-error">
+              <header class="patch-file-diff-header">
+                <span class="patch-file-status patch-file-status-deleted" aria-hidden="true"></span>
+                <code :title="row.path">{{ row.path }}</code>
+                <span class="patch-file-error">{{ row.error || "Patch failed" }}</span>
+              </header>
+            </article>
+          </template>
+        </div>
+        <div
+          v-else-if="patchFiles.length > 1"
+          class="patch-tool-diffs-container patch-tool-file-list"
+        >
           <PatchFileDiff
             v-for="file in patchFiles"
             :key="file.path"
@@ -134,12 +158,14 @@
         </div>
       </div>
 
-      <div v-if="isComplete && hasError" class="patch-tool-section">
+      <div v-if="isComplete && hasAnyError && !isGrouped" class="patch-tool-section">
         <pre class="patch-tool-error-message">{{ errorMessage || "Patch failed" }}</pre>
       </div>
 
-      <div v-if="isRunning" class="patch-tool-section">
-        <div class="patch-tool-label">Applying patch...</div>
+      <div v-if="running" class="patch-tool-section">
+        <div class="patch-tool-label">
+          {{ isGrouped ? "Applying patches..." : "Applying patch..." }}
+        </div>
       </div>
     </div>
   </div>
@@ -148,6 +174,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from "vue";
 import type { LLMContent } from "../../../types";
+import type { CoalescedToolCall } from "../coalesce";
 import type {
   FileContents,
   SupportedLanguages,
@@ -176,11 +203,13 @@ interface PatchDisplayData {
 }
 
 interface PatchFile {
+  key: string;
   path: string;
   diff: string;
   status: "added" | "deleted" | "modified";
   additions: number;
   deletions: number;
+  error?: string;
 }
 
 // Map file extension to language for syntax highlighting
@@ -246,6 +275,7 @@ const props = defineProps<{
   hasError?: boolean;
   executionTime?: string;
   display?: unknown;
+  groupedTools?: CoalescedToolCall[];
   onCommentTextChange?: (text: string) => void;
 }>();
 
@@ -308,6 +338,14 @@ const path = computed(() => {
   }
   return typeof ti === "string" ? ti : "";
 });
+const groupedTools = computed(() => props.groupedTools || []);
+const isGrouped = computed(() => groupedTools.value.length > 1);
+const running = computed(() =>
+  isGrouped.value ? groupedTools.value.some((call) => !call.hasResult) : !!props.isRunning,
+);
+const hasAnyError = computed(() =>
+  isGrouped.value ? groupedTools.value.some((call) => call.toolError) : !!props.hasError,
+);
 
 const displayData = computed<PatchDisplayData | null>(() => {
   const d = props.display;
@@ -323,13 +361,18 @@ const errorMessage = computed(() =>
     : "",
 );
 
-const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
+const isComplete = computed(() =>
+  isGrouped.value
+    ? groupedTools.value.every((call) => call.hasResult)
+    : !props.isRunning && props.toolResult !== undefined,
+);
 
 const hasDiff = computed(
   () =>
-    displayData.value != null &&
-    (displayData.value.diff ||
-      (displayData.value.oldContent != null && displayData.value.newContent != null)),
+    groupedRows.value.some((row) => row.diff) ||
+    (displayData.value != null &&
+      (displayData.value.diff ||
+        (displayData.value.oldContent != null && displayData.value.newContent != null))),
 );
 
 function parsePatchFiles(diff: string): PatchFile[] {
@@ -344,6 +387,7 @@ function parsePatchFiles(diff: string): PatchFile[] {
       oldPath === "/dev/null" ? "added" : newPath === "/dev/null" ? "deleted" : "modified";
     const lines = fileDiff.split("\n");
     return {
+      key: `${index}:${status === "deleted" ? oldPath : newPath}`,
       path: status === "deleted" ? oldPath : newPath,
       diff: fileDiff,
       status,
@@ -354,14 +398,52 @@ function parsePatchFiles(diff: string): PatchFile[] {
 }
 
 const patchFiles = computed(() => parsePatchFiles(displayData.value?.diff || ""));
+const groupedRows = computed<PatchFile[]>(() =>
+  groupedTools.value.map((call, index) => {
+    const display =
+      call.display && typeof call.display === "object" && "path" in call.display
+        ? (call.display as PatchDisplayData)
+        : null;
+    const parsed = display?.diff ? parsePatchFiles(display.diff)[0] : undefined;
+    const input =
+      call.toolInput && typeof call.toolInput === "object" && "path" in call.toolInput
+        ? (call.toolInput as { path?: unknown })
+        : null;
+    const resultText = call.toolResult?.find((result) => result.Type === 2)?.Text;
+    return {
+      key: call.toolUseId || `${index}`,
+      path:
+        parsed?.path ||
+        display?.path ||
+        (typeof input?.path === "string" ? input.path : `patch ${index + 1}`),
+      diff: parsed?.diff || "",
+      status: parsed?.status || "modified",
+      additions: parsed?.additions || 0,
+      deletions: parsed?.deletions || 0,
+      error: call.toolError ? resultText || "Patch failed" : undefined,
+    };
+  }),
+);
+const groupedPaths = computed(() => new Set(groupedRows.value.map((row) => row.path)));
+const groupedSuccessCount = computed(
+  () => groupedTools.value.filter((call) => call.hasResult && !call.toolError).length,
+);
 const filename = computed(() =>
-  patchFiles.value.length > 1
-    ? `${patchFiles.value.length} files changed`
-    : displayData.value?.path || path.value || "patch",
+  isGrouped.value
+    ? hasAnyError.value
+      ? `${groupedSuccessCount.value} of ${groupedTools.value.length} patches applied`
+      : groupedPaths.value.size === 1
+        ? `${groupedTools.value.length} changes in ${groupedRows.value[0]?.path || "one file"}`
+        : groupedPaths.value.size === groupedTools.value.length
+          ? `${groupedPaths.value.size} files changed`
+          : `${groupedTools.value.length} changes across ${groupedPaths.value.size} files`
+    : patchFiles.value.length > 1
+      ? `${patchFiles.value.length} files changed`
+      : displayData.value?.path || path.value || "patch",
 );
 
 const showDiffToggle = computed(
-  () => !isMobile.value && isExpanded.value && isComplete.value && !props.hasError && hasDiff.value,
+  () => !isMobile.value && isExpanded.value && isComplete.value && hasDiff.value,
 );
 
 // Path to open in the editor: the display data's path (absolutized by the patch
@@ -369,7 +451,7 @@ const showDiffToggle = computed(
 // passed, so possibly relative. Not the "patch" placeholder `filename` uses
 // when neither is known.
 const editorPath = computed(() =>
-  patchFiles.value.length > 1 ? "" : displayData.value?.path || path.value,
+  isGrouped.value || patchFiles.value.length > 1 ? "" : displayData.value?.path || path.value,
 );
 
 // "Open in editor" opens that file in the standalone Monaco editor modal (the
@@ -456,7 +538,8 @@ const { rendered } = useFileDiffInstance(diffHostEl, () => {
     !nearViewport.value ||
     !isExpanded.value ||
     !isComplete.value ||
-    props.hasError ||
+    hasAnyError.value ||
+    isGrouped.value ||
     !hasDiff.value
   ) {
     return null;

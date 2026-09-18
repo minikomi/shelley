@@ -3,7 +3,13 @@
      falling back to a generic running/completed card. Preserves the
      tool-running / tool-result-details class + testid contract. -->
 <template>
-  <div v-if="toolUseId" class="toc-tool-anchor" :data-tool-use-id="toolUseId" aria-hidden="true" />
+  <div
+    v-for="id in toolUseIds"
+    :key="id"
+    class="toc-tool-anchor"
+    :data-tool-use-id="id"
+    aria-hidden="true"
+  />
   <component
     :is="toolComponent"
     v-if="toolComponent && mountSpecializedCard"
@@ -112,6 +118,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { LLMContent } from "../../types";
+import type { CoalescedToolCall } from "./coalesce";
 import { useNearViewport } from "../composables/nearViewport";
 import { usePerfLifecycle } from "../composables/perfLifecycle";
 import { useToolStreamingOutput } from "../composables/toolProgress";
@@ -146,6 +153,7 @@ const props = defineProps<{
   display?: unknown;
   onCommentTextChange?: (text: string) => void;
   toolUseId?: string;
+  toolCalls?: CoalescedToolCall[];
 }>();
 
 // Completed inline specialized cards are the dominant mount cost in very large
@@ -205,6 +213,13 @@ const executionTime = computed(() => {
 });
 
 const toolComponent = computed(() => TOOL_COMPONENTS[props.toolName] || null);
+const toolUseIds = computed(() =>
+  props.toolCalls?.length
+    ? props.toolCalls.flatMap((call) => (call.toolUseId ? [call.toolUseId] : []))
+    : props.toolUseId
+      ? [props.toolUseId]
+      : [],
+);
 
 const toolComponentProps = computed<Record<string, unknown>>(() => {
   const base: Record<string, unknown> = {
@@ -217,6 +232,9 @@ const toolComponentProps = computed<Record<string, unknown>>(() => {
   };
   if (props.toolName === "patch" && props.onCommentTextChange) {
     base.onCommentTextChange = props.onCommentTextChange;
+  }
+  if (props.toolName === "apply_patch" && props.toolCalls?.length) {
+    base.groupedTools = props.toolCalls;
   }
   if (streamingOutput.value !== undefined) {
     base.streamingOutput = streamingOutput.value;

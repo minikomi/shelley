@@ -1314,9 +1314,11 @@ function collectChunkTargets(node: RenderNode, index: number, into: ChunkTargetI
       }
       break;
     case "tool-call":
-      if (node.item.toolUseId) {
-        into.byTool.set(node.item.toolUseId, index);
-        into.byToolFrag.set(fragPrefix(node.item.toolUseId), index);
+      for (const id of node.item.toolCalls?.flatMap((call) =>
+        call.toolUseId ? [call.toolUseId] : [],
+      ) || (node.item.toolUseId ? [node.item.toolUseId] : [])) {
+        into.byTool.set(id, index);
+        into.byToolFrag.set(fragPrefix(id), index);
       }
       break;
     case "carried-band":

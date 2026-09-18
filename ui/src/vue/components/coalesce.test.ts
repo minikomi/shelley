@@ -37,6 +37,15 @@ function thinking(t: string): LLMContent {
 function toolUse(id: string): LLMContent {
   return { ID: id, Type: 5, ToolName: "bash", ToolInput: { command: "true" } } as LLMContent;
 }
+function nativePatch(id: string, path: string): LLMContent {
+  return {
+    ID: id,
+    Type: 5,
+    ToolName: "apply_patch",
+    ToolInput: { type: "update_file", path, diff: "@@\n-old\n+new" },
+    OpenAIResponsesToolCallType: "apply_patch_call",
+  } as LLMContent;
+}
 function serverToolUse(id: string): LLMContent {
   return { ID: id, Type: 7, ToolName: "web_search", ToolInput: {} } as LLMContent;
 }
@@ -81,6 +90,43 @@ function serverToolUse(id: string): LLMContent {
 {
   const items = coalesceMessages([agentMessage([toolUse("t4")])]);
   check("tool only -> tool item only", items.length === 1 && items[0].type === "tool", items);
+}
+
+// --- Adjacent native apply_patch calls render as one visual group ---
+{
+  const items = coalesceMessages([
+    agentMessage([
+      nativePatch("p1", "one.txt"),
+      nativePatch("p2", "two.txt"),
+      toolUse("b1"),
+      nativePatch("p3", "three.txt"),
+    ]),
+  ]);
+  check(
+    "contiguous native patches -> one group before unrelated tool",
+    items.length === 3 &&
+      items[0].toolCalls?.map((call) => call.toolUseId).join(",") === "p1,p2" &&
+      items[1].toolUseId === "b1" &&
+      items[2].toolUseId === "p3",
+    items,
+  );
+}
+
+// --- Custom apply_patch calls keep their existing independent rendering ---
+{
+  const custom = {
+    ID: "custom1",
+    Type: 5,
+    ToolName: "apply_patch",
+    ToolInput: { input: "*** Begin Patch" },
+    OpenAIResponsesToolCallType: "custom_tool_call",
+  } as LLMContent;
+  const items = coalesceMessages([agentMessage([custom, { ...custom, ID: "custom2" }])]);
+  check(
+    "custom apply_patch calls are not grouped",
+    items.length === 2 && items.every((item) => !item.toolCalls),
+    items,
+  );
 }
 
 // --- Text written after the tool calls renders after them ---
