@@ -3207,3 +3207,87 @@ func TestExecuteToolCallsAbandonsContextIgnoringTool(t *testing.T) {
 		t.Fatalf("late tool result was persisted: %+v", recordedMessages)
 	}
 }
+
+func TestExecuteToolCallsRunsSequentialToolsInOutputOrder(t *testing.T) {
+	started := make(chan string, 3)
+	releaseFirst := make(chan struct{})
+	sequentialTool := &llm.Tool{
+		Name:       "sequential_test",
+		Sequential: true,
+		Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
+			var req struct{ Name string }
+			if err := json.Unmarshal(input, &req); err != nil {
+				return llm.ErrorToolOut(err)
+			}
+			started <- req.Name
+			if req.Name == "first" {
+				select {
+				case <-releaseFirst:
+				case <-ctx.Done():
+					return llm.ErrorToolOut(ctx.Err())
+				}
+			}
+			return llm.ToolOut{LLMContent: llm.TextContent(req.Name)}
+		},
+	}
+	parallelTool := &llm.Tool{
+		Name: "parallel_test",
+		Run: func(context.Context, json.RawMessage) llm.ToolOut {
+			started <- "parallel"
+			return llm.ToolOut{LLMContent: llm.TextContent("parallel")}
+		},
+	}
+	loop := NewLoop(Config{
+		Tools: []*llm.Tool{sequentialTool, parallelTool},
+		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error {
+			return nil
+		},
+	})
+	content := []llm.Content{
+		{ID: "first", Type: llm.ContentTypeToolUse, ToolName: sequentialTool.Name, ToolInput: json.RawMessage(`{"Name":"first"}`)},
+		{ID: "parallel", Type: llm.ContentTypeToolUse, ToolName: parallelTool.Name, ToolInput: json.RawMessage(`{}`)},
+		{ID: "second", Type: llm.ContentTypeToolUse, ToolName: sequentialTool.Name, ToolInput: json.RawMessage(`{"Name":"second"}`)},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- loop.executeToolCalls(ctx, content) }()
+
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case name := <-started:
+			seen[name] = true
+		case err := <-done:
+			close(releaseFirst)
+			t.Fatalf("executeToolCalls returned early: %v", err)
+		case <-ctx.Done():
+			close(releaseFirst)
+			t.Fatal("first sequential and unrelated calls did not start")
+		}
+	}
+	if !seen["first"] || !seen["parallel"] {
+		close(releaseFirst)
+		t.Fatalf("calls started before release = %v, want first and parallel", seen)
+	}
+	select {
+	case name := <-started:
+		close(releaseFirst)
+		t.Fatalf("%q started before the first sequential call completed", name)
+	default:
+	}
+
+	close(releaseFirst)
+	select {
+	case name := <-started:
+		if name != "second" {
+			t.Fatalf("next call = %q, want second", name)
+		}
+	case <-ctx.Done():
+		t.Fatal("second sequential call did not start")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("executeToolCalls failed: %v", err)
+	}
+}

@@ -1,6 +1,7 @@
 package claudetool
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1208,5 +1209,123 @@ func TestSimplePatchRejectsOverlaps(t *testing.T) {
 	result := tool.Run(t.Context(), json.RawMessage(`{"path":"simple.txt","edits":[{"oldText":"abcd","newText":"A"},{"oldText":"cdef","newText":"C"}]}`))
 	if result.Error == nil || !strings.Contains(result.Error.Error(), "overlapping edits") {
 		t.Fatalf("error = %v", result.Error)
+	}
+}
+func nativeOpenAIApplyPatchDiff(diff string) *string {
+	return &diff
+}
+
+func TestNativeOpenAIApplyPatchToolAndExecution(t *testing.T) {
+	tempDir := t.TempDir()
+	tool := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "native_openai_apply_patch"}).Tool()
+	if tool.Name != ApplyPatchName || tool.Type != ApplyPatchName || !tool.Sequential {
+		t.Fatalf("tool = name %q type %q sequential %v", tool.Name, tool.Type, tool.Sequential)
+	}
+	if tool.CustomGrammar != "" || tool.InputSchema != nil {
+		t.Fatalf("native tool unexpectedly has grammar %q or schema %s", tool.CustomGrammar, tool.InputSchema)
+	}
+
+	run := func(operation nativeOpenAIApplyPatchOperation) llm.ToolOut {
+		raw, err := json.Marshal(operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tool.Run(context.Background(), raw)
+	}
+	if result := run(nativeOpenAIApplyPatchOperation{Type: "create_file", Path: "nested/edit.txt", Diff: nativeOpenAIApplyPatchDiff("+before\n+keep\n+")}); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	result := run(nativeOpenAIApplyPatchOperation{Type: "update_file", Path: "nested/edit.txt", Diff: nativeOpenAIApplyPatchDiff("@@\n-before\n+after\n keep")})
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	path := filepath.Join(tempDir, "nested", "edit.txt")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "after\nkeep\n"; string(content) != want {
+		t.Fatalf("updated content = %q, want %q", content, want)
+	}
+	if display, ok := result.Display.(PatchDisplayData); !ok || display.Path != path || display.Diff == "" {
+		t.Fatalf("display = %#v", result.Display)
+	}
+	if result := run(nativeOpenAIApplyPatchOperation{Type: "delete_file", Path: "nested/edit.txt"}); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted file stat error = %v", err)
+	}
+}
+
+func TestNativeOpenAIApplyPatchValidatesOperation(t *testing.T) {
+	tool := (&PatchTool{WorkingDir: NewMutableWorkingDir(t.TempDir()), Profile: "native_openai_apply_patch"}).Tool()
+	for _, operation := range []nativeOpenAIApplyPatchOperation{
+		{Type: "create_file", Path: "missing-diff"},
+		{Type: "delete_file", Path: "delete", Diff: nativeOpenAIApplyPatchDiff("+unexpected")},
+		{Type: "rename_file", Path: "rename"},
+	} {
+		raw, err := json.Marshal(operation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result := tool.Run(context.Background(), raw); result.Error == nil {
+			t.Fatalf("operation %+v unexpectedly succeeded", operation)
+		}
+	}
+}
+
+func TestNativeOpenAIApplyPatchV4AUpdates(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		old  string
+		diff string
+		want string
+	}{
+		{
+			name: "sequential repeated context",
+			old:  "target\nmiddle\ntarget\n",
+			diff: "@@\n-target\n+first\n@@\n-target\n+second",
+			want: "first\nmiddle\nsecond\n",
+		},
+		{
+			name: "anchor and whitespace tolerant context",
+			old:  "target\nmarker\ntarget   \n",
+			diff: "@@ marker\n-target\n+changed",
+			want: "target\nmarker\nchanged\n",
+		},
+		{
+			name: "insertion-only sections",
+			old:  "before\nanchor\nafter\n",
+			diff: "@@ anchor\n+inserted\n@@\n+at eof\n*** End of File",
+			want: "before\nanchor\ninserted\nafter\nat eof\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			path := filepath.Join(tempDir, "edit.txt")
+			if err := os.WriteFile(path, []byte(tt.old), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tool := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "native_openai_apply_patch"}).Tool()
+			raw, err := json.Marshal(nativeOpenAIApplyPatchOperation{
+				Type: "update_file",
+				Path: "edit.txt",
+				Diff: nativeOpenAIApplyPatchDiff(tt.diff),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := tool.Run(context.Background(), raw); result.Error != nil {
+				t.Fatal(result.Error)
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(content) != tt.want {
+				t.Fatalf("content = %q, want %q", content, tt.want)
+			}
+		})
 	}
 }

@@ -103,11 +103,17 @@ type PatchProfiler interface {
 	PatchProfile() string
 }
 
+const (
+	PatchProfileFlat                   = "flat"
+	PatchProfileCodexApplyPatch        = "codex_apply_patch"
+	PatchProfileNativeOpenAIApplyPatch = "native_openai_apply_patch"
+)
+
 func PatchProfile(svc Service) string {
 	if profiler, ok := svc.(PatchProfiler); ok {
 		return profiler.PatchProfile()
 	}
-	return "flat"
+	return PatchProfileFlat
 }
 
 // DefaultReasoner is implemented by services that can report the reasoning
@@ -302,8 +308,7 @@ type SystemContent struct {
 // Tool represents a tool available to an LLM.
 type Tool struct {
 	Name string
-	// Type is used by the text editor tool; see
-	// https://docs.anthropic.com/en/docs/build-with-claude/tool-use/text-editor-tool
+	// Type selects a provider-native tool representation when non-empty.
 	Type        string
 	Description string
 	InputSchema json.RawMessage
@@ -314,6 +319,9 @@ type Tool struct {
 	EndsTurn bool
 	// Cache indicates whether to use prompt caching for this tool
 	Cache bool
+	// Sequential runs sibling calls to this tool in model output order while
+	// allowing unrelated tools to run concurrently.
+	Sequential bool
 
 	// ServerSide marks tools that are executed server-side by the LLM provider
 	// (e.g., Anthropic web search). These tools are provider-specific and must
@@ -322,7 +330,7 @@ type Tool struct {
 
 	// The Run function is automatically called when the tool is used.
 	// Run functions may be called concurrently with adjacent tools, including
-	// other calls to the same tool.
+	// other calls to the same tool, unless Sequential is set.
 	// The input to Run function is the input to the tool, as provided by Claude, in compliance with the input schema.
 	// The outputs from Run will be sent back to Claude.
 	// If you do not want to respond to the tool call request from Claude, return ErrDoNotRespond.
@@ -403,6 +411,12 @@ type Content struct {
 	Signature string
 
 	OpenAIResponsesReasoning *OpenAIResponsesReasoningMetadata `json:",omitempty"`
+	// OpenAIResponsesToolCallType preserves provider-native call framing for
+	// stateless Responses replay (for example, apply_patch_call).
+	OpenAIResponsesToolCallType string `json:",omitempty"`
+	// OpenAIResponsesToolCallStatus preserves required provider-native status
+	// fields when replaying a Responses tool call.
+	OpenAIResponsesToolCallStatus string `json:",omitempty"`
 
 	// for tool_use
 	ToolName  string

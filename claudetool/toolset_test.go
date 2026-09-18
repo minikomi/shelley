@@ -1,6 +1,7 @@
 package claudetool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -726,4 +727,43 @@ func TestNewToolSetRawFlagDoesNotOverrideUnsupportedService(t *testing.T) {
 		}
 	}
 	t.Fatal("patch tool not found")
+}
+
+type reportedPatchService struct {
+	mockService
+	profile string
+}
+
+func (s *reportedPatchService) Provider() string     { return "openai" }
+func (s *reportedPatchService) PatchProfile() string { return s.profile }
+
+type reportedPatchProvider struct{ profile string }
+
+func (p *reportedPatchProvider) GetService(string) (llm.Service, error) {
+	return &reportedPatchService{profile: p.profile}, nil
+}
+func (*reportedPatchProvider) GetAvailableModels() []string { return []string{"test"} }
+func (p *reportedPatchProvider) GetWorkhorseService(modelID string) (llm.Service, error) {
+	return p.GetService(modelID)
+}
+
+func TestNewToolSetUsesReportedApplyPatchProfile(t *testing.T) {
+	ts := NewToolSet(context.Background(), ToolSetConfig{
+		LLMProvider:           &reportedPatchProvider{profile: llm.PatchProfileNativeOpenAIApplyPatch},
+		ModelID:               "test",
+		PatchOpenAIRawEnabled: func() bool { return true },
+	})
+	var patch *llm.Tool
+	for _, tool := range ts.Tools() {
+		if tool.Name == ApplyPatchName {
+			patch = tool
+			break
+		}
+	}
+	if patch == nil {
+		t.Fatal("apply_patch tool not found")
+	}
+	if patch.Type != ApplyPatchName || patch.CustomGrammar != "" || !patch.Sequential {
+		t.Fatalf("native tool = %+v", patch)
+	}
 }

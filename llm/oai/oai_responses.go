@@ -129,17 +129,19 @@ type responsesText struct {
 }
 
 type responsesInputItem struct {
-	ID               string              `json:"id,omitempty"`                // for replayed output items
-	Type             string              `json:"type"`                        // "message", "reasoning", "function_call", "custom_tool_call", outputs
-	Role             string              `json:"role,omitempty"`              // for messages: "user", "assistant"
-	Content          []responsesContent  `json:"content,omitempty"`           // for messages
-	CallID           string              `json:"call_id,omitempty"`           // for function_call and function_call_output
-	Name             string              `json:"name,omitempty"`              // for function_call
-	Arguments        string              `json:"arguments,omitempty"`         // for function_call
-	Input            string              `json:"input,omitempty"`             // for custom_tool_call
-	Output           string              `json:"output,omitempty"`            // for tool outputs
-	Summary          *[]responsesSummary `json:"summary,omitempty"`           // for reasoning; pointer preserves an empty array
-	EncryptedContent string              `json:"encrypted_content,omitempty"` // for reasoning
+	ID               string                   `json:"id,omitempty"`                // for replayed output items
+	Type             string                   `json:"type"`                        // "message", "reasoning", "function_call", "custom_tool_call", outputs
+	Role             string                   `json:"role,omitempty"`              // for messages: "user", "assistant"
+	Content          []responsesContent       `json:"content,omitempty"`           // for messages
+	CallID           string                   `json:"call_id,omitempty"`           // for function_call and function_call_output
+	Name             string                   `json:"name,omitempty"`              // for function_call
+	Arguments        string                   `json:"arguments,omitempty"`         // for function_call
+	Input            string                   `json:"input,omitempty"`             // for custom_tool_call
+	Output           string                   `json:"output,omitempty"`            // for tool outputs
+	Status           string                   `json:"status,omitempty"`            // for apply_patch calls and outputs
+	Operation        *responsesPatchOperation `json:"operation,omitempty"`         // for apply_patch_call
+	Summary          *[]responsesSummary      `json:"summary,omitempty"`           // for reasoning; pointer preserves an empty array
+	EncryptedContent string                   `json:"encrypted_content,omitempty"` // for reasoning
 }
 
 type responsesContent struct {
@@ -180,18 +182,19 @@ type responsesResponse struct {
 }
 
 type responsesOutputItem struct {
-	ID               string             `json:"id"`
-	Type             string             `json:"type"`           // "message", "reasoning", "function_call", "web_search_call"
-	Role             string             `json:"role,omitempty"` // for messages: "assistant"
-	Status           string             `json:"status,omitempty"`
-	Content          []responsesContent `json:"content,omitempty"`           // for messages
-	CallID           string             `json:"call_id,omitempty"`           // for function_call
-	Name             string             `json:"name,omitempty"`              // for function_call
-	Arguments        string             `json:"arguments,omitempty"`         // for function_call
-	Input            string             `json:"input,omitempty"`             // for custom_tool_call
-	Summary          []responsesSummary `json:"summary,omitempty"`           // for reasoning
-	EncryptedContent string             `json:"encrypted_content,omitempty"` // for reasoning
-	Action           *responsesAction   `json:"action,omitempty"`            // for web_search_call (queries)
+	ID               string                   `json:"id"`
+	Type             string                   `json:"type"`           // "message", "reasoning", "function_call", "web_search_call"
+	Role             string                   `json:"role,omitempty"` // for messages: "assistant"
+	Status           string                   `json:"status,omitempty"`
+	Content          []responsesContent       `json:"content,omitempty"`           // for messages
+	CallID           string                   `json:"call_id,omitempty"`           // for function_call
+	Name             string                   `json:"name,omitempty"`              // for function_call
+	Arguments        string                   `json:"arguments,omitempty"`         // for function_call
+	Input            string                   `json:"input,omitempty"`             // for custom_tool_call
+	Operation        *responsesPatchOperation `json:"operation,omitempty"`         // for apply_patch_call
+	Summary          []responsesSummary       `json:"summary,omitempty"`           // for reasoning
+	EncryptedContent string                   `json:"encrypted_content,omitempty"` // for reasoning
+	Action           *responsesAction         `json:"action,omitempty"`            // for web_search_call (queries)
 }
 
 // responsesAction is the action descriptor for server-side tool calls like
@@ -199,6 +202,12 @@ type responsesOutputItem struct {
 type responsesAction struct {
 	Type    string   `json:"type,omitempty"`
 	Queries []string `json:"queries,omitempty"`
+}
+
+type responsesPatchOperation struct {
+	Type string  `json:"type"`
+	Path string  `json:"path"`
+	Diff *string `json:"diff,omitempty"`
 }
 
 // responsesSummary is an item in a reasoning output's summary array.
@@ -233,6 +242,10 @@ type responsesError struct {
 
 // fromLLMMessageResponses converts llm.Message to Responses API input items
 func fromLLMMessageResponses(msg llm.Message) []responsesInputItem {
+	return fromLLMMessageResponsesWithToolCallTypes(msg, make(map[string]string))
+}
+
+func fromLLMMessageResponsesWithToolCallTypes(msg llm.Message, toolCallTypes map[string]string) []responsesInputItem {
 	var items []responsesInputItem
 
 	// Separate tool results from regular content
@@ -240,6 +253,13 @@ func fromLLMMessageResponses(msg llm.Message) []responsesInputItem {
 	var toolResults []llm.Content
 
 	for _, c := range msg.Content {
+		if c.Type == llm.ContentTypeToolUse {
+			toolCallType := c.OpenAIResponsesToolCallType
+			if toolCallType == "" && c.ToolName == "apply_patch" {
+				toolCallType = "custom_tool_call"
+			}
+			toolCallTypes[c.ID] = toolCallType
+		}
 		if llm.IsServerSideContentType(c.Type) {
 			continue // skip provider-specific server-side content blocks
 		}
@@ -266,8 +286,10 @@ func fromLLMMessageResponses(msg llm.Message) []responsesInputItem {
 		}
 		toolResultContent := strings.Join(texts, "\n")
 
-		// Add error prefix if needed
-		if tr.ToolError {
+		isApplyPatch := toolCallTypes[tr.ToolUseID] == "apply_patch_call"
+		// Native apply_patch has a dedicated failure status; function and custom
+		// outputs need an in-band error marker.
+		if tr.ToolError && !isApplyPatch {
 			if toolResultContent != "" {
 				toolResultContent = "error: " + toolResultContent
 			} else {
@@ -276,12 +298,20 @@ func fromLLMMessageResponses(msg llm.Message) []responsesInputItem {
 		}
 
 		outputType := "function_call_output"
-		if tr.ToolName == "apply_patch" {
+		status := ""
+		if isApplyPatch {
+			outputType = "apply_patch_call_output"
+			status = "completed"
+			if tr.ToolError {
+				status = "failed"
+			}
+		} else if toolCallTypes[tr.ToolUseID] == "custom_tool_call" || tr.ToolName == "apply_patch" {
 			outputType = "custom_tool_call_output"
 		}
 		items = append(items, responsesInputItem{
 			Type:   outputType,
 			CallID: tr.ToolUseID,
+			Status: status,
 			Output: cmp.Or(toolResultContent, " "),
 		})
 
@@ -353,13 +383,31 @@ func fromLLMMessageResponses(msg llm.Message) []responsesInputItem {
 				})
 			case llm.ContentTypeToolUse:
 				flushMessage()
-				if c.ToolName == "apply_patch" {
+				switch c.OpenAIResponsesToolCallType {
+				case "apply_patch_call":
+					var operation responsesPatchOperation
+					_ = json.Unmarshal(c.ToolInput, &operation)
+					items = append(items, responsesInputItem{
+						Type:      "apply_patch_call",
+						CallID:    c.ID,
+						Status:    c.OpenAIResponsesToolCallStatus,
+						Operation: &operation,
+					})
+				case "custom_tool_call":
 					var input struct {
 						Input string `json:"input"`
 					}
 					_ = json.Unmarshal(c.ToolInput, &input)
 					items = append(items, responsesInputItem{Type: "custom_tool_call", CallID: c.ID, Name: c.ToolName, Input: input.Input})
-				} else {
+				default:
+					if toolCallTypes[c.ID] == "custom_tool_call" {
+						var input struct {
+							Input string `json:"input"`
+						}
+						_ = json.Unmarshal(c.ToolInput, &input)
+						items = append(items, responsesInputItem{Type: "custom_tool_call", CallID: c.ID, Name: c.ToolName, Input: input.Input})
+						continue
+					}
 					items = append(items, responsesInputItem{Type: "function_call", CallID: c.ID, Name: c.ToolName, Arguments: string(c.ToolInput)})
 				}
 			}
@@ -380,6 +428,9 @@ func responsesImageContent(c llm.Content) responsesContent {
 
 // fromLLMToolResponses converts llm.Tool to Responses API tool format
 func fromLLMToolResponses(t *llm.Tool) responsesTool {
+	if t.Type == "apply_patch" {
+		return responsesTool{Type: "apply_patch"}
+	}
 	if t.CustomGrammar != "" {
 		return responsesTool{
 			Type:        "custom",
@@ -486,7 +537,21 @@ func (s *ResponsesService) toLLMResponseFromResponses(resp *responsesResponse, h
 			stopReason = llm.StopReasonToolUse
 		case "custom_tool_call":
 			input, _ := json.Marshal(map[string]string{"input": item.Input})
-			contents = append(contents, llm.Content{ID: item.CallID, Type: llm.ContentTypeToolUse, ToolName: item.Name, ToolInput: input})
+			contents = append(contents, llm.Content{
+				ID: item.CallID, Type: llm.ContentTypeToolUse, ToolName: item.Name, ToolInput: input,
+				OpenAIResponsesToolCallType: "custom_tool_call",
+			})
+			stopReason = llm.StopReasonToolUse
+		case "apply_patch_call":
+			if item.Status != "completed" {
+				continue
+			}
+			input, _ := json.Marshal(item.Operation)
+			contents = append(contents, llm.Content{
+				ID: item.CallID, Type: llm.ContentTypeToolUse, ToolName: "apply_patch", ToolInput: input,
+				OpenAIResponsesToolCallType:   "apply_patch_call",
+				OpenAIResponsesToolCallStatus: item.Status,
+			})
 			stopReason = llm.StopReasonToolUse
 		}
 	}
@@ -613,7 +678,10 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 				return nil, fmt.Errorf("openai-responses messages[%d].content[%d]: cannot replay citations on empty assistant text", i, j)
 			}
 		}
-		items := fromLLMMessageResponses(msg)
+	}
+	toolCallTypes := make(map[string]string)
+	for _, msg := range messages {
+		items := fromLLMMessageResponsesWithToolCallTypes(msg, toolCallTypes)
 		allInput = append(allInput, items...)
 	}
 
@@ -1169,10 +1237,10 @@ func shouldRetryResponsesDecodeError(err error, body []byte) bool {
 }
 
 func (s *ResponsesService) PatchProfile() string {
-	if s.isOpenAIResponses() && s.Model.SupportsApplyPatch {
-		return "codex_apply_patch"
+	if !s.isOpenAIResponses() {
+		return llm.PatchProfileFlat
 	}
-	return "flat"
+	return llm.PatchProfileNativeOpenAIApplyPatch
 }
 
 // ConfigDetails returns configuration information for logging

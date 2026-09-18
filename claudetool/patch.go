@@ -150,6 +150,9 @@ func (p *PatchTool) Tool() *llm.Tool {
 	if p.Profile == "codex_apply_patch" {
 		return p.applyPatchTool()
 	}
+	if p.Profile == "native_openai_apply_patch" {
+		return p.nativeOpenAIApplyPatchTool()
+	}
 	schema := PatchNestedInputSchema
 	description := strings.TrimSpace(PatchBaseDescription + PatchUsageNotes)
 	if p.Profile == "simple" {
