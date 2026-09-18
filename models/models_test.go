@@ -784,6 +784,52 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 	}
 }
 
+func TestGetTranscriptionModelsIncludesIntegrationAndCustomRoutes(t *testing.T) {
+	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer testDB.Close()
+	if err := testDB.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.CreateModel(t.Context(), generated.CreateModelParams{
+		ModelID:      "custom-transcription-model",
+		DisplayName:  "Transcription Model",
+		ProviderType: "openai",
+		Endpoint:     "https://api.example.com/v1",
+		ApiKey:       "transcription-key",
+		ModelName:    "gpt-transcribe",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, err := NewManager(&Config{
+		TranscriptionModels: []TranscriptionModel{{
+			Model:    "gpt-transcribe",
+			Endpoint: "https://llm.int.exe.xyz/v1/audio/transcriptions",
+			Source:   "llm.int.exe.xyz",
+		}},
+		DB: testDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.GetTranscriptionModels("gpt-transcribe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("transcription models = %+v, want integration and custom routes", got)
+	}
+	if got[0].Endpoint != "https://llm.int.exe.xyz/v1/audio/transcriptions" {
+		t.Fatalf("integration route = %+v", got[0])
+	}
+	if got[1].Endpoint != "https://api.example.com/v1/audio/transcriptions" || got[1].APIKey != "transcription-key" {
+		t.Fatalf("custom route = %+v", got[1])
+	}
+}
+
 func (m *mockLLMService) SupportsImages() bool { return true }
 
 func TestReasoningServiceMapping(t *testing.T) {

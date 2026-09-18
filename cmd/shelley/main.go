@@ -461,10 +461,11 @@ func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (
 
 	httpc := llmhttp.NewClient(nil)
 	return &server.LLMConfig{
-		Models:       modelsources.Build(models.All(), sources, httpc, logger),
-		DefaultModel: defaultModel,
-		DB:           database,
-		HTTPC:        httpc,
+		Models:              modelsources.Build(models.All(), sources, httpc, logger),
+		TranscriptionModels: modelsources.TranscriptionModels(sources),
+		DefaultModel:        defaultModel,
+		DB:                  database,
+		HTTPC:               httpc,
 		RefreshBuiltModels: func(ctx context.Context) ([]models.Built, error) {
 			_, sources := buildLLMModelSources(ctx, global, config, logger)
 			return modelsources.Build(models.All(), sources, httpc, logger), nil

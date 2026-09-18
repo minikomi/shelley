@@ -22,6 +22,9 @@ type LLMConfig struct {
 	// registers them as-is; custom models are loaded separately from DB.
 	Models []models.Built
 
+	// TranscriptionModels are known non-chat transcription routes.
+	TranscriptionModels []models.TranscriptionModel
+
 	// DefaultModel is an optional process or shelley.json override. When empty,
 	// model order is authoritative and the first ready model is the default.
 	DefaultModel string

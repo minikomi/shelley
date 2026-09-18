@@ -9,11 +9,13 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
+	"shelley.exe.dev/models"
 )
 
 const (
@@ -22,8 +24,6 @@ const (
 	maxTranscriptionUpload              = 25_000_000
 	maxTranscriptionErrorBody           = 64 << 10
 	maxTranscriptionResponse            = 16 << 20
-	transcriptionRoutingRejection       = "ChatGPT subscriptions do not support transcription; use an LLM integration with managed OpenAI or BYOK"
-	transcriptionIntegrationMissing     = "integration not found or not attached to this VM (trace: "
 )
 
 type transcriptionResult struct {
@@ -55,16 +55,14 @@ type recordingTranscriber interface {
 	Transcribe(context.Context, string, string, bool) (transcriptionResult, error)
 }
 
-// transcriptionEndpoints are tried in fixed order.
-var transcriptionEndpoints = []string{
-	"https://llm.int.exe.xyz/v1/audio/transcriptions",
-	"https://openai.int.exe.xyz/v1/audio/transcriptions",
+type transcriptionModelProvider interface {
+	GetTranscriptionModels(string) ([]models.TranscriptionModel, error)
 }
 
 type openAIRecordingTranscriber struct {
-	client    *http.Client
-	endpoints []string
-	mediaRun  mediaCommandRunner
+	client       *http.Client
+	resolveModel func(string) (models.TranscriptionModel, error)
+	mediaRun     mediaCommandRunner
 }
 
 type transcriptionAPIResponse struct {
@@ -97,12 +95,43 @@ func (e *transcriptionHTTPError) Error() string {
 	return fmt.Sprintf("OpenAI transcription failed (%s): %s", e.Status, e.Message)
 }
 
-func newOpenAIRecordingTranscriber() recordingTranscriber {
+func newOpenAIRecordingTranscriber(provider LLMProvider) recordingTranscriber {
 	return &openAIRecordingTranscriber{
-		client:    http.DefaultClient,
-		endpoints: transcriptionEndpoints,
-		mediaRun:  runMediaCommand,
+		client: http.DefaultClient,
+		resolveModel: func(modelName string) (models.TranscriptionModel, error) {
+			modelProvider, ok := provider.(transcriptionModelProvider)
+			if !ok {
+				return models.TranscriptionModel{}, fmt.Errorf("transcription model %q is not available", modelName)
+			}
+			available, err := modelProvider.GetTranscriptionModels(modelName)
+			if err != nil {
+				return models.TranscriptionModel{}, fmt.Errorf("load transcription model %q: %w", modelName, err)
+			}
+			return selectTranscriptionModel(modelName, available)
+		},
+		mediaRun: runMediaCommand,
 	}
+}
+
+func selectTranscriptionModel(modelName string, available []models.TranscriptionModel) (models.TranscriptionModel, error) {
+	var selected *models.TranscriptionModel
+	for i := range available {
+		if available[i].Model != modelName || available[i].Endpoint == "" {
+			continue
+		}
+		if selected == nil {
+			selected = &available[i]
+		}
+		parsed, err := url.Parse(available[i].Endpoint)
+		if err == nil && strings.HasPrefix(parsed.Hostname(), "llm.int.") {
+			selected = &available[i]
+			break
+		}
+	}
+	if selected == nil {
+		return models.TranscriptionModel{}, fmt.Errorf("transcription model %q is not available", modelName)
+	}
+	return *selected, nil
 }
 
 func (t *openAIRecordingTranscriber) Transcribe(ctx context.Context, mediaPath, prompt string, timestamps bool) (transcriptionResult, error) {
@@ -207,6 +236,10 @@ func validateTimestampResponse(body []byte) error {
 }
 
 func (t *openAIRecordingTranscriber) transcribe(ctx context.Context, mediaPath, prompt string, options transcriptionAPIOptions) (transcriptionAPIResponse, error) {
+	model, err := t.resolveModel(options.Model)
+	if err != nil {
+		return transcriptionAPIResponse{}, err
+	}
 	media, err := os.Open(mediaPath)
 	if err != nil {
 		return transcriptionAPIResponse{}, fmt.Errorf("open recording: %w", err)
@@ -240,37 +273,18 @@ func (t *openAIRecordingTranscriber) transcribe(ctx context.Context, mediaPath, 
 		return transcriptionAPIResponse{}, err
 	}
 
-	contentType := writer.FormDataContentType()
-	var response transcriptionAPIResponse
-	for index, endpoint := range t.endpoints {
-		response, err = t.request(ctx, endpoint, contentType, body.Bytes(), options.ResponseFormat != "verbose_json")
-		if err == nil {
-			break
-		}
-		if index == len(t.endpoints)-1 || !isTranscriptionRoutingError(err) {
-			return transcriptionAPIResponse{}, err
-		}
-	}
-	return response, err
+	return t.request(ctx, model, writer.FormDataContentType(), body.Bytes(), options.ResponseFormat != "verbose_json")
 }
 
-func isTranscriptionRoutingError(err error) bool {
-	var httpError *transcriptionHTTPError
-	if !errors.As(err, &httpError) {
-		return false
-	}
-	return (httpError.StatusCode == http.StatusBadRequest &&
-		strings.HasPrefix(httpError.Message, transcriptionRoutingRejection)) ||
-		(httpError.StatusCode == http.StatusForbidden &&
-			strings.HasPrefix(httpError.Message, transcriptionIntegrationMissing))
-}
-
-func (t *openAIRecordingTranscriber) request(ctx context.Context, endpoint, contentType string, body []byte, requireText bool) (transcriptionAPIResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+func (t *openAIRecordingTranscriber) request(ctx context.Context, model models.TranscriptionModel, contentType string, body []byte, requireText bool) (transcriptionAPIResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, model.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return transcriptionAPIResponse{}, err
 	}
 	req.Header.Set("Content-Type", contentType)
+	if model.APIKey != "" && model.APIKey != "implicit" {
+		req.Header.Set("Authorization", "Bearer "+model.APIKey)
+	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {

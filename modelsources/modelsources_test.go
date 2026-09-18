@@ -864,7 +864,8 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 					{"id":"anthropic/claude-opus-4-7","provider":"anthropic","native_id":"claude-opus-4-7","apis":["anthropic_messages"]},
 					{"id":"openai/gpt-5.6-sol","provider":"openai","native_id":"gpt-5.6-sol","apis":["openai_chat","openai_responses"]},
 					{"id":"openai/gpt-5.5","provider":"openai","native_id":"gpt-5.5","apis":["openai_responses"]},
-					{"id":"fireworks/glm-5p2","provider":"fireworks","native_id":"accounts/fireworks/models/glm-5p2","apis":["openai_chat"]}
+					{"id":"fireworks/glm-5p2","provider":"fireworks","native_id":"accounts/fireworks/models/glm-5p2","apis":["openai_chat"]},
+					{"id":"openai/gpt-transcribe","provider":"openai","native_id":"gpt-transcribe","apis":["openai_transcriptions"]}
 				]
 			}`
 		default:
@@ -896,6 +897,12 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 		if integ.Models[i].apiModelName() != want {
 			t.Fatalf("model %d apiModelName = %q, want %q", i, integ.Models[i].apiModelName(), want)
 		}
+	}
+	transcriptionModels := TranscriptionModels([]Source{LLMIntegration(integ, "")})
+	if len(transcriptionModels) != 1 ||
+		transcriptionModels[0].Model != "gpt-transcribe" ||
+		transcriptionModels[0].Endpoint != "https://llm.int.exe.xyz/v1/audio/transcriptions" {
+		t.Fatalf("transcription models = %+v", transcriptionModels)
 	}
 }
 

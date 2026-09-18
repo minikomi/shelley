@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,11 +121,22 @@ type Built struct {
 	BaseURL string
 }
 
+// TranscriptionModel is a known OpenAI-compatible transcription route.
+type TranscriptionModel struct {
+	Model    string
+	Endpoint string
+	APIKey   string
+	Source   string
+}
+
 // Config holds runtime configuration for the Manager. Built-in models
 // are passed in pre-materialized; custom models are loaded from DB.
 type Config struct {
 	// Models is the set of ready-to-use built-in models, in display order.
 	Models []Built
+
+	// TranscriptionModels are non-chat models discovered from integrations.
+	TranscriptionModels []TranscriptionModel
 
 	Logger *slog.Logger
 
@@ -448,12 +460,13 @@ func Default() Model {
 
 // Manager owns the live set of LLM services for a Shelley server.
 type Manager struct {
-	mu         sync.RWMutex
-	services   map[string]serviceEntry
-	modelOrder []string
-	logger     *slog.Logger
-	db         *db.DB
-	httpc      *http.Client
+	mu                  sync.RWMutex
+	services            map[string]serviceEntry
+	modelOrder          []string
+	transcriptionModels []TranscriptionModel
+	logger              *slog.Logger
+	db                  *db.DB
+	httpc               *http.Client
 }
 
 // GetWorkhorseService returns a service that uses a cheap model from the
@@ -577,10 +590,11 @@ func NewManager(cfg *Config) (*Manager, error) {
 		httpc = llmhttp.NewClient(nil)
 	}
 	m := &Manager{
-		services: map[string]serviceEntry{},
-		logger:   cfg.Logger,
-		db:       cfg.DB,
-		httpc:    httpc,
+		services:            map[string]serviceEntry{},
+		transcriptionModels: append([]TranscriptionModel(nil), cfg.TranscriptionModels...),
+		logger:              cfg.Logger,
+		db:                  cfg.DB,
+		httpc:               httpc,
 	}
 
 	m.registerBuiltModelsLocked(cfg.Models)
@@ -719,6 +733,35 @@ func (m *Manager) GetAvailableModels() []string {
 	result := make([]string, len(m.modelOrder))
 	copy(result, m.modelOrder)
 	return result
+}
+
+// GetTranscriptionModels returns known routes for an exact wire model name.
+func (m *Manager) GetTranscriptionModels(modelName string) ([]TranscriptionModel, error) {
+	m.mu.RLock()
+	var result []TranscriptionModel
+	for _, model := range m.transcriptionModels {
+		if model.Model == modelName {
+			result = append(result, model)
+		}
+	}
+	m.mu.RUnlock()
+
+	dbModels, err := m.customModelRows()
+	if err != nil {
+		return nil, err
+	}
+	for _, model := range dbModels {
+		if model.ModelName != modelName || (model.ProviderType != "openai" && model.ProviderType != "openai-responses") {
+			continue
+		}
+		result = append(result, TranscriptionModel{
+			Model:    model.ModelName,
+			Endpoint: strings.TrimSuffix(model.Endpoint, "/") + "/audio/transcriptions",
+			APIKey:   model.ApiKey,
+			Source:   SourceCustomLabel,
+		})
+	}
+	return result, nil
 }
 
 func (m *Manager) HasModel(modelID string) bool {
