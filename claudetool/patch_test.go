@@ -928,7 +928,17 @@ func TestApplyPatchProfileToolAndExecution(t *testing.T) {
 		t.Fatalf("tool = name %q grammar %q", tool.Name, tool.CustomGrammar)
 	}
 	for _, want := range []string{
+		`update_hunk: "*** Update File: " filename LF change_move? change?`,
+		`add_line: "+" /(.*)/ LF -> line`,
+		`change_move: "*** Move to: " filename LF`,
+	} {
+		if !strings.Contains(tool.CustomGrammar, want) {
+			t.Errorf("apply_patch grammar missing %q", want)
+		}
+	}
+	for _, want := range []string{
 		`beginning with "*** Begin Patch" and ending with "*** End Patch"`,
+		`Place an optional "*** Move to: new-path" immediately after an update header`,
 		`Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.`,
 		`up to 3 unchanged lines before and after the edit when available`,
 		`unless fewer lines already include a unique structural anchor`,
@@ -1132,6 +1142,80 @@ func TestApplyPatchDeletesFile(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deleted file stat error = %v", err)
+	}
+}
+
+func TestApplyPatchMovesUpdatedFile(t *testing.T) {
+	tempDir := t.TempDir()
+	oldPath := filepath.Join(tempDir, "old", "name.txt")
+	newPath := filepath.Join(tempDir, "renamed", "dir", "name.txt")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte("old content\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := &PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}
+	raw, _ := json.Marshal(applyPatchInput{Input: `*** Begin Patch
+*** Update File: old/name.txt
+*** Move to: renamed/dir/name.txt
+@@
+-old content
++new content
+*** End Patch`})
+	result := patch.Tool().Run(t.Context(), raw)
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old file stat error = %v", err)
+	}
+	got, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new content\n" {
+		t.Fatalf("moved content = %q", got)
+	}
+	info, err := os.Stat(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("moved mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
+func TestApplyPatchMoveOverwritesDestination(t *testing.T) {
+	tempDir := t.TempDir()
+	oldPath := filepath.Join(tempDir, "old.txt")
+	newPath := filepath.Join(tempDir, "new.txt")
+	if err := os.WriteFile(oldPath, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := &PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}
+	raw, _ := json.Marshal(applyPatchInput{Input: `*** Begin Patch
+*** Update File: old.txt
+*** Move to: new.txt
+@@
+-old
++moved
+*** End Patch`})
+	if result := patch.Tool().Run(t.Context(), raw); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old file stat error = %v", err)
+	}
+	got, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "moved\n" {
+		t.Fatalf("destination content = %q", got)
 	}
 }
 
