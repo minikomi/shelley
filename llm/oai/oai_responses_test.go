@@ -1241,7 +1241,8 @@ func TestResponsesServiceDoWithCaching(t *testing.T) {
 			Usage: responsesUsage{
 				InputTokens: 100,
 				InputTokensDetails: &responsesInputTokensDetails{
-					CachedTokens: 80,
+					CachedTokens:     80,
+					CacheWriteTokens: 15,
 				},
 				OutputTokens: 50,
 			},
@@ -1268,22 +1269,22 @@ func TestResponsesServiceDoWithCaching(t *testing.T) {
 		t.Fatalf("Do() error = %v", err)
 	}
 
-	// InputTokens should be total - cached = 100 - 80 = 20
-	if resp.Usage.InputTokens != 20 {
-		t.Errorf("resp.Usage.InputTokens = %d, expected 20 (non-cached portion)", resp.Usage.InputTokens)
+	// InputTokens should exclude cache reads and writes: 100 - 80 - 15 = 5
+	if resp.Usage.InputTokens != 5 {
+		t.Errorf("resp.Usage.InputTokens = %d, expected 5 (non-cached portion)", resp.Usage.InputTokens)
 	}
 	// CacheReadInputTokens should be the cached amount
 	if resp.Usage.CacheReadInputTokens != 80 {
 		t.Errorf("resp.Usage.CacheReadInputTokens = %d, expected 80", resp.Usage.CacheReadInputTokens)
 	}
-	// CacheCreationInputTokens should be 0 (OpenAI doesn't report this)
-	if resp.Usage.CacheCreationInputTokens != 0 {
-		t.Errorf("resp.Usage.CacheCreationInputTokens = %d, expected 0", resp.Usage.CacheCreationInputTokens)
+	// CacheCreationInputTokens should be the cache-write amount
+	if resp.Usage.CacheCreationInputTokens != 15 {
+		t.Errorf("resp.Usage.CacheCreationInputTokens = %d, expected 15", resp.Usage.CacheCreationInputTokens)
 	}
 	if resp.Usage.OutputTokens != 50 {
 		t.Errorf("resp.Usage.OutputTokens = %d, expected 50", resp.Usage.OutputTokens)
 	}
-	// TotalInputTokens = 20 + 0 + 80 = 100 (matches OpenAI's input_tokens)
+	// TotalInputTokens = 5 + 15 + 80 = 100 (matches OpenAI's input_tokens)
 	if resp.Usage.TotalInputTokens() != 100 {
 		t.Errorf("resp.Usage.TotalInputTokens() = %d, expected 100", resp.Usage.TotalInputTokens())
 	}

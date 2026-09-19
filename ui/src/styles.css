@@ -10674,6 +10674,7 @@ kbd {
   font-size: 0.75rem;
   color: var(--text-secondary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  width: min(440px, calc(100vw - 1rem));
   max-width: calc(100vw - 1rem);
 }
 .chat-context-popup.p-popover:before,
@@ -10744,12 +10745,12 @@ kbd {
 
 .token-cost-graph {
   margin-top: 0;
-  width: 280px;
+  width: 100%;
   max-width: 100%;
 }
 
 .context-composition-graph {
-  width: 280px;
+  width: 100%;
   max-width: 100%;
 }
 
