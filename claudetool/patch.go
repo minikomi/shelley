@@ -200,7 +200,7 @@ Recipes:
 	ApplyPatchName        = "apply_patch"
 	ApplyPatchDescription = `The apply_patch tool edits files using the Codex patch format. This is a FREEFORM tool: send only an envelope beginning with "*** Begin Patch" and ending with "*** End Patch"; do not wrap it in JSON.
 Use "*** Add File: path" with every content line prefixed "+", "*** Delete File: path", or "*** Update File: path" with hunk lines prefixed by exactly one " " (context), "-" (remove), or "+" (add). Place an optional "*** Move to: new-path" immediately after an update header to rename the updated file. Use "*** End of File" after a change to require an end-of-file match. An update containing only "+" lines appends them to the file.
-Update chunks search forward through the file and use the first matching location. Matching tries exact text, then ignores trailing whitespace, then surrounding whitespace, then normalizes common Unicode dashes, quotes, and spaces. Non-exact matching is reported in the tool result. Include enough unchanged context to select the intended location—up to 3 unchanged lines before and after the edit when available. An "@@ text" header starts the search after the matching source line. Stack multiple "@@ text" headers to narrow nested scopes. Use "@@ line N" to select an exact source line.
+Update chunks search forward through the file and use the first matching location. Matching tries exact text, then ignores trailing whitespace, then surrounding whitespace, then normalizes common Unicode dashes, quotes, and spaces. The tool result reports non-exact matches and selections from multiple candidates. Include enough unchanged context to select the intended location—up to 3 unchanged lines before and after the edit when available. An "@@ text" header starts the search after the matching source line. Stack multiple "@@ text" headers to narrow nested scopes. Use "@@ line N" to start searching at source line N; it is a cursor hint, not an exact selector.
 The patch is validated as a unit: a parse or match failure rejects the entire patch without changing files. If matching fails, reread the current file and retry with current context.`
 	ApplyPatchGrammar = `start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
@@ -340,10 +340,12 @@ type applyPatchMutation struct {
 }
 
 type applyPatchMatch struct {
-	offset int
-	length int
-	line   int
-	mode   string
+	offset     int
+	length     int
+	line       int
+	searchLine int
+	candidates int
+	mode       string
 }
 
 // PatchRequest represents a single patch operation.
@@ -462,7 +464,7 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 	}()
 
 	mutations := make([]applyPatchMutation, 0, len(files))
-	var fuzzyMatches []string
+	var matchNotices []string
 	for _, file := range files {
 		path := file.path
 		if !filepath.IsAbs(path) {
@@ -531,15 +533,15 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 					cursor = len(content)
 					continue
 				}
+				lineHint := 0
 				if request.line > 0 {
-					offset, ok := exactMatchOffsetAtLine(content, request.OldText, request.line)
+					offset, ok := applyPatchLineOffset(content, request.line)
 					if !ok {
-						err = applyPatchMatchError(path, content, request.OldText)
+						err = fmt.Errorf("apply_patch update for %q has line hint %d outside the file\n\nNo files were changed", path, request.line)
 						break
 					}
-					content = content[:offset] + request.NewText + content[offset+len(request.OldText):]
-					cursor = offset + len(request.NewText)
-					continue
+					cursor = max(cursor, offset)
+					lineHint = request.line
 				}
 				if len(request.anchors) > 0 {
 					for _, anchor := range request.anchors {
@@ -548,8 +550,8 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 							err = fmt.Errorf("apply_patch update for %q: anchor did not match a source line after line %d:\n%s\n\nNo files were changed", path, 1+strings.Count(content[:cursor], "\n"), anchor)
 							break
 						}
-						if match.mode != "exact" {
-							fuzzyMatches = append(fuzzyMatches, formatApplyPatchFuzzyMatch(path, match, "anchor"))
+						if applyPatchMatchNeedsNotice(match, 0) {
+							matchNotices = append(matchNotices, formatApplyPatchMatch(path, match, "anchor", 0))
 						}
 						cursor = match.offset + match.length
 						if cursor < len(content) && content[cursor] == '\n' {
@@ -565,8 +567,8 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 					err = applyPatchMatchError(path, content, request.OldText)
 					break
 				}
-				if match.mode != "exact" {
-					fuzzyMatches = append(fuzzyMatches, formatApplyPatchFuzzyMatch(path, match, "context"))
+				if applyPatchMatchNeedsNotice(match, lineHint) {
+					matchNotices = append(matchNotices, formatApplyPatchMatch(path, match, "context", lineHint))
 				}
 				content = content[:match.offset] + request.NewText + content[match.offset+match.length:]
 				cursor = match.offset + len(request.NewText)
@@ -622,8 +624,8 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 	}
 	p.logResult(ctx, "success", nil)
 	message := fmt.Sprintf("Applied patch to %d file(s).", len(mutations))
-	if len(fuzzyMatches) > 0 {
-		message += " Non-exact matching used: " + strings.Join(fuzzyMatches, "; ") + "."
+	if len(matchNotices) > 0 {
+		message += " Match details: " + strings.Join(matchNotices, "; ") + "."
 	}
 	return llm.ToolOut{
 		LLMContent: llm.TextContent(message),
@@ -659,11 +661,22 @@ func applyPatchMatchError(path, content, oldText string) error {
 	for i, line := range lines {
 		lineText[i] = strconv.Itoa(line)
 	}
-	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nChoose one reported location by repeating the hunk with an \"@@ line N\" header, or include more surrounding unchanged lines.\n\n%s\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "), applyPatchMatchContexts(content, lines))
+	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nStart the hunk search near one reported location with an \"@@ line N\" header, or include more surrounding unchanged lines.\n\n%s\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "), applyPatchMatchContexts(content, lines))
 }
 
-func formatApplyPatchFuzzyMatch(path string, match applyPatchMatch, subject string) string {
-	return fmt.Sprintf("%s %s at line %d (%s)", path, subject, match.line, match.mode)
+func applyPatchMatchNeedsNotice(match applyPatchMatch, lineHint int) bool {
+	return match.mode != "exact" || match.candidates > 1 || lineHint > 0 && match.line != lineHint
+}
+
+func formatApplyPatchMatch(path string, match applyPatchMatch, subject string, lineHint int) string {
+	details := []string{match.mode}
+	if match.candidates > 1 {
+		details = append(details, fmt.Sprintf("first of %d matches at or after line %d", match.candidates, match.searchLine))
+	}
+	if lineHint > 0 && match.line != lineHint {
+		details = append(details, fmt.Sprintf("line hint %d", lineHint))
+	}
+	return fmt.Sprintf("%s %s selected line %d (%s)", path, subject, match.line, strings.Join(details, "; "))
 }
 
 func findApplyPatchMatch(content, pattern string, cursor int, endOfFile bool) (applyPatchMatch, bool) {
@@ -680,6 +693,7 @@ func findApplyPatchMatch(content, pattern string, cursor int, endOfFile bool) (a
 	if endOfFile {
 		start = len(contentLines) - len(patternLines)
 	}
+	searchLine := start + 1
 
 	modes := []struct {
 		name  string
@@ -697,6 +711,8 @@ func findApplyPatchMatch(content, pattern string, cursor int, endOfFile bool) (a
 		}},
 	}
 	for _, mode := range modes {
+		var first applyPatchMatch
+		candidates := 0
 		for i := start; i <= len(contentLines)-len(patternLines); i++ {
 			matched := true
 			for j := range patternLines {
@@ -708,11 +724,18 @@ func findApplyPatchMatch(content, pattern string, cursor int, endOfFile bool) (a
 			if matched {
 				last := i + len(patternLines) - 1
 				length := offsets[last] + len(contentLines[last]) - offsets[i]
-				return applyPatchMatch{offset: offsets[i], length: length, line: i + 1, mode: mode.name}, true
+				if candidates == 0 {
+					first = applyPatchMatch{offset: offsets[i], length: length, line: i + 1, searchLine: searchLine, mode: mode.name}
+				}
+				candidates++
 			}
 			if endOfFile {
 				break
 			}
+		}
+		if candidates > 0 {
+			first.candidates = candidates
+			return first, true
 		}
 	}
 	return applyPatchMatch{}, false
@@ -763,7 +786,7 @@ func applyPatchMatchContexts(content string, matches []int) string {
 		}
 		start := max(0, line-1-contextLines)
 		end := min(len(lines), line+contextLines)
-		fmt.Fprintf(&out, "\n- line %d (select with \"@@ line %d\"):\n%s", line, line, strings.Join(lines[start:end], "\n"))
+		fmt.Fprintf(&out, "\n- line %d (start search with \"@@ line %d\"):\n%s", line, line, strings.Join(lines[start:end], "\n"))
 	}
 	return out.String()
 }
@@ -785,21 +808,12 @@ func exactMatchLines(content, oldText string) []int {
 	}
 }
 
-func exactMatchOffsetAtLine(content, oldText string, targetLine int) (int, bool) {
-	if oldText == "" {
+func applyPatchLineOffset(content string, line int) (int, bool) {
+	_, offsets := applyPatchLines(content)
+	if line < 1 || line > len(offsets) {
 		return 0, false
 	}
-	for offset := 0; ; {
-		match := strings.Index(content[offset:], oldText)
-		if match < 0 {
-			return 0, false
-		}
-		match += offset
-		if 1+strings.Count(content[:match], "\n") == targetLine {
-			return match, true
-		}
-		offset = match + len(oldText)
-	}
+	return offsets[line-1], true
 }
 
 func applyPatchDisplayPath(mutations []applyPatchMutation) string {

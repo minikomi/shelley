@@ -942,11 +942,11 @@ func TestApplyPatchProfileToolAndExecution(t *testing.T) {
 		`Use "*** End of File" after a change to require an end-of-file match.`,
 		`An update containing only "+" lines appends them to the file.`,
 		`Matching tries exact text, then ignores trailing whitespace, then surrounding whitespace, then normalizes common Unicode`,
-		`Non-exact matching is reported in the tool result.`,
+		`The tool result reports non-exact matches and selections from multiple candidates.`,
 		`up to 3 unchanged lines before and after the edit when available`,
 		`An "@@ text" header starts the search after the matching source line.`,
 		`Stack multiple "@@ text" headers to narrow nested scopes.`,
-		`Use "@@ line N" to select an exact source line.`,
+		`Use "@@ line N" to start searching at source line N; it is a cursor hint, not an exact selector.`,
 		`a parse or match failure rejects the entire patch without changing files`,
 		`If matching fails, reread the current file and retry with current context.`,
 	} {
@@ -1036,6 +1036,28 @@ func TestApplyPatchReportsFuzzyMatching(t *testing.T) {
 	}
 }
 
+func TestApplyPatchReportsFirstOfMultipleExactMatches(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.txt")
+	if err := os.WriteFile(path, []byte("same\nmiddle\nsame\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	raw, _ := json.Marshal(applyPatchInput{Input: `*** Begin Patch
+*** Update File: edit.txt
+@@
+-same
++changed
+*** End Patch`})
+	result := patch.Run(t.Context(), raw)
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	if len(result.LLMContent) == 0 || !strings.Contains(result.LLMContent[0].Text, "context selected line 1 (exact; first of 2 matches at or after line 1)") {
+		t.Fatalf("tool result = %+v", result.LLMContent)
+	}
+}
+
 func TestApplyPatchMatchesChunksInOrder(t *testing.T) {
 	tempDir := t.TempDir()
 	path := filepath.Join(tempDir, "edit.txt")
@@ -1118,11 +1140,11 @@ func TestApplyPatchMatchErrorIdentifiesAmbiguousLines(t *testing.T) {
 	err := applyPatchMatchError("example.go", "func first() {\n\tsame\n}\nfunc second() {\n\tsame\n}\nfunc third() {\n\tsame\n}\n", "\tsame\n")
 	for _, want := range []string{
 		`apply_patch update for "example.go" matched 3 locations at lines 2, 5, 8`,
-		`Choose one reported location by repeating the hunk with an "@@ line N" header`,
+		`Start the hunk search near one reported location with an "@@ line N" header`,
 		"Matching locations:",
-		`line 2 (select with "@@ line 2")`,
-		`line 5 (select with "@@ line 5")`,
-		`line 8 (select with "@@ line 8")`,
+		`line 2 (start search with "@@ line 2")`,
+		`line 5 (start search with "@@ line 5")`,
+		`line 8 (start search with "@@ line 8")`,
 		"No files were changed",
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -1156,6 +1178,35 @@ func TestApplyPatchSelectsAmbiguousHunkByLine(t *testing.T) {
 	want := "func first() {\n\tsame\n}\nfunc second() {\n\tchanged\n}\nfunc third() {\n\tsame\n}\n"
 	if string(got) != want {
 		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
+func TestApplyPatchLineHintSearchesForward(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.go")
+	if err := os.WriteFile(path, []byte("same\nmiddle\nsame\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	raw, _ := json.Marshal(applyPatchInput{Input: `*** Begin Patch
+*** Update File: edit.go
+@@ line 2
+-same
++changed
+*** End Patch`})
+	result := patch.Run(t.Context(), raw)
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "same\nmiddle\nchanged\n" {
+		t.Fatalf("content = %q", got)
+	}
+	if len(result.LLMContent) == 0 || !strings.Contains(result.LLMContent[0].Text, "context selected line 3 (exact; line hint 2)") {
+		t.Fatalf("tool result = %+v", result.LLMContent)
 	}
 }
 
