@@ -939,14 +939,16 @@ func TestApplyPatchProfileToolAndExecution(t *testing.T) {
 	for _, want := range []string{
 		`beginning with "*** Begin Patch" and ending with "*** End Patch"`,
 		`Place an optional "*** Move to: new-path" immediately after an update header`,
-		`Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.`,
+		`Use "*** End of File" after a change to require an end-of-file match.`,
+		`An update containing only "+" lines appends them to the file.`,
+		`Matching tries exact text, then ignores trailing whitespace, then surrounding whitespace, then normalizes common Unicode`,
+		`Non-exact matching is reported in the tool result.`,
 		`up to 3 unchanged lines before and after the edit when available`,
-		`unless fewer lines already include a unique structural anchor`,
-		`An "@@ text" header anchors the hunk after the matching source line`,
+		`An "@@ text" header starts the search after the matching source line.`,
 		`Stack multiple "@@ text" headers to narrow nested scopes.`,
-		`use "@@ line N".`,
+		`Use "@@ line N" to select an exact source line.`,
 		`a parse or match failure rejects the entire patch without changing files`,
-		`For "matched 0 locations," reread the current file and retry with exact current context`,
+		`If matching fails, reread the current file and retry with current context.`,
 	} {
 		if !strings.Contains(tool.Description, want) {
 			t.Errorf("apply_patch description missing guidance %q", want)
@@ -985,13 +987,130 @@ func TestApplyPatchMatchErrorExplainsMissingContext(t *testing.T) {
 	err := applyPatchMatchError("example.go", "current\ncontents\n", "stale\ncontents\n")
 	for _, want := range []string{
 		`apply_patch update for "example.go" matched 0 locations`,
-		"The context must match exactly, including whitespace.",
-		"Reread the current file and retry with context copied from it.",
+		"after exact, whitespace-normalized, and Unicode-normalized matching",
+		"Reread the current file and retry with current context.",
 		"No files were changed",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+}
+
+func TestApplyPatchReportsFuzzyMatching(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		old     string
+		mode    string
+	}{
+		{name: "trailing whitespace", content: "target   \n", old: "target", mode: "trailing-whitespace"},
+		{name: "surrounding whitespace", content: "  target  \n", old: "target", mode: "surrounding-whitespace"},
+		{name: "Unicode punctuation", content: "smart—dash\n", old: "smart-dash", mode: "Unicode-normalized"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			path := filepath.Join(tempDir, "edit.txt")
+			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+			input := "*** Begin Patch\n*** Update File: edit.txt\n@@\n-" + test.old + "\n+changed\n*** End Patch"
+			raw, _ := json.Marshal(applyPatchInput{Input: input})
+			result := patch.Run(t.Context(), raw)
+			if result.Error != nil {
+				t.Fatal(result.Error)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != "changed\n" {
+				t.Fatalf("content = %q", got)
+			}
+			if len(result.LLMContent) == 0 || !strings.Contains(result.LLMContent[0].Text, test.mode) {
+				t.Fatalf("tool result = %+v, want fuzzy mode %q", result.LLMContent, test.mode)
+			}
+		})
+	}
+}
+
+func TestApplyPatchMatchesChunksInOrder(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.txt")
+	if err := os.WriteFile(path, []byte("same\nmiddle\nsame\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	raw, _ := json.Marshal(applyPatchInput{Input: `*** Begin Patch
+*** Update File: edit.txt
+@@
+-same
++first
+@@
+-same
++second
+*** End Patch`})
+	if result := patch.Run(t.Context(), raw); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first\nmiddle\nsecond\n" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestApplyPatchEndOfFileSelectsLastMatch(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.txt")
+	if err := os.WriteFile(path, []byte("target\nmiddle\ntarget\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	raw, _ := json.Marshal(applyPatchInput{Input: `*** Begin Patch
+*** Update File: edit.txt
+@@
+-target
++last
+*** End of File
+*** End Patch`})
+	if result := patch.Run(t.Context(), raw); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "target\nmiddle\nlast\n" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestApplyPatchPureAdditionAppends(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "edit.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patch := (&PatchTool{WorkingDir: NewMutableWorkingDir(tempDir), Profile: "codex_apply_patch"}).Tool()
+	raw, _ := json.Marshal(applyPatchInput{Input: `*** Begin Patch
+*** Update File: edit.txt
+@@
++after
+*** End Patch`})
+	if result := patch.Run(t.Context(), raw); result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "before\nafter\n" {
+		t.Fatalf("content = %q", got)
 	}
 }
 
