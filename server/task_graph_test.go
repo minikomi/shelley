@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,44 @@ func TestTaskGraphAwaitedTreatsFailuresAsTerminal(t *testing.T) {
 	}
 	if !taskGraphAwaited(graph, []string{"failed"}) {
 		t.Fatal("failed task did not satisfy task await")
+	}
+}
+
+func TestTaskGraphTaskPromptIncludesDirectDependencyResults(t *testing.T) {
+	graph := &db.TaskGraphSnapshot{Tasks: []db.TaskGraphTask{
+		{ID: "research", Title: "Research API", Status: "complete", FinalResponse: "Use endpoint /v2."},
+		{ID: "schema", Title: "Define schema", Status: "complete"},
+		{ID: "unrelated", Title: "Unrelated", Status: "complete", FinalResponse: "Do not include me."},
+	}}
+	task := db.TaskGraphTask{
+		ID:           "implement",
+		Prompt:       "Implement the client.",
+		Dependencies: []string{"research", "schema"},
+	}
+
+	got := taskGraphTaskPrompt(graph, task)
+	for _, want := range []string{
+		"Implement the client.",
+		"Completed direct dependency results",
+		"dependency research: Research API",
+		"Use endpoint /v2.",
+		"dependency schema: Define schema",
+		"(completed without a final response)",
+		"verify claims against the shared working tree",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Do not include me.") {
+		t.Fatalf("prompt includes non-dependency result:\n%s", got)
+	}
+}
+
+func TestTaskGraphTaskPromptLeavesRootPromptUnchanged(t *testing.T) {
+	task := db.TaskGraphTask{ID: "root", Prompt: "Do the work."}
+	if got := taskGraphTaskPrompt(&db.TaskGraphSnapshot{}, task); got != task.Prompt {
+		t.Fatalf("root prompt = %q, want %q", got, task.Prompt)
 	}
 }
 

@@ -278,10 +278,39 @@ func (s *Server) launchTaskGraphTask(graphID string, task db.TaskGraphTask) {
 	} else {
 		reasoning = db.ParseConversationOptions(parent.ConversationOptions).ThinkingLevel
 	}
-	if _, err := NewSubagentRunner(s).RunSubagent(ctx, childID, task.Prompt, false, 0, model, reasoning); err != nil {
+	prompt := taskGraphTaskPrompt(graph, task)
+	if _, err := NewSubagentRunner(s).RunSubagent(ctx, childID, prompt, false, 0, model, reasoning); err != nil {
 		s.logger.Error("Launch task graph child", "graphID", graphID, "taskID", task.ID, "error", err)
 		s.failTaskGraphLaunch(graphID, task.ID, err)
 	}
+}
+
+func taskGraphTaskPrompt(graph *db.TaskGraphSnapshot, task db.TaskGraphTask) string {
+	var dependencies []db.TaskGraphTask
+	for _, dependencyID := range task.Dependencies {
+		for _, candidate := range graph.Tasks {
+			if candidate.ID == dependencyID && candidate.Status == "complete" {
+				dependencies = append(dependencies, candidate)
+				break
+			}
+		}
+	}
+	if len(dependencies) == 0 {
+		return task.Prompt
+	}
+
+	var prompt strings.Builder
+	prompt.WriteString(task.Prompt)
+	prompt.WriteString("\n\nCompleted direct dependency results follow. Use them as handoff context and verify claims against the shared working tree.")
+	for _, dependency := range dependencies {
+		result := dependency.FinalResponse
+		if result == "" {
+			result = "(completed without a final response)"
+		}
+		fmt.Fprintf(&prompt, "\n\n--- dependency %s: %s ---\n%s\n--- end dependency %s ---",
+			dependency.ID, dependency.Title, result, dependency.ID)
+	}
+	return prompt.String()
 }
 
 func (s *Server) failTaskGraphLaunch(graphID, taskID string, cause error) {

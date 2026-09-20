@@ -38,6 +38,9 @@ The parent owns integration and final validation.
 Use create once per delegation wave to define delegated subagent runs only.
 Keep parent planning, integration, and final validation outside the graph.
 Every task launches a subagent automatically when its dependencies complete.
+Before a dependent task launches, Shelley appends every completed direct
+dependency's final response to its prompt as handoff context. Do not duplicate
+those results in task prompts; shared files remain the source of truth.
 Use await to wait for work already in progress without sending children any
 new prompts. Every result includes the complete current graph snapshot.
 
