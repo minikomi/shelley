@@ -11,8 +11,8 @@
   <div
     ref="containerRef"
     class="markdown-content break-words"
-    @click="onImageActivate"
-    @keydown="onImageActivate"
+    @click="onActivate"
+    @keydown="onActivate"
     v-html="html"
   ></div>
 </template>
@@ -20,6 +20,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { highlightCode, normalizeCodeLanguage } from "../../services/markdownHighlight";
+import {
+  addCodeBlockHeaders,
+  codeBlockText,
+  setCodeBlockCopied,
+} from "../../utils/codeBlockCopy";
 import { applyHighlightTokens } from "../../utils/codeHighlight";
 import { COMMENT_ICON } from "../../utils/icons";
 import { localhostLinkOptionsFromInit } from "../../utils/linkify";
@@ -64,9 +69,11 @@ const containerRef = ref<HTMLDivElement | null>(null);
 // within a viewport of view (same shared observer that gates tool cards),
 // then tokenize.
 let cancelDeferred: (() => void)[] = [];
+const copyFeedbackTimers = new Map<HTMLButtonElement, ReturnType<typeof setTimeout>>();
 onBeforeUnmount(() => {
   for (const cancel of cancelDeferred) cancel();
   cancelDeferred = [];
+  clearCopyFeedback();
 });
 
 const html = computed(
@@ -108,6 +115,7 @@ watch(
     // observer's target set.
     for (const cancel of cancelDeferred) cancel();
     cancelDeferred = [];
+    clearCopyFeedback();
     const root = containerRef.value;
     if (!root) return;
     if (props.commentable) {
@@ -124,6 +132,7 @@ watch(
         wrap.append(img, badge());
       }
     }
+    addCodeBlockHeaders(root);
     highlightFencedCode(root);
   },
   { flush: "post", immediate: true },
@@ -189,8 +198,44 @@ function badge(): HTMLElement {
   return el;
 }
 
-function onImageActivate(e: MouseEvent | KeyboardEvent) {
-  const img = e.target;
+function clearCopyFeedback(): void {
+  for (const [button, timer] of copyFeedbackTimers) {
+    clearTimeout(timer);
+    setCodeBlockCopied(button, false);
+  }
+  copyFeedbackTimers.clear();
+}
+
+async function copyCodeBlock(button: HTMLButtonElement): Promise<void> {
+  const text = codeBlockText(button);
+  if (text === undefined) return;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    const previousTimer = copyFeedbackTimers.get(button);
+    if (previousTimer) clearTimeout(previousTimer);
+    setCodeBlockCopied(button, true);
+    const timer = setTimeout(() => {
+      setCodeBlockCopied(button, false);
+      copyFeedbackTimers.delete(button);
+    }, 1500);
+    copyFeedbackTimers.set(button, timer);
+  } catch (error) {
+    console.error("Copying code failed", error);
+  }
+}
+
+function onActivate(e: MouseEvent | KeyboardEvent) {
+  const target = e.target;
+  if (e instanceof MouseEvent && target instanceof Element) {
+    const button = target.closest<HTMLButtonElement>(".shelley-code-copy");
+    if (button) {
+      void copyCodeBlock(button);
+      return;
+    }
+  }
+
+  const img = target;
   if (!(img instanceof HTMLImageElement) || !isCommentable(img)) return;
   if (e instanceof KeyboardEvent) {
     // Only the activation keys, and only once the target is known to be an
