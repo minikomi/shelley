@@ -90,11 +90,31 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"implementation owner includes focused tests",
 		"separate test-mapping or review filler tasks",
 		"parent owns integration and final validation",
+		"cohesive, independently testable outcomes",
+		"file type",
+		"substantial enough to amortize",
+		"tightly coupled work",
+		"bounded context packet",
+		"owned scope, stable interfaces",
+		"source-of-truth files, non-goals",
+		"least costly capable model",
+		"routine bounded work",
 		"delegated subagent runs only",
 		"parent planning",
 		"completed direct",
 		"handoff context",
 		"shared files remain the source of truth",
+		"must read, use, or coordinate",
+		"immutable interface",
+		"partially written files",
+		"deliverable, validation performed",
+		"remaining uncertainty",
+		"parent integration needs",
+		"cheap path first",
+		"git diff --stat",
+		"one aggregate acceptance command",
+		"repeat focused checks",
+		"substantial scope in the parent",
 		"max_concurrency controls",
 		"resource and cost constraints",
 		"Branch whenever two useful subagent scopes",
@@ -135,7 +155,16 @@ func TestTaskGraphToolTerminalAwaitPromptsAnotherDelegationDecision(t *testing.T
 		t.Fatalf("run: %v", out.Error)
 	}
 	text := out.LLMContent[0].Text
-	for _, required := range []string{"delegation wave is terminal", "create a new graph first", "exclusive file scopes"} {
+	for _, required := range []string{
+		"delegation wave is terminal",
+		"cheap path first",
+		"git diff --stat",
+		"one aggregate acceptance command",
+		"Do not repeat passing focused checks",
+		"substantially rewrite child-owned work",
+		"create a new graph first",
+		"exclusive file scopes",
+	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("terminal await output missing %q: %s", required, text)
 		}

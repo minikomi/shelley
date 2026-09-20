@@ -35,12 +35,30 @@ Each implementation owner includes focused tests for its scope.
 Do not create separate test-mapping or review filler tasks.
 The parent owns integration and final validation.
 
+Choose task boundaries by cohesive, independently testable outcomes, not by
+file type. A task is right-sized when it is substantial enough to amortize
+delegation overhead, has one clear responsibility, and can finish without
+frequent coordination with concurrent tasks. Keep tightly coupled work such as
+markup, styling, and browser behavior under one owner when they share a runtime
+contract.
+
+Each task prompt is a bounded context packet: state the objective, acceptance
+criteria, owned scope, stable interfaces, source-of-truth files, non-goals, and
+focused validation command. Do not mechanically inherit the parent's model or
+reasoning level; use the least costly capable model and medium reasoning for
+routine bounded work unless genuine complexity justifies more.
+
 Use create once per delegation wave to define delegated subagent runs only.
 Keep parent planning, integration, and final validation outside the graph.
 Every task launches a subagent automatically when its dependencies complete.
 Before a dependent task launches, Shelley appends every completed direct
 dependency's final response to its prompt as handoff context. Do not duplicate
 those results in task prompts; shared files remain the source of truth.
+If a task must read, use, or coordinate with output owned by another task, add
+that dependency unless the parent established an immutable interface before
+the wave. Never consume another task's partially written files.
+Every task's final response reports its deliverable, validation performed,
+remaining uncertainty, and exact parent integration needs, concisely.
 Use await to wait for work already in progress without sending children any
 new prompts. Every result includes the complete current graph snapshot.
 
@@ -49,6 +67,14 @@ next work has independent scopes where delegation shortens the critical path,
 call create again for a new graph before starting that work. Each graph should
 represent one coherent wave based on what is known then; do not hardcode phase
 names or task counts, and do not mutate a finished graph: completed waves are immutable.
+
+After a graph becomes terminal, integrate through the cheap path first: read
+task reports and git diff --stat, run one aggregate acceptance command, and
+inspect full files only when a check fails or an interface violation is
+suspected. Do not repeat focused checks that task owners already passed. Do not
+silently rewrite a child's substantial scope in the parent; use a focused
+follow-up task or reconsider the partition when integration requires major
+rework.
 
 Subagents are not research-only advisors. A delegation wave may own
 implementation and modify files when scopes are exclusive and clearly assigned.
@@ -193,7 +219,7 @@ func (t *TaskGraphTool) run(ctx context.Context, req taskGraphInput) llm.ToolOut
 		}
 		message := "Await condition reached."
 		if snapshot != nil && snapshot.Status != "active" {
-			message += " This delegation wave is terminal. Before using research, shell, editing, or browser tools for remaining substantial work, decide whether another delegation wave would shorten the critical path. If so, create a new graph first; implementation tasks may own exclusive file scopes."
+			message += " This delegation wave is terminal. Integrate through the cheap path first: read task reports and git diff --stat, run one aggregate acceptance command, and inspect full files only for failures or suspected interface violations. Do not repeat passing focused checks or substantially rewrite child-owned work in the parent. Before using research, shell, editing, or browser tools for remaining substantial work, decide whether another delegation wave would shorten the critical path. If so, create a new graph first; implementation tasks may own exclusive file scopes."
 		}
 		return taskGraphToolOut(message, snapshot)
 	case "cancel":
