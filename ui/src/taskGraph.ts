@@ -12,7 +12,7 @@ export type TaskState =
 export interface TaskGraphTask {
   id: string;
   title: string;
-  owner: "parent" | "subagent";
+  owner: "subagent";
   state: TaskState;
   depends_on?: string[];
   slug?: string;

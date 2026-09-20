@@ -1732,7 +1732,13 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Failed to cancel conversation", http.StatusInternalServerError)
 		return
 	}
+	graphErr := s.cancelActiveTaskGraph(ctx, conversationID)
 	s.cancelSubagentTree(ctx, conversationID)
+	if graphErr != nil {
+		s.logger.Error("Failed to cancel active task graph", "conversationID", conversationID, "error", graphErr)
+		http.Error(w, "Failed to cancel task graph", http.StatusInternalServerError)
+		return
+	}
 
 	if !exists {
 		w.WriteHeader(http.StatusOK)

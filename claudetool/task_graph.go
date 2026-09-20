@@ -23,16 +23,16 @@ research, shell, editing, or browser tools. A prose plan is not a task graph.
 Do not create a graph for contained work where delegation would not shorten the
 critical path.
 
-Use create once to define the graph. Subagent tasks run automatically when
-their dependencies complete; parent tasks become ready for you to complete.
-Use await to wait for work already in progress without sending children any
-new prompts. Every result includes the complete current graph snapshot.`
+Use create once to define delegated subagent runs only. Keep parent planning,
+editing, integration, and final validation outside the graph. Every task
+launches a subagent automatically when its dependencies complete. Use await to
+wait for work already in progress without sending children any new prompts.
+Every result includes the complete current graph snapshot.`
 
 type TaskGraphService interface {
 	CreateTaskGraph(context.Context, string, string, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
 	GetLatestTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error)
 	GetTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error)
-	CompleteTaskGraphTask(context.Context, string, string, string, string) (*db.TaskGraphSnapshot, error)
 	AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error)
 	CancelTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, []string, error)
 }
@@ -44,20 +44,17 @@ type TaskGraphTool struct {
 }
 
 type taskGraphInput struct {
-	Action   string          `json:"action"`
-	GraphID  string          `json:"graph_id,omitempty"`
-	Title    string          `json:"title,omitempty"`
-	Tasks    []taskGraphTask `json:"tasks,omitempty"`
-	TaskID   string          `json:"task_id,omitempty"`
-	TaskIDs  []string        `json:"task_ids,omitempty"`
-	Response string          `json:"response,omitempty"`
-	Timeout  int             `json:"timeout_seconds,omitempty"`
+	Action  string          `json:"action"`
+	GraphID string          `json:"graph_id,omitempty"`
+	Title   string          `json:"title,omitempty"`
+	Tasks   []taskGraphTask `json:"tasks,omitempty"`
+	TaskIDs []string        `json:"task_ids,omitempty"`
+	Timeout int             `json:"timeout_seconds,omitempty"`
 }
 
 type taskGraphTask struct {
 	ID           string   `json:"id"`
 	Title        string   `json:"title"`
-	Owner        string   `json:"owner"`
 	Dependencies []string `json:"dependencies,omitempty"`
 	Prompt       string   `json:"prompt,omitempty"`
 	Slug         string   `json:"slug,omitempty"`
@@ -74,7 +71,7 @@ func (t *TaskGraphTool) Tool() *llm.Tool {
   "type": "object",
   "required": ["action"],
   "properties": {
-    "action": {"type": "string", "enum": ["create", "list", "complete", "await", "cancel"]},
+    "action": {"type": "string", "enum": ["create", "list", "await", "cancel"]},
     "graph_id": {"type": "string", "description": "Graph ID. list may omit it to get the latest graph."},
     "title": {"type": "string", "description": "Required for create."},
     "tasks": {
@@ -82,13 +79,12 @@ func (t *TaskGraphTool) Tool() *llm.Tool {
       "description": "Required for create.",
       "items": {
         "type": "object",
-        "required": ["id", "title", "owner"],
+        "required": ["id", "title", "prompt"],
         "properties": {
           "id": {"type": "string"},
           "title": {"type": "string"},
-          "owner": {"type": "string", "enum": ["parent", "subagent"]},
           "dependencies": {"type": "array", "items": {"type": "string"}},
-          "prompt": {"type": "string"},
+          "prompt": {"type": "string", "description": "The complete delegated scope for this subagent run."},
           "slug": {"type": "string"},
           "model": {"type": "string"},
           "reasoning": {"type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]},
@@ -96,9 +92,7 @@ func (t *TaskGraphTool) Tool() *llm.Tool {
         }
       }
     },
-    "task_id": {"type": "string", "description": "One task to complete."},
     "task_ids": {"type": "array", "items": {"type": "string"}, "description": "Tasks to await or cancel. Omit to await/cancel the whole graph."},
-    "response": {"type": "string", "description": "Final response for a parent-owned completed task."},
     "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Maximum await duration. Defaults to 900 seconds."}
   }
 }`),
@@ -130,15 +124,6 @@ func (t *TaskGraphTool) run(ctx context.Context, req taskGraphInput) llm.ToolOut
 			return llm.ToolOut{LLMContent: llm.TextContent("No task graph exists for this conversation.")}
 		}
 		return taskGraphToolOut("Current task graph.", snapshot)
-	case "complete":
-		if req.GraphID == "" || req.TaskID == "" {
-			return llm.ErrorfToolOut("graph_id and task_id are required for complete")
-		}
-		snapshot, err := t.Service.CompleteTaskGraphTask(ctx, t.ParentConversationID, req.GraphID, req.TaskID, req.Response)
-		if err != nil {
-			return llm.ErrorfToolOut("complete task: %v", err)
-		}
-		return taskGraphToolOut("Task completed.", snapshot)
 	case "await":
 		if req.GraphID == "" {
 			return llm.ErrorfToolOut("graph_id is required for await")
@@ -209,11 +194,8 @@ func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCr
 		if _, exists := byID[task.ID]; exists {
 			return nil, fmt.Errorf("duplicate task id %q", task.ID)
 		}
-		if task.Owner != "parent" && task.Owner != "subagent" {
-			return nil, fmt.Errorf("task %q has invalid owner %q", task.ID, task.Owner)
-		}
-		if task.Owner == "subagent" && strings.TrimSpace(task.Prompt) == "" {
-			return nil, fmt.Errorf("subagent task %q requires prompt", task.ID)
+		if strings.TrimSpace(task.Prompt) == "" {
+			return nil, fmt.Errorf("task %q requires a subagent prompt", task.ID)
 		}
 		if task.Reasoning != "" && !isValidReasoningLevel(task.Reasoning) {
 			return nil, fmt.Errorf("task %q has invalid reasoning %q", task.ID, task.Reasoning)
@@ -270,7 +252,7 @@ func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCr
 	for _, id := range orderedIDs {
 		task := byID[id]
 		out = append(out, db.TaskGraphTaskCreate{
-			ID: task.ID, Title: task.Title, Owner: task.Owner, Dependencies: task.Dependencies,
+			ID: task.ID, Title: task.Title, Dependencies: task.Dependencies,
 			Prompt: task.Prompt, Slug: task.Slug, Model: task.Model, Reasoning: task.Reasoning, FileScopes: task.FileScopes,
 		})
 	}

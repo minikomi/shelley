@@ -24,9 +24,6 @@ func (*taskGraphServiceStub) GetLatestTaskGraphSnapshot(context.Context, string)
 func (*taskGraphServiceStub) GetTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error) {
 	return nil, nil
 }
-func (*taskGraphServiceStub) CompleteTaskGraphTask(context.Context, string, string, string, string) (*db.TaskGraphSnapshot, error) {
-	return nil, nil
-}
 func (*taskGraphServiceStub) AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error) {
 	return nil, nil
 }
@@ -41,8 +38,8 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 		Action: "create",
 		Title:  "Graph",
 		Tasks: []taskGraphTask{
-			{ID: "z-research", Title: "Research", Owner: "subagent", Prompt: "Research this", FileScopes: []string{"docs"}},
-			{ID: "a-write", Title: "Write", Owner: "parent", Dependencies: []string{"z-research"}, FileScopes: []string{"docs"}},
+			{ID: "z-research", Title: "Research", Prompt: "Research this", FileScopes: []string{"docs"}},
+			{ID: "a-review", Title: "Review", Prompt: "Review the research", Dependencies: []string{"z-research"}, FileScopes: []string{"docs"}},
 		},
 	})
 	if err != nil {
@@ -62,7 +59,7 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 	if len(stub.created) != 2 {
 		t.Fatalf("created %d tasks, want 2", len(stub.created))
 	}
-	if stub.created[0].ID != "z-research" || stub.created[1].ID != "a-write" {
+	if stub.created[0].ID != "z-research" || stub.created[1].ID != "a-review" {
 		t.Fatalf("created order = %q, %q; want input order", stub.created[0].ID, stub.created[1].ID)
 	}
 }
@@ -74,6 +71,8 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"MUST call create before",
 		"A prose plan is not a task graph",
 		"delegation would not shorten the",
+		"delegated subagent runs only",
+		"parent planning",
 	} {
 		if !strings.Contains(description, required) {
 			t.Errorf("task graph description missing %q", required)
@@ -85,15 +84,15 @@ func TestTaskGraphToolRejectsInvalidConcurrentScopesAndCycles(t *testing.T) {
 	tool := &TaskGraphTool{Service: &taskGraphServiceStub{}, ParentConversationID: "parent"}
 	for _, tasks := range [][]taskGraphTask{
 		{
-			{ID: "one", Title: "One", Owner: "subagent", Prompt: "one", FileScopes: []string{"server"}},
-			{ID: "two", Title: "Two", Owner: "subagent", Prompt: "two", FileScopes: []string{"server/api"}},
+			{ID: "one", Title: "One", Prompt: "one", FileScopes: []string{"server"}},
+			{ID: "two", Title: "Two", Prompt: "two", FileScopes: []string{"server/api"}},
 		},
 		{
-			{ID: "one", Title: "One", Owner: "parent", Dependencies: []string{"two"}},
-			{ID: "two", Title: "Two", Owner: "parent", Dependencies: []string{"one"}},
+			{ID: "one", Title: "One", Prompt: "one", Dependencies: []string{"two"}},
+			{ID: "two", Title: "Two", Prompt: "two", Dependencies: []string{"one"}},
 		},
 		{
-			{ID: "one", Title: "One", Owner: "subagent"},
+			{ID: "one", Title: "One"},
 		},
 	} {
 		if _, err := tool.validateCreate(taskGraphInput{Action: "create", Title: "Graph", Tasks: tasks}); err == nil {

@@ -42,19 +42,6 @@ func (s *Server) GetTaskGraphSnapshot(ctx context.Context, graphID string) (*db.
 	return s.db.GetTaskGraphSnapshot(ctx, graphID)
 }
 
-func (s *Server) CompleteTaskGraphTask(ctx context.Context, parentID, graphID, taskID, response string) (*db.TaskGraphSnapshot, error) {
-	if err := s.ensureTaskGraphParent(ctx, graphID, parentID); err != nil {
-		return nil, err
-	}
-	snapshot, err := s.db.CompleteParentTaskGraphTask(ctx, graphID, taskID, response)
-	if err != nil {
-		return nil, err
-	}
-	s.signalTaskGraphChange()
-	go s.scheduleTaskGraph(graphID)
-	return snapshot, nil
-}
-
 func (s *Server) AwaitTaskGraph(ctx context.Context, parentID, graphID string, taskIDs []string) (*db.TaskGraphSnapshot, error) {
 	for {
 		wake := s.taskGraphWaitChannel()
@@ -133,6 +120,24 @@ func (s *Server) CancelTaskGraph(ctx context.Context, parentID, graphID string, 
 	}
 	s.signalTaskGraphChange()
 	return snapshot, uncancelled, nil
+}
+
+func (s *Server) cancelActiveTaskGraph(ctx context.Context, parentID string) error {
+	snapshot, err := s.db.GetLatestTaskGraphSnapshot(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	if snapshot == nil || snapshot.Status != "active" {
+		return nil
+	}
+	_, uncancelled, err := s.CancelTaskGraph(ctx, parentID, snapshot.GraphID, nil)
+	if err != nil {
+		return err
+	}
+	if len(uncancelled) != 0 {
+		return fmt.Errorf("task graph tasks could not be cancelled: %s", strings.Join(uncancelled, ", "))
+	}
+	return nil
 }
 
 func (s *Server) ensureTaskGraphParent(ctx context.Context, graphID, parentID string) error {

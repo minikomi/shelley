@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +16,6 @@ import (
 type TaskGraphTaskCreate struct {
 	ID           string
 	Title        string
-	Owner        string
 	Dependencies []string
 	Prompt       string
 	Slug         string
@@ -95,10 +95,13 @@ func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title s
 			Tasks:                make([]TaskGraphTask, 0, len(tasks)),
 		}
 		for _, task := range tasks {
+			if strings.TrimSpace(task.Prompt) == "" {
+				return fmt.Errorf("task %q requires a subagent prompt", task.ID)
+			}
 			graph.Tasks = append(graph.Tasks, TaskGraphTask{
 				ID:           task.ID,
 				Title:        task.Title,
-				Owner:        task.Owner,
+				Owner:        "subagent",
 				Status:       "pending",
 				Dependencies: append([]string{}, task.Dependencies...),
 				Prompt:       task.Prompt,
@@ -187,46 +190,6 @@ func (db *DB) ListTaskGraphsWithReadySubagentTasks(ctx context.Context) ([]strin
 	return graphIDs, err
 }
 
-func (db *DB) CompleteParentTaskGraphTask(ctx context.Context, graphID, taskID, response string) (*TaskGraphSnapshot, error) {
-	var snapshot TaskGraphSnapshot
-	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
-		q := generated.New(tx.Conn())
-		row, graph, err := findTaskGraphOptions(ctx, tx, graphID)
-		if err != nil {
-			return err
-		}
-		task := findTaskGraphTask(graph, taskID)
-		if task == nil {
-			return sql.ErrNoRows
-		}
-		if task.Owner != "parent" {
-			return fmt.Errorf("task %q is owned by %s", taskID, task.Owner)
-		}
-		if task.Status != "complete" {
-			if task.Status != "ready" {
-				return fmt.Errorf("task %q is not ready", taskID)
-			}
-			task.Status = "complete"
-			task.FinalResponse = response
-			task.Error = ""
-			now := tx.Now
-			task.CompletedAt = &now
-			promoteTaskGraphReadyTasks(graph)
-			graph.UpdatedAt = now
-		}
-		refreshTaskGraphStatus(graph)
-		if err := saveTaskGraphOptions(ctx, q, row.conversationID, row.opts); err != nil {
-			return err
-		}
-		snapshot = *graph
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &snapshot, nil
-}
-
 // CompleteTaskGraphChild records a final subagent response. It returns true
 // whenever the child is durably tagged as a graph child, including duplicate
 // completion notifications.
@@ -259,7 +222,7 @@ func (db *DB) CompleteTaskGraphChild(ctx context.Context, childConversationID, r
 			return nil
 		}
 		task := findTaskGraphTask(graph, childTag.TaskID)
-		if task == nil || task.Owner != "subagent" || task.ChildConversationID != childConversationID {
+		if task == nil || task.ChildConversationID != childConversationID {
 			return nil
 		}
 		matched = true
@@ -328,7 +291,7 @@ func (db *DB) ClaimReadyTaskGraphSubagentTasks(ctx context.Context, graphID stri
 		}
 		running := 0
 		for _, task := range graph.Tasks {
-			if task.Owner == "subagent" && task.Status == "running" {
+			if task.Status == "running" {
 				running++
 			}
 		}
@@ -342,7 +305,7 @@ func (db *DB) ClaimReadyTaskGraphSubagentTasks(ctx context.Context, graphID stri
 			if available == 0 {
 				break
 			}
-			if task.Owner != "subagent" || task.Status != "ready" {
+			if task.Status != "ready" {
 				continue
 			}
 			task.Status = "running"

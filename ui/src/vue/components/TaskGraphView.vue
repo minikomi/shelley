@@ -172,12 +172,12 @@ function taskDetail(task: TaskGraphTask): string {
     .map((id) => props.graph.tasks.find((candidate) => candidate.id === id)?.title || id)
     .join(", ");
   if (task.state === "running" || task.state === "starting") {
-    return [task.model, task.owner, dependencies ? `after ${dependencies}` : ""].filter(Boolean).join(" · ");
+    return [task.model, dependencies ? `after ${dependencies}` : ""].filter(Boolean).join(" · ");
   }
   if (dependencies) {
     return `${task.state === "pending" ? "Waiting for" : "After"} ${dependencies}`;
   }
-  return task.owner === "parent" ? "Parent task" : task.model || "Subagent task";
+  return task.model || "Subagent task";
 }
 
 function openTask(slug: string) {

@@ -1136,7 +1136,6 @@ func (s *Service) makeTaskGraphDemoResponse(inputTokens uint64) *llm.Response {
 			{
 				"id":          "inspect",
 				"title":       "Inspect repository",
-				"owner":       "subagent",
 				"prompt":      "delay: 60",
 				"model":       "predictable",
 				"file_scopes": []string{"server"},
@@ -1144,7 +1143,6 @@ func (s *Service) makeTaskGraphDemoResponse(inputTokens uint64) *llm.Response {
 			{
 				"id":          "verify",
 				"title":       "Verify UI states",
-				"owner":       "subagent",
 				"prompt":      "delay: 60",
 				"model":       "predictable",
 				"file_scopes": []string{"ui"},
@@ -1152,13 +1150,12 @@ func (s *Service) makeTaskGraphDemoResponse(inputTokens uint64) *llm.Response {
 			{
 				"id":     "scaffold",
 				"title":  "Scaffold application",
-				"owner":  "parent",
 				"prompt": "Build the independent application shell.",
 			},
 			{
 				"id":           "integrate",
-				"title":        "Integrate and validate",
-				"owner":        "parent",
+				"title":        "Review the delegated results",
+				"prompt":       "Review the completed delegated work and report integration risks. Do not integrate it.",
 				"dependencies": []string{"inspect", "verify", "scaffold"},
 			},
 		},
