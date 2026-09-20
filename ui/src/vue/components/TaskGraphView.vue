@@ -195,6 +195,7 @@ function openTask(slug: string) {
 }
 
 .task-graph-dock {
+  flex: none;
   margin: 0 1rem;
   box-shadow: 0 -0.5rem 1.5rem rgb(0 0 0 / 18%);
 }
