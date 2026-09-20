@@ -28,6 +28,28 @@
       </svg>
     </button>
 
+    <details v-if="!collapsed" class="task-graph-plan">
+      <summary>
+        <span>Plan details</span>
+        <small>
+          {{ graph.tasks.length }} tasks
+          <template v-if="graph.max_concurrency">
+            · concurrency {{ graph.max_concurrency }}
+          </template>
+        </small>
+      </summary>
+      <div class="task-graph-plan-body">
+        <p v-if="graph.serial_rationale" class="task-graph-plan-rationale">
+          {{ graph.serial_rationale }}
+        </p>
+        <article v-for="task in graph.tasks" :key="task.id">
+          <strong>{{ task.title }}</strong>
+          <small>{{ taskPlanMeta(task) }}</small>
+          <p>{{ taskBrief(task) }}</p>
+        </article>
+      </div>
+    </details>
+
     <div v-if="!collapsed && topology.layered" class="task-graph-rows task-graph-flow">
       <template v-for="(layer, layerIndex) in topology.layers" :key="layer.depth">
         <div
@@ -54,9 +76,20 @@
               class="task-graph-action"
               @click.stop="openTask(task.slug)"
             >
-              {{ stateLabel(task.state) }}
+              <TaskGraphRunningLabel v-if="task.state === 'running'" />
+              <template v-else>{{ stateLabel(task.state) }}</template>
+              <TaskGraphElapsedTime
+                v-if="task.state === 'running' || task.state === 'starting'"
+                :started-at="task.started_at"
+              />
             </button>
-            <span v-else class="task-graph-state-label">{{ stateLabel(task.state) }}</span>
+            <span v-else class="task-graph-state-label">
+              {{ stateLabel(task.state) }}
+              <TaskGraphElapsedTime
+                v-if="task.state === 'running' || task.state === 'starting'"
+                :started-at="task.started_at"
+              />
+            </span>
           </div>
         </div>
         <div
@@ -93,9 +126,20 @@
           class="task-graph-action"
           @click.stop="openTask(task.slug)"
         >
-          {{ stateLabel(task.state) }}
+          <TaskGraphRunningLabel v-if="task.state === 'running'" />
+          <template v-else>{{ stateLabel(task.state) }}</template>
+          <TaskGraphElapsedTime
+            v-if="task.state === 'running' || task.state === 'starting'"
+            :started-at="task.started_at"
+          />
         </button>
-        <span v-else class="task-graph-state-label">{{ stateLabel(task.state) }}</span>
+        <span v-else class="task-graph-state-label">
+          {{ stateLabel(task.state) }}
+          <TaskGraphElapsedTime
+            v-if="task.state === 'running' || task.state === 'starting'"
+            :started-at="task.started_at"
+          />
+        </span>
       </div>
     </div>
   </div>
@@ -105,6 +149,8 @@
 import { computed } from "vue";
 import type { TaskGraphSnapshot, TaskGraphTask, TaskState } from "../../taskGraph";
 import { navigateToConversationSlug } from "../composables/subagentLive";
+import TaskGraphElapsedTime from "./TaskGraphElapsedTime.vue";
+import TaskGraphRunningLabel from "./TaskGraphRunningLabel.vue";
 import TaskGraphTaskDetail from "./TaskGraphTaskDetail.vue";
 
 const props = withDefaults(
@@ -263,6 +309,25 @@ function taskDetail(task: TaskGraphTask): string {
     return `${task.state === "pending" ? "Waiting for" : "After"} ${dependencies}`;
   }
   return task.model || "Subagent task";
+}
+
+function taskPlanMeta(task: TaskGraphTask): string {
+  const dependencies = (task.depends_on || [])
+    .map((id) => props.graph.tasks.find((candidate) => candidate.id === id)?.title || id)
+    .join(", ");
+  return [
+    task.model,
+    task.reasoning ? `${task.reasoning} reasoning` : "",
+    dependencies ? `after ${dependencies}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function taskBrief(task: TaskGraphTask): string {
+  const prompt = task.prompt?.trim().replace(/\s+/g, " ");
+  if (!prompt) return "No additional brief.";
+  return prompt.length > 240 ? `${prompt.slice(0, 237)}...` : prompt;
 }
 
 function openTask(slug: string) {
@@ -441,6 +506,88 @@ function openTask(slug: string) {
   border-top: 1px solid var(--border);
 }
 
+.task-graph-plan {
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.task-graph-plan summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  list-style: none;
+  font-size: 0.6875rem;
+  cursor: pointer;
+}
+
+.task-graph-plan summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-graph-plan summary::after {
+  margin-left: auto;
+  content: "›";
+  transition: transform 0.15s ease;
+}
+
+.task-graph-plan[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.task-graph-plan summary span {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.task-graph-plan summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-graph-plan-body {
+  border-top: 1px solid var(--border);
+}
+
+.task-graph-plan article,
+.task-graph-plan-rationale {
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-graph-plan article:last-child {
+  border-bottom: 0;
+}
+
+.task-graph-plan article {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.task-graph-plan article strong {
+  color: var(--text-primary);
+  font-size: 0.75rem;
+}
+
+.task-graph-plan article small,
+.task-graph-plan article p,
+.task-graph-plan-rationale {
+  font-size: 0.625rem;
+  line-height: 1.4;
+}
+
+.task-graph-plan article p {
+  display: -webkit-box;
+  margin: 0.125rem 0 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .task-graph-row {
   --task-depth: 0;
   display: grid;
@@ -617,6 +764,16 @@ function openTask(slug: string) {
   color: var(--text-secondary);
   font-size: 0.6875rem;
   cursor: pointer;
+}
+
+.task-graph-action time,
+.task-graph-state-label time {
+  display: block;
+  margin-top: 0.0625rem;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  text-align: right;
 }
 
 .task-state-running .task-graph-action,

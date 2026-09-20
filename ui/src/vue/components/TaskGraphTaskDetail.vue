@@ -36,7 +36,16 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.is-live {
+.is-live.is-live {
+  display: block;
+  overflow: hidden;
+  max-width: 100%;
   color: var(--text-primary);
+  font-family: var(--font-mono);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-line-clamp: unset;
 }
+
 </style>

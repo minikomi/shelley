@@ -15,8 +15,11 @@ export interface TaskGraphTask {
   owner: "subagent";
   state: TaskState;
   depends_on?: string[];
+  prompt?: string;
   slug?: string;
   model?: string;
+  reasoning?: string;
+  file_scopes?: string[];
   child_conversation_id?: string;
   result?: string;
   error?: string;
@@ -29,6 +32,8 @@ export interface TaskGraphSnapshot {
   parent_conversation_id: string;
   title: string;
   state: TaskGraphState;
+  max_concurrency?: number;
+  serial_rationale?: string;
   created_at: string;
   updated_at: string;
   tasks: TaskGraphTask[];
