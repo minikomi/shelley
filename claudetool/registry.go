@@ -22,6 +22,7 @@ var ToolRegistry = []ToolInfo{
 	{Name: "change_dir", Summary: "Change the working directory.", DefaultOn: true, SourcePath: "claudetool/changedir.go"},
 	{Name: "output_iframe", Summary: "Show HTML/visualizations to the user.", DefaultOn: true, SourcePath: "claudetool/output_iframe.go"},
 	{Name: "subagent", Summary: "Spawn a subagent conversation.", DefaultOn: true, SourcePath: "claudetool/subagent.go"},
+	{Name: "task_graph", Summary: "Create and coordinate a persisted task graph.", DefaultOn: true, SourcePath: "claudetool/task_graph.go"},
 	{Name: "llm_one_shot", Summary: "One-shot prompt to another LLM.", DefaultOn: true, SourcePath: "claudetool/llm_one_shot.go"},
 	{Name: "browser", Summary: "Browser automation (navigate, eval, screenshot, emulate, network, accessibility, profile).", DefaultOn: true, SourcePath: "claudetool/browse/browse.go"},
 	{Name: "read_image", Summary: "Read an image file for the model.", DefaultOn: true, SourcePath: "claudetool/browse/browse.go"},

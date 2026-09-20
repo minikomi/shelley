@@ -1,0 +1,66 @@
+<template>
+  <TaskGraphView
+    v-if="graph"
+    :graph="graph"
+    :collapsed="collapsed"
+    variant="inline"
+    @toggle="collapsed = !collapsed"
+  />
+  <div v-else class="tool" data-testid="tool-call-completed">
+    <div class="tool-header">
+      <div class="tool-summary">
+        <span class="tool-emoji">◇</span>
+        <span class="tool-name">task graph</span>
+        <span class="tool-command">{{ actionLabel }}</span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { api } from "../../../services/api";
+import { taskGraphSnapshot, type TaskGraphSnapshot } from "../../../taskGraph";
+import TaskGraphView from "../TaskGraphView.vue";
+
+const props = defineProps<{
+  toolInput?: unknown;
+  display?: unknown;
+}>();
+
+const collapsed = ref(true);
+const graph = ref<TaskGraphSnapshot | null>(taskGraphSnapshot(props.display));
+let refreshTimer: number | null = null;
+
+const actionLabel = computed(() => {
+  if (!props.toolInput || typeof props.toolInput !== "object") return "updated";
+  const action = (props.toolInput as { action?: unknown }).action;
+  return typeof action === "string" ? action : "updated";
+});
+
+function clearRefreshTimer() {
+  if (refreshTimer !== null) {
+    window.clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+async function refreshGraph() {
+  clearRefreshTimer();
+  const current = graph.value;
+  if (!current || current.state !== "active" || !current.parent_conversation_id) return;
+  try {
+    const latest = await api.getLatestTaskGraph(current.parent_conversation_id);
+    if (!latest || latest.id !== current.id) return;
+    graph.value = latest;
+    if (latest.state === "active") {
+      refreshTimer = window.setTimeout(() => void refreshGraph(), 1500);
+    }
+  } catch {
+    // The persisted display snapshot remains usable if live refresh fails.
+  }
+}
+
+onMounted(() => void refreshGraph());
+onUnmounted(clearRefreshTimer);
+</script>

@@ -347,6 +347,11 @@
       </div>
     </div>
 
+    <TaskGraphDock
+      :conversation-id="conversationId"
+      :refresh-token="messages.length + queuedGhosts.length"
+    />
+
     <!-- Message input -->
     <!-- No :key here, matching React: MessageInput must NOT remount on the
          first-message conversationId flip, or its post-await setMessage("")
@@ -594,6 +599,7 @@ import { chunkMountKey } from "./chunkMount";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
 import TranscriptionTask from "./TranscriptionTask.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
+import TaskGraphDock from "./TaskGraphDock.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import InlineText from "./InlineText.vue";
 import ThinkingContent from "./tools/ThinkingContent.vue";

@@ -12,6 +12,7 @@ import {
   VersionInfo,
   CommitInfo,
 } from "../types";
+import type { TaskGraphSnapshot } from "../taskGraph";
 
 // Extract a useful error message from a failed fetch response. Prefers the
 // response body (which may contain a server-side detail like a hook error),
@@ -110,6 +111,17 @@ class ApiService {
     const response = await fetch(`${this.baseUrl}/conversations`);
     if (!response.ok) {
       throw new Error(`Failed to get conversations: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async getLatestTaskGraph(conversationId: string): Promise<TaskGraphSnapshot | null> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${encodeURIComponent(conversationId)}/task-graph`,
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw await responseError(response, "Failed to get task graph");
     }
     return response.json();
   }
