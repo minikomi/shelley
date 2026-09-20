@@ -95,6 +95,7 @@ function deferred<T>() {
   const store = new BtwStore(
     {
       listBtwReaders: async () => [],
+      dismissBtwExchange: async () => {},
       getConversationWithProgress: async () => ({ conversation, messages: [] }),
     },
     children.store,
@@ -129,6 +130,7 @@ function deferred<T>() {
   const store = new BtwStore(
     {
       listBtwReaders: async () => (++lists === 1 ? first.promise : [descriptor]),
+      dismissBtwExchange: async () => {},
       getConversationWithProgress: async () => ({ conversation, messages: [question, answer] }),
     },
     children.store,
@@ -168,6 +170,7 @@ for (const scenario of [
   const store = new BtwStore(
     {
       listBtwReaders: async () => (++lists === 1 ? first.promise : []),
+      dismissBtwExchange: async () => {},
       getConversationWithProgress: async () => ({ conversation, messages: [question, answer] }),
     },
     children.store,
@@ -190,6 +193,7 @@ for (const scenario of [
   const store = new BtwStore(
     {
       listBtwReaders: async () => [descriptor],
+      dismissBtwExchange: async () => {},
       getConversationWithProgress: async () => {
         throw new ApiError("gone", 404);
       },
@@ -199,6 +203,43 @@ for (const scenario of [
   );
   await store.hydrate(parentID);
   assert.equal(store.list(parentID).length, 0, "a child hydrate 404 removes its descriptor");
+}
+
+{
+  const children = childStore();
+  children.records.set("child", record(conversation, [question, answer]));
+  const dismissed: Array<[string, string]> = [];
+  const store = new BtwStore(
+    {
+      listBtwReaders: async () => [descriptor],
+      dismissBtwExchange: async (parentID, childID) => {
+        dismissed.push([parentID, childID]);
+      },
+      getConversationWithProgress: async () => ({ conversation, messages: [question, answer] }),
+    },
+    children.store,
+    null,
+  );
+  store.upsert(descriptor);
+  const cachedChild = children.records.get("child");
+  let notifications = 0;
+  store.subscribe(parentID, () => notifications++);
+
+  await store.dismiss(store.list(parentID)[0]);
+
+  assert.deepEqual(
+    dismissed,
+    [[parentID, "child"]],
+    "dismiss uses the reader's parent and child IDs",
+  );
+  assert.equal(store.list(parentID).length, 0, "dismiss removes the inline reader");
+  assert.equal(children.unsubscribes, 2, "dismiss detaches child subscriptions");
+  assert.equal(notifications, 1, "dismiss notifies inline readers");
+  assert.equal(
+    children.records.get("child"),
+    cachedChild,
+    "dismiss retains the child conversation cache",
+  );
 }
 
 const oldSummary = user(1, "summary prompt", { userData: { btw_turn_kind: "summary" } });
@@ -224,6 +265,7 @@ const priorExchange: BtwExchange = {
 };
 const acceptedAPI = {
   listBtwReaders: async () => [descriptor],
+  dismissBtwExchange: async () => {},
   getConversationWithProgress: async () => ({
     conversation,
     messages: [oldSummary, oldAnswer, newSummary, newAnswer],
@@ -269,6 +311,7 @@ for (const reload of [false, true]) {
   const exact = new BtwStore(
     {
       listBtwReaders: async () => [descriptor],
+      dismissBtwExchange: async () => {},
       getConversationWithProgress: async () => ({
         conversation,
         messages: [

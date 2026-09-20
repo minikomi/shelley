@@ -4,7 +4,10 @@ import { messageStore } from "./messageStore";
 import { projectBtwReader } from "./btwProjector";
 import * as summaryIntent from "./btwSummaryIntent";
 
-type API = Pick<typeof api, "listBtwReaders" | "getConversationWithProgress">;
+type API = Pick<
+  typeof api,
+  "listBtwReaders" | "dismissBtwExchange" | "getConversationWithProgress"
+>;
 type Children = Pick<
   typeof messageStore,
   "peek" | "getTransient" | "applyFullHistory" | "subscribe" | "subscribeTransient"
@@ -118,6 +121,11 @@ export class BtwStore {
     parent.revision++;
     this.detach(childID);
     this.emit(parentID);
+  }
+
+  async dismiss(exchange: BtwExchange): Promise<void> {
+    await this.btwAPI.dismissBtwExchange(exchange.parent_conversation_id, exchange.exchange_id);
+    this.removeReader(exchange.exchange_id, exchange.parent_conversation_id);
   }
 
   clear(conversationID: string, parentHint?: string): void {

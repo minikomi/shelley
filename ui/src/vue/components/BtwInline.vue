@@ -79,6 +79,15 @@
           Open subagent
         </a>
         <button
+          v-if="!isActive"
+          type="button"
+          class="btw-inline-action"
+          :disabled="busy"
+          @click="dismiss"
+        >
+          Dismiss
+        </button>
+        <button
           v-if="isActive"
           type="button"
           class="btw-inline-action"
@@ -241,6 +250,18 @@ async function mutate(run: () => Promise<void>): Promise<boolean> {
 }
 function cancel() {
   void mutate(() => api.cancelConversation(props.exchange.exchange_id));
+}
+async function dismiss() {
+  if (busy.value) return;
+  busy.value = true;
+  actionError.value = null;
+  try {
+    await btwStore.dismiss(props.exchange);
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : "Failed to dismiss BTW";
+  } finally {
+    busy.value = false;
+  }
 }
 function retry() {
   const turn = props.exchange.turns.at(-1);

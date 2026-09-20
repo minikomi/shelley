@@ -171,6 +171,30 @@ func (db *DB) ListBtwReaders(ctx context.Context, parentID string) ([]BtwReaderI
 	return readers, err
 }
 
+// DismissBtwReader removes managed BTW metadata from a child owned by parentID.
+// The conversation, its parent relationship, and all messages remain intact.
+func (db *DB) DismissBtwReader(ctx context.Context, parentID, childID string) error {
+	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		child, err := q.GetConversation(ctx, childID)
+		if err != nil {
+			return err
+		}
+		identity, ok := ManagedBtwReaderIdentity(child)
+		if !ok || identity.ParentConversationID != parentID {
+			return fmt.Errorf("not an owned BTW reader")
+		}
+		options, _, err := scrubManagedBtwOptions(child.ConversationOptions)
+		if err != nil {
+			return err
+		}
+		return q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
+			ConversationID:      childID,
+			ConversationOptions: options,
+		})
+	})
+}
+
 // ListFrozenParentMessages returns the exact context-visible parent prefix
 // selected by conversation, generation, and inclusive sequence boundary.
 func (db *DB) ListFrozenParentMessages(ctx context.Context, conversationID string, pointer BtwParentPointer) ([]generated.Message, error) {

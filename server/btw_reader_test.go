@@ -569,6 +569,50 @@ func TestBtwUsesOnlyReaderToolsAndMetadataListing(t *testing.T) {
 	}
 }
 
+func TestBtwDismissRemovesReaderButPreservesChild(t *testing.T) {
+	server, database, _, parent := newBtwTest(t)
+	descriptor := postBtw(t, server, parent.ConversationID, "echo: dismiss", false)
+	before := listMessages(t, database, descriptor.ConversationID)
+	if len(before) == 0 {
+		t.Fatal("BTW child has no messages before dismissal")
+	}
+
+	w := httptest.NewRecorder()
+	server.handleDismissBtwReader(w, httptest.NewRequest(http.MethodPost, "/", nil), parent.ConversationID, descriptor.ConversationID)
+	requireBtwStatus(t, w, http.StatusNoContent)
+
+	readers, err := database.ListBtwReaders(t.Context(), parent.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readers) != 0 {
+		t.Fatalf("dismissed readers=%#v", readers)
+	}
+	child, err := database.GetConversationByID(t.Context(), descriptor.ConversationID)
+	if err != nil {
+		t.Fatalf("dismissed child missing: %v", err)
+	}
+	if child.ParentConversationID == nil || *child.ParentConversationID != parent.ConversationID {
+		t.Fatalf("dismissed child parent=%v want=%q", child.ParentConversationID, parent.ConversationID)
+	}
+	if after := listMessages(t, database, descriptor.ConversationID); len(after) != len(before) {
+		t.Fatalf("dismissed child messages=%d want=%d", len(after), len(before))
+	}
+}
+
+func TestBtwDismissWrongParentReturnsNotFound(t *testing.T) {
+	server, database, _, parent := newBtwTest(t)
+	descriptor := postBtw(t, server, parent.ConversationID, "echo: dismiss", false)
+	otherParent, err := database.CreateConversation(t.Context(), nil, true, nil, strPtr("predictable"), db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	server.handleDismissBtwReader(w, httptest.NewRequest(http.MethodPost, "/", nil), otherParent.ConversationID, descriptor.ConversationID)
+	requireBtwStatus(t, w, http.StatusNotFound)
+}
+
 func TestBtwSummaryIsOrdinaryMarkedChildTurn(t *testing.T) {
 	server, database, held, parent := newBtwTest(t)
 	descriptor := postBtw(t, server, parent.ConversationID, "echo: discuss", false)

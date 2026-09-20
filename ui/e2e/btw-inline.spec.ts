@@ -104,7 +104,19 @@ test.describe("inline BTW reader", () => {
       await page.reload();
       await expect(input).toHaveValue(summary, { timeout: 30_000 });
       await expect(page.getByTestId("btw-inline")).toHaveCount(2);
-      await first.getByRole("link", { name: "Open subagent" }).click();
+      const dismissedChildID = await first.getAttribute("data-btw-exchange-id");
+      expect(dismissedChildID).toBeTruthy();
+      await first.getByRole("button", { name: "Dismiss" }).click();
+      await expect(first).toHaveCount(0, { timeout: 30_000 });
+      await expect(page.getByTestId("btw-inline")).toHaveCount(1);
+
+      const child = await request.get(`/api/conversation/${dismissedChildID}`);
+      expect(child.ok()).toBe(true);
+
+      await page.reload();
+      await expect(first).toHaveCount(0);
+      await expect(page.getByTestId("btw-inline")).toHaveCount(1);
+      await second.getByRole("link", { name: "Open subagent" }).click();
       await expect(page).toHaveURL(/\/c\/btw-/, { timeout: 10_000 });
     } finally {
       parentBarrier.cleanup();

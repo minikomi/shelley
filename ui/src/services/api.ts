@@ -369,6 +369,14 @@ class ApiService {
     return data.readers ?? [];
   }
 
+  async dismissBtwExchange(conversationId: string, exchangeId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${conversationId}/btw/${exchangeId}/dismiss`,
+      { method: "POST", headers: this.postHeaders },
+    );
+    if (!response.ok) throw await responseError(response, "Failed to dismiss BTW");
+  }
+
   async summarizeBtwExchange(
     conversationId: string,
     exchangeId: string,
