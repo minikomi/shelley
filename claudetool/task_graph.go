@@ -23,11 +23,17 @@ research, shell, editing, or browser tools. A prose plan is not a task graph.
 Do not create a graph for contained work where delegation would not shorten the
 critical path.
 
-Use create once to define delegated subagent runs only. Keep parent planning,
-editing, integration, and final validation outside the graph. Every task
-launches a subagent automatically when its dependencies complete. Use await to
-wait for work already in progress without sending children any new prompts.
-Every result includes the complete current graph snapshot.
+Use create once per delegation wave to define delegated subagent runs only.
+Keep parent planning, integration, and final validation outside the graph.
+Every task launches a subagent automatically when its dependencies complete.
+Use await to wait for work already in progress without sending children any
+new prompts. Every result includes the complete current graph snapshot.
+
+After a graph reaches a terminal state, reassess the remaining request. If the
+next work has independent scopes where delegation shortens the critical path,
+call create again for a new graph before starting that work. Each graph should
+represent one coherent wave based on what is known then; do not hardcode phase
+names or task counts, and do not mutate a finished graph.
 
 Maximize safe breadth: dependencies must represent true blockers, not preferred
 ordering. Aim to fill the three available concurrent slots when the request has

@@ -78,6 +78,10 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"three available concurrent slots",
 		"research-only sidecar",
 		"true blockers",
+		"once per delegation wave",
+		"call create again",
+		"do not hardcode phase",
+		"do not mutate a finished graph",
 	} {
 		if !strings.Contains(description, required) {
 			t.Errorf("task graph description missing %q", required)
