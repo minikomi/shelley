@@ -1,12 +1,12 @@
 <template>
   <TaskGraphView
-    v-if="graph"
+    v-if="visibleInTimeline && graph"
     :graph="graph"
     :collapsed="collapsed"
     variant="inline"
     @toggle="collapsed = !collapsed"
   />
-  <div v-else class="tool" data-testid="tool-call-completed">
+  <div v-else-if="visibleInTimeline" class="tool" data-testid="tool-call-completed">
     <div class="tool-header">
       <div class="tool-summary">
         <span class="tool-emoji">◇</span>
@@ -32,10 +32,16 @@ const collapsed = ref(true);
 const graph = ref<TaskGraphSnapshot | null>(taskGraphSnapshot(props.display));
 let refreshTimer: number | null = null;
 
+const action = computed(() => {
+  if (!props.toolInput || typeof props.toolInput !== "object") return "";
+  const value = (props.toolInput as { action?: unknown }).action;
+  return typeof value === "string" ? value : "";
+});
+
+const visibleInTimeline = computed(() => action.value === "" || action.value === "create");
+
 const actionLabel = computed(() => {
-  if (!props.toolInput || typeof props.toolInput !== "object") return "updated";
-  const action = (props.toolInput as { action?: unknown }).action;
-  return typeof action === "string" ? action : "updated";
+  return action.value || "updated";
 });
 
 function clearRefreshTimer() {
@@ -47,6 +53,7 @@ function clearRefreshTimer() {
 
 async function refreshGraph() {
   clearRefreshTimer();
+  if (!visibleInTimeline.value) return;
   const current = graph.value;
   if (!current || current.state !== "active" || !current.parent_conversation_id) return;
   try {

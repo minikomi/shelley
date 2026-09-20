@@ -29,11 +29,13 @@
 
     <div v-if="!collapsed" class="task-graph-rows">
       <div
-        v-for="(task, index) in graph.tasks"
+        v-for="{ task, index, depth } in displayTasks"
         :key="task.id"
         class="task-graph-row"
-        :class="`task-state-${task.state}`"
+        :class="[`task-state-${task.state}`, { 'has-dependencies': depth > 0 }]"
+        :style="{ '--task-depth': Math.min(depth, 3) }"
       >
+        <span v-if="depth > 0" class="task-tree-connector" aria-hidden="true" />
         <span class="task-state-icon" aria-hidden="true">{{ taskIcon(task, index) }}</span>
         <span class="task-graph-copy">
           <strong>{{ task.title }}</strong>
@@ -94,6 +96,27 @@ const counts = computed(() => {
   };
 });
 
+const displayTasks = computed(() => {
+  const depths = new Map<string, number>();
+  const taskByID = new Map(props.graph.tasks.map((task) => [task.id, task]));
+
+  function depthFor(task: TaskGraphTask, visiting = new Set<string>()): number {
+    const existing = depths.get(task.id);
+    if (existing !== undefined) return existing;
+    if (visiting.has(task.id)) return 0;
+    visiting.add(task.id);
+    const depth = (task.depends_on || []).reduce((maxDepth, dependencyID) => {
+      const dependency = taskByID.get(dependencyID);
+      return dependency ? Math.max(maxDepth, depthFor(dependency, visiting) + 1) : maxDepth;
+    }, 0);
+    visiting.delete(task.id);
+    depths.set(task.id, depth);
+    return depth;
+  }
+
+  return props.graph.tasks.map((task, index) => ({ task, index, depth: depthFor(task) }));
+});
+
 const tone = computed(() => {
   if (props.graph.state === "failed" || counts.value.failed) return "failed";
   if (props.graph.state === "complete") return "complete";
@@ -145,14 +168,14 @@ function taskIcon(task: TaskGraphTask, index: number): string {
 function taskDetail(task: TaskGraphTask): string {
   if (task.error) return task.error;
   if (task.state === "complete" && task.result) return task.result.split("\n")[0];
+  const dependencies = (task.depends_on || [])
+    .map((id) => props.graph.tasks.find((candidate) => candidate.id === id)?.title || id)
+    .join(", ");
   if (task.state === "running" || task.state === "starting") {
-    return [task.model, task.owner].filter(Boolean).join(" · ");
+    return [task.model, task.owner, dependencies ? `after ${dependencies}` : ""].filter(Boolean).join(" · ");
   }
-  if (task.state === "pending" && task.depends_on?.length) {
-    const dependencies = task.depends_on
-      .map((id) => props.graph.tasks.find((candidate) => candidate.id === id)?.title || id)
-      .join(", ");
-    return `Waiting for ${dependencies}`;
+  if (dependencies) {
+    return `${task.state === "pending" ? "Waiting for" : "After"} ${dependencies}`;
   }
   return task.owner === "parent" ? "Parent task" : task.model || "Subagent task";
 }
@@ -258,7 +281,14 @@ function openTask(slug: string) {
   color: var(--text-secondary);
   font-size: 0.6875rem;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.task-graph-copy small {
+  display: -webkit-box;
+  line-height: 1.35;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .task-graph-chevron {
@@ -274,19 +304,51 @@ function openTask(slug: string) {
 }
 
 .task-graph-rows {
-  max-height: 15rem;
+  max-height: 20rem;
   overflow-y: auto;
   border-top: 1px solid var(--border);
 }
 
 .task-graph-row {
+  --task-depth: 0;
   display: grid;
   grid-template-columns: 1.35rem minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.625rem;
-  min-height: 2.75rem;
-  padding: 0.5rem 0.75rem;
+  min-height: 3.5rem;
+  padding: 0.625rem 0.75rem;
   border-bottom: 1px solid var(--border);
+}
+
+.task-graph-row.has-dependencies {
+  grid-template-columns: 0.625rem 1.35rem minmax(0, 1fr) auto;
+  margin-left: calc(min(var(--task-depth), 3) * 0.75rem);
+}
+
+.task-tree-connector {
+  position: relative;
+  align-self: stretch;
+  width: 0.625rem;
+}
+
+.task-tree-connector::before {
+  position: absolute;
+  top: -0.625rem;
+  bottom: 50%;
+  left: 0.1875rem;
+  width: 1px;
+  background: var(--border);
+  content: "";
+}
+
+.task-tree-connector::after {
+  position: absolute;
+  top: 50%;
+  left: 0.1875rem;
+  width: 0.4375rem;
+  height: 1px;
+  background: var(--border);
+  content: "";
 }
 
 .task-graph-row:last-child {
@@ -340,7 +402,30 @@ function openTask(slug: string) {
 }
 
 .task-graph-inline.collapsed .task-graph-header {
-  min-height: 2.75rem;
+  min-height: 2.625rem;
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+
+.task-graph-inline.collapsed .task-graph-indicator {
+  width: 1.125rem;
+  height: 1.125rem;
+  font-size: 0.625rem;
+}
+
+.task-graph-inline.collapsed .task-graph-heading {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.task-graph-inline.collapsed .task-graph-heading strong {
+  font-size: 0.75rem;
+}
+
+.task-graph-inline.collapsed .task-graph-heading small {
+  flex: none;
+  font-size: 0.625rem;
 }
 
 @keyframes task-progress-pulse {
@@ -363,6 +448,21 @@ function openTask(slug: string) {
   .task-graph-row {
     padding-right: 0.625rem;
     padding-left: 0.625rem;
+  }
+
+  .task-graph-row.has-dependencies {
+    margin-left: calc(min(var(--task-depth), 2) * 0.4rem);
+  }
+
+  .task-graph-copy strong {
+    white-space: normal;
+  }
+
+  .task-graph-inline.collapsed .task-graph-heading small {
+    overflow: hidden;
+    flex: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
