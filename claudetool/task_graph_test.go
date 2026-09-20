@@ -75,9 +75,9 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"delegation would not shorten the",
 		"delegated subagent runs only",
 		"parent planning",
-		"Maximize safe breadth",
-		"three available concurrent slots",
-		"research-only sidecar",
+		"scheduler cap, not a target",
+		"One-task, linear, and branching graphs",
+		"make the graph look busy",
 		"true blockers",
 		"once per delegation wave",
 		"call create again",
@@ -115,7 +115,7 @@ func TestTaskGraphToolTerminalAwaitPromptsAnotherDelegationDecision(t *testing.T
 	}
 }
 
-func TestTaskGraphToolRejectsNonForkingGraphs(t *testing.T) {
+func TestTaskGraphToolAcceptsTaskDerivedGraphShapes(t *testing.T) {
 	tool := &TaskGraphTool{Service: &taskGraphServiceStub{}, ParentConversationID: "parent"}
 	for _, tasks := range [][]taskGraphTask{
 		{{ID: "only", Title: "Only", Prompt: "Work"}},
@@ -125,8 +125,8 @@ func TestTaskGraphToolRejectsNonForkingGraphs(t *testing.T) {
 			{ID: "three", Title: "Three", Prompt: "Three", Dependencies: []string{"two"}},
 		},
 	} {
-		if _, err := tool.validateCreate(taskGraphInput{Action: "create", Title: "Graph", Tasks: tasks}); err == nil {
-			t.Fatalf("validateCreate(%+v) succeeded, want non-forking graph error", tasks)
+		if _, err := tool.validateCreate(taskGraphInput{Action: "create", Title: "Graph", Tasks: tasks}); err != nil {
+			t.Fatalf("validateCreate(%+v): %v", tasks, err)
 		}
 	}
 }
