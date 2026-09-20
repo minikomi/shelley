@@ -20,7 +20,7 @@ const props = defineProps<{
 }>();
 
 const graph = ref<TaskGraphSnapshot | null>(null);
-const collapsed = ref(false);
+const collapsed = ref(true);
 let refreshTimer: number | null = null;
 let requestID = 0;
 
@@ -53,7 +53,7 @@ async function loadGraph() {
   try {
     const next = await api.getLatestTaskGraph(conversationId);
     if (id !== requestID || conversationId !== props.conversationId) return;
-    if (next?.id !== graph.value?.id) collapsed.value = false;
+    if (next?.id !== graph.value?.id) collapsed.value = true;
     graph.value = next;
   } catch {
     if (id === requestID) graph.value = null;
@@ -65,7 +65,7 @@ watch(
   () => props.conversationId,
   () => {
     graph.value = null;
-    collapsed.value = false;
+    collapsed.value = true;
     void loadGraph();
   },
 );

@@ -1,11 +1,23 @@
 <template>
-  <TaskGraphView
-    v-if="visibleInTimeline && graph"
-    :graph="graph"
-    :collapsed="collapsed"
-    variant="inline"
-    @toggle="collapsed = !collapsed"
-  />
+  <div v-if="visibleInTimeline && graph" class="tool" data-testid="tool-call-completed">
+    <div class="tool-header" @click="collapsed = !collapsed">
+      <div class="tool-summary">
+        <span class="tool-emoji">◇</span>
+        <span class="tool-name">task graph</span>
+        <span class="tool-command">{{ graph.title || "Task graph" }}</span>
+      </div>
+      <button
+        class="tool-toggle"
+        :aria-label="collapsed ? 'Expand' : 'Collapse'"
+        :aria-expanded="!collapsed"
+      >
+        <ToolChevron :expanded="!collapsed" />
+      </button>
+    </div>
+    <div v-if="!collapsed" class="tool-details task-graph-tool-details">
+      <TaskGraphView :graph="graph" :show-header="false" variant="inline" />
+    </div>
+  </div>
   <div v-else-if="visibleInTimeline" class="tool" data-testid="tool-call-completed">
     <div class="tool-header">
       <div class="tool-summary">
@@ -22,6 +34,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { api } from "../../../services/api";
 import { taskGraphSnapshot, type TaskGraphSnapshot } from "../../../taskGraph";
 import TaskGraphView from "../TaskGraphView.vue";
+import ToolChevron from "./ToolChevron.vue";
 
 const props = defineProps<{
   toolInput?: unknown;
@@ -71,3 +84,9 @@ async function refreshGraph() {
 onMounted(() => void refreshGraph());
 onUnmounted(clearRefreshTimer);
 </script>
+
+<style scoped>
+.task-graph-tool-details {
+  padding: 0;
+}
+</style>

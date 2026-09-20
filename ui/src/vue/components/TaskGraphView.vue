@@ -5,6 +5,7 @@
     data-testid="task-graph"
   >
     <button
+      v-if="showHeader"
       type="button"
       class="task-graph-header"
       :aria-expanded="!collapsed"
@@ -12,8 +13,8 @@
     >
       <span class="task-graph-indicator" aria-hidden="true">{{ indicator }}</span>
       <span class="task-graph-heading">
-        <strong>{{ graph.title || "Task graph" }}</strong>
-        <small>{{ summary }}</small>
+        <strong v-if="variant !== 'dock' || !collapsed">{{ graph.title || "Task graph" }}</strong>
+        <small>{{ variant === "dock" && collapsed ? dockSummary : summary }}</small>
       </span>
       <svg
         class="task-graph-chevron"
@@ -23,7 +24,7 @@
         viewBox="0 0 24 24"
         aria-hidden="true"
       >
-        <path stroke-linecap="round" stroke-linejoin="round" :stroke-width="2" d="M6 9l6 6 6-6" />
+        <path stroke-linecap="round" stroke-linejoin="round" :stroke-width="2" d="m9 6 6 6-6 6" />
       </svg>
     </button>
 
@@ -110,10 +111,12 @@ const props = withDefaults(
     graph: TaskGraphSnapshot;
     collapsed?: boolean;
     variant?: "dock" | "inline";
+    showHeader?: boolean;
   }>(),
   {
     collapsed: false,
     variant: "dock",
+    showHeader: true,
   },
 );
 
@@ -135,6 +138,7 @@ const counts = computed(() => {
     ).length,
     failed: tasks.filter((task) => task.state === "failed").length,
     cancelled: tasks.filter((task) => task.state === "cancelled").length,
+    remaining: tasks.filter((task) => task.state === "pending" || task.state === "ready").length,
   };
 });
 
@@ -205,6 +209,18 @@ const summary = computed(() => {
   if (counts.value.failed) parts.push(`${counts.value.failed} failed`);
   if (counts.value.cancelled) parts.push(`${counts.value.cancelled} cancelled`);
   return parts.join(" · ");
+});
+
+const dockSummary = computed(() => {
+  const parts = [];
+  if (counts.value.running) {
+    parts.push(
+      `${counts.value.running} subagent${counts.value.running === 1 ? "" : "s"} running`,
+    );
+  }
+  if (counts.value.remaining) parts.push(`${counts.value.remaining} remaining`);
+  if (counts.value.failed) parts.push(`${counts.value.failed} failed`);
+  return parts.join(" · ") || summary.value;
 });
 
 function stateLabel(state: TaskState): string {
@@ -415,7 +431,7 @@ function openTask(slug: string) {
 }
 
 .task-graph-chevron.expanded {
-  transform: rotate(180deg);
+  transform: rotate(90deg);
 }
 
 .task-graph-rows {
@@ -695,6 +711,11 @@ function openTask(slug: string) {
 
 .task-graph.collapsed .task-graph-heading small {
   display: none;
+}
+
+.task-graph-dock.collapsed .task-graph-heading small {
+  display: block;
+  font-size: 0.6875rem;
 }
 
 .task-graph.collapsed .task-graph-chevron {
