@@ -931,6 +931,9 @@ func (s *Server) conversationMux() *http.ServeMux {
 	mux.HandleFunc("POST /{id}/btw/{childID}/summarize", func(w http.ResponseWriter, r *http.Request) {
 		s.handleSummarizeBtwReader(w, r, r.PathValue("id"), r.PathValue("childID"))
 	})
+	mux.HandleFunc("POST /{id}/btw/{childID}/dismiss", func(w http.ResponseWriter, r *http.Request) {
+		s.handleDismissBtwReader(w, r, r.PathValue("id"), r.PathValue("childID"))
+	})
 	mux.HandleFunc("POST /{id}/continue", func(w http.ResponseWriter, r *http.Request) {
 		s.handleContinueConversation(w, r, r.PathValue("id"))
 	})
