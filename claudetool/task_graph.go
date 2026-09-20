@@ -27,7 +27,15 @@ Use create once to define delegated subagent runs only. Keep parent planning,
 editing, integration, and final validation outside the graph. Every task
 launches a subagent automatically when its dependencies complete. Use await to
 wait for work already in progress without sending children any new prompts.
-Every result includes the complete current graph snapshot.`
+Every result includes the complete current graph snapshot.
+
+Maximize safe breadth: dependencies must represent true blockers, not preferred
+ordering. Aim to fill the three available concurrent slots when the request has
+enough independent scopes. For an end-to-end build, do not create a
+research-only sidecar graph while keeping all implementation in the parent.
+Delegate separable research, design, scaffolding, implementation, and
+independent review scopes; the parent integrates their results. Purely linear
+and single-task graphs are rejected because they provide no concurrency benefit.`
 
 type TaskGraphService interface {
 	CreateTaskGraph(context.Context, string, string, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
@@ -180,8 +188,8 @@ func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCr
 	if strings.TrimSpace(req.Title) == "" {
 		return nil, fmt.Errorf("title is required")
 	}
-	if len(req.Tasks) == 0 {
-		return nil, fmt.Errorf("at least one task is required")
+	if len(req.Tasks) < 2 {
+		return nil, fmt.Errorf("at least two delegated tasks are required")
 	}
 	byID := make(map[string]taskGraphTask, len(req.Tasks))
 	orderedIDs := make([]string, 0, len(req.Tasks))
@@ -237,16 +245,21 @@ func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCr
 	if err := validateTaskGraphAcyclic(byID); err != nil {
 		return nil, err
 	}
+	forked := false
 	for i, leftID := range orderedIDs {
 		for _, rightID := range orderedIDs[i+1:] {
 			left, right := byID[leftID], byID[rightID]
 			if taskDependsOn(byID, left.ID, right.ID) || taskDependsOn(byID, right.ID, left.ID) {
 				continue
 			}
+			forked = true
 			if fileScopesOverlap(left.FileScopes, right.FileScopes) {
 				return nil, fmt.Errorf("concurrent tasks %q and %q have overlapping file scopes", left.ID, right.ID)
 			}
 		}
+	}
+	if !forked {
+		return nil, fmt.Errorf("task graph must contain parallel branches")
 	}
 	out := make([]db.TaskGraphTaskCreate, 0, len(orderedIDs))
 	for _, id := range orderedIDs {

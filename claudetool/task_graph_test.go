@@ -38,8 +38,9 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 		Action: "create",
 		Title:  "Graph",
 		Tasks: []taskGraphTask{
-			{ID: "z-research", Title: "Research", Prompt: "Research this", FileScopes: []string{"docs"}},
-			{ID: "a-review", Title: "Review", Prompt: "Review the research", Dependencies: []string{"z-research"}, FileScopes: []string{"docs"}},
+			{ID: "z-research", Title: "Research", Prompt: "Research this", FileScopes: []string{"docs/research"}},
+			{ID: "a-design", Title: "Design", Prompt: "Design this", FileScopes: []string{"docs/design"}},
+			{ID: "m-review", Title: "Review", Prompt: "Review the work", Dependencies: []string{"z-research", "a-design"}, FileScopes: []string{"docs"}},
 		},
 	})
 	if err != nil {
@@ -56,11 +57,11 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 	if len(out.LLMContent) != 1 || !strings.Contains(out.LLMContent[0].Text, `"id":"graph"`) {
 		t.Fatalf("model output = %#v, want graph ID", out.LLMContent)
 	}
-	if len(stub.created) != 2 {
-		t.Fatalf("created %d tasks, want 2", len(stub.created))
+	if len(stub.created) != 3 {
+		t.Fatalf("created %d tasks, want 3", len(stub.created))
 	}
-	if stub.created[0].ID != "z-research" || stub.created[1].ID != "a-review" {
-		t.Fatalf("created order = %q, %q; want input order", stub.created[0].ID, stub.created[1].ID)
+	if stub.created[0].ID != "z-research" || stub.created[1].ID != "a-design" || stub.created[2].ID != "m-review" {
+		t.Fatalf("created order = %q, %q, %q; want input order", stub.created[0].ID, stub.created[1].ID, stub.created[2].ID)
 	}
 }
 
@@ -73,9 +74,29 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"delegation would not shorten the",
 		"delegated subagent runs only",
 		"parent planning",
+		"Maximize safe breadth",
+		"three available concurrent slots",
+		"research-only sidecar",
+		"true blockers",
 	} {
 		if !strings.Contains(description, required) {
 			t.Errorf("task graph description missing %q", required)
+		}
+	}
+}
+
+func TestTaskGraphToolRejectsNonForkingGraphs(t *testing.T) {
+	tool := &TaskGraphTool{Service: &taskGraphServiceStub{}, ParentConversationID: "parent"}
+	for _, tasks := range [][]taskGraphTask{
+		{{ID: "only", Title: "Only", Prompt: "Work"}},
+		{
+			{ID: "one", Title: "One", Prompt: "One"},
+			{ID: "two", Title: "Two", Prompt: "Two", Dependencies: []string{"one"}},
+			{ID: "three", Title: "Three", Prompt: "Three", Dependencies: []string{"two"}},
+		},
+	} {
+		if _, err := tool.validateCreate(taskGraphInput{Action: "create", Title: "Graph", Tasks: tasks}); err == nil {
+			t.Fatalf("validateCreate(%+v) succeeded, want non-forking graph error", tasks)
 		}
 	}
 }
