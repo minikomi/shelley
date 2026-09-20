@@ -25,6 +25,16 @@ manifests, and available test commands so the graph reflects real work rather
 than guessed audit tasks. A prose plan is not a task graph. Do not create a
 graph for contained work where delegation would not shorten the critical path.
 
+When the user already supplies a concrete contract, acceptance criteria, and
+identifiable implementation scopes, do only cheap bounded inspection needed to
+stabilize interfaces, then delegate implementation directly. Keep that graph
+minimal: do not fan out discovery or research subagents. Discovery or research
+tasks are justified only when independent unknowns genuinely block
+implementation and the parent cannot resolve them cheaply.
+Each implementation owner includes focused tests for its scope.
+Do not create separate test-mapping or review filler tasks.
+The parent owns integration and final validation.
+
 Use create once per delegation wave to define delegated subagent runs only.
 Keep parent planning, integration, and final validation outside the graph.
 Every task launches a subagent automatically when its dependencies complete.
@@ -35,7 +45,7 @@ After a graph reaches a terminal state, reassess the remaining request. If the
 next work has independent scopes where delegation shortens the critical path,
 call create again for a new graph before starting that work. Each graph should
 represent one coherent wave based on what is known then; do not hardcode phase
-names or task counts, and do not mutate a finished graph.
+names or task counts, and do not mutate a finished graph: completed waves are immutable.
 
 Subagents are not research-only advisors. A delegation wave may own
 implementation and modify files when scopes are exclusive and clearly assigned.
