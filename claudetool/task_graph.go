@@ -35,6 +35,13 @@ call create again for a new graph before starting that work. Each graph should
 represent one coherent wave based on what is known then; do not hardcode phase
 names or task counts, and do not mutate a finished graph.
 
+Subagents are not research-only advisors. A delegation wave may own
+implementation and modify files when scopes are exclusive and clearly assigned.
+Do not begin substantial parent-side implementation merely because an earlier
+research wave finished. First decide whether the build work can be partitioned;
+if it can, create another graph and delegate those file-writing scopes. The
+parent integrates results and handles work that cannot usefully be delegated.
+
 Maximize safe breadth: dependencies must represent true blockers, not preferred
 ordering. Aim to fill the three available concurrent slots when the request has
 enough independent scopes. For an end-to-end build, do not create a
@@ -155,7 +162,11 @@ func (t *TaskGraphTool) run(ctx context.Context, req taskGraphInput) llm.ToolOut
 		if err != nil {
 			return llm.ErrorfToolOut("await task graph: %v", err)
 		}
-		return taskGraphToolOut("Await condition reached.", snapshot)
+		message := "Await condition reached."
+		if snapshot != nil && snapshot.Status != "active" {
+			message += " This delegation wave is terminal. Before using research, shell, editing, or browser tools for remaining substantial work, decide whether another delegation wave would shorten the critical path. If so, create a new graph first; implementation tasks may own exclusive file scopes."
+		}
+		return taskGraphToolOut(message, snapshot)
 	case "cancel":
 		if req.GraphID == "" {
 			return llm.ErrorfToolOut("graph_id is required for cancel")

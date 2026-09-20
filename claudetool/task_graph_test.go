@@ -11,7 +11,8 @@ import (
 )
 
 type taskGraphServiceStub struct {
-	created []db.TaskGraphTaskCreate
+	created       []db.TaskGraphTaskCreate
+	awaitSnapshot *db.TaskGraphSnapshot
 }
 
 func (s *taskGraphServiceStub) CreateTaskGraph(_ context.Context, parent, title string, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
@@ -24,8 +25,8 @@ func (*taskGraphServiceStub) GetLatestTaskGraphSnapshot(context.Context, string)
 func (*taskGraphServiceStub) GetTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error) {
 	return nil, nil
 }
-func (*taskGraphServiceStub) AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error) {
-	return nil, nil
+func (s *taskGraphServiceStub) AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error) {
+	return s.awaitSnapshot, nil
 }
 func (*taskGraphServiceStub) CancelTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, []string, error) {
 	return nil, nil, nil
@@ -82,9 +83,34 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"call create again",
 		"do not hardcode phase",
 		"do not mutate a finished graph",
+		"not research-only advisors",
+		"implementation and modify files",
+		"delegate those file-writing scopes",
 	} {
 		if !strings.Contains(description, required) {
 			t.Errorf("task graph description missing %q", required)
+		}
+	}
+}
+
+func TestTaskGraphToolTerminalAwaitPromptsAnotherDelegationDecision(t *testing.T) {
+	stub := &taskGraphServiceStub{awaitSnapshot: &db.TaskGraphSnapshot{
+		GraphID: "graph",
+		Status:  "complete",
+	}}
+	tool := (&TaskGraphTool{Service: stub, ParentConversationID: "parent"}).Tool()
+	input, err := json.Marshal(taskGraphInput{Action: "await", GraphID: "graph"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := tool.Run(t.Context(), input)
+	if out.Error != nil {
+		t.Fatalf("run: %v", out.Error)
+	}
+	text := out.LLMContent[0].Text
+	for _, required := range []string{"delegation wave is terminal", "create a new graph first", "exclusive file scopes"} {
+		if !strings.Contains(text, required) {
+			t.Errorf("terminal await output missing %q: %s", required, text)
 		}
 	}
 }
