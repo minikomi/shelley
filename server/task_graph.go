@@ -14,7 +14,7 @@ import (
 
 // CreateTaskGraph persists a validated graph before scheduling its ready
 // subagent tasks. Launches happen outside the persistence transaction.
-func (s *Server) CreateTaskGraph(ctx context.Context, parentID, title string, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
+func (s *Server) CreateTaskGraph(ctx context.Context, parentID, title string, maxConcurrency int, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
 	if _, err := s.db.GetConversationByID(ctx, parentID); err != nil {
 		return nil, err
 	}
@@ -25,7 +25,7 @@ func (s *Server) CreateTaskGraph(ctx context.Context, parentID, title string, ta
 	if latest != nil && latest.Status == "active" {
 		return nil, fmt.Errorf("conversation already has an active task graph %q", latest.GraphID)
 	}
-	snapshot, err := s.db.CreateTaskGraph(ctx, parentID, title, tasks)
+	snapshot, err := s.db.CreateTaskGraph(ctx, parentID, title, maxConcurrency, tasks)
 	if err != nil {
 		return nil, err
 	}

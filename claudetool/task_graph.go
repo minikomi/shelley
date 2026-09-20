@@ -42,15 +42,17 @@ research wave finished. First decide whether the build work can be partitioned;
 if it can, create another graph and delegate those file-writing scopes. The
 parent integrates results and handles work that cannot usefully be delegated.
 
-Choose the graph size and shape from the actual work. The three-task concurrency
-limit is a scheduler cap, not a target. One-task, linear, and branching graphs
-are all valid when they accurately represent a useful delegation wave.
+Choose the graph size and shape from the actual work. max_concurrency controls
+simultaneously running children, not graph size; omit it to use the server
+default of 3, or set another positive value when resource and cost constraints
+warrant it. One-task, linear, and branching graphs are all valid when they
+accurately represent a useful delegation wave.
 Dependencies must represent true blockers, not preferred ordering. Do not
 invent audit, research, design, review, or implementation tasks merely to fill
 slots, create symmetry, or make the graph look busy.`
 
 type TaskGraphService interface {
-	CreateTaskGraph(context.Context, string, string, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
+	CreateTaskGraph(context.Context, string, string, int, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
 	GetLatestTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error)
 	GetTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error)
 	AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error)
@@ -64,12 +66,13 @@ type TaskGraphTool struct {
 }
 
 type taskGraphInput struct {
-	Action  string          `json:"action"`
-	GraphID string          `json:"graph_id,omitempty"`
-	Title   string          `json:"title,omitempty"`
-	Tasks   []taskGraphTask `json:"tasks,omitempty"`
-	TaskIDs []string        `json:"task_ids,omitempty"`
-	Timeout int             `json:"timeout_seconds,omitempty"`
+	Action         string          `json:"action"`
+	GraphID        string          `json:"graph_id,omitempty"`
+	Title          string          `json:"title,omitempty"`
+	Tasks          []taskGraphTask `json:"tasks,omitempty"`
+	TaskIDs        []string        `json:"task_ids,omitempty"`
+	Timeout        int             `json:"timeout_seconds,omitempty"`
+	MaxConcurrency int             `json:"max_concurrency,omitempty"`
 }
 
 type taskGraphTask struct {
@@ -94,6 +97,7 @@ func (t *TaskGraphTool) Tool() *llm.Tool {
     "action": {"type": "string", "enum": ["create", "list", "await", "cancel"]},
     "graph_id": {"type": "string", "description": "Graph ID. list may omit it to get the latest graph."},
     "title": {"type": "string", "description": "Required for create."},
+    "max_concurrency": {"type": "integer", "minimum": 1, "description": "Maximum simultaneously running children for this graph. Omit to use the server default of 3."},
     "tasks": {
       "type": "array",
       "description": "Required for create.",
@@ -130,7 +134,7 @@ func (t *TaskGraphTool) run(ctx context.Context, req taskGraphInput) llm.ToolOut
 		if err != nil {
 			return llm.ErrorfToolOut("%v", err)
 		}
-		snapshot, err := t.Service.CreateTaskGraph(ctx, t.ParentConversationID, strings.TrimSpace(req.Title), tasks)
+		snapshot, err := t.Service.CreateTaskGraph(ctx, t.ParentConversationID, strings.TrimSpace(req.Title), req.MaxConcurrency, tasks)
 		if err != nil {
 			return llm.ErrorfToolOut("create task graph: %v", err)
 		}
@@ -203,6 +207,9 @@ func (t *TaskGraphTool) snapshot(ctx context.Context, graphID string) (*db.TaskG
 func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCreate, error) {
 	if strings.TrimSpace(req.Title) == "" {
 		return nil, fmt.Errorf("title is required")
+	}
+	if req.MaxConcurrency < 0 {
+		return nil, fmt.Errorf("max_concurrency must be positive")
 	}
 	if len(req.Tasks) == 0 {
 		return nil, fmt.Errorf("at least one delegated task is required")

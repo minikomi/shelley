@@ -12,12 +12,15 @@ func TestTaskGraphLifecycle(t *testing.T) {
 	defer cleanup()
 	parentID := createTaskGraphParent(t, database)
 
-	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Ship it", []TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Ship it", 0, []TaskGraphTaskCreate{
 		{ID: "build", Title: "Build", Prompt: "Build it", FileScopes: []string{"server"}},
 		{ID: "review", Title: "Review", Prompt: "Review it", Dependencies: []string{"build"}, FileScopes: []string{"server"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateTaskGraph: %v", err)
+	}
+	if graph.MaxConcurrency != DefaultTaskGraphMaxConcurrency {
+		t.Fatalf("max concurrency = %d, want default %d", graph.MaxConcurrency, DefaultTaskGraphMaxConcurrency)
 	}
 	if got := taskGraphStatus(graph, "build"); got != "ready" {
 		t.Fatalf("build status = %q, want ready", got)
@@ -84,7 +87,7 @@ func TestTaskGraphClaimCapsConcurrentSubagents(t *testing.T) {
 	for i := range tasks {
 		tasks[i] = TaskGraphTaskCreate{ID: string(rune('a' + i)), Title: "Task", Prompt: "work"}
 	}
-	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Parallel", tasks)
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Parallel", 2, tasks)
 	if err != nil {
 		t.Fatalf("CreateTaskGraph: %v", err)
 	}
@@ -92,8 +95,11 @@ func TestTaskGraphClaimCapsConcurrentSubagents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimReadyTaskGraphSubagentTasks: %v", err)
 	}
-	if len(claimed) != 3 {
-		t.Fatalf("claimed %d tasks, want 3", len(claimed))
+	if graph.MaxConcurrency != 2 {
+		t.Fatalf("max concurrency = %d, want 2", graph.MaxConcurrency)
+	}
+	if len(claimed) != 2 {
+		t.Fatalf("claimed %d tasks, want 2", len(claimed))
 	}
 	again, err := database.ClaimReadyTaskGraphSubagentTasks(t.Context(), graph.GraphID)
 	if err != nil {
@@ -109,7 +115,7 @@ func TestTaskGraphLaunchFailureCancelsDependents(t *testing.T) {
 	defer cleanup()
 	parentID := createTaskGraphParent(t, database)
 
-	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Failure", []TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Failure", 0, []TaskGraphTaskCreate{
 		{ID: "build", Title: "Build", Prompt: "Build"},
 		{ID: "review", Title: "Review", Prompt: "Review", Dependencies: []string{"build"}},
 	})
@@ -139,7 +145,7 @@ func TestTaskGraphRecoversClaimWithoutChild(t *testing.T) {
 	database, cleanup := NewTestDB(t)
 	defer cleanup()
 	parentID := createTaskGraphParent(t, database)
-	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Recover", []TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Recover", 0, []TaskGraphTaskCreate{
 		{ID: "work", Title: "Work", Prompt: "Work"},
 	})
 	if err != nil {
@@ -162,7 +168,7 @@ func TestTaskGraphConcurrentChildCompletionPreservesBothUpdates(t *testing.T) {
 	database, cleanup := NewTestDB(t)
 	defer cleanup()
 	parentID := createTaskGraphParent(t, database)
-	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Parallel", []TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Parallel", 0, []TaskGraphTaskCreate{
 		{ID: "one", Title: "One", Prompt: "One"},
 		{ID: "two", Title: "Two", Prompt: "Two"},
 	})
@@ -219,7 +225,7 @@ func TestTaskGraphDeletedWithParentConversation(t *testing.T) {
 	database, cleanup := NewTestDB(t)
 	defer cleanup()
 	parentID := createTaskGraphParent(t, database)
-	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Delete", []TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Delete", 0, []TaskGraphTaskCreate{
 		{ID: "work", Title: "Work", Prompt: "Work"},
 	})
 	if err != nil {

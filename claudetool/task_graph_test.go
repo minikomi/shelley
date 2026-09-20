@@ -11,13 +11,15 @@ import (
 )
 
 type taskGraphServiceStub struct {
-	created       []db.TaskGraphTaskCreate
-	awaitSnapshot *db.TaskGraphSnapshot
+	created        []db.TaskGraphTaskCreate
+	awaitSnapshot  *db.TaskGraphSnapshot
+	maxConcurrency int
 }
 
-func (s *taskGraphServiceStub) CreateTaskGraph(_ context.Context, parent, title string, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
+func (s *taskGraphServiceStub) CreateTaskGraph(_ context.Context, parent, title string, maxConcurrency int, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
 	s.created = tasks
-	return &db.TaskGraphSnapshot{GraphID: "graph", ParentConversationID: parent, Title: title}, nil
+	s.maxConcurrency = maxConcurrency
+	return &db.TaskGraphSnapshot{GraphID: "graph", ParentConversationID: parent, Title: title, MaxConcurrency: maxConcurrency}, nil
 }
 func (*taskGraphServiceStub) GetLatestTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error) {
 	return nil, nil
@@ -36,8 +38,9 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 	stub := &taskGraphServiceStub{}
 	tool := (&TaskGraphTool{Service: stub, ParentConversationID: "parent"}).Tool()
 	input, err := json.Marshal(taskGraphInput{
-		Action: "create",
-		Title:  "Graph",
+		Action:         "create",
+		Title:          "Graph",
+		MaxConcurrency: 5,
 		Tasks: []taskGraphTask{
 			{ID: "z-research", Title: "Research", Prompt: "Research this", FileScopes: []string{"docs/research"}},
 			{ID: "a-design", Title: "Design", Prompt: "Design this", FileScopes: []string{"docs/design"}},
@@ -61,6 +64,9 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 	if len(stub.created) != 3 {
 		t.Fatalf("created %d tasks, want 3", len(stub.created))
 	}
+	if stub.maxConcurrency != 5 || display.MaxConcurrency != 5 {
+		t.Fatalf("max concurrency stub=%d display=%d, want 5", stub.maxConcurrency, display.MaxConcurrency)
+	}
 	if stub.created[0].ID != "z-research" || stub.created[1].ID != "a-design" || stub.created[2].ID != "m-review" {
 		t.Fatalf("created order = %q, %q, %q; want input order", stub.created[0].ID, stub.created[1].ID, stub.created[2].ID)
 	}
@@ -75,7 +81,8 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"delegation would not shorten the",
 		"delegated subagent runs only",
 		"parent planning",
-		"scheduler cap, not a target",
+		"max_concurrency controls",
+		"resource and cost constraints",
 		"One-task, linear, and branching graphs",
 		"make the graph look busy",
 		"true blockers",

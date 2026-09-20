@@ -23,7 +23,7 @@ func TestGetTaskGraph(t *testing.T) {
 		t.Fatalf("empty graph status = %d, want 404", notFound.Code)
 	}
 
-	graph, err := database.CreateTaskGraph(t.Context(), parent.ConversationID, "Plan", []db.TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(t.Context(), parent.ConversationID, "Plan", 0, []db.TaskGraphTaskCreate{
 		{ID: "plan", Title: "Plan", Prompt: "Plan"},
 	})
 	if err != nil {
@@ -79,10 +79,10 @@ func TestTaskGraphRejectsSecondActiveGraph(t *testing.T) {
 		t.Fatalf("CreateConversation: %v", err)
 	}
 	tasks := []db.TaskGraphTaskCreate{{ID: "work", Title: "Work", Prompt: "Work"}}
-	if _, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "First", tasks); err != nil {
+	if _, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "First", 0, tasks); err != nil {
 		t.Fatalf("first CreateTaskGraph: %v", err)
 	}
-	if _, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "Second", tasks); err == nil {
+	if _, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "Second", 0, tasks); err == nil {
 		t.Fatal("second active task graph was accepted")
 	}
 }
@@ -95,7 +95,7 @@ func TestCancelConversationCancelsActiveTaskGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, "Research", []db.TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, "Research", 0, []db.TaskGraphTaskCreate{
 		{ID: "research", Title: "Research", Prompt: "Research"},
 	})
 	if err != nil {

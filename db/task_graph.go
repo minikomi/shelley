@@ -24,6 +24,8 @@ type TaskGraphTaskCreate struct {
 	FileScopes   []string
 }
 
+const DefaultTaskGraphMaxConcurrency = 3
+
 // TaskGraphSnapshot is persisted in its parent conversation's options. A
 // parent may retain finished graphs so list/get calls can still address them;
 // only one graph may be active at a time.
@@ -32,6 +34,7 @@ type TaskGraphSnapshot struct {
 	ParentConversationID string          `json:"parent_conversation_id"`
 	Title                string          `json:"title"`
 	Status               string          `json:"state"`
+	MaxConcurrency       int             `json:"max_concurrency"`
 	CreatedAt            time.Time       `json:"created_at"`
 	UpdatedAt            time.Time       `json:"updated_at"`
 	Tasks                []TaskGraphTask `json:"tasks"`
@@ -69,7 +72,10 @@ type taskGraphOptionsRow struct {
 	opts           ConversationOptions
 }
 
-func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title string, tasks []TaskGraphTaskCreate) (*TaskGraphSnapshot, error) {
+func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title string, maxConcurrency int, tasks []TaskGraphTaskCreate) (*TaskGraphSnapshot, error) {
+	if maxConcurrency < 0 {
+		return nil, fmt.Errorf("max concurrency must be positive")
+	}
 	graphID := uuid.NewString()
 	var created TaskGraphSnapshot
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
@@ -90,6 +96,7 @@ func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title s
 			GraphID:              graphID,
 			ParentConversationID: parentConversationID,
 			Title:                title,
+			MaxConcurrency:       taskGraphMaxConcurrency(maxConcurrency),
 			CreatedAt:            now,
 			UpdatedAt:            now,
 			Tasks:                make([]TaskGraphTask, 0, len(tasks)),
@@ -295,7 +302,7 @@ func (db *DB) ClaimReadyTaskGraphSubagentTasks(ctx context.Context, graphID stri
 				running++
 			}
 		}
-		available := max(0, 3-running)
+		available := max(0, taskGraphMaxConcurrency(graph.MaxConcurrency)-running)
 		if available == 0 {
 			return nil
 		}
@@ -619,6 +626,7 @@ func cancelBlockedTaskGraphTasks(graph *TaskGraphSnapshot, now time.Time) {
 }
 
 func refreshTaskGraphStatus(graph *TaskGraphSnapshot) {
+	graph.MaxConcurrency = taskGraphMaxConcurrency(graph.MaxConcurrency)
 	cancelled, failed, terminal := false, false, true
 	for i := range graph.Tasks {
 		task := &graph.Tasks[i]
@@ -645,4 +653,11 @@ func refreshTaskGraphStatus(graph *TaskGraphSnapshot) {
 	default:
 		graph.Status = "active"
 	}
+}
+
+func taskGraphMaxConcurrency(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return DefaultTaskGraphMaxConcurrency
 }
