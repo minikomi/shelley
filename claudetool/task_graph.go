@@ -17,13 +17,15 @@ const taskGraphName = "task_graph"
 
 const taskGraphDescription = `Create and coordinate a persisted task dependency graph.
 
-For a top-level request with multiple substantial stages, or with independent
-research, implementation, or review scopes, you MUST call create before
-substantial research, implementation, or browser work. Before the first graph,
-one bounded read-only shell pass may inspect repository state, guidance files,
-manifests, and available test commands so the graph reflects real work rather
-than guessed audit tasks. A prose plan is not a task graph. Do not create a
-graph for contained work where delegation would not shorten the critical path.
+For a top-level request, call create before substantial work when two or more
+useful delegated scopes can proceed independently, or when one bounded task
+provides concrete isolation while the parent has useful non-overlapping work.
+Multiple stages alone are not a reason to create a graph. Do not hand the whole
+request to a singleton task or create a graph where delegation would not shorten
+the critical path. Before the first graph, one bounded read-only shell pass may
+inspect repository state, guidance files, manifests, and available test commands
+so the graph reflects real work rather than guessed audit tasks. A prose plan is
+not a task graph.
 
 When the user already supplies a concrete contract, acceptance criteria, and
 identifiable implementation scopes, do only cheap bounded inspection needed to
@@ -44,12 +46,17 @@ contract.
 
 Each task prompt is a bounded context packet: state the objective, acceptance
 criteria, owned scope, stable interfaces, source-of-truth files, non-goals, and
-focused validation command. Do not mechanically inherit the parent's model or
-reasoning level; use the least costly capable model and medium reasoning for
-routine bounded work unless genuine complexity justifies more.
+one focused validation command. When the user asks for concise or minimal work,
+include a simple implementation-size limit and explicitly exclude optional
+polish. Stop when the focused validation passes. When available, use Luna with
+medium reasoning for extraction or read-only work, Terra with medium reasoning
+for routine implementation, and Sol or high reasoning only for genuinely
+difficult architecture or debugging.
 
 Use create once per delegation wave to define delegated subagent runs only.
-Keep parent planning, integration, and final validation outside the graph.
+The parent may own one non-overlapping implementation lane while tasks run once
+shared interfaces are stable. Keep parent integration and final validation
+outside the graph.
 Every task launches a subagent automatically when its dependencies complete.
 Before a dependent task launches, Shelley appends every completed direct
 dependency's final response to its prompt as handoff context. Do not duplicate
@@ -72,16 +79,15 @@ After a graph becomes terminal, integrate through the cheap path first: read
 task reports and git diff --stat, run one aggregate acceptance command, and
 inspect full files only when a check fails or an interface violation is
 suspected. Do not repeat focused checks that task owners already passed. Do not
-silently rewrite a child's substantial scope in the parent; use a focused
-follow-up task or reconsider the partition when integration requires major
-rework.
+silently rewrite a child's substantial scope in the parent. The parent handles
+small seam fixes directly; use a focused follow-up task or reconsider the
+partition only when integration requires major rework.
 
 Subagents are not research-only advisors. A delegation wave may own
 implementation and modify files when scopes are exclusive and clearly assigned.
-Do not begin substantial parent-side implementation merely because an earlier
-research wave finished. First decide whether the build work can be partitioned;
-if it can, create another graph and delegate those file-writing scopes. The
-parent integrates results and handles work that cannot usefully be delegated.
+The parent may implement a cohesive exclusive scope concurrently with delegated
+work. Do not force all file-writing work into the graph merely because some
+implementation can be delegated.
 
 Before launching file-writing tasks, establish any shared manifests, module
 contracts, directories, and test infrastructure those tasks need. While a graph
@@ -93,13 +99,13 @@ Choose the graph size and shape from the actual work. max_concurrency controls
 simultaneously running children, not graph size; omit it to use the server
 default of 3, or set another positive value when resource and cost constraints
 warrant it. Branch whenever two useful subagent scopes can start from what is
-already known. A singleton or fully serial graph is an exception and requires
-serial_rationale explaining the concrete upstream output that blocks every
-other delegated scope. Parent-owned work is not a reason to omit a later
-implementation or review wave. Dependencies must represent true blockers, not
-preferred ordering. Do not invent audit, research, design, review, or
-implementation tasks merely to fill slots, create symmetry, or make the graph
-look busy.`
+already known. A singleton is justified only by a concrete isolation benefit
+while the parent does useful concurrent work; never use one to proxy the whole
+request. A fully serial graph is an exception and requires serial_rationale
+explaining the concrete upstream output that blocks every other delegated scope.
+Dependencies must represent true blockers, not preferred ordering. Do not
+invent audit, research, design, review, or implementation tasks merely to fill
+slots, create symmetry, or make the graph look busy.`
 
 type TaskGraphService interface {
 	CreateTaskGraph(context.Context, string, string, int, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
