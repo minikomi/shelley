@@ -83,8 +83,10 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"parent planning",
 		"max_concurrency controls",
 		"resource and cost constraints",
-		"One-task, linear, and branching graphs",
-		"make the graph look busy",
+		"Branch whenever two useful subagent scopes",
+		"serial_rationale",
+		"Parent-owned work is not a reason",
+		"create symmetry",
 		"true blockers",
 		"once per delegation wave",
 		"call create again",
@@ -122,7 +124,7 @@ func TestTaskGraphToolTerminalAwaitPromptsAnotherDelegationDecision(t *testing.T
 	}
 }
 
-func TestTaskGraphToolAcceptsTaskDerivedGraphShapes(t *testing.T) {
+func TestTaskGraphToolRequiresRationaleForNonBranchingGraphs(t *testing.T) {
 	tool := &TaskGraphTool{Service: &taskGraphServiceStub{}, ParentConversationID: "parent"}
 	for _, tasks := range [][]taskGraphTask{
 		{{ID: "only", Title: "Only", Prompt: "Work"}},
@@ -132,8 +134,13 @@ func TestTaskGraphToolAcceptsTaskDerivedGraphShapes(t *testing.T) {
 			{ID: "three", Title: "Three", Prompt: "Three", Dependencies: []string{"two"}},
 		},
 	} {
-		if _, err := tool.validateCreate(taskGraphInput{Action: "create", Title: "Graph", Tasks: tasks}); err != nil {
-			t.Fatalf("validateCreate(%+v): %v", tasks, err)
+		req := taskGraphInput{Action: "create", Title: "Graph", Tasks: tasks}
+		if _, err := tool.validateCreate(req); err == nil || !strings.Contains(err.Error(), "serial_rationale") {
+			t.Fatalf("validateCreate(%+v) error = %v, want serial_rationale error", tasks, err)
+		}
+		req.SerialRationale = "The build requires the research artifact produced by the upstream task."
+		if _, err := tool.validateCreate(req); err != nil {
+			t.Fatalf("validateCreate(%+v) with rationale: %v", tasks, err)
 		}
 	}
 }

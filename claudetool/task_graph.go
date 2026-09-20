@@ -45,11 +45,14 @@ parent integrates results and handles work that cannot usefully be delegated.
 Choose the graph size and shape from the actual work. max_concurrency controls
 simultaneously running children, not graph size; omit it to use the server
 default of 3, or set another positive value when resource and cost constraints
-warrant it. One-task, linear, and branching graphs are all valid when they
-accurately represent a useful delegation wave.
-Dependencies must represent true blockers, not preferred ordering. Do not
-invent audit, research, design, review, or implementation tasks merely to fill
-slots, create symmetry, or make the graph look busy.`
+warrant it. Branch whenever two useful subagent scopes can start from what is
+already known. A singleton or fully serial graph is an exception and requires
+serial_rationale explaining the concrete upstream output that blocks every
+other delegated scope. Parent-owned work is not a reason to omit a later
+implementation or review wave. Dependencies must represent true blockers, not
+preferred ordering. Do not invent audit, research, design, review, or
+implementation tasks merely to fill slots, create symmetry, or make the graph
+look busy.`
 
 type TaskGraphService interface {
 	CreateTaskGraph(context.Context, string, string, int, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
@@ -66,13 +69,14 @@ type TaskGraphTool struct {
 }
 
 type taskGraphInput struct {
-	Action         string          `json:"action"`
-	GraphID        string          `json:"graph_id,omitempty"`
-	Title          string          `json:"title,omitempty"`
-	Tasks          []taskGraphTask `json:"tasks,omitempty"`
-	TaskIDs        []string        `json:"task_ids,omitempty"`
-	Timeout        int             `json:"timeout_seconds,omitempty"`
-	MaxConcurrency int             `json:"max_concurrency,omitempty"`
+	Action          string          `json:"action"`
+	GraphID         string          `json:"graph_id,omitempty"`
+	Title           string          `json:"title,omitempty"`
+	Tasks           []taskGraphTask `json:"tasks,omitempty"`
+	TaskIDs         []string        `json:"task_ids,omitempty"`
+	Timeout         int             `json:"timeout_seconds,omitempty"`
+	MaxConcurrency  int             `json:"max_concurrency,omitempty"`
+	SerialRationale string          `json:"serial_rationale,omitempty"`
 }
 
 type taskGraphTask struct {
@@ -98,6 +102,7 @@ func (t *TaskGraphTool) Tool() *llm.Tool {
     "graph_id": {"type": "string", "description": "Graph ID. list may omit it to get the latest graph."},
     "title": {"type": "string", "description": "Required for create."},
     "max_concurrency": {"type": "integer", "minimum": 1, "description": "Maximum simultaneously running children for this graph. Omit to use the server default of 3."},
+    "serial_rationale": {"type": "string", "description": "Required for a singleton or fully serial graph. Explain the concrete upstream output that prevents another delegated scope from starting now."},
     "tasks": {
       "type": "array",
       "description": "Required for create.",
@@ -268,16 +273,21 @@ func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCr
 	if err := validateTaskGraphAcyclic(byID); err != nil {
 		return nil, err
 	}
+	hasParallelPair := false
 	for i, leftID := range orderedIDs {
 		for _, rightID := range orderedIDs[i+1:] {
 			left, right := byID[leftID], byID[rightID]
 			if taskDependsOn(byID, left.ID, right.ID) || taskDependsOn(byID, right.ID, left.ID) {
 				continue
 			}
+			hasParallelPair = true
 			if fileScopesOverlap(left.FileScopes, right.FileScopes) {
 				return nil, fmt.Errorf("concurrent tasks %q and %q have overlapping file scopes", left.ID, right.ID)
 			}
 		}
+	}
+	if !hasParallelPair && strings.TrimSpace(req.SerialRationale) == "" {
+		return nil, fmt.Errorf("serial_rationale is required when no delegated tasks can run in parallel")
 	}
 	out := make([]db.TaskGraphTaskCreate, 0, len(orderedIDs))
 	for _, id := range orderedIDs {
