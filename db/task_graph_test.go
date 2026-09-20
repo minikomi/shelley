@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -41,13 +42,29 @@ func TestTaskGraphLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimReadyTaskGraphSubagentTasks: %v", err)
 	}
-	if len(claimed) != 1 || claimed[0].TaskID != "build" {
+	if len(claimed) != 1 || claimed[0].ID != "build" {
 		t.Fatalf("claimed = %+v, want build", claimed)
 	}
-	if err := database.SetTaskGraphTaskChildConversation(t.Context(), graph.GraphID, "build", "child", "child"); err != nil {
+	child, err := database.CreateSubagentConversation(t.Context(), "child", parentID, nil)
+	if err != nil {
+		t.Fatalf("CreateSubagentConversation: %v", err)
+	}
+	if err := database.SetTaskGraphTaskChildConversation(t.Context(), graph.GraphID, "build", child.ConversationID, "child"); err != nil {
 		t.Fatalf("SetTaskGraphTaskChildConversation: %v", err)
 	}
-	matched, graph, err := database.CompleteTaskGraphChild(t.Context(), "child", "built")
+	childTag := ParseConversationOptions(child.ConversationOptions).TaskGraphChild
+	if childTag != nil {
+		t.Fatal("stale child options unexpectedly included a graph tag")
+	}
+	taggedChild, err := database.GetConversationByID(t.Context(), child.ConversationID)
+	if err != nil {
+		t.Fatalf("GetConversationByID: %v", err)
+	}
+	childTag = ParseConversationOptions(taggedChild.ConversationOptions).TaskGraphChild
+	if childTag == nil || childTag.ParentConversationID != parentID || childTag.GraphID != graph.GraphID || childTag.TaskID != "build" {
+		t.Fatalf("child graph tag = %#v", childTag)
+	}
+	matched, graph, err := database.CompleteTaskGraphChild(t.Context(), child.ConversationID, "built")
 	if err != nil {
 		t.Fatalf("CompleteTaskGraphChild: %v", err)
 	}
@@ -58,7 +75,7 @@ func TestTaskGraphLifecycle(t *testing.T) {
 		t.Fatalf("review status after build = %q, want ready", got)
 	}
 
-	matched, _, err = database.CompleteTaskGraphChild(t.Context(), "child", "duplicate")
+	matched, _, err = database.CompleteTaskGraphChild(t.Context(), child.ConversationID, "duplicate")
 	if err != nil {
 		t.Fatalf("duplicate CompleteTaskGraphChild: %v", err)
 	}
@@ -147,6 +164,63 @@ func TestTaskGraphRecoversClaimWithoutChild(t *testing.T) {
 	claimed, err = database.ClaimReadyTaskGraphSubagentTasks(t.Context(), graph.GraphID)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("recovered claim = %d, %v; want one task", len(claimed), err)
+	}
+}
+
+func TestTaskGraphConcurrentChildCompletionPreservesBothUpdates(t *testing.T) {
+	database, cleanup := NewTestDB(t)
+	defer cleanup()
+	parentID := createTaskGraphParent(t, database)
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Parallel", []TaskGraphTaskCreate{
+		{ID: "one", Title: "One", Owner: "subagent", Prompt: "One"},
+		{ID: "two", Title: "Two", Owner: "subagent", Prompt: "Two"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskGraph: %v", err)
+	}
+	claimed, err := database.ClaimReadyTaskGraphSubagentTasks(t.Context(), graph.GraphID)
+	if err != nil || len(claimed) != 2 {
+		t.Fatalf("ClaimReadyTaskGraphSubagentTasks = %d, %v; want two tasks", len(claimed), err)
+	}
+
+	children := make([]string, 0, len(claimed))
+	for _, task := range claimed {
+		child, err := database.CreateSubagentConversation(t.Context(), task.ID, parentID, nil)
+		if err != nil {
+			t.Fatalf("CreateSubagentConversation(%q): %v", task.ID, err)
+		}
+		if err := database.SetTaskGraphTaskChildConversation(t.Context(), graph.GraphID, task.ID, child.ConversationID, task.ID); err != nil {
+			t.Fatalf("SetTaskGraphTaskChildConversation(%q): %v", task.ID, err)
+		}
+		children = append(children, child.ConversationID)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(children))
+	for _, childID := range children {
+		wg.Add(1)
+		go func(childID string) {
+			defer wg.Done()
+			matched, _, err := database.CompleteTaskGraphChild(t.Context(), childID, childID+" done")
+			if err != nil {
+				errs <- err
+			} else if !matched {
+				errs <- errors.New("completion did not match graph child")
+			}
+		}(childID)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	snapshot, err := database.GetTaskGraphSnapshot(t.Context(), graph.GraphID)
+	if err != nil {
+		t.Fatalf("GetTaskGraphSnapshot: %v", err)
+	}
+	if snapshot.Status != "complete" || taskGraphStatus(snapshot, "one") != "complete" || taskGraphStatus(snapshot, "two") != "complete" {
+		t.Fatalf("snapshot after concurrent completions = %#v", snapshot)
 	}
 }
 

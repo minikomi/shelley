@@ -47,12 +47,16 @@ func scrubManagedBtwOptions(raw string) (string, bool, error) {
 	_, hasKind := options["kind"]
 	_, hasPointer := options["parent_pointer"]
 	_, hasCommitTour := options["commit_tour"]
-	if !hasKind && !hasPointer && !hasCommitTour {
+	_, hasTaskGraphs := options["task_graphs"]
+	_, hasTaskGraphChild := options["task_graph_child"]
+	if !hasKind && !hasPointer && !hasCommitTour && !hasTaskGraphs && !hasTaskGraphChild {
 		return raw, false, nil
 	}
 	delete(options, "kind")
 	delete(options, "parent_pointer")
 	delete(options, "commit_tour")
+	delete(options, "task_graphs")
+	delete(options, "task_graph_child")
 	scrubbed, err := json.Marshal(options)
 	return string(scrubbed), true, err
 }

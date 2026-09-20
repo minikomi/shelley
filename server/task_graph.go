@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
 )
 
 // CreateTaskGraph persists a validated graph before scheduling its ready
@@ -203,20 +202,12 @@ func (s *Server) scheduleTaskGraphForChild(childConversationID string) {
 	}
 }
 
-func (s *Server) taskGraphTaskForChild(ctx context.Context, childConversationID string) (*generated.TaskGraphTask, error) {
-	var task generated.TaskGraphTask
-	err := s.db.Queries(ctx, func(q *generated.Queries) error {
-		var err error
-		task, err = q.FindTaskGraphTaskByChildConversation(ctx, &childConversationID)
-		return err
-	})
+func (s *Server) taskGraphTaskForChild(ctx context.Context, childConversationID string) (*db.TaskGraphChild, error) {
+	task, err := s.db.GetTaskGraphChild(ctx, childConversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &task, nil
+	return task, err
 }
 
 // scheduleTaskGraph claims a bounded deterministic batch. Every call only
@@ -236,55 +227,55 @@ func (s *Server) scheduleTaskGraph(graphID string) {
 	}
 }
 
-func (s *Server) launchTaskGraphTask(graphID string, task generated.TaskGraphTask) {
+func (s *Server) launchTaskGraphTask(graphID string, task db.TaskGraphTask) {
 	ctx := context.Background()
 	graph, err := s.db.GetTaskGraphSnapshot(ctx, graphID)
 	if err != nil {
 		s.logger.Error("Load task graph for launch", "graphID", graphID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.TaskID, err)
+		s.failTaskGraphLaunch(graphID, task.ID, err)
 		return
 	}
 	parent, err := s.db.GetConversationByID(ctx, graph.ParentConversationID)
 	if err != nil {
 		s.logger.Error("Load task graph parent for launch", "graphID", graphID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.TaskID, err)
+		s.failTaskGraphLaunch(graphID, task.ID, err)
 		return
 	}
 	cwd := ""
 	if parent.Cwd != nil {
 		cwd = *parent.Cwd
 	}
-	slug := task.TaskID
-	if task.Slug != nil {
-		slug = *task.Slug
+	slug := task.ID
+	if task.Slug != "" {
+		slug = task.Slug
 	}
 	slug = "task-" + strings.ReplaceAll(graphID, "-", "") + "-" + slug
 	childID, actualSlug, err := (&db.SubagentDBAdapter{DB: s.db}).GetOrCreateSubagentConversation(ctx, slug, graph.ParentConversationID, cwd)
 	if err != nil {
-		s.logger.Error("Create task graph child conversation", "graphID", graphID, "taskID", task.TaskID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.TaskID, err)
+		s.logger.Error("Create task graph child conversation", "graphID", graphID, "taskID", task.ID, "error", err)
+		s.failTaskGraphLaunch(graphID, task.ID, err)
 		return
 	}
-	if err := s.db.SetTaskGraphTaskChildConversation(ctx, graphID, task.TaskID, childID, actualSlug); err != nil {
-		s.logger.Error("Associate task graph child conversation", "graphID", graphID, "taskID", task.TaskID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.TaskID, err)
+	if err := s.db.SetTaskGraphTaskChildConversation(ctx, graphID, task.ID, childID, actualSlug); err != nil {
+		s.logger.Error("Associate task graph child conversation", "graphID", graphID, "taskID", task.ID, "error", err)
+		s.failTaskGraphLaunch(graphID, task.ID, err)
 		return
 	}
 	model := ""
-	if task.Model != nil {
-		model = *task.Model
+	if task.Model != "" {
+		model = task.Model
 	} else if parent.Model != nil {
 		model = *parent.Model
 	}
 	reasoning := ""
-	if task.Reasoning != nil {
-		reasoning = *task.Reasoning
+	if task.Reasoning != "" {
+		reasoning = task.Reasoning
 	} else {
 		reasoning = db.ParseConversationOptions(parent.ConversationOptions).ThinkingLevel
 	}
-	if _, err := NewSubagentRunner(s).RunSubagent(ctx, childID, taskGraphDeref(task.Prompt), false, 0, model, reasoning); err != nil {
-		s.logger.Error("Launch task graph child", "graphID", graphID, "taskID", task.TaskID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.TaskID, err)
+	if _, err := NewSubagentRunner(s).RunSubagent(ctx, childID, task.Prompt, false, 0, model, reasoning); err != nil {
+		s.logger.Error("Launch task graph child", "graphID", graphID, "taskID", task.ID, "error", err)
+		s.failTaskGraphLaunch(graphID, task.ID, err)
 	}
 }
 
@@ -293,13 +284,6 @@ func (s *Server) failTaskGraphLaunch(graphID, taskID string, cause error) {
 		s.logger.Error("Mark task graph task failed", "graphID", graphID, "taskID", taskID, "error", err)
 	}
 	s.signalTaskGraphChange()
-}
-
-func taskGraphDeref(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }
 
 func (s *Server) handleGetTaskGraph(w http.ResponseWriter, r *http.Request, parentID string) {

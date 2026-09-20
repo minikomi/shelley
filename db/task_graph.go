@@ -24,6 +24,9 @@ type TaskGraphTaskCreate struct {
 	FileScopes   []string
 }
 
+// TaskGraphSnapshot is persisted in its parent conversation's options. A
+// parent may retain finished graphs so list/get calls can still address them;
+// only one graph may be active at a time.
 type TaskGraphSnapshot struct {
 	GraphID              string          `json:"id"`
 	ParentConversationID string          `json:"parent_conversation_id"`
@@ -53,303 +56,384 @@ type TaskGraphTask struct {
 	CompletedAt         *time.Time `json:"completed_at,omitempty"`
 }
 
+// TaskGraphChild tags a graph-owned child conversation, allowing completion
+// and restart recovery to find its parent graph without a separate table.
+type TaskGraphChild struct {
+	ParentConversationID string `json:"parent_conversation_id"`
+	GraphID              string `json:"graph_id"`
+	TaskID               string `json:"task_id"`
+}
+
+type taskGraphOptionsRow struct {
+	conversationID string
+	opts           ConversationOptions
+}
+
 func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title string, tasks []TaskGraphTaskCreate) (*TaskGraphSnapshot, error) {
 	graphID := uuid.NewString()
-	err := db.WithTx(ctx, func(q *generated.Queries) error {
-		if _, err := q.CreateTaskGraph(ctx, generated.CreateTaskGraphParams{
+	var created TaskGraphSnapshot
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		parent, err := q.GetConversation(ctx, parentConversationID)
+		if err != nil {
+			return err
+		}
+		opts := ParseConversationOptions(parent.ConversationOptions)
+		for i := range opts.TaskGraphs {
+			refreshTaskGraphStatus(&opts.TaskGraphs[i])
+			if opts.TaskGraphs[i].Status == "active" {
+				return fmt.Errorf("conversation already has an active task graph %q", opts.TaskGraphs[i].GraphID)
+			}
+		}
+		now := tx.Now
+		graph := TaskGraphSnapshot{
 			GraphID:              graphID,
 			ParentConversationID: parentConversationID,
 			Title:                title,
-		}); err != nil {
+			CreatedAt:            now,
+			UpdatedAt:            now,
+			Tasks:                make([]TaskGraphTask, 0, len(tasks)),
+		}
+		for _, task := range tasks {
+			graph.Tasks = append(graph.Tasks, TaskGraphTask{
+				ID:           task.ID,
+				Title:        task.Title,
+				Owner:        task.Owner,
+				Status:       "pending",
+				Dependencies: append([]string{}, task.Dependencies...),
+				Prompt:       task.Prompt,
+				Slug:         task.Slug,
+				Model:        task.Model,
+				Reasoning:    task.Reasoning,
+				FileScopes:   append([]string{}, task.FileScopes...),
+				CreatedAt:    now,
+			})
+		}
+		promoteTaskGraphReadyTasks(&graph)
+		refreshTaskGraphStatus(&graph)
+		opts.TaskGraphs = append(opts.TaskGraphs, graph)
+		if err := saveTaskGraphOptions(ctx, q, parentConversationID, opts); err != nil {
 			return err
 		}
-		for position, task := range tasks {
-			fileScopes, err := json.Marshal(task.FileScopes)
-			if err != nil {
-				return fmt.Errorf("marshal file scopes for %q: %w", task.ID, err)
-			}
-			if _, err := q.CreateTaskGraphTask(ctx, generated.CreateTaskGraphTaskParams{
-				GraphID:    graphID,
-				TaskID:     task.ID,
-				Position:   int64(position),
-				Title:      task.Title,
-				Owner:      task.Owner,
-				Prompt:     nullString(task.Prompt),
-				Slug:       nullString(task.Slug),
-				Model:      nullString(task.Model),
-				Reasoning:  nullString(task.Reasoning),
-				FileScopes: string(fileScopes),
-			}); err != nil {
-				return err
-			}
-			for _, dependency := range task.Dependencies {
-				if err := q.CreateTaskGraphDependency(ctx, generated.CreateTaskGraphDependencyParams{
-					GraphID:         graphID,
-					TaskID:          task.ID,
-					DependsOnTaskID: dependency,
-				}); err != nil {
-					return err
-				}
-			}
-		}
-		_, err := q.PromoteTaskGraphReadyTasks(ctx, graphID)
-		return err
+		created = graph
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create task graph: %w", err)
 	}
-	return db.GetTaskGraphSnapshot(ctx, graphID)
+	return &created, nil
 }
 
 func (db *DB) GetLatestTaskGraphSnapshot(ctx context.Context, parentConversationID string) (*TaskGraphSnapshot, error) {
-	var graph generated.TaskGraph
+	var graph *TaskGraphSnapshot
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		var err error
-		graph, err = generated.New(rx.Conn()).GetLatestTaskGraph(ctx, parentConversationID)
-		return err
-	})
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
+		parent, err := generated.New(rx.Conn()).GetConversation(ctx, parentConversationID)
+		if err != nil {
+			return err
 		}
-		return nil, err
-	}
-	return db.getTaskGraphSnapshot(ctx, graph)
+		opts := ParseConversationOptions(parent.ConversationOptions)
+		if len(opts.TaskGraphs) == 0 {
+			return nil
+		}
+		latest := opts.TaskGraphs[len(opts.TaskGraphs)-1]
+		refreshTaskGraphStatus(&latest)
+		graph = &latest
+		return nil
+	})
+	return graph, err
 }
 
 func (db *DB) GetTaskGraphSnapshot(ctx context.Context, graphID string) (*TaskGraphSnapshot, error) {
-	var graph generated.TaskGraph
+	var graph *TaskGraphSnapshot
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		var err error
-		graph, err = generated.New(rx.Conn()).GetTaskGraph(ctx, graphID)
-		return err
+		rows, err := listTaskGraphOptions(ctx, rx)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			for _, candidate := range row.opts.TaskGraphs {
+				if candidate.GraphID == graphID {
+					refreshTaskGraphStatus(&candidate)
+					graph = &candidate
+					return nil
+				}
+			}
+		}
+		return sql.ErrNoRows
 	})
-	if err != nil {
-		return nil, err
-	}
-	return db.getTaskGraphSnapshot(ctx, graph)
+	return graph, err
 }
 
 func (db *DB) ListTaskGraphsWithReadySubagentTasks(ctx context.Context) ([]string, error) {
 	var graphIDs []string
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		var err error
-		graphIDs, err = generated.New(rx.Conn()).ListTaskGraphsWithReadySubagentTasks(ctx)
-		return err
+		rows, err := listTaskGraphOptions(ctx, rx)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			for i := range row.opts.TaskGraphs {
+				graph := &row.opts.TaskGraphs[i]
+				for _, task := range graph.Tasks {
+					if task.Owner == "subagent" && task.Status == "ready" {
+						graphIDs = append(graphIDs, graph.GraphID)
+						break
+					}
+				}
+			}
+		}
+		return nil
 	})
 	return graphIDs, err
 }
 
-func (db *DB) getTaskGraphSnapshot(ctx context.Context, graph generated.TaskGraph) (*TaskGraphSnapshot, error) {
-	var tasks []generated.TaskGraphTask
-	var dependencies []generated.TaskGraphDependency
-	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		q := generated.New(rx.Conn())
-		var err error
-		tasks, err = q.ListTaskGraphTasks(ctx, graph.GraphID)
-		if err != nil {
-			return err
-		}
-		dependencies, err = q.ListTaskGraphDependencies(ctx, graph.GraphID)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	depsByTask := make(map[string][]string, len(tasks))
-	for _, dep := range dependencies {
-		depsByTask[dep.TaskID] = append(depsByTask[dep.TaskID], dep.DependsOnTaskID)
-	}
-	snapshot := &TaskGraphSnapshot{
-		GraphID:              graph.GraphID,
-		ParentConversationID: graph.ParentConversationID,
-		Title:                graph.Title,
-		CreatedAt:            graph.CreatedAt,
-		UpdatedAt:            graph.UpdatedAt,
-		Tasks:                make([]TaskGraphTask, 0, len(tasks)),
-	}
-	cancelled := false
-	failed := false
-	terminal := true
-	for _, task := range tasks {
-		var fileScopes []string
-		if err := json.Unmarshal([]byte(task.FileScopes), &fileScopes); err != nil {
-			return nil, fmt.Errorf("decode file scopes for %q: %w", task.TaskID, err)
-		}
-		dependencies := depsByTask[task.TaskID]
-		if dependencies == nil {
-			dependencies = []string{}
-		}
-		snapshot.Tasks = append(snapshot.Tasks, TaskGraphTask{
-			ID:                  task.TaskID,
-			Title:               task.Title,
-			Owner:               task.Owner,
-			Status:              taskGraphTaskState(task.Status),
-			Dependencies:        dependencies,
-			Prompt:              taskGraphDeref(task.Prompt),
-			Slug:                taskGraphDeref(task.Slug),
-			Model:               taskGraphDeref(task.Model),
-			Reasoning:           taskGraphDeref(task.Reasoning),
-			FileScopes:          fileScopes,
-			ChildConversationID: taskGraphDeref(task.ChildConversationID),
-			FinalResponse:       taskGraphDeref(task.FinalResponse),
-			Error:               taskGraphTaskError(task.Status, task.FinalResponse),
-			CreatedAt:           task.CreatedAt,
-			StartedAt:           task.StartedAt,
-			CompletedAt:         task.CompletedAt,
-		})
-		if task.Status == "cancelled" {
-			cancelled = true
-		}
-		if task.Status == "failed" {
-			failed = true
-		}
-		if task.Status != "complete" && task.Status != "cancelled" && task.Status != "failed" {
-			terminal = false
-		}
-	}
-	switch {
-	case terminal && failed:
-		snapshot.Status = "failed"
-	case terminal && cancelled:
-		snapshot.Status = "cancelled"
-	case terminal:
-		snapshot.Status = "complete"
-	default:
-		snapshot.Status = "active"
-	}
-	return snapshot, nil
-}
-
 func (db *DB) CompleteParentTaskGraphTask(ctx context.Context, graphID, taskID, response string) (*TaskGraphSnapshot, error) {
-	err := db.WithTx(ctx, func(q *generated.Queries) error {
-		task, err := q.GetTaskGraphTask(ctx, generated.GetTaskGraphTaskParams{GraphID: graphID, TaskID: taskID})
+	var snapshot TaskGraphSnapshot
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		row, graph, err := findTaskGraphOptions(ctx, tx, graphID)
 		if err != nil {
 			return err
+		}
+		task := findTaskGraphTask(graph, taskID)
+		if task == nil {
+			return sql.ErrNoRows
 		}
 		if task.Owner != "parent" {
 			return fmt.Errorf("task %q is owned by %s", taskID, task.Owner)
 		}
-		if task.Status == "complete" {
-			return nil
+		if task.Status != "complete" {
+			if task.Status != "ready" {
+				return fmt.Errorf("task %q is not ready", taskID)
+			}
+			task.Status = "complete"
+			task.FinalResponse = response
+			task.Error = ""
+			now := tx.Now
+			task.CompletedAt = &now
+			promoteTaskGraphReadyTasks(graph)
+			graph.UpdatedAt = now
 		}
-		n, err := q.CompleteParentTaskGraphTask(ctx, generated.CompleteParentTaskGraphTaskParams{
-			FinalResponse: nullString(response),
-			GraphID:       graphID,
-			TaskID:        taskID,
-		})
-		if err != nil {
+		refreshTaskGraphStatus(graph)
+		if err := saveTaskGraphOptions(ctx, q, row.conversationID, row.opts); err != nil {
 			return err
 		}
-		if n == 0 {
-			return fmt.Errorf("task %q is not ready", taskID)
-		}
-		_, err = q.PromoteTaskGraphReadyTasks(ctx, graphID)
-		return err
+		snapshot = *graph
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return db.GetTaskGraphSnapshot(ctx, graphID)
+	return &snapshot, nil
 }
 
 // CompleteTaskGraphChild records a final subagent response. It returns true
-// only when the conversation belongs to a running graph task.
+// whenever the child is durably tagged as a graph child, including duplicate
+// completion notifications.
 func (db *DB) CompleteTaskGraphChild(ctx context.Context, childConversationID, response string) (bool, *TaskGraphSnapshot, error) {
-	var graphID string
-	err := db.WithTx(ctx, func(q *generated.Queries) error {
-		task, err := q.FindTaskGraphTaskByChildConversation(ctx, &childConversationID)
+	var matched bool
+	var snapshot *TaskGraphSnapshot
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		child, err := q.GetConversation(ctx, childConversationID)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil
 			}
 			return err
 		}
-		graphID = task.GraphID
-		n, err := q.CompleteChildTaskGraphTask(ctx, generated.CompleteChildTaskGraphTaskParams{
-			FinalResponse:       nullString(response),
-			ChildConversationID: &childConversationID,
-		})
-		if err != nil {
-			return err
-		}
-		if n == 0 {
+		childTag := ParseConversationOptions(child.ConversationOptions).TaskGraphChild
+		if childTag == nil {
 			return nil
 		}
-		_, err = q.PromoteTaskGraphReadyTasks(ctx, graphID)
-		return err
+		parent, err := q.GetConversation(ctx, childTag.ParentConversationID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil
+			}
+			return err
+		}
+		opts := ParseConversationOptions(parent.ConversationOptions)
+		graph := taskGraphByID(&opts, childTag.GraphID)
+		if graph == nil {
+			return nil
+		}
+		task := findTaskGraphTask(graph, childTag.TaskID)
+		if task == nil || task.Owner != "subagent" || task.ChildConversationID != childConversationID {
+			return nil
+		}
+		matched = true
+		if task.Status == "running" {
+			task.Status = "complete"
+			task.FinalResponse = response
+			task.Error = ""
+			now := tx.Now
+			task.CompletedAt = &now
+			graph.UpdatedAt = now
+			promoteTaskGraphReadyTasks(graph)
+			refreshTaskGraphStatus(graph)
+			if err := saveTaskGraphOptions(ctx, q, parent.ConversationID, opts); err != nil {
+				return err
+			}
+		}
+		refreshTaskGraphStatus(graph)
+		copy := *graph
+		snapshot = &copy
+		return nil
 	})
-	if err != nil {
-		return false, nil, err
-	}
-	if graphID == "" {
-		return false, nil, nil
-	}
-	snapshot, err := db.GetTaskGraphSnapshot(ctx, graphID)
-	return true, snapshot, err
+	return matched, snapshot, err
 }
 
 func (db *DB) FailTaskGraphTask(ctx context.Context, graphID, taskID, message string) (*TaskGraphSnapshot, error) {
-	err := db.WithTx(ctx, func(q *generated.Queries) error {
-		n, err := q.FailTaskGraphTask(ctx, generated.FailTaskGraphTaskParams{
-			FinalResponse: nullString(message),
-			GraphID:       graphID,
-			TaskID:        taskID,
-		})
+	var snapshot TaskGraphSnapshot
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		row, graph, err := findTaskGraphOptions(ctx, tx, graphID)
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			return nil
+		task := findTaskGraphTask(graph, taskID)
+		if task == nil {
+			return sql.ErrNoRows
 		}
-		for {
-			n, err := q.CancelBlockedTaskGraphTasks(ctx, graphID)
-			if err != nil {
-				return err
-			}
-			if n == 0 {
-				return nil
-			}
+		if task.Status == "running" {
+			task.Status = "failed"
+			task.FinalResponse = message
+			task.Error = message
+			now := tx.Now
+			task.CompletedAt = &now
+			graph.UpdatedAt = now
+			cancelBlockedTaskGraphTasks(graph, now)
 		}
+		refreshTaskGraphStatus(graph)
+		if err := saveTaskGraphOptions(ctx, q, row.conversationID, row.opts); err != nil {
+			return err
+		}
+		snapshot = *graph
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return db.GetTaskGraphSnapshot(ctx, graphID)
+	return &snapshot, nil
 }
 
-func (db *DB) ClaimReadyTaskGraphSubagentTasks(ctx context.Context, graphID string) ([]generated.TaskGraphTask, error) {
-	var tasks []generated.TaskGraphTask
-	err := db.WithTx(ctx, func(q *generated.Queries) error {
-		var err error
-		tasks, err = q.ClaimReadyTaskGraphSubagentTasks(ctx, graphID)
-		return err
-	})
-	return tasks, err
-}
-
-func (db *DB) SetTaskGraphTaskChildConversation(ctx context.Context, graphID, taskID, conversationID, slug string) error {
-	return db.WithTx(ctx, func(q *generated.Queries) error {
-		n, err := q.SetTaskGraphTaskChildConversation(ctx, generated.SetTaskGraphTaskChildConversationParams{
-			ChildConversationID: &conversationID,
-			Slug:                &slug,
-			GraphID:             graphID,
-			TaskID:              taskID,
-		})
+func (db *DB) ClaimReadyTaskGraphSubagentTasks(ctx context.Context, graphID string) ([]TaskGraphTask, error) {
+	var claimed []TaskGraphTask
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		row, graph, err := findTaskGraphOptions(ctx, tx, graphID)
 		if err != nil {
 			return err
 		}
-		if n != 1 {
-			return fmt.Errorf("task %q was not available for launch", taskID)
+		running := 0
+		for _, task := range graph.Tasks {
+			if task.Owner == "subagent" && task.Status == "running" {
+				running++
+			}
+		}
+		available := max(0, 3-running)
+		if available == 0 {
+			return nil
+		}
+		now := tx.Now
+		for i := range graph.Tasks {
+			task := &graph.Tasks[i]
+			if available == 0 {
+				break
+			}
+			if task.Owner != "subagent" || task.Status != "ready" {
+				continue
+			}
+			task.Status = "running"
+			task.StartedAt = &now
+			graph.UpdatedAt = now
+			claimed = append(claimed, *task)
+			available--
+		}
+		if len(claimed) != 0 {
+			refreshTaskGraphStatus(graph)
+			return saveTaskGraphOptions(ctx, q, row.conversationID, row.opts)
 		}
 		return nil
+	})
+	return claimed, err
+}
+
+// SetTaskGraphTaskChildConversation atomically associates the claimed task and
+// writes the child tag used by completion and recovery.
+func (db *DB) SetTaskGraphTaskChildConversation(ctx context.Context, graphID, taskID, conversationID, slug string) error {
+	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		row, graph, err := findTaskGraphOptions(ctx, tx, graphID)
+		if err != nil {
+			return err
+		}
+		task := findTaskGraphTask(graph, taskID)
+		if task == nil || task.Status != "running" || task.ChildConversationID != "" {
+			return fmt.Errorf("task %q was not available for launch", taskID)
+		}
+		child, err := q.GetConversation(ctx, conversationID)
+		if err != nil {
+			return err
+		}
+		if child.ParentConversationID == nil || *child.ParentConversationID != row.conversationID {
+			return fmt.Errorf("task child %q does not belong to parent conversation", conversationID)
+		}
+		childOpts := ParseConversationOptions(child.ConversationOptions)
+		childOpts.TaskGraphChild = &TaskGraphChild{
+			ParentConversationID: row.conversationID,
+			GraphID:              graphID,
+			TaskID:               taskID,
+		}
+		childOptsJSON, err := json.Marshal(childOpts)
+		if err != nil {
+			return fmt.Errorf("marshal task graph child options: %w", err)
+		}
+		task.ChildConversationID = conversationID
+		task.Slug = slug
+		graph.UpdatedAt = tx.Now
+		refreshTaskGraphStatus(graph)
+		if err := q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
+			ConversationID: conversationID, ConversationOptions: string(childOptsJSON),
+		}); err != nil {
+			return err
+		}
+		return saveTaskGraphOptions(ctx, q, row.conversationID, row.opts)
 	})
 }
 
 func (db *DB) ResetUnstartedTaskGraphTasks(ctx context.Context) error {
-	return db.WithTx(ctx, func(q *generated.Queries) error {
-		_, err := q.ResetUnstartedTaskGraphTasks(ctx)
-		return err
+	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		rows, err := listTaskGraphOptions(ctx, tx.Rx)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			changed := false
+			for i := range row.opts.TaskGraphs {
+				graph := &row.opts.TaskGraphs[i]
+				for j := range graph.Tasks {
+					task := &graph.Tasks[j]
+					if task.Status == "running" && task.ChildConversationID == "" {
+						task.Status = "ready"
+						task.StartedAt = nil
+						changed = true
+					}
+				}
+				if changed {
+					graph.UpdatedAt = tx.Now
+					refreshTaskGraphStatus(graph)
+				}
+			}
+			if changed {
+				if err := saveTaskGraphOptions(ctx, q, row.conversationID, row.opts); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 }
 
@@ -357,105 +441,245 @@ func (db *DB) ResetUnstartedTaskGraphTasks(ctx context.Context) error {
 // child conversation cancellation separately.
 func (db *DB) CancelTaskGraph(ctx context.Context, graphID string, taskIDs []string) ([]string, *TaskGraphSnapshot, error) {
 	var running []string
-	err := db.WithTx(ctx, func(q *generated.Queries) error {
+	var snapshot TaskGraphSnapshot
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		row, graph, err := findTaskGraphOptions(ctx, tx, graphID)
+		if err != nil {
+			return err
+		}
+		changed := false
 		if len(taskIDs) == 0 {
-			tasks, err := q.ListTaskGraphTasks(ctx, graphID)
-			if err != nil {
-				return err
-			}
-			for _, task := range tasks {
+			for i := range graph.Tasks {
+				task := &graph.Tasks[i]
 				if task.Status == "running" {
-					running = append(running, task.TaskID)
+					running = append(running, task.ID)
+					continue
 				}
-			}
-			_, err = q.CancelReadyTaskGraphTasks(ctx, graphID)
-			if err != nil {
-				return err
+				if task.Status == "pending" || task.Status == "ready" {
+					task.Status = "cancelled"
+					now := tx.Now
+					task.CompletedAt = &now
+					changed = true
+				}
 			}
 		} else {
 			for _, taskID := range taskIDs {
-				task, err := q.GetTaskGraphTask(ctx, generated.GetTaskGraphTaskParams{GraphID: graphID, TaskID: taskID})
-				if err != nil {
-					return err
+				task := findTaskGraphTask(graph, taskID)
+				if task == nil {
+					return sql.ErrNoRows
 				}
 				if task.Status == "running" {
 					running = append(running, taskID)
 					continue
 				}
-				if _, err := q.CancelReadyTaskGraphTask(ctx, generated.CancelReadyTaskGraphTaskParams{GraphID: graphID, TaskID: taskID}); err != nil {
-					return err
+				if task.Status == "pending" || task.Status == "ready" {
+					task.Status = "cancelled"
+					now := tx.Now
+					task.CompletedAt = &now
+					changed = true
 				}
 			}
 		}
-		for {
-			n, err := q.CancelBlockedTaskGraphTasks(ctx, graphID)
-			if err != nil {
+		if changed {
+			graph.UpdatedAt = tx.Now
+			cancelBlockedTaskGraphTasks(graph, tx.Now)
+		}
+		refreshTaskGraphStatus(graph)
+		if changed {
+			if err := saveTaskGraphOptions(ctx, q, row.conversationID, row.opts); err != nil {
 				return err
 			}
-			if n == 0 {
-				return nil
-			}
 		}
+		snapshot = *graph
+		return nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	snapshot, err := db.GetTaskGraphSnapshot(ctx, graphID)
-	return running, snapshot, err
+	return running, &snapshot, nil
 }
 
 func (db *DB) CancelRunningTaskGraphTask(ctx context.Context, graphID, taskID string) (*TaskGraphSnapshot, error) {
-	err := db.WithTx(ctx, func(q *generated.Queries) error {
-		n, err := q.CancelRunningTaskGraphTask(ctx, generated.CancelRunningTaskGraphTaskParams{
-			GraphID: graphID,
-			TaskID:  taskID,
-		})
+	var snapshot TaskGraphSnapshot
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		row, graph, err := findTaskGraphOptions(ctx, tx, graphID)
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			return nil
+		task := findTaskGraphTask(graph, taskID)
+		if task == nil {
+			return sql.ErrNoRows
 		}
-		for {
-			n, err := q.CancelBlockedTaskGraphTasks(ctx, graphID)
-			if err != nil {
+		if task.Status == "running" {
+			task.Status = "cancelled"
+			now := tx.Now
+			task.CompletedAt = &now
+			graph.UpdatedAt = now
+			cancelBlockedTaskGraphTasks(graph, now)
+			refreshTaskGraphStatus(graph)
+			if err := saveTaskGraphOptions(ctx, q, row.conversationID, row.opts); err != nil {
 				return err
 			}
-			if n == 0 {
-				return nil
-			}
 		}
+		refreshTaskGraphStatus(graph)
+		snapshot = *graph
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return db.GetTaskGraphSnapshot(ctx, graphID)
+	return &snapshot, nil
 }
 
-func nullString(value string) *string {
-	if value == "" {
+func (db *DB) GetTaskGraphChild(ctx context.Context, childConversationID string) (*TaskGraphChild, error) {
+	var tag *TaskGraphChild
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		conversation, err := generated.New(rx.Conn()).GetConversation(ctx, childConversationID)
+		if err != nil {
+			return err
+		}
+		if stored := ParseConversationOptions(conversation.ConversationOptions).TaskGraphChild; stored != nil {
+			copy := *stored
+			tag = &copy
+		}
 		return nil
-	}
-	return &value
+	})
+	return tag, err
 }
 
-func taskGraphDeref(value *string) string {
-	if value == nil {
-		return ""
+func listTaskGraphOptions(ctx context.Context, rx *Rx) ([]taskGraphOptionsRow, error) {
+	rows, err := rx.Query("SELECT conversation_id, conversation_options FROM conversations")
+	if err != nil {
+		return nil, err
 	}
-	return *value
+	defer rows.Close()
+	var result []taskGraphOptionsRow
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, err
+		}
+		opts := ParseConversationOptions(raw)
+		if len(opts.TaskGraphs) != 0 {
+			result = append(result, taskGraphOptionsRow{conversationID: id, opts: opts})
+		}
+	}
+	return result, rows.Err()
 }
 
-func taskGraphTaskState(status string) string {
-	if status == "queued" {
-		return "pending"
+func findTaskGraphOptions(ctx context.Context, tx *Tx, graphID string) (*taskGraphOptionsRow, *TaskGraphSnapshot, error) {
+	rows, err := listTaskGraphOptions(ctx, tx.Rx)
+	if err != nil {
+		return nil, nil, err
 	}
-	return status
+	for i := range rows {
+		graph := taskGraphByID(&rows[i].opts, graphID)
+		if graph != nil {
+			return &rows[i], graph, nil
+		}
+	}
+	return nil, nil, sql.ErrNoRows
 }
 
-func taskGraphTaskError(status string, response *string) string {
-	if status != "failed" {
-		return ""
+func saveTaskGraphOptions(ctx context.Context, q *generated.Queries, conversationID string, opts ConversationOptions) error {
+	raw, err := json.Marshal(opts)
+	if err != nil {
+		return fmt.Errorf("marshal task graph options: %w", err)
 	}
-	return taskGraphDeref(response)
+	return q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
+		ConversationID: conversationID, ConversationOptions: string(raw),
+	})
+}
+
+func taskGraphByID(opts *ConversationOptions, graphID string) *TaskGraphSnapshot {
+	for i := range opts.TaskGraphs {
+		if opts.TaskGraphs[i].GraphID == graphID {
+			return &opts.TaskGraphs[i]
+		}
+	}
+	return nil
+}
+
+func findTaskGraphTask(graph *TaskGraphSnapshot, taskID string) *TaskGraphTask {
+	for i := range graph.Tasks {
+		if graph.Tasks[i].ID == taskID {
+			return &graph.Tasks[i]
+		}
+	}
+	return nil
+}
+
+func promoteTaskGraphReadyTasks(graph *TaskGraphSnapshot) {
+	for i := range graph.Tasks {
+		task := &graph.Tasks[i]
+		if task.Status != "pending" {
+			continue
+		}
+		ready := true
+		for _, dependency := range task.Dependencies {
+			prerequisite := findTaskGraphTask(graph, dependency)
+			if prerequisite == nil || prerequisite.Status != "complete" {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			task.Status = "ready"
+		}
+	}
+}
+
+func cancelBlockedTaskGraphTasks(graph *TaskGraphSnapshot, now time.Time) {
+	for {
+		changed := false
+		for i := range graph.Tasks {
+			task := &graph.Tasks[i]
+			if task.Status != "pending" {
+				continue
+			}
+			for _, dependency := range task.Dependencies {
+				prerequisite := findTaskGraphTask(graph, dependency)
+				if prerequisite != nil && (prerequisite.Status == "cancelled" || prerequisite.Status == "failed") {
+					task.Status = "cancelled"
+					task.CompletedAt = &now
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
+func refreshTaskGraphStatus(graph *TaskGraphSnapshot) {
+	cancelled, failed, terminal := false, false, true
+	for i := range graph.Tasks {
+		task := &graph.Tasks[i]
+		if task.Status == "cancelled" {
+			cancelled = true
+		}
+		if task.Status == "failed" {
+			failed = true
+			task.Error = task.FinalResponse
+		} else {
+			task.Error = ""
+		}
+		if task.Status != "complete" && task.Status != "cancelled" && task.Status != "failed" {
+			terminal = false
+		}
+	}
+	switch {
+	case terminal && failed:
+		graph.Status = "failed"
+	case terminal && cancelled:
+		graph.Status = "cancelled"
+	case terminal:
+		graph.Status = "complete"
+	default:
+		graph.Status = "active"
+	}
 }

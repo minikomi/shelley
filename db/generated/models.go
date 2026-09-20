@@ -81,36 +81,3 @@ type NotificationChannel struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
-
-type TaskGraph struct {
-	GraphID              string    `json:"graph_id"`
-	ParentConversationID string    `json:"parent_conversation_id"`
-	Title                string    `json:"title"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
-}
-
-type TaskGraphDependency struct {
-	GraphID         string `json:"graph_id"`
-	TaskID          string `json:"task_id"`
-	DependsOnTaskID string `json:"depends_on_task_id"`
-}
-
-type TaskGraphTask struct {
-	GraphID             string     `json:"graph_id"`
-	TaskID              string     `json:"task_id"`
-	Position            int64      `json:"position"`
-	Title               string     `json:"title"`
-	Owner               string     `json:"owner"`
-	Status              string     `json:"status"`
-	Prompt              *string    `json:"prompt"`
-	Slug                *string    `json:"slug"`
-	Model               *string    `json:"model"`
-	Reasoning           *string    `json:"reasoning"`
-	FileScopes          string     `json:"file_scopes"`
-	ChildConversationID *string    `json:"child_conversation_id"`
-	FinalResponse       *string    `json:"final_response"`
-	CreatedAt           time.Time  `json:"created_at"`
-	StartedAt           *time.Time `json:"started_at"`
-	CompletedAt         *time.Time `json:"completed_at"`
-}

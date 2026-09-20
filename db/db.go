@@ -303,6 +303,10 @@ type ConversationOptions struct {
 	// discord, ntfy) for this conversation. Useful for cron-style or
 	// self-invoked conversations that shouldn't ping the user.
 	DisableNotifications bool `json:"disable_notifications,omitempty"`
+	// TaskGraphs holds graph snapshots owned by this parent conversation.
+	TaskGraphs []TaskGraphSnapshot `json:"task_graphs,omitempty"`
+	// TaskGraphChild identifies graph-owned subagent conversations.
+	TaskGraphChild *TaskGraphChild `json:"task_graph_child,omitempty"`
 }
 
 // ParseConversationOptions parses a JSON string into ConversationOptions.

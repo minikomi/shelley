@@ -1559,7 +1559,8 @@ func TestManagedBtwIdentityAndUserInitiatedScrubbing(t *testing.T) {
 	assertScrubbed := func(name string, conversation *generated.Conversation) {
 		t.Helper()
 		options := ParseConversationOptions(conversation.ConversationOptions)
-		if options.Kind != "" || options.ParentPointer != nil || options.ThinkingLevel != "high" {
+		if options.Kind != "" || options.ParentPointer != nil || options.ThinkingLevel != "high" ||
+			len(options.TaskGraphs) != 0 || options.TaskGraphChild != nil {
 			t.Fatalf("%s retained managed identity: %#v", name, options)
 		}
 		if _, ok := ManagedBtwReaderIdentity(*conversation); ok {
@@ -1571,6 +1572,12 @@ func TestManagedBtwIdentityAndUserInitiatedScrubbing(t *testing.T) {
 		Kind:          BtwReaderKind,
 		ParentPointer: &BtwParentPointer{Generation: 1, SequenceID: 2},
 		ThinkingLevel: "high",
+		TaskGraphs:    []TaskGraphSnapshot{{GraphID: "stale-graph"}},
+		TaskGraphChild: &TaskGraphChild{
+			ParentConversationID: parent.ConversationID,
+			GraphID:              "stale-graph",
+			TaskID:               "work",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1593,6 +1600,7 @@ func TestManagedBtwIdentityAndUserInitiatedScrubbing(t *testing.T) {
 		Kind:          BtwReaderKind,
 		ParentPointer: &BtwParentPointer{Generation: 1, SequenceID: 2},
 		ThinkingLevel: "high",
+		TaskGraphs:    []TaskGraphSnapshot{{GraphID: "draft-graph"}},
 	}, "draft")
 	if err != nil {
 		t.Fatal(err)
