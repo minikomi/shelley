@@ -9880,9 +9880,68 @@ kbd {
   overflow-x: auto;
 }
 
+.markdown-content .shelley-code-block {
+  margin: 0.75em 0;
+  background: var(--code-bg);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.markdown-content .shelley-code-block pre {
+  margin: 0;
+  border-radius: 0;
+}
+
+.shelley-code-header {
+  height: 26px;
+  padding: 0 7px 0 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.shelley-code-copy {
+  position: relative;
+  display: flex;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.shelley-code-copy::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+}
+
+.shelley-code-copy:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
 .dark .markdown-content pre {
   background: var(--bg-base);
   box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.dark .markdown-content .shelley-code-block {
+  background: var(--bg-base);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.dark .markdown-content .shelley-code-block pre {
+  box-shadow: none;
 }
 
 .markdown-content pre code {
