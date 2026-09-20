@@ -339,6 +339,11 @@
       </button>
     </div>
 
+    <TaskGraphDock
+      :conversation-id="conversationId"
+      :refresh-token="messages.length + queuedGhosts.length"
+    />
+
     <!-- Status bar -->
     <div :class="statusBarClass">
       <div class="status-bar-content">
@@ -346,11 +351,6 @@
         <span :id="`${tocTargetId}-desktop`" class="status-navigation" />
       </div>
     </div>
-
-    <TaskGraphDock
-      :conversation-id="conversationId"
-      :refresh-token="messages.length + queuedGhosts.length"
-    />
 
     <!-- Message input -->
     <!-- No :key here, matching React: MessageInput must NOT remount on the

@@ -27,7 +27,49 @@
       </svg>
     </button>
 
-    <div v-if="!collapsed" class="task-graph-rows">
+    <div v-if="!collapsed && topology.layered" class="task-graph-rows task-graph-flow">
+      <template v-for="(layer, layerIndex) in topology.layers" :key="layer.depth">
+        <div
+          class="task-flow-layer"
+          :class="{ 'is-group': layer.tasks.length > 1, 'is-single': layer.tasks.length === 1 }"
+        >
+          <div
+            v-for="{ task, index } in layer.tasks"
+            :key="task.id"
+            class="task-graph-row"
+            :class="`task-state-${task.state}`"
+          >
+            <span class="task-state-icon" aria-hidden="true">{{ taskIcon(task, index) }}</span>
+            <span class="task-graph-copy">
+              <strong>{{ task.title }}</strong>
+              <small>{{ taskDetail(task) }}</small>
+              <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
+                <span />
+              </span>
+            </span>
+            <button
+              v-if="task.slug"
+              type="button"
+              class="task-graph-action"
+              @click.stop="openTask(task.slug)"
+            >
+              Open
+            </button>
+            <span v-else class="task-graph-state-label">{{ stateLabel(task.state) }}</span>
+          </div>
+        </div>
+        <div
+          v-if="layerIndex < topology.layers.length - 1"
+          class="task-flow-junction"
+          :class="{ 'is-finished': layer.tasks.every(({ task }) => task.state === 'complete') }"
+          aria-hidden="true"
+        >
+          <span />
+        </div>
+      </template>
+    </div>
+
+    <div v-else-if="!collapsed" class="task-graph-rows">
       <div
         v-for="{ task, index, depth } in displayTasks"
         :key="task.id"
@@ -115,6 +157,31 @@ const displayTasks = computed(() => {
   }
 
   return props.graph.tasks.map((task, index) => ({ task, index, depth: depthFor(task) }));
+});
+
+const topology = computed(() => {
+  const byDepth = new Map<number, (typeof displayTasks.value)[number][]>();
+  for (const item of displayTasks.value) {
+    const layer = byDepth.get(item.depth) || [];
+    layer.push(item);
+    byDepth.set(item.depth, layer);
+  }
+  const layers = [...byDepth.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([depth, tasks]) => ({ depth, tasks }));
+
+  const layered = layers.every((layer, index) => {
+    const expected = new Set(index === 0 ? [] : layers[index - 1].tasks.map(({ task }) => task.id));
+    return layer.tasks.every(({ task }) => {
+      const dependencies = task.depends_on || [];
+      return (
+        dependencies.length === expected.size &&
+        dependencies.every((dependency) => expected.has(dependency))
+      );
+    });
+  });
+
+  return { layered, layers };
 });
 
 const tone = computed(() => {
@@ -354,6 +421,92 @@ function openTask(slug: string) {
 
 .task-graph-row:last-child {
   border-bottom: 0;
+}
+
+.task-graph-flow {
+  padding: 0.375rem 0;
+}
+
+.task-flow-layer {
+  position: relative;
+}
+
+.task-flow-layer::before,
+.task-flow-junction::before {
+  position: absolute;
+  left: 1rem;
+  width: 1px;
+  background: color-mix(in srgb, var(--text-secondary) 24%, var(--border));
+  content: "";
+}
+
+.task-flow-layer::before {
+  top: 0;
+  bottom: 0;
+}
+
+.task-flow-layer:first-child::before {
+  top: 1.3125rem;
+}
+
+.task-flow-layer:last-child::before {
+  bottom: 1.3125rem;
+}
+
+.task-graph-flow .task-graph-row {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 2.625rem;
+  padding: 0.375rem 0.625rem 0.375rem 2.5rem;
+  border-bottom: 0;
+}
+
+.task-graph-flow .task-graph-row::before {
+  position: absolute;
+  top: 50%;
+  left: 1rem;
+  width: 0.5625rem;
+  height: 1px;
+  background: color-mix(in srgb, var(--text-secondary) 24%, var(--border));
+  content: "";
+}
+
+.task-graph-flow .task-state-icon {
+  position: absolute;
+  top: 50%;
+  left: 1.5625rem;
+  z-index: 1;
+  width: 1.0625rem;
+  height: 1.0625rem;
+  font-size: 0.5625rem;
+  transform: translateY(-50%);
+}
+
+.task-flow-junction {
+  position: relative;
+  height: 0.875rem;
+}
+
+.task-flow-junction::before {
+  top: 0;
+  bottom: 0;
+}
+
+.task-flow-junction span {
+  position: absolute;
+  top: 50%;
+  left: 1rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 48%, var(--border));
+  border-radius: 1px;
+  background: var(--bg-secondary);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.task-flow-junction.is-finished span {
+  border-color: color-mix(in srgb, var(--accent-primary) 72%, var(--border));
+  background: color-mix(in srgb, var(--accent-primary) 72%, var(--border));
 }
 
 .task-state-running,
