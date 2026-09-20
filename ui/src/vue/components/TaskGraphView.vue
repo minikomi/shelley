@@ -43,7 +43,7 @@
             <span class="task-state-icon" aria-hidden="true">{{ taskIcon(task, index) }}</span>
             <span class="task-graph-copy">
               <strong>{{ task.title }}</strong>
-              <small>{{ taskDetail(task) }}</small>
+              <TaskGraphTaskDetail :task="task" :fallback="taskDetail(task)" />
               <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
                 <span />
               </span>
@@ -82,7 +82,7 @@
         <span class="task-state-icon" aria-hidden="true">{{ taskIcon(task, index) }}</span>
         <span class="task-graph-copy">
           <strong>{{ task.title }}</strong>
-          <small>{{ taskDetail(task) }}</small>
+          <TaskGraphTaskDetail :task="task" :fallback="taskDetail(task)" />
           <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
             <span />
           </span>
@@ -105,6 +105,7 @@
 import { computed } from "vue";
 import type { TaskGraphSnapshot, TaskGraphTask, TaskState } from "../../taskGraph";
 import { navigateToConversationSlug } from "../composables/subagentLive";
+import TaskGraphTaskDetail from "./TaskGraphTaskDetail.vue";
 
 const props = withDefaults(
   defineProps<{
