@@ -9930,11 +9930,6 @@ kbd {
   color: var(--text-primary);
 }
 
-.shelley-code-copy-success {
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
 .dark .markdown-content pre {
   background: var(--bg-base);
   box-shadow: inset 0 0 0 1px var(--border);
