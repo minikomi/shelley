@@ -48,12 +48,12 @@
               </span>
             </span>
             <button
-              v-if="task.slug"
+              v-if="task.slug && task.child_conversation_id"
               type="button"
               class="task-graph-action"
               @click.stop="openTask(task.slug)"
             >
-              Open
+              {{ stateLabel(task.state) }}
             </button>
             <span v-else class="task-graph-state-label">{{ stateLabel(task.state) }}</span>
           </div>
@@ -87,12 +87,12 @@
           </span>
         </span>
         <button
-          v-if="task.slug"
+          v-if="task.slug && task.child_conversation_id"
           type="button"
           class="task-graph-action"
           @click.stop="openTask(task.slug)"
         >
-          Open
+          {{ stateLabel(task.state) }}
         </button>
         <span v-else class="task-graph-state-label">{{ stateLabel(task.state) }}</span>
       </div>
@@ -210,14 +210,15 @@ const summary = computed(() => {
 function stateLabel(state: TaskState): string {
   switch (state) {
     case "complete":
-      return "Done";
+      return "Complete";
     case "failed":
       return "Failed";
     case "cancelled":
       return "Cancelled";
     case "running":
-    case "starting":
       return "Running";
+    case "starting":
+      return "Starting";
     case "ready":
       return "Ready";
     default:
@@ -263,8 +264,54 @@ function openTask(slug: string) {
 
 .task-graph-dock {
   flex: none;
-  margin: 0 1rem;
-  box-shadow: 0 -0.5rem 1.5rem rgb(0 0 0 / 18%);
+  margin: 0;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: var(--bg-primary);
+  box-shadow: none;
+}
+
+.task-graph-dock.task-graph-running,
+.task-graph-dock.task-graph-complete,
+.task-graph-dock.task-graph-failed {
+  border-color: var(--border);
+}
+
+.task-graph-dock .task-graph-header {
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  padding: 0.35rem 1rem;
+}
+
+.task-graph-dock .task-graph-indicator {
+  width: 1rem;
+  height: 1rem;
+  font-size: 0.6rem;
+}
+
+.task-graph-dock .task-graph-rows {
+  max-height: 14rem;
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+}
+
+.task-graph-dock .task-graph-flow .task-graph-row {
+  min-height: 2.25rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+
+.task-graph-dock .task-graph-heading strong,
+.task-graph-dock .task-graph-copy strong {
+  font-size: 0.75rem;
+}
+
+.task-graph-dock .task-graph-heading small,
+.task-graph-dock .task-graph-copy small,
+.task-graph-dock .task-graph-state-label,
+.task-graph-dock .task-graph-action {
+  font-size: 0.625rem;
 }
 
 .task-graph-running {
@@ -431,26 +478,12 @@ function openTask(slug: string) {
   position: relative;
 }
 
-.task-flow-layer::before,
 .task-flow-junction::before {
   position: absolute;
   left: 1rem;
   width: 1px;
   background: color-mix(in srgb, var(--text-secondary) 24%, var(--border));
   content: "";
-}
-
-.task-flow-layer::before {
-  top: 0;
-  bottom: 0;
-}
-
-.task-flow-layer:first-child::before {
-  top: 1.3125rem;
-}
-
-.task-flow-layer:last-child::before {
-  bottom: 1.3125rem;
 }
 
 .task-graph-flow .task-graph-row {
@@ -471,6 +504,24 @@ function openTask(slug: string) {
   content: "";
 }
 
+.task-graph-flow .task-flow-layer .task-graph-row::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1rem;
+  width: 1px;
+  background: color-mix(in srgb, var(--text-secondary) 24%, var(--border));
+  content: "";
+}
+
+.task-graph-flow .task-flow-layer:first-child .task-graph-row:first-child::after {
+  top: 50%;
+}
+
+.task-graph-flow .task-flow-layer:last-child .task-graph-row:last-child::after {
+  bottom: 50%;
+}
+
 .task-graph-flow .task-state-icon {
   position: absolute;
   top: 50%;
@@ -480,6 +531,11 @@ function openTask(slug: string) {
   height: 1.0625rem;
   font-size: 0.5625rem;
   transform: translateY(-50%);
+}
+
+.task-graph-flow .task-state-pending .task-state-icon,
+.task-graph-flow .task-state-ready .task-state-icon {
+  display: none;
 }
 
 .task-flow-junction {
@@ -546,6 +602,25 @@ function openTask(slug: string) {
   cursor: pointer;
 }
 
+.task-state-running .task-graph-action,
+.task-state-starting .task-graph-action {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+  color: var(--accent-primary);
+}
+
+.task-state-complete .task-graph-action {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--success-bg) 65%, transparent);
+  color: var(--success-text);
+}
+
+.task-state-failed .task-graph-action {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--error-bg) 65%, transparent);
+  color: var(--error-text);
+}
+
 .task-graph-state-label {
   color: var(--text-tertiary);
   font-size: 0.6875rem;
@@ -582,6 +657,51 @@ function openTask(slug: string) {
   font-size: 0.625rem;
 }
 
+.task-graph.collapsed {
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.task-graph-inline.collapsed {
+  margin: 0.125rem 0;
+}
+
+.task-graph.collapsed .task-graph-header {
+  min-height: 1.625rem;
+  padding: 0.125rem 0.375rem;
+  gap: 0.375rem;
+}
+
+.task-graph.collapsed .task-graph-indicator {
+  width: 0.5rem;
+  height: 0.5rem;
+  color: transparent;
+  font-size: 0;
+  box-shadow: none;
+}
+
+.task-graph.collapsed .task-graph-heading {
+  display: block;
+}
+
+.task-graph.collapsed .task-graph-heading strong {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+.task-graph.collapsed .task-graph-heading small {
+  display: none;
+}
+
+.task-graph.collapsed .task-graph-chevron {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
 @keyframes task-progress-pulse {
   from {
     opacity: 0.55;
@@ -595,7 +715,7 @@ function openTask(slug: string) {
 
 @media (max-width: 600px) {
   .task-graph-dock {
-    margin: 0 0.75rem;
+    margin: 0;
   }
 
   .task-graph-header,
@@ -606,6 +726,11 @@ function openTask(slug: string) {
 
   .task-graph-row.has-dependencies {
     margin-left: calc(min(var(--task-depth), 2) * 0.4rem);
+  }
+
+  .task-graph-dock .task-graph-header {
+    padding-right: 0.75rem;
+    padding-left: 0.75rem;
   }
 
   .task-graph-copy strong {
