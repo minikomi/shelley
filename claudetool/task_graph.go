@@ -18,10 +18,12 @@ const taskGraphName = "task_graph"
 const taskGraphDescription = `Create and coordinate a persisted task dependency graph.
 
 For a top-level request with multiple substantial stages, or with independent
-research, implementation, or review scopes, you MUST call create before using
-research, shell, editing, or browser tools. A prose plan is not a task graph.
-Do not create a graph for contained work where delegation would not shorten the
-critical path.
+research, implementation, or review scopes, you MUST call create before
+substantial research, implementation, or browser work. Before the first graph,
+one bounded read-only shell pass may inspect repository state, guidance files,
+manifests, and available test commands so the graph reflects real work rather
+than guessed audit tasks. A prose plan is not a task graph. Do not create a
+graph for contained work where delegation would not shorten the critical path.
 
 Use create once per delegation wave to define delegated subagent runs only.
 Keep parent planning, integration, and final validation outside the graph.
@@ -41,6 +43,12 @@ Do not begin substantial parent-side implementation merely because an earlier
 research wave finished. First decide whether the build work can be partitioned;
 if it can, create another graph and delegate those file-writing scopes. The
 parent integrates results and handles work that cannot usefully be delegated.
+
+Before launching file-writing tasks, establish any shared manifests, module
+contracts, directories, and test infrastructure those tasks need. While a graph
+is active, the parent may work on non-overlapping integration files, but must
+not change shared configuration, interfaces, or test/runtime infrastructure
+consumed by running children. Await or cancel the affected tasks first.
 
 Choose the graph size and shape from the actual work. max_concurrency controls
 simultaneously running children, not graph size; omit it to use the server

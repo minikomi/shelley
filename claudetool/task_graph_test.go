@@ -77,6 +77,8 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 	for _, required := range []string{
 		"multiple substantial stages",
 		"MUST call create before",
+		"bounded read-only shell pass",
+		"guessed audit tasks",
 		"A prose plan is not a task graph",
 		"delegation would not shorten the",
 		"delegated subagent runs only",
@@ -95,6 +97,9 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"not research-only advisors",
 		"implementation and modify files",
 		"delegate those file-writing scopes",
+		"establish any shared manifests",
+		"shared configuration, interfaces",
+		"Await or cancel the affected tasks first",
 	} {
 		if !strings.Contains(description, required) {
 			t.Errorf("task graph description missing %q", required)
