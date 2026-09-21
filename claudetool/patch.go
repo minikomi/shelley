@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 
 	"github.com/pkg/diff"
 	"shelley.exe.dev/claudetool/editbuf"
@@ -198,22 +199,27 @@ Recipes:
 
 	ApplyPatchName        = "apply_patch"
 	ApplyPatchDescription = `The apply_patch tool edits files using the Codex patch format. This is a FREEFORM tool: send only an envelope beginning with "*** Begin Patch" and ending with "*** End Patch"; do not wrap it in JSON.
-Use "*** Add File: path" with every content line prefixed "+", "*** Delete File: path", or "*** Update File: path" with hunk lines prefixed by exactly one " " (context), "-" (remove), or "+" (add). Context text after its one-character marker must match the file verbatim, including leading spaces and tabs.
-For every update hunk, include enough unchanged context to identify one location—up to 3 unchanged lines before and after the edit when available, unless fewer lines already include a unique structural anchor such as a function declaration, type name, CSS selector, or test name. Do not patch using only a short repeated fragment. An "@@ text" header anchors the hunk after the matching source line; copy that line exactly from the file. Stack multiple "@@ text" headers to narrow nested scopes. To select one location reported by an ambiguous-match error, use "@@ line N".
-The patch is validated as a unit: a parse or match failure rejects the entire patch without changing files. For "matched 0 locations," reread the current file and retry with exact current context; do not trim or normalize whitespace.`
+Use "*** Add File: path" with every content line prefixed "+", "*** Delete File: path", or "*** Update File: path" with hunk lines prefixed by exactly one " " (context), "-" (remove), or "+" (add). Place an optional "*** Move to: new-path" immediately after an update header to rename the updated file. Use "*** End of File" after a change to require an end-of-file match. An update containing only "+" lines appends them to the file.
+Update chunks search forward through the file and use the first matching location. Matching tries exact text, then ignores trailing whitespace, then surrounding whitespace, then normalizes common Unicode dashes, quotes, and spaces. The tool result reports non-exact matches and selections from multiple candidates. Include enough unchanged context to select the intended location—up to 3 unchanged lines before and after the edit when available. An "@@ text" header starts the search after the matching source line. Stack multiple "@@ text" headers to narrow nested scopes. Use "@@ line N" to start searching at source line N; it is a cursor hint, not an exact selector.
+The patch is validated as a unit: a parse or match failure rejects the entire patch without changing files. If matching fails, reread the current file and retry with current context.`
 	ApplyPatchGrammar = `start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
+
 hunk: add_hunk | delete_hunk | update_hunk
 add_hunk: "*** Add File: " filename LF add_line+
 delete_hunk: "*** Delete File: " filename LF
-update_hunk: "*** Update File: " filename LF change?
+update_hunk: "*** Update File: " filename LF change_move? change?
+
 filename: /(.+)/
-add_line: "+" /(.*)/ LF
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
 change: (change_context | change_line)+ eof_line?
 change_context: ("@@" | "@@ " /(.+)/) LF
 change_line: ("+" | "-" | " ") /(.*)/ LF
 eof_line: "*** End of File" LF
+
 %import common.LF`
 
 	PatchUsageNotes = `
@@ -316,16 +322,30 @@ type applyPatchInput struct {
 type applyPatchFile struct {
 	operation string
 	path      string
+	movePath  string
 	patches   []PatchRequest
 }
 
 type applyPatchMutation struct {
-	path    string
-	old     []byte
-	new     []byte
-	mode    os.FileMode
-	created bool
-	deleted bool
+	path            string
+	movePath        string
+	old             []byte
+	new             []byte
+	mode            os.FileMode
+	moveDestination []byte
+	moveMode        os.FileMode
+	moveOverwrote   bool
+	created         bool
+	deleted         bool
+}
+
+type applyPatchMatch struct {
+	offset     int
+	length     int
+	line       int
+	searchLine int
+	candidates int
+	mode       string
 }
 
 // PatchRequest represents a single patch operation.
@@ -338,6 +358,7 @@ type PatchRequest struct {
 	Reindent      *Reindent `json:"reindent,omitempty"`
 	line          int
 	anchors       []string
+	endOfFile     bool
 }
 
 // Reindent represents indentation adjustment configuration.
@@ -415,11 +436,15 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 
 	pathSet := make(map[string]struct{}, len(files))
 	for _, file := range files {
-		path := file.path
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(p.getWorkingDir(), path)
+		for _, path := range []string{file.path, file.movePath} {
+			if path == "" {
+				continue
+			}
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(p.getWorkingDir(), path)
+			}
+			pathSet[filepath.Clean(path)] = struct{}{}
 		}
-		pathSet[filepath.Clean(path)] = struct{}{}
 	}
 	paths := make([]string, 0, len(pathSet))
 	for path := range pathSet {
@@ -439,6 +464,7 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 	}()
 
 	mutations := make([]applyPatchMutation, 0, len(files))
+	var matchNotices []string
 	for _, file := range files {
 		path := file.path
 		if !filepath.IsAbs(path) {
@@ -449,6 +475,26 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 		mutation := applyPatchMutation{path: path, old: old, mode: 0o600}
 		if info, statErr := os.Stat(path); statErr == nil {
 			mutation.mode = info.Mode().Perm()
+		}
+		if file.movePath != "" {
+			movePath := file.movePath
+			if !filepath.IsAbs(movePath) {
+				movePath = filepath.Join(p.getWorkingDir(), movePath)
+			}
+			movePath = filepath.Clean(movePath)
+			if movePath != path {
+				mutation.movePath = movePath
+				mutation.moveMode = 0o600
+				if destination, destinationErr := os.ReadFile(movePath); destinationErr == nil {
+					mutation.moveDestination = destination
+					mutation.moveOverwrote = true
+					if info, statErr := os.Stat(movePath); statErr == nil {
+						mutation.moveMode = info.Mode().Perm()
+					}
+				} else if !errors.Is(destinationErr, os.ErrNotExist) {
+					err = destinationErr
+				}
+			}
 		}
 
 		switch file.operation {
@@ -473,31 +519,59 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 				break
 			}
 			content := string(old)
+			cursor := 0
 			for _, request := range file.patches {
+				if request.OldText == "" {
+					addition := request.NewText
+					if content != "" && !strings.HasSuffix(content, "\n") {
+						addition = "\n" + addition
+					}
+					if addition != "" && !strings.HasSuffix(addition, "\n") {
+						addition += "\n"
+					}
+					content += addition
+					cursor = len(content)
+					continue
+				}
+				lineHint := 0
 				if request.line > 0 {
-					offset, ok := exactMatchOffsetAtLine(content, request.OldText, request.line)
+					offset, ok := applyPatchLineOffset(content, request.line)
 					if !ok {
-						err = applyPatchMatchError(path, content, request.OldText)
+						err = fmt.Errorf("apply_patch update for %q has line hint %d outside the file\n\nNo files were changed", path, request.line)
 						break
 					}
-					content = content[:offset] + request.NewText + content[offset+len(request.OldText):]
-					continue
+					cursor = max(cursor, offset)
+					lineHint = request.line
 				}
 				if len(request.anchors) > 0 {
-					offset, selectorErr := exactMatchOffsetAfterAnchors(content, request.OldText, request.anchors)
-					if selectorErr != nil {
-						err = fmt.Errorf("apply_patch update for %q: %w\n\nNo files were changed", path, selectorErr)
+					for _, anchor := range request.anchors {
+						match, ok := findApplyPatchMatch(content, anchor, cursor, false)
+						if !ok {
+							err = fmt.Errorf("apply_patch update for %q: anchor did not match a source line after line %d:\n%s\n\nNo files were changed", path, 1+strings.Count(content[:cursor], "\n"), anchor)
+							break
+						}
+						if applyPatchMatchNeedsNotice(match, 0) {
+							matchNotices = append(matchNotices, formatApplyPatchMatch(path, match, "anchor", 0))
+						}
+						cursor = match.offset + match.length
+						if cursor < len(content) && content[cursor] == '\n' {
+							cursor++
+						}
+					}
+					if err != nil {
 						break
 					}
-					content = content[:offset] + request.NewText + content[offset+len(request.OldText):]
-					continue
 				}
-				spec, count := patchkit.Unique(content, request.OldText, request.NewText)
-				if count != 1 {
+				match, ok := findApplyPatchMatch(content, request.OldText, cursor, request.endOfFile)
+				if !ok {
 					err = applyPatchMatchError(path, content, request.OldText)
 					break
 				}
-				content = content[:spec.Off] + request.NewText + content[spec.Off+spec.Len:]
+				if applyPatchMatchNeedsNotice(match, lineHint) {
+					matchNotices = append(matchNotices, formatApplyPatchMatch(path, match, "context", lineHint))
+				}
+				content = content[:match.offset] + request.NewText + content[match.offset+match.length:]
+				cursor = match.offset + len(request.NewText)
 			}
 			mutation.new = []byte(content)
 		}
@@ -511,9 +585,21 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 	// Apply from validated snapshots. Roll back earlier writes if an OS error
 	// occurs so a multi-file patch is atomic from the agent's perspective.
 	for i, mutation := range mutations {
-		if mutation.deleted {
+		switch {
+		case mutation.deleted:
 			err = os.Remove(mutation.path)
-		} else {
+		case mutation.movePath != "":
+			err = os.MkdirAll(filepath.Dir(mutation.movePath), 0o700)
+			if err == nil {
+				err = os.WriteFile(mutation.movePath, mutation.new, mutation.mode)
+			}
+			if err == nil {
+				err = os.Remove(mutation.path)
+				if err != nil {
+					rollbackApplyPatchMutation(mutation)
+				}
+			}
+		default:
 			err = os.MkdirAll(filepath.Dir(mutation.path), 0o700)
 			if err == nil {
 				err = os.WriteFile(mutation.path, mutation.new, mutation.mode)
@@ -521,12 +607,7 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 		}
 		if err != nil {
 			for j := i - 1; j >= 0; j-- {
-				prior := mutations[j]
-				if prior.created {
-					_ = os.Remove(prior.path)
-				} else {
-					_ = os.WriteFile(prior.path, prior.old, prior.mode)
-				}
+				rollbackApplyPatchMutation(mutations[j])
 			}
 			p.logResult(ctx, "execution_failed", err)
 			return llm.ErrorToolOut(err)
@@ -535,26 +616,160 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 
 	var diff strings.Builder
 	for _, mutation := range mutations {
-		diff.WriteString(generateUnifiedDiff(mutation.path, string(mutation.old), string(mutation.new)))
+		path := mutation.path
+		if mutation.movePath != "" {
+			path = mutation.movePath
+		}
+		diff.WriteString(generateUnifiedDiff(path, string(mutation.old), string(mutation.new)))
 	}
 	p.logResult(ctx, "success", nil)
+	message := fmt.Sprintf("Applied patch to %d file(s).", len(mutations))
+	if len(matchNotices) > 0 {
+		message += " Match details: " + strings.Join(matchNotices, "; ") + "."
+	}
 	return llm.ToolOut{
-		LLMContent: llm.TextContent(fmt.Sprintf("Applied patch to %d file(s).", len(mutations))),
+		LLMContent: llm.TextContent(message),
 		Display:    PatchDisplayData{Path: applyPatchDisplayPath(mutations), Diff: diff.String()},
+	}
+}
+
+func rollbackApplyPatchMutation(mutation applyPatchMutation) {
+	switch {
+	case mutation.created:
+		_ = os.Remove(mutation.path)
+	case mutation.deleted:
+		_ = os.WriteFile(mutation.path, mutation.old, mutation.mode)
+	case mutation.movePath != "":
+		_ = os.WriteFile(mutation.path, mutation.old, mutation.mode)
+		if mutation.moveOverwrote {
+			_ = os.WriteFile(mutation.movePath, mutation.moveDestination, mutation.moveMode)
+		} else {
+			_ = os.Remove(mutation.movePath)
+		}
+	default:
+		_ = os.WriteFile(mutation.path, mutation.old, mutation.mode)
 	}
 }
 
 func applyPatchMatchError(path, content, oldText string) error {
 	lines := exactMatchLines(content, oldText)
 	if len(lines) == 0 {
-		return fmt.Errorf("apply_patch update for %q matched 0 locations\n\nThe context must match exactly, including whitespace. Reread the current file and retry with context copied from it.\n\nNo files were changed", path)
+		return fmt.Errorf("apply_patch update for %q matched 0 locations after exact, whitespace-normalized, and Unicode-normalized matching\n\nReread the current file and retry with current context.\n\nNo files were changed", path)
 	}
 
 	lineText := make([]string, len(lines))
 	for i, line := range lines {
 		lineText[i] = strconv.Itoa(line)
 	}
-	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nChoose one reported location by repeating the hunk with an \"@@ line N\" header, or include more surrounding unchanged lines.\n\n%s\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "), applyPatchMatchContexts(content, lines))
+	return fmt.Errorf("apply_patch update for %q matched %d locations at lines %s\n\nStart the hunk search near one reported location with an \"@@ line N\" header, or include more surrounding unchanged lines.\n\n%s\n\nNo files were changed", path, len(lines), strings.Join(lineText, ", "), applyPatchMatchContexts(content, lines))
+}
+
+func applyPatchMatchNeedsNotice(match applyPatchMatch, lineHint int) bool {
+	return match.mode != "exact" || match.candidates > 1 || (lineHint > 0 && match.line != lineHint)
+}
+
+func formatApplyPatchMatch(path string, match applyPatchMatch, subject string, lineHint int) string {
+	details := []string{match.mode}
+	if match.candidates > 1 {
+		details = append(details, fmt.Sprintf("first of %d matches at or after line %d", match.candidates, match.searchLine))
+	}
+	if lineHint > 0 && match.line != lineHint {
+		details = append(details, fmt.Sprintf("line hint %d", lineHint))
+	}
+	return fmt.Sprintf("%s %s selected line %d (%s)", path, subject, match.line, strings.Join(details, "; "))
+}
+
+func findApplyPatchMatch(content, pattern string, cursor int, endOfFile bool) (applyPatchMatch, bool) {
+	contentLines, offsets := applyPatchLines(content)
+	patternLines := strings.Split(pattern, "\n")
+	if len(patternLines) > len(contentLines) {
+		return applyPatchMatch{}, false
+	}
+
+	start := 0
+	for start < len(offsets) && offsets[start] < cursor {
+		start++
+	}
+	if endOfFile {
+		start = len(contentLines) - len(patternLines)
+	}
+	searchLine := start + 1
+
+	modes := []struct {
+		name  string
+		equal func(string, string) bool
+	}{
+		{name: "exact", equal: func(a, b string) bool { return a == b }},
+		{name: "trailing-whitespace", equal: func(a, b string) bool {
+			return strings.TrimRightFunc(a, unicode.IsSpace) == strings.TrimRightFunc(b, unicode.IsSpace)
+		}},
+		{name: "surrounding-whitespace", equal: func(a, b string) bool {
+			return strings.TrimSpace(a) == strings.TrimSpace(b)
+		}},
+		{name: "Unicode-normalized", equal: func(a, b string) bool {
+			return normalizeApplyPatchLine(a) == normalizeApplyPatchLine(b)
+		}},
+	}
+	for _, mode := range modes {
+		var first applyPatchMatch
+		candidates := 0
+		for i := start; i <= len(contentLines)-len(patternLines); i++ {
+			matched := true
+			for j := range patternLines {
+				if !mode.equal(contentLines[i+j], patternLines[j]) {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				last := i + len(patternLines) - 1
+				length := offsets[last] + len(contentLines[last]) - offsets[i]
+				if candidates == 0 {
+					first = applyPatchMatch{offset: offsets[i], length: length, line: i + 1, searchLine: searchLine, mode: mode.name}
+				}
+				candidates++
+			}
+			if endOfFile {
+				break
+			}
+		}
+		if candidates > 0 {
+			first.candidates = candidates
+			return first, true
+		}
+	}
+	return applyPatchMatch{}, false
+}
+
+func applyPatchLines(content string) ([]string, []int) {
+	lines := strings.Split(content, "\n")
+	if strings.HasSuffix(content, "\n") {
+		lines = lines[:len(lines)-1]
+	}
+	offsets := make([]int, len(lines))
+	offset := 0
+	for i, line := range lines {
+		offsets[i] = offset
+		offset += len(line) + 1
+	}
+	return lines, offsets
+}
+
+func normalizeApplyPatchLine(line string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\u2212':
+			return '-'
+		case '\u2018', '\u2019', '\u201A', '\u201B':
+			return '\''
+		case '\u201C', '\u201D', '\u201E', '\u201F':
+			return '"'
+		case '\u00A0', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F', '\u205F', '\u3000':
+			return ' '
+		default:
+			return r
+		}
+	}, strings.TrimSpace(line))
 }
 
 func applyPatchMatchContexts(content string, matches []int) string {
@@ -571,7 +786,7 @@ func applyPatchMatchContexts(content string, matches []int) string {
 		}
 		start := max(0, line-1-contextLines)
 		end := min(len(lines), line+contextLines)
-		fmt.Fprintf(&out, "\n- line %d (select with \"@@ line %d\"):\n%s", line, line, strings.Join(lines[start:end], "\n"))
+		fmt.Fprintf(&out, "\n- line %d (start search with \"@@ line %d\"):\n%s", line, line, strings.Join(lines[start:end], "\n"))
 	}
 	return out.String()
 }
@@ -593,64 +808,19 @@ func exactMatchLines(content, oldText string) []int {
 	}
 }
 
-func exactMatchOffsetAtLine(content, oldText string, targetLine int) (int, bool) {
-	if oldText == "" {
+func applyPatchLineOffset(content string, line int) (int, bool) {
+	_, offsets := applyPatchLines(content)
+	if line < 1 || line > len(offsets) {
 		return 0, false
 	}
-	for offset := 0; ; {
-		match := strings.Index(content[offset:], oldText)
-		if match < 0 {
-			return 0, false
-		}
-		match += offset
-		if 1+strings.Count(content[:match], "\n") == targetLine {
-			return match, true
-		}
-		offset = match + len(oldText)
-	}
-}
-
-func exactMatchOffsetAfterAnchors(content, oldText string, anchors []string) (int, error) {
-	cursor := 0
-	for _, anchor := range anchors {
-		next, ok := sourceLineOffsetAfter(content, anchor, cursor)
-		if !ok {
-			return 0, fmt.Errorf("anchor did not match a source line after offset %d:\n%s", cursor, anchor)
-		}
-		cursor = next
-	}
-	match := strings.Index(content[cursor:], oldText)
-	if match < 0 {
-		return 0, fmt.Errorf("context did not match after anchor:\n%s", oldText)
-	}
-	return cursor + match, nil
-}
-
-func sourceLineOffsetAfter(content, anchor string, cursor int) (int, bool) {
-	for cursor <= len(content) {
-		end := strings.IndexByte(content[cursor:], '\n')
-		if end < 0 {
-			end = len(content)
-		} else {
-			end += cursor
-		}
-		line := content[cursor:end]
-		if line == anchor || strings.TrimSpace(line) == anchor {
-			if end < len(content) {
-				end++
-			}
-			return end, true
-		}
-		if end == len(content) {
-			return 0, false
-		}
-		cursor = end + 1
-	}
-	return 0, false
+	return offsets[line-1], true
 }
 
 func applyPatchDisplayPath(mutations []applyPatchMutation) string {
 	if len(mutations) == 1 {
+		if mutations[0].movePath != "" {
+			return mutations[0].movePath
+		}
 		return mutations[0].path
 	}
 	return "multiple files"
@@ -694,6 +864,14 @@ func parseApplyPatch(text string) ([]applyPatchFile, error) {
 			if path == "" {
 				return nil, fmt.Errorf("apply_patch update path is required")
 			}
+			movePath := ""
+			if i < len(lines)-1 && strings.HasPrefix(lines[i], "*** Move to: ") {
+				movePath = strings.TrimPrefix(lines[i], "*** Move to: ")
+				if movePath == "" {
+					return nil, fmt.Errorf("apply_patch move path is required")
+				}
+				i++
+			}
 			var patches []PatchRequest
 			for i < len(lines)-1 && !strings.HasPrefix(lines[i], "*** ") {
 				line := 0
@@ -711,6 +889,7 @@ func parseApplyPatch(text string) ([]applyPatchFile, error) {
 					i++
 				}
 				var oldLines, newLines []string
+				endOfFile := false
 				for i < len(lines)-1 && !strings.HasPrefix(lines[i], "@@") && !strings.HasPrefix(lines[i], "*** ") {
 					switch {
 					case strings.HasPrefix(lines[i], " "):
@@ -725,15 +904,19 @@ func parseApplyPatch(text string) ([]applyPatchFile, error) {
 					}
 					i++
 				}
-				if len(oldLines) == 0 {
-					return nil, fmt.Errorf("update hunk for %q has no old lines", path)
+				if i < len(lines)-1 && lines[i] == "*** End of File" {
+					endOfFile = true
+					i++
 				}
-				patches = append(patches, PatchRequest{Operation: "replace", OldText: strings.Join(oldLines, "\n"), NewText: strings.Join(newLines, "\n"), line: line, anchors: anchors})
+				if len(oldLines) == 0 && len(newLines) == 0 {
+					return nil, fmt.Errorf("update hunk for %q is empty", path)
+				}
+				patches = append(patches, PatchRequest{Operation: "replace", OldText: strings.Join(oldLines, "\n"), NewText: strings.Join(newLines, "\n"), line: line, anchors: anchors, endOfFile: endOfFile})
 			}
 			if len(patches) == 0 {
 				return nil, fmt.Errorf("update hunk for %q is empty", path)
 			}
-			files = append(files, applyPatchFile{operation: "replace", path: path, patches: patches})
+			files = append(files, applyPatchFile{operation: "replace", path: path, movePath: movePath, patches: patches})
 		default:
 			return nil, fmt.Errorf("invalid apply_patch hunk header %q", line)
 		}
