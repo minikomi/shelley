@@ -58,8 +58,11 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 	if !ok || display.GraphID != "graph" {
 		t.Fatalf("display = %#v, want graph snapshot", out.Display)
 	}
-	if len(out.LLMContent) != 1 || !strings.Contains(out.LLMContent[0].Text, `"id":"graph"`) {
+	if len(out.LLMContent) != 1 || !strings.Contains(out.LLMContent[0].Text, "graph graph") {
 		t.Fatalf("model output = %#v, want graph ID", out.LLMContent)
+	}
+	if strings.Contains(out.LLMContent[0].Text, "Research this") {
+		t.Fatalf("model output repeats task prompts: %s", out.LLMContent[0].Text)
 	}
 	if len(stub.created) != 3 {
 		t.Fatalf("created %d tasks, want 3", len(stub.created))
@@ -164,19 +167,8 @@ func TestTaskGraphToolTerminalAwaitPromptsAnotherDelegationDecision(t *testing.T
 		t.Fatalf("run: %v", out.Error)
 	}
 	text := out.LLMContent[0].Text
-	for _, required := range []string{
-		"delegation wave is terminal",
-		"cheap path first",
-		"git diff --stat",
-		"one aggregate acceptance command",
-		"Do not repeat passing focused checks",
-		"substantially rewrite child-owned work",
-		"create a new graph first",
-		"exclusive file scopes",
-	} {
-		if !strings.Contains(text, required) {
-			t.Errorf("terminal await output missing %q: %s", required, text)
-		}
+	if !strings.Contains(text, "graph is finished") {
+		t.Errorf("terminal await output missing finished note: %s", text)
 	}
 }
 

@@ -2,7 +2,6 @@ package claudetool
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path"
 	"slices"
@@ -225,7 +224,7 @@ func (t *TaskGraphTool) run(ctx context.Context, req taskGraphInput) llm.ToolOut
 		}
 		message := "Await condition reached."
 		if snapshot != nil && snapshot.Status != "active" {
-			message += " This delegation wave is terminal. Integrate through the cheap path first: read task reports and git diff --stat, run one aggregate acceptance command, and inspect full files only for failures or suspected interface violations. Do not repeat passing focused checks or substantially rewrite child-owned work in the parent. Before using research, shell, editing, or browser tools for remaining substantial work, decide whether another delegation wave would shorten the critical path. If so, create a new graph first; implementation tasks may own exclusive file scopes."
+			message += " The graph is finished; integrate the task reports."
 		}
 		return taskGraphToolOut(message, snapshot)
 	case "cancel":
@@ -409,12 +408,25 @@ func fileScopeOverlaps(a, b string) bool {
 }
 
 func taskGraphToolOut(text string, snapshot *db.TaskGraphSnapshot) llm.ToolOut {
-	payload, err := json.Marshal(snapshot)
-	if err != nil {
-		return llm.ErrorfToolOut("encode task graph result: %v", err)
+	var out strings.Builder
+	fmt.Fprintf(&out, "%s\ngraph %s %q: %s\n", text, snapshot.GraphID, snapshot.Title, snapshot.Status)
+	for _, task := range snapshot.Tasks {
+		fmt.Fprintf(&out, "- %s %s: %s", task.Status, task.ID, task.Title)
+		if task.Slug != "" {
+			fmt.Fprintf(&out, " (%s)", task.Slug)
+		}
+		if task.Error != "" {
+			fmt.Fprintf(&out, " — %s", task.Error)
+		}
+		out.WriteString("\n")
+	}
+	for _, task := range snapshot.Tasks {
+		if task.Status == "complete" && task.Result != "" {
+			fmt.Fprintf(&out, "\n--- %s: %s ---\n%s\n", task.ID, task.Title, task.Result)
+		}
 	}
 	return llm.ToolOut{
-		LLMContent: llm.TextContent(text + "\n" + string(payload)),
+		LLMContent: llm.TextContent(out.String()),
 		Display:    snapshot,
 	}
 }

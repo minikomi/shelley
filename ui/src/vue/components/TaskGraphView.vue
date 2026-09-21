@@ -49,8 +49,8 @@
               <button type="button" class="task-graph-title" @click="toggleBrief(task.id)">
                 <strong>{{ task.title }}</strong>
               </button>
-              <TaskGraphTaskDetail :task="task" :fallback="taskDetail(task)" />
-              <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" />
+              <small v-if="task.error">{{ task.error }}</small>
+              <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" :tasks="graph.tasks" />
               <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
                 <span />
               </span>
@@ -61,8 +61,7 @@
               class="task-graph-action"
               @click.stop="openTask(task.slug)"
             >
-              <TaskGraphRunningLabel v-if="task.state === 'running'" />
-              <template v-else>{{ stateLabel(task.state) }}</template>
+              {{ stateLabel(task.state) }}
               <TaskGraphElapsedTime
                 v-if="task.state === 'running' || task.state === 'starting'"
                 :started-at="task.started_at"
@@ -102,8 +101,8 @@
           <button type="button" class="task-graph-title" @click="toggleBrief(task.id)">
             <strong>{{ task.title }}</strong>
           </button>
-          <TaskGraphTaskDetail :task="task" :fallback="taskDetail(task)" />
-          <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" />
+          <small v-if="task.error">{{ task.error }}</small>
+          <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" :tasks="graph.tasks" />
           <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
             <span />
           </span>
@@ -114,8 +113,7 @@
           class="task-graph-action"
           @click.stop="openTask(task.slug)"
         >
-          <TaskGraphRunningLabel v-if="task.state === 'running'" />
-          <template v-else>{{ stateLabel(task.state) }}</template>
+          {{ stateLabel(task.state) }}
           <TaskGraphElapsedTime
             v-if="task.state === 'running' || task.state === 'starting'"
             :started-at="task.started_at"
@@ -138,9 +136,7 @@ import { computed, ref } from "vue";
 import type { TaskGraphSnapshot, TaskGraphTask, TaskState } from "../../taskGraph";
 import { navigateToConversationSlug } from "../composables/subagentLive";
 import TaskGraphElapsedTime from "./TaskGraphElapsedTime.vue";
-import TaskGraphRunningLabel from "./TaskGraphRunningLabel.vue";
 import TaskGraphTaskBrief from "./TaskGraphTaskBrief.vue";
-import TaskGraphTaskDetail from "./TaskGraphTaskDetail.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -287,20 +283,6 @@ function taskIcon(task: TaskGraphTask, index: number): string {
   if (task.state === "failed") return "!";
   if (task.state === "running" || task.state === "starting") return "•";
   return String(index + 1);
-}
-
-function taskDetail(task: TaskGraphTask): string {
-  if (task.error) return task.error;
-  const dependencies = (task.depends_on || [])
-    .map((id) => props.graph.tasks.find((candidate) => candidate.id === id)?.title || id)
-    .join(", ");
-  if (task.state === "running" || task.state === "starting") {
-    return [task.model, dependencies ? `after ${dependencies}` : ""].filter(Boolean).join(" · ");
-  }
-  if (dependencies) {
-    return `${task.state === "pending" ? "Waiting for" : "After"} ${dependencies}`;
-  }
-  return task.model || "Subagent task";
 }
 
 function openTask(slug: string) {

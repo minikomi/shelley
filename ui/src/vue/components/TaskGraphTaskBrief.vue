@@ -9,12 +9,19 @@
 import { computed } from "vue";
 import type { TaskGraphTask } from "../../taskGraph";
 
-const props = defineProps<{ task: TaskGraphTask }>();
+const props = defineProps<{
+  task: TaskGraphTask;
+  tasks: TaskGraphTask[];
+}>();
 
 const meta = computed(() => {
+  const dependencies = (props.task.depends_on || [])
+    .map((id) => props.tasks.find((candidate) => candidate.id === id)?.title || id)
+    .join(", ");
   const scopes = (props.task.file_scopes || []).join(", ");
   return [
     props.task.reasoning ? `${props.task.reasoning} reasoning` : "",
+    dependencies ? `after ${dependencies}` : "",
     scopes ? `scope ${scopes}` : "",
   ]
     .filter(Boolean)
