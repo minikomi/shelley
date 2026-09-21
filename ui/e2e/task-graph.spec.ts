@@ -50,3 +50,27 @@ test("task graph docks above the composer and collapses", async ({ page, request
   await graph.locator(".task-graph-header").click();
   await expect(graph.locator(".task-graph-row")).toHaveCount(6);
 });
+
+test("task graph is discovered while the parent turn is still running", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120000);
+  const flag = await request.post("/feature-flags", {
+    headers: { "X-Shelley-Request": "1" },
+    data: { name: "task-graph", value: true },
+  });
+  expect(flag.ok()).toBe(true);
+  await setPageFeatureFlag(page, "task-graph", true);
+
+  const slug = await createConversationViaAPI(request, "hello there");
+  await page.goto(`/c/${slug}`);
+  await page.getByTestId("message-input").fill("task graph demo");
+  await page.getByTestId("send-button").click();
+
+  const graph = page.getByTestId("task-graph").last();
+  await expect(graph).toBeVisible({ timeout: 30000 });
+  await expect(graph).toContainText("subagents running");
+  await graph.locator(".task-graph-header").click();
+  await expect(graph).toContainText("Build task graph demo");
+});

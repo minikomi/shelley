@@ -19,6 +19,7 @@ import TaskGraphView from "./TaskGraphView.vue";
 const props = defineProps<{
   conversationId: string | null;
   refreshToken: number;
+  discovering: boolean;
 }>();
 
 const enabled = useFeatureFlag("task-graph");
@@ -42,7 +43,7 @@ function clearRefreshTimer() {
 
 function scheduleRefresh() {
   clearRefreshTimer();
-  if (activeGraphs.value.length === 0) return;
+  if (activeGraphs.value.length === 0 && !props.discovering) return;
   refreshTimer = window.setTimeout(() => void loadGraphs(), 1500);
 }
 
@@ -75,7 +76,7 @@ watch(
 );
 
 watch(
-  () => [props.refreshToken, enabled.value],
+  () => [props.refreshToken, props.discovering, enabled.value],
   () => void loadGraphs(),
 );
 

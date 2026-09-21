@@ -357,6 +357,7 @@
     <TaskGraphDock
       :conversation-id="conversationId"
       :refresh-token="messages.length + queuedGhosts.length"
+      :discovering="agentWorking"
     />
 
     <!-- Status bar -->
@@ -498,7 +499,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, useId, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  provide,
+  reactive,
+  ref,
+  useId,
+  watch,
+} from "vue";
 import Button from "primevue/button";
 import PvMessage from "primevue/message";
 import {
@@ -2864,7 +2875,7 @@ async function prepareRecording(text: string): Promise<RecordingDestination> {
     conversation_options: isDraft ? buildConversationOptions() : undefined,
   };
   try {
-    const conversationId = props.conversationId || await ensureDraftConversation(text);
+    const conversationId = props.conversationId || (await ensureDraftConversation(text));
     return {
       conversationId,
       async returnTo() {
