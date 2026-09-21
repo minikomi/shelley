@@ -12,6 +12,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { api } from "../../services/api";
 import type { TaskGraphSnapshot } from "../../taskGraph";
+import { useFeatureFlag } from "../composables/featureFlags";
 import TaskGraphView from "./TaskGraphView.vue";
 
 const props = defineProps<{
@@ -19,6 +20,7 @@ const props = defineProps<{
   refreshToken: number;
 }>();
 
+const enabled = useFeatureFlag("task-graph");
 const graph = ref<TaskGraphSnapshot | null>(null);
 const collapsed = ref(true);
 let refreshTimer: number | null = null;
@@ -46,7 +48,7 @@ async function loadGraph() {
   const conversationId = props.conversationId;
   const id = ++requestID;
   clearRefreshTimer();
-  if (!conversationId) {
+  if (!conversationId || !enabled.value) {
     graph.value = null;
     return;
   }
@@ -72,7 +74,7 @@ watch(
 );
 
 watch(
-  () => props.refreshToken,
+  () => [props.refreshToken, enabled.value],
   () => void loadGraph(),
 );
 

@@ -31,6 +31,13 @@ var FlagPatchSimple = featureflags.Register(featureflags.Flag{
 	Default:     false,
 })
 
+// FlagTaskGraph exposes the task_graph tool to top-level conversations.
+var FlagTaskGraph = featureflags.Register(featureflags.Flag{
+	Name:        "task-graph",
+	Description: "Expose the task_graph tool for persisted, dependency-ordered subagent delegation with a live dock in the conversation.",
+	Default:     false,
+})
+
 // FlagPatchOpenAIRaw lets capable direct OpenAI Responses models use the raw,
 // grammar-constrained Codex apply_patch tool. It overrides patch-simple when
 // both flags are enabled and has no effect on unsupported providers.

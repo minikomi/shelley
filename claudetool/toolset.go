@@ -74,6 +74,8 @@ type ToolSetConfig struct {
 	SubagentDB SubagentDB
 	// TaskGraphService persists and schedules top-level task graphs.
 	TaskGraphService TaskGraphService
+	// TaskGraphEnabled gates the task_graph tool.
+	TaskGraphEnabled func() bool
 	// ParentConversationID is the ID of the parent conversation (for subagent tool).
 	ParentConversationID string
 	// ConversationID is the ID of the conversation these tools belong to.
@@ -262,7 +264,8 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 
 	// Task graphs orchestrate direct child conversations and are intentionally
 	// unavailable to nested subagents.
-	if cfg.TaskGraphService != nil && cfg.SubagentDepth == 0 && cfg.ParentConversationID != "" {
+	if cfg.TaskGraphService != nil && cfg.TaskGraphEnabled != nil && cfg.TaskGraphEnabled() &&
+		cfg.SubagentDepth == 0 && cfg.ParentConversationID != "" {
 		tools = append(tools, (&TaskGraphTool{
 			Service:              cfg.TaskGraphService,
 			ParentConversationID: cfg.ParentConversationID,

@@ -426,6 +426,7 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 		BuildAvailableModels:  buildAvailableModels,
 		PatchSimpleEnabled:    flagEnabled(server.FlagPatchSimple.Name),
 		PatchOpenAIRawEnabled: flagEnabled(server.FlagPatchOpenAIRaw.Name),
+		TaskGraphEnabled:      flagEnabled(server.FlagTaskGraph.Name),
 	}
 }
 

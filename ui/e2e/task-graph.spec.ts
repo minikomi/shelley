@@ -1,8 +1,14 @@
 import { test, expect } from "@playwright/test";
-import { createConversationViaAPI } from "./helpers";
+import { createConversationViaAPI, setPageFeatureFlag } from "./helpers";
 
 test("task graph docks above the composer and collapses", async ({ page, request }) => {
   test.setTimeout(120000);
+  const flag = await request.post("/feature-flags", {
+    headers: { "X-Shelley-Request": "1" },
+    data: { name: "task-graph", value: true },
+  });
+  expect(flag.ok()).toBe(true);
+  await setPageFeatureFlag(page, "task-graph", true);
   const slug = await createConversationViaAPI(request, "task graph demo", {
     agentTimeout: 30000,
   });

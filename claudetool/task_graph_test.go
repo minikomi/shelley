@@ -222,11 +222,13 @@ func TestTaskGraphToolRejectsInvalidConcurrentScopesAndCycles(t *testing.T) {
 	}
 }
 
-func TestTaskGraphToolUnavailableToNestedSubagents(t *testing.T) {
+func TestTaskGraphToolRequiresFlagAndTopLevel(t *testing.T) {
 	stub := &taskGraphServiceStub{}
+	enabled := func() bool { return true }
 	topLevel := NewToolSet(t.Context(), ToolSetConfig{
 		ParentConversationID: "parent",
 		TaskGraphService:     stub,
+		TaskGraphEnabled:     enabled,
 	})
 	defer topLevel.Cleanup()
 	if !hasTaskGraphTool(topLevel.Tools()) {
@@ -236,11 +238,22 @@ func TestTaskGraphToolUnavailableToNestedSubagents(t *testing.T) {
 	nested := NewToolSet(t.Context(), ToolSetConfig{
 		ParentConversationID: "parent",
 		TaskGraphService:     stub,
+		TaskGraphEnabled:     enabled,
 		SubagentDepth:        1,
 	})
 	defer nested.Cleanup()
 	if hasTaskGraphTool(nested.Tools()) {
 		t.Fatal("nested subagent tool set includes task_graph")
+	}
+
+	flagOff := NewToolSet(t.Context(), ToolSetConfig{
+		ParentConversationID: "parent",
+		TaskGraphService:     stub,
+		TaskGraphEnabled:     func() bool { return false },
+	})
+	defer flagOff.Cleanup()
+	if hasTaskGraphTool(flagOff.Tools()) {
+		t.Fatal("tool set includes task_graph with the flag off")
 	}
 }
 
