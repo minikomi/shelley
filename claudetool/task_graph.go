@@ -40,6 +40,10 @@ stabilize interfaces, then delegate implementation directly. Keep that graph
 minimal: do not fan out discovery or research subagents. Discovery or research
 tasks are justified only when independent unknowns genuinely block
 implementation and the parent cannot resolve them cheaply.
+Before researching, name the unanswered questions that could change the work.
+Close research once authoritative sources answer them; do not continue
+collecting sources after the graph finishes unless validation exposes a new
+factual uncertainty.
 Each implementation owner includes focused tests for its scope.
 Do not create separate test-mapping or review filler tasks.
 The parent owns integration and final validation.
@@ -51,7 +55,9 @@ file type. A task is right-sized when it is substantial enough to amortize
 delegation overhead, has one clear responsibility, and can finish without
 frequent coordination with concurrent tasks. Keep tightly coupled work such as
 markup, styling, and browser behavior under one owner when they share a runtime
-contract.
+contract. If one concurrent owner would reasonably need to inspect another's
+implementation, merge those scopes or establish the complete stable interface
+first. Prefer cognitive locality over maximizing the number of parallel tasks.
 
 Each task prompt is a bounded context packet: state the objective, acceptance
 criteria, owned scope, stable interfaces, source-of-truth files, non-goals, and
@@ -74,9 +80,13 @@ context field instead of repeating them. Use create-level model and reasoning
 as defaults when most tasks use the same settings; task fields are overrides.
 
 Use create once per delegation wave to define delegated subagent runs only.
-The parent may own one non-overlapping implementation lane while tasks run once
-shared interfaces are stable. Keep parent integration and final validation
-outside the graph.
+Treat the parent's work as another lane when sizing the wave: give it one
+cohesive objective, validation, and stop condition instead of making it the
+leftovers bucket. Roughly estimate each lane by expected inspection, work,
+validation, and repair passes. The parent may own one non-overlapping
+implementation lane once shared interfaces are stable, but it should finish no
+later than the expected slowest child. If it is larger, rebalance the scopes.
+Keep parent integration and final validation outside the graph.
 Every task launches a subagent automatically when its dependencies complete.
 Before a dependent task launches, Shelley appends every completed direct
 dependency's final response to its prompt as handoff context. Do not duplicate
@@ -101,7 +111,9 @@ inspect full files only when a check fails or an interface violation is
 suspected. Do not repeat focused checks that task owners already passed. Do not
 silently rewrite a child's substantial scope in the parent. The parent handles
 small seam fixes directly; use a focused follow-up task or reconsider the
-partition only when integration requires major rework.
+partition only when integration requires major rework. A healthy wave leaves no
+creative tail: absent a concrete failure, no new research, implementation, or
+design work should begin after the graph finishes.
 
 Subagents are not research-only advisors. A delegation wave may own
 implementation and modify files when scopes are exclusive and clearly assigned.
