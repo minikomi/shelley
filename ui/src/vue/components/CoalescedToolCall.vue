@@ -131,6 +131,7 @@ import BrowserProfileTool from "./tools/BrowserProfileTool.vue";
 import KeywordSearchTool from "./tools/KeywordSearchTool.vue";
 import ChangeDirTool from "./tools/ChangeDirTool.vue";
 import SubagentTool from "./tools/SubagentTool.vue";
+import TaskGraphTool from "./tools/TaskGraphTool.vue";
 import LLMOneShotTool from "./tools/LLMOneShotTool.vue";
 import OutputIframeTool from "./tools/OutputIframeTool.vue";
 import WebSearchTool from "./tools/WebSearchTool.vue";
@@ -183,6 +184,7 @@ const TOOL_COMPONENTS: Record<string, any> = {
   keyword_search: KeywordSearchTool,
   change_dir: ChangeDirTool,
   subagent: SubagentTool,
+  task_graph: TaskGraphTool,
   output_iframe: OutputIframeTool,
   llm_one_shot: LLMOneShotTool,
   browser_emulate: BrowserEmulateTool,

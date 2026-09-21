@@ -339,6 +339,11 @@
       </button>
     </div>
 
+    <TaskGraphDock
+      :conversation-id="conversationId"
+      :refresh-token="messages.length + queuedGhosts.length"
+    />
+
     <!-- Status bar -->
     <div :class="statusBarClass">
       <div class="status-bar-content">
@@ -594,6 +599,7 @@ import { chunkMountKey } from "./chunkMount";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
 import TranscriptionTask from "./TranscriptionTask.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
+import TaskGraphDock from "./TaskGraphDock.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import InlineText from "./InlineText.vue";
 import ThinkingContent from "./tools/ThinkingContent.vue";

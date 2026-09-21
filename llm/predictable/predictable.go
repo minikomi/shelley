@@ -199,6 +199,9 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		// Return a response with all tool types for testing
 		return s.makeToolSmorgasbordResponse(inputTokens), nil
 
+	case "task graph demo":
+		return s.makeTaskGraphDemoResponse(inputTokens), nil
+
 	case "echo: foo":
 		return s.makeResponse("foo", inputTokens), nil
 
@@ -1101,6 +1104,15 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 		ToolInput: json.RawMessage(shellInput),
 	})
 
+	// task_graph tool
+	taskGraphInput, _ := json.Marshal(map[string]string{"action": "list"})
+	content = append(content, llm.Content{
+		ID:        fmt.Sprintf("tool_task_graph_%d", (baseNano+20)%1000),
+		Type:      llm.ContentTypeToolUse,
+		ToolName:  "task_graph",
+		ToolInput: json.RawMessage(taskGraphInput),
+	})
+
 	return &llm.Response{
 		ID:         fmt.Sprintf("pred-smorgasbord-%d", baseNano),
 		Type:       "message",
@@ -1112,6 +1124,71 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 			InputTokens:  inputTokens,
 			OutputTokens: 200,
 			CostUSD:      0.01,
+		},
+	}
+}
+
+func (s *Service) makeTaskGraphDemoResponse(inputTokens uint64) *llm.Response {
+	input, _ := json.Marshal(map[string]any{
+		"action": "create",
+		"title":  "Build task graph demo",
+		"tasks": []map[string]any{
+			{
+				"id":          "inspect",
+				"title":       "Inspect repository",
+				"prompt":      "delay: 60",
+				"model":       "predictable",
+				"file_scopes": []string{"server"},
+			},
+			{
+				"id":          "verify",
+				"title":       "Verify UI states",
+				"prompt":      "delay: 60",
+				"model":       "predictable",
+				"file_scopes": []string{"ui"},
+			},
+			{
+				"id":     "scaffold",
+				"title":  "Scaffold application",
+				"prompt": "delay: 60",
+				"model":  "predictable",
+			},
+			{
+				"id":           "backend",
+				"title":        "Implement backend",
+				"prompt":       "Implement the backend from the repository inspection and application shell.",
+				"dependencies": []string{"inspect", "scaffold"},
+			},
+			{
+				"id":           "frontend",
+				"title":        "Implement frontend",
+				"prompt":       "Implement the frontend from the UI verification and application shell.",
+				"dependencies": []string{"verify", "scaffold"},
+			},
+			{
+				"id":           "integrate",
+				"title":        "Review the delegated results",
+				"prompt":       "Review the completed delegated work and report integration risks. Do not integrate it.",
+				"dependencies": []string{"backend", "frontend"},
+			},
+		},
+	})
+	return &llm.Response{
+		ID:    fmt.Sprintf("pred-task-graph-%d", time.Now().UnixNano()),
+		Type:  "message",
+		Role:  llm.MessageRoleAssistant,
+		Model: "predictable-v1",
+		Content: []llm.Content{{
+			ID:        fmt.Sprintf("tool_task_graph_demo_%d", time.Now().UnixNano()%1000),
+			Type:      llm.ContentTypeToolUse,
+			ToolName:  "task_graph",
+			ToolInput: json.RawMessage(input),
+		}},
+		StopReason: llm.StopReasonToolUse,
+		Usage: llm.Usage{
+			InputTokens:  inputTokens,
+			OutputTokens: 120,
+			CostUSD:      0,
 		},
 	}
 }

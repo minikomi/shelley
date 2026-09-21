@@ -426,6 +426,8 @@ type Server struct {
 	// independent DBs don't share state.
 	cacheMasterSecretMu    sync.Mutex
 	cacheMasterSecretCache []byte
+	taskGraphWakeMu        sync.Mutex
+	taskGraphWake          chan struct{}
 }
 
 // NewServer creates a new server instance
@@ -455,6 +457,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		reflectionEmoji:         cachedReflectionEmoji,
 		commitTourJobs:          make(map[string]*commitTourJob),
 		commitTourRecoverySlots: make(chan struct{}, 2),
+		taskGraphWake:           make(chan struct{}),
 	}
 
 	s.conversationListStream = newConversationListStream(s)
@@ -491,6 +494,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	// Set up subagent support
 	s.toolSetConfig.SubagentRunner = NewSubagentRunner(s)
 	s.toolSetConfig.SubagentDB = &db.SubagentDBAdapter{DB: database}
+	s.toolSetConfig.TaskGraphService = s
 	s.toolSetConfig.MaxSubagentDepth = 1 // Only top-level conversations can spawn subagents
 
 	return s
@@ -2068,6 +2072,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	// connections and request lifetimes.
 	go s.recoverQueuedTranscriptions(context.Background())
 	go s.recoverCommitTourWorkers(context.Background())
+	go s.recoverTaskGraphs()
 
 	// Wait for shutdown signal or server error
 	quit := make(chan os.Signal, 1)

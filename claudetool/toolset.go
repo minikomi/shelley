@@ -72,6 +72,8 @@ type ToolSetConfig struct {
 	SubagentRunner SubagentRunner
 	// SubagentDB is the database for subagent conversations.
 	SubagentDB SubagentDB
+	// TaskGraphService persists and schedules top-level task graphs.
+	TaskGraphService TaskGraphService
 	// ParentConversationID is the ID of the parent conversation (for subagent tool).
 	ParentConversationID string
 	// ConversationID is the ID of the conversation these tools belong to.
@@ -256,6 +258,16 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			ParentReasoning:      cfg.ReasoningLevel,
 		}
 		tools = append(tools, subagentTool.Tool())
+	}
+
+	// Task graphs orchestrate direct child conversations and are intentionally
+	// unavailable to nested subagents.
+	if cfg.TaskGraphService != nil && cfg.SubagentDepth == 0 && cfg.ParentConversationID != "" {
+		tools = append(tools, (&TaskGraphTool{
+			Service:              cfg.TaskGraphService,
+			ParentConversationID: cfg.ParentConversationID,
+			AvailableModels:      availableModels,
+		}).Tool())
 	}
 
 	// Add LLM one-shot tool if LLM provider is configured
