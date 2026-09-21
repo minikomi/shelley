@@ -2014,3 +2014,43 @@ func TestParseResponsesSSETimestamps(t *testing.T) {
 		t.Fatalf("deltas = %+v", deltas)
 	}
 }
+
+func TestParseResponsesSSETaskGraphToolDeltas(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":3,"item":{"id":"fc_task_graph","type":"function_call","call_id":"call_task_graph","name":"task_graph","arguments":""}}`,
+		``,
+		`event: response.function_call_arguments.delta`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":3,"delta":"{\"action\":\"create\","}`,
+		``,
+		`event: response.function_call_arguments.delta`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":3,"delta":"\"tasks\":[]}"}`,
+		``,
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":3,"item":{"id":"fc_task_graph","type":"function_call","call_id":"call_task_graph","name":"task_graph","arguments":"{\"action\":\"create\",\"tasks\":[]}"}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_task_graph","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		``,
+	}, "\n")
+
+	var deltas []llm.StreamDelta
+	if _, err := parseResponsesSSEStream(strings.NewReader(stream), func(delta llm.StreamDelta) {
+		deltas = append(deltas, delta)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []llm.StreamDelta{
+		{Type: "tool_start", Text: "task_graph", Index: 3},
+		{Type: "tool_input", Text: `{"action":"create",`, Index: 3},
+		{Type: "tool_input", Text: `"tasks":[]}`, Index: 3},
+	}
+	if len(deltas) != len(want) {
+		t.Fatalf("deltas = %#v, want %#v", deltas, want)
+	}
+	for i := range want {
+		if deltas[i] != want[i] {
+			t.Fatalf("deltas[%d] = %#v, want %#v", i, deltas[i], want[i])
+		}
+	}
+}

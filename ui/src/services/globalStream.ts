@@ -213,7 +213,7 @@ export function connectGlobalStream({
 
     // Persistent state
     if (data.messages && data.messages.length > 0) {
-      // Clear streaming text / tool progress for tools that just produced results.
+      // Clear streaming transient state / tool progress for durable updates.
       const toolIds: string[] = [];
       let sawAgentMsg = false;
       let maxSeq = 0;
@@ -270,6 +270,12 @@ export function connectGlobalStream({
     }
     if (data.stream_delta?.type === "thinking") {
       messageStore.appendStreamThinking(convId, data.stream_delta.text);
+    }
+    if (data.stream_delta?.type === "tool_start") {
+      messageStore.setStreamedToolStart(convId, data.stream_delta.index, data.stream_delta.text);
+    }
+    if (data.stream_delta?.type === "tool_input") {
+      messageStore.appendStreamedToolInput(convId, data.stream_delta.index, data.stream_delta.text);
     }
   };
 

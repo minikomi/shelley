@@ -192,6 +192,21 @@
               />
             </div>
           </template>
+          <div
+            v-for="(_, index) in provisionalTaskGraphs"
+            :key="`provisional-task-graph-${index}`"
+            class="tool"
+            data-testid="tool-call-running"
+            data-provisional-task-graph
+          >
+            <div class="tool-header">
+              <div class="tool-summary">
+                <span class="tool-emoji">◇</span>
+                <span class="tool-name">task graph</span>
+                <span class="tool-command">· setting up</span>
+              </div>
+            </div>
+          </div>
           <!-- streaming preview -->
           <div
             v-if="showStreamingPreview || showStreamingThinking"
@@ -506,7 +521,7 @@ import {
 } from "../../types";
 import { api } from "../../services/api";
 import { btwStore } from "../../services/btwStore";
-import { messageStore } from "../../services/messageStore";
+import { messageStore, type TransientState } from "../../services/messageStore";
 import { cacheDiag } from "../../services/cacheDiag";
 import {
   loadCachedDraft,
@@ -1014,6 +1029,10 @@ const toolProgress = ref<Record<string, ToolProgress>>({});
 provideToolProgress(toolProgress);
 const streamingText = ref("");
 const streamingThinking = ref("");
+const streamedTools = ref<TransientState["streamedTools"]>({});
+const provisionalTaskGraphs = computed(() =>
+  Object.entries(streamedTools.value).filter(([, tool]) => tool.toolName === "task_graph"),
+);
 const showAdvancedSettings = ref(false);
 const advancedSettingsRef = ref<HTMLDivElement | null>(null);
 const availableTools = ref<Array<{ name: string; summary: string; default_on: boolean }>>([]);
@@ -2334,6 +2353,7 @@ function syncTransientFromStore(focusedId: string) {
   if (focusedId !== currentConversationId) return;
   perfCount("chat.syncTransient");
   toolProgress.value = tr.toolProgress;
+  streamedTools.value = tr.streamedTools;
   streamingText.value = tr.streamingText;
   streamingThinking.value = tr.streamingThinking;
   agentWorking.value = tr.agentWorking;
@@ -4171,7 +4191,7 @@ watch(
 
 // Auto-scroll after DOM updates (mirrors the useLayoutEffect).
 watch(
-  [messages, loading, streamingText, streamingThinking],
+  [messages, loading, streamedTools, streamingText, streamingThinking],
   () => {
     if (loading.value) return;
     nextTick(() => {

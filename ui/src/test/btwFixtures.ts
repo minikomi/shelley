@@ -11,6 +11,7 @@ import type { TransientState } from "../services/messageStore";
 export const parentID = "parent";
 export const idleTransient: TransientState = {
   toolProgress: {},
+  streamedTools: {},
   streamingText: "",
   streamingThinking: "",
   agentWorking: false,

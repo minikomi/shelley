@@ -1136,6 +1136,9 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 				block.ToolInput = nil
 			}
 			contents[event.Index] = block
+			if onStream != nil && block.Type == "tool_use" {
+				onStream(llm.StreamDelta{Type: "tool_start", Text: block.ToolName, Index: event.Index})
+			}
 
 		case "content_block_delta":
 			if event.Index >= len(contents) {
@@ -1166,6 +1169,9 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 			case "input_json_delta":
 				// Accumulate raw JSON for tool_use input
 				c.ToolInput = append(c.ToolInput, []byte(delta.PartialJSON)...)
+				if onStream != nil && c.Type == "tool_use" {
+					onStream(llm.StreamDelta{Type: "tool_input", Text: delta.PartialJSON, Index: event.Index})
+				}
 			case "signature_delta":
 				c.Signature += delta.Signature
 			}

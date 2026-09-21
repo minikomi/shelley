@@ -3351,3 +3351,49 @@ func postRawAnthropic(t *testing.T, apiKey string, req *request) error {
 	}
 	return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 }
+
+func TestParseSSEStreamTaskGraphToolDeltas(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_task_graph","type":"message","role":"assistant","model":"test","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_task_graph","name":"task_graph","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"action\":\"create\","}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"tasks\":[]}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":2}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	var deltas []llm.StreamDelta
+	if _, err := parseSSEStream(strings.NewReader(stream), func(delta llm.StreamDelta) {
+		deltas = append(deltas, delta)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []llm.StreamDelta{
+		{Type: "tool_start", Text: "task_graph", Index: 2},
+		{Type: "tool_input", Text: `{"action":"create",`, Index: 2},
+		{Type: "tool_input", Text: `"tasks":[]}`, Index: 2},
+	}
+	if len(deltas) != len(want) {
+		t.Fatalf("deltas = %#v, want %#v", deltas, want)
+	}
+	for i := range want {
+		if deltas[i] != want[i] {
+			t.Fatalf("deltas[%d] = %#v, want %#v", i, deltas[i], want[i])
+		}
+	}
+}

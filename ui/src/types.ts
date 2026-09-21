@@ -156,9 +156,9 @@ export interface ToolProgress {
   output: string;
 }
 
-// StreamDelta represents a partial text delta from the LLM.
+// StreamDelta represents a partial LLM content delta.
 export interface StreamDelta {
-  type: string; // "text" or "thinking"
+  type: string; // "text", "thinking", "tool_start", or "tool_input"
   text: string;
   index: number;
   // seq is a per-conversation, monotonically increasing sequence number

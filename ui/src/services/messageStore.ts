@@ -326,13 +326,20 @@ export interface ConversationCacheRecord {
 
 export interface TransientState {
   toolProgress: Record<string, ToolProgress>;
+  streamedTools: Record<number, { toolName: string; input: string }>;
   streamingText: string;
   streamingThinking: string;
   agentWorking: boolean;
 }
 
 function emptyTransient(): TransientState {
-  return { toolProgress: {}, streamingText: "", streamingThinking: "", agentWorking: false };
+  return {
+    toolProgress: {},
+    streamedTools: {},
+    streamingText: "",
+    streamingThinking: "",
+    agentWorking: false,
+  };
 }
 
 function emptyRecord(id: string): ConversationCacheRecord {
@@ -1830,6 +1837,27 @@ export class MessageStore {
     this.notifyTransient(id);
   }
 
+  setStreamedToolStart(id: string, index: number, toolName: string): void {
+    const t = this.getTransient(id);
+    const prior = t.streamedTools[index];
+    t.streamedTools = {
+      ...t.streamedTools,
+      [index]: { toolName, input: prior?.input ?? "" },
+    };
+    this.notifyTransient(id);
+  }
+
+  appendStreamedToolInput(id: string, index: number, input: string): void {
+    if (!input) return;
+    const t = this.getTransient(id);
+    const prior = t.streamedTools[index];
+    t.streamedTools = {
+      ...t.streamedTools,
+      [index]: { toolName: prior?.toolName ?? "", input: (prior?.input ?? "") + input },
+    };
+    this.notifyTransient(id);
+  }
+
   appendStreamText(id: string, text: string): void {
     if (!text) return;
     const t = this.getTransient(id);
@@ -1846,7 +1874,9 @@ export class MessageStore {
 
   resetStreaming(id: string): void {
     const t = this.getTransient(id);
-    if (!t.streamingText && !t.streamingThinking) return;
+    if (!t.streamingText && !t.streamingThinking && Object.keys(t.streamedTools).length === 0)
+      return;
+    t.streamedTools = {};
     t.streamingText = "";
     t.streamingThinking = "";
     this.notifyTransient(id);

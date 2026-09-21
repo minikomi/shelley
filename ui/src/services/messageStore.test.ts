@@ -2011,6 +2011,8 @@ async function main(): Promise<void> {
     const s = freshStore();
     const id = "c-reset-ephemera";
     s.setToolProgress(id, { tool_use_id: "tool-1", tool_name: "shell", output: "x" });
+    s.setStreamedToolStart(id, 3, "task_graph");
+    s.appendStreamedToolInput(id, 3, '{"title":"Plan');
     s.appendStreamText(id, "hello");
     s.appendStreamThinking(id, "hmm");
     s.setAgentWorking(id, true);
@@ -2018,6 +2020,7 @@ async function main(): Promise<void> {
     const t = s.getTransient(id);
     assert(t.agentWorking === true, "agentWorking should still be preserved");
     assert(Object.keys(t.toolProgress).length === 0, "toolProgress should be wiped on reset");
+    assert(Object.keys(t.streamedTools).length === 0, "streamed tools should be wiped on reset");
     assert(t.streamingText === "", "streamingText should be wiped on reset");
     assert(t.streamingThinking === "", "streamingThinking should be wiped on reset");
   });
