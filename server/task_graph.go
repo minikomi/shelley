@@ -339,6 +339,24 @@ func (s *Server) failTaskGraphLaunch(parentID, graphID, taskID string, cause err
 }
 
 func (s *Server) handleListTaskGraphs(w http.ResponseWriter, r *http.Request, parentID string) {
+	if graphID := r.URL.Query().Get("graph_id"); graphID != "" {
+		snapshot, err := s.db.GetTaskGraphSnapshot(r.Context(), parentID, graphID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "task graph not found", http.StatusNotFound)
+				return
+			}
+			s.logger.Error("Get task graph", "conversationID", parentID, "graphID", graphID, "error", err)
+			http.Error(w, "failed to get task graph", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode([]*db.TaskGraphSnapshot{snapshot}); err != nil {
+			s.logger.Error("Encode task graph", "conversationID", parentID, "graphID", graphID, "error", err)
+		}
+		return
+	}
+
 	snapshots, err := s.db.ListTaskGraphSnapshots(r.Context(), parentID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -348,6 +366,15 @@ func (s *Server) handleListTaskGraphs(w http.ResponseWriter, r *http.Request, pa
 		s.logger.Error("List task graphs", "conversationID", parentID, "error", err)
 		http.Error(w, "failed to list task graphs", http.StatusInternalServerError)
 		return
+	}
+	if r.URL.Query().Has("active") {
+		active := snapshots[:0]
+		for _, snapshot := range snapshots {
+			if snapshot.Status == "active" {
+				active = append(active, snapshot)
+			}
+		}
+		snapshots = active
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(snapshots); err != nil {

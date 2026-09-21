@@ -112,7 +112,10 @@ async function refreshGraph() {
   const parentConversationId = current?.parent_conversation_id || currentConversationId?.value;
   if (!parentConversationId) return;
   try {
-    const graphs = await api.getTaskGraphs(parentConversationId);
+    const graphs = await api.getTaskGraphs(
+      parentConversationId,
+      current ? { graphId: current.id } : { active: true },
+    );
     if (id !== requestID) return;
     const latest = current
       ? graphs.find((candidate) => candidate.id === current.id)

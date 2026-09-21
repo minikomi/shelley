@@ -42,14 +42,34 @@ await run("getTaskGraphs requests the conversation graphs", async () => {
       ]);
     }) as typeof globalThis.fetch,
     async () => {
-      const graphs = await api.getTaskGraphs("parent/id");
+      const graphs = await api.getTaskGraphs("parent/id", { active: true });
       assert(
         graphs.length === 1 && graphs[0].id === "graph-1",
         `graphs = ${JSON.stringify(graphs)}`,
       );
     },
   );
-  assert(requestedURL === "/api/conversation/parent%2Fid/task-graphs", `url = ${requestedURL}`);
+  assert(
+    requestedURL === "/api/conversation/parent%2Fid/task-graphs?active=1",
+    `url = ${requestedURL}`,
+  );
+});
+
+await run("getTaskGraphs requests one graph by id", async () => {
+  let requestedURL = "";
+  await withFetch(
+    (async (input) => {
+      requestedURL = String(input);
+      return Response.json([]);
+    }) as typeof globalThis.fetch,
+    async () => {
+      await api.getTaskGraphs("parent", { graphId: "graph/id" });
+    },
+  );
+  assert(
+    requestedURL === "/api/conversation/parent/task-graphs?graph_id=graph%2Fid",
+    `url = ${requestedURL}`,
+  );
 });
 
 await run("getTaskGraphs propagates server failures", async () => {

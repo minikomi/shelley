@@ -49,6 +49,26 @@ func TestGetTaskGraph(t *testing.T) {
 	if len(graphs) != 1 || graphs[0].GraphID != graph.GraphID {
 		t.Fatalf("response graphs = %#v, want %q", graphs, graph.GraphID)
 	}
+
+	active := httptest.NewRecorder()
+	server.handleListTaskGraphs(active, httptest.NewRequest(http.MethodGet, "/?active=1", nil), parent.ConversationID)
+	graphs = nil
+	if err := json.Unmarshal(active.Body.Bytes(), &graphs); err != nil {
+		t.Fatalf("decode active response: %v", err)
+	}
+	if len(graphs) != 1 || graphs[0].GraphID != graph.GraphID {
+		t.Fatalf("active graphs = %#v, want %q", graphs, graph.GraphID)
+	}
+
+	one := httptest.NewRecorder()
+	server.handleListTaskGraphs(one, httptest.NewRequest(http.MethodGet, "/?graph_id="+graph.GraphID, nil), parent.ConversationID)
+	graphs = nil
+	if err := json.Unmarshal(one.Body.Bytes(), &graphs); err != nil {
+		t.Fatalf("decode one graph response: %v", err)
+	}
+	if len(graphs) != 1 || graphs[0].GraphID != graph.GraphID {
+		t.Fatalf("one graph = %#v, want %q", graphs, graph.GraphID)
+	}
 }
 
 func TestTaskGraphAwaitedTreatsFailuresAsTerminal(t *testing.T) {

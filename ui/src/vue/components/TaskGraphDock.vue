@@ -55,7 +55,7 @@ async function loadGraphs() {
     return;
   }
   try {
-    const next = await api.getTaskGraphs(conversationId);
+    const next = await api.getTaskGraphs(conversationId, { active: true });
     if (id !== requestID || conversationId !== props.conversationId) return;
     graphs.value = next;
   } catch (error) {
