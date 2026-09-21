@@ -61,6 +61,14 @@ polish. Stop when the focused validation passes. When available, use Luna with
 medium reasoning for extraction or read-only work, Terra with medium reasoning
 for routine implementation, and Sol or high reasoning only for genuinely
 difficult architecture or debugging.
+Give each task operational purpose, not just a deliverable: explain how it
+shortens the request's critical path, what decisions it owns, which contracts it
+can trust without inspecting sibling work, and exactly when it should stop.
+For routine bounded tasks, prefer one batched inspection, one primary work pass,
+one focused validation, and at most one repair pass. This is guidance rather
+than enforcement: concrete validation failures justify further iteration. The
+worker should optimize the whole request's critical path instead of local polish
+or certainty beyond its acceptance criteria.
 Put constraints and context shared by multiple tasks in the create-level
 context field instead of repeating them. Use create-level model and reasoning
 as defaults when most tasks use the same settings; task fields are overrides.
