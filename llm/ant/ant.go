@@ -1169,9 +1169,6 @@ func parseSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*response, err
 			case "input_json_delta":
 				// Accumulate raw JSON for tool_use input
 				c.ToolInput = append(c.ToolInput, []byte(delta.PartialJSON)...)
-				if onStream != nil && c.Type == "tool_use" {
-					onStream(llm.StreamDelta{Type: "tool_input", Text: delta.PartialJSON, Index: event.Index})
-				}
 			case "signature_delta":
 				c.Signature += delta.Signature
 			}

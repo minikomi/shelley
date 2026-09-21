@@ -82,9 +82,10 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onUnmounted, ref, watch } from "vue";
 import Popover from "primevue/popover";
-import { isCompactionCarried, type Message, type LLMMessage, type LLMContent } from "../../types";
+import { isCompactionCarried, type Message, type LLMContent } from "../../types";
 import { perfCount, perfWrap } from "../../utils/perf";
 import { replaceLocationFragment } from "../../utils/locationFragment";
+import { parseLLMMessage } from "../../utils/parseLLMMessage";
 import { chunkMountKey } from "./chunkMount";
 
 interface TOCThumbnail {
@@ -119,17 +120,6 @@ const activeId = ref<string | null>(null);
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null);
 const listRef = ref<HTMLElement | null>(null);
 const renderedThumbnails = ref<Map<string, TOCThumbnail[]>>(new Map());
-
-function parseLLMMessage(message: Message): LLMMessage | null {
-  if (!message.llm_data) return null;
-  try {
-    return typeof message.llm_data === "string"
-      ? (JSON.parse(message.llm_data) as LLMMessage)
-      : (message.llm_data as LLMMessage);
-  } catch {
-    return null;
-  }
-}
 
 function extractMessageLabel(message: Message, maxLen = 70): string {
   const llm = parseLLMMessage(message);
@@ -446,7 +436,9 @@ function scrollToFragment(container: HTMLElement, fragment: string): boolean {
 }
 
 const entries = computed(
-  perfWrap("toc.buildEntries", () => buildEntries(props.messages, renderedThumbnails.value)),
+  perfWrap("toc.buildEntries", () =>
+    open.value ? buildEntries(props.messages, renderedThumbnails.value) : [],
+  ),
 );
 const activeEntryByMessageId = computed(() => {
   const entriesBySourceMessageId = new Map<string, TOCEntry[]>();
@@ -482,6 +474,7 @@ function handleShow() {
   refreshRenderedThumbnails();
   open.value = true;
   nextTick(() => {
+    attachScroll();
     const list = listRef.value;
     if (!list) return;
     const index = entries.value.findIndex((entry) => entry.id === activeId.value);
@@ -525,6 +518,7 @@ let scrollHandler: (() => void) | null = null;
 
 function attachScroll() {
   detachScroll();
+  if (!open.value) return;
   const container = props.containerRef;
   if (!container) return;
   const update = () => {

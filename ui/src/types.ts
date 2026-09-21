@@ -73,6 +73,7 @@ export interface LLMMessage {
   Content: LLMContent[];
   ToolUse?: unknown;
   EndOfTurn?: boolean;
+  ExcludedFromContext?: boolean;
 }
 
 export interface LLMContent {
@@ -158,7 +159,7 @@ export interface ToolProgress {
 
 // StreamDelta represents a partial LLM content delta.
 export interface StreamDelta {
-  type: string; // "text", "thinking", "tool_start", or "tool_input"
+  type: string; // "text", "thinking", or "tool_start"
   text: string;
   index: number;
   // seq is a per-conversation, monotonically increasing sequence number

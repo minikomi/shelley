@@ -3385,8 +3385,6 @@ func TestParseSSEStreamTaskGraphToolDeltas(t *testing.T) {
 	}
 	want := []llm.StreamDelta{
 		{Type: "tool_start", Text: "task_graph", Index: 2},
-		{Type: "tool_input", Text: `{"action":"create",`, Index: 2},
-		{Type: "tool_input", Text: `"tasks":[]}`, Index: 2},
 	}
 	if len(deltas) != len(want) {
 		t.Fatalf("deltas = %#v, want %#v", deltas, want)

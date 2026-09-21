@@ -243,18 +243,10 @@ await run("routes streamed tools by index and clears them for durable agent mess
   });
   latest().emitMessage({
     conversation_id: id,
-    stream_delta: { type: "tool_input", text: '{"title":"Plan', index: 4, seq: 2 },
-  });
-  latest().emitMessage({
-    conversation_id: id,
-    stream_delta: { type: "tool_start", text: "bash", index: 5, seq: 3 },
+    stream_delta: { type: "tool_start", text: "bash", index: 5, seq: 2 },
   });
   const transient = messageStore.getTransient(id);
   assert(transient.streamedTools[4].toolName === "task_graph", "tool start routed by index");
-  assert(
-    transient.streamedTools[4].input === '{"title":"Plan',
-    "partial tool input retained without parsing",
-  );
   assert(transient.streamedTools[5].toolName === "bash", "separate tool index retained");
 
   latest().emitMessage({

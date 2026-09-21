@@ -274,9 +274,6 @@ export function connectGlobalStream({
     if (data.stream_delta?.type === "tool_start") {
       messageStore.setStreamedToolStart(convId, data.stream_delta.index, data.stream_delta.text);
     }
-    if (data.stream_delta?.type === "tool_input") {
-      messageStore.appendStreamedToolInput(convId, data.stream_delta.index, data.stream_delta.text);
-    }
   };
 
   const connect = () => {

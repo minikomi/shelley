@@ -6,6 +6,7 @@ import {
   distillStatus,
   isCompactionCarried,
 } from "../../types";
+import { parseLLMMessage } from "../../utils/parseLLMMessage";
 
 export interface CoalescedItem {
   type: "message" | "tool";
@@ -72,28 +73,21 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
 
   // First pass: collect all tool results + display data.
   messages.forEach((message) => {
-    if (message.llm_data) {
-      try {
-        const llmData =
-          typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
-        if (llmData && llmData.Content && Array.isArray(llmData.Content)) {
-          llmData.Content.forEach((content: LLMContent) => {
-            if (content && content.Type === 6 && content.ToolUseID) {
-              toolResultMap[content.ToolUseID] = {
-                result: content.ToolResult || [],
-                error: content.ToolError || false,
-                startTime: content.ToolUseStartTime || null,
-                endTime: content.ToolUseEndTime || null,
-              };
-              if (content.Display) {
-                displayDataMap[content.ToolUseID] = content.Display;
-              }
-            }
-          });
+    const llmData = parseLLMMessage(message);
+    if (llmData?.Content && Array.isArray(llmData.Content)) {
+      llmData.Content.forEach((content: LLMContent) => {
+        if (content && content.Type === 6 && content.ToolUseID) {
+          toolResultMap[content.ToolUseID] = {
+            result: content.ToolResult || [],
+            error: content.ToolError || false,
+            startTime: content.ToolUseStartTime || null,
+            endTime: content.ToolUseEndTime || null,
+          };
+          if (content.Display) {
+            displayDataMap[content.ToolUseID] = content.Display;
+          }
         }
-      } catch (err) {
-        console.error("Failed to parse message LLM data for tool results:", err);
-      }
+      });
     }
   });
 
@@ -121,18 +115,8 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
       return;
     }
 
-    let hasToolResult = false;
-    if (message.llm_data) {
-      try {
-        const llmData =
-          typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
-        if (llmData && llmData.Content && Array.isArray(llmData.Content)) {
-          hasToolResult = llmData.Content.some((c: LLMContent) => c.Type === 6);
-        }
-      } catch (err) {
-        console.error("Failed to parse message LLM data:", err);
-      }
-    }
+    const llmData = parseLLMMessage(message);
+    const hasToolResult = !!llmData?.Content?.some((c: LLMContent) => c.Type === 6);
 
     if (message.type === "user" && !hasToolResult) {
       items.push(messageItem(message, carried));
@@ -142,91 +126,81 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
       return;
     }
 
-    if (message.llm_data) {
-      try {
-        const llmData =
-          typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
-        if (llmData && llmData.Content && Array.isArray(llmData.Content)) {
-          const textContents: LLMContent[] = [];
-          const toolUses: LLMContent[] = [];
-          const serverToolResults: Record<string, LLMContent[]> = {};
-          let hasThinking = false;
-          // Block positions, used to decide whether this message's text was
-          // spoken before or after its tool calls. Providers that run
-          // server-side tools (web_search) return a single assistant message
-          // whose blocks interleave reasoning, tool calls, and the final
-          // answer; that answer is written last and must not be rendered above
-          // the searches that produced it.
-          let lastToolIndex = -1;
-          let firstTextIndex = -1;
+    if (llmData?.Content && Array.isArray(llmData.Content)) {
+      const textContents: LLMContent[] = [];
+      const toolUses: LLMContent[] = [];
+      const serverToolResults: Record<string, LLMContent[]> = {};
+      let hasThinking = false;
+      // Block positions, used to decide whether this message's text was
+      // spoken before or after its tool calls. Providers that run
+      // server-side tools (web_search) return a single assistant message
+      // whose blocks interleave reasoning, tool calls, and the final
+      // answer; that answer is written last and must not be rendered above
+      // the searches that produced it.
+      let lastToolIndex = -1;
+      let firstTextIndex = -1;
 
-          llmData.Content.forEach((content: LLMContent, index: number) => {
-            if (content.Type === 2) {
-              textContents.push(content);
-              if (firstTextIndex < 0 && (content.Text || "").trim()) firstTextIndex = index;
-            } else if (content.Type === 3 && (content.Thinking || content.Text)) {
-              // Non-empty thinking block. Adaptive-thinking models may emit a
-              // signature-only block (empty Thinking/Text); that one is not
-              // renderable, mirroring meaningfulContent in Message.vue.
-              hasThinking = true;
-            } else if (content.Type === 5 || content.Type === 7) {
-              toolUses.push(content);
-              lastToolIndex = index;
-            } else if (content.Type === 8 && content.ToolUseID && content.ToolResult) {
-              serverToolResults[content.ToolUseID] = content.ToolResult;
-            }
-          });
-
-          const textString = textContents
-            .map((c) => c.Text || "")
-            .join("")
-            .trim();
-          // A turn with only thinking + tool calls (no text) still needs a
-          // message item, or the thinking block would never render.
-          const needsMessageItem = !!textString || hasThinking;
-          // Text written after every tool call is a reply to those calls, so
-          // its message item follows them. Everything else (preamble text,
-          // thinking-only turns) keeps its historical position ahead of the
-          // tools.
-          const textFollowsTools =
-            !!textString && lastToolIndex >= 0 && firstTextIndex > lastToolIndex;
-          if (needsMessageItem && !textFollowsTools) {
-            items.push(messageItem(message, carried));
-          }
-
-          const wasTruncated = llmData.ExcludedFromContext === true;
-
-          toolUses.forEach((toolUse) => {
-            const resultData = toolUse.ID ? toolResultMap[toolUse.ID] : undefined;
-            const serverResult = toolUse.ID ? serverToolResults[toolUse.ID] : undefined;
-            const displayData = toolUse.ID ? displayDataMap[toolUse.ID] : undefined;
-            const isServerSideToolUse = toolUse.Type === 7;
-            items.push({
-              type: "tool",
-              generation: message.generation,
-              carried,
-              // Keep anchor placement stable when the later tool-result row
-              // arrives; the tool begins at its assistant invocation.
-              sourceSequenceID: message.sequence_id,
-              anchorKey: `tool:${toolUse.ID || `${message.message_id}-${toolUse.ToolName || "unknown"}`}`,
-              toolUseId: toolUse.ID,
-              toolName: toolUse.ToolName,
-              toolInput: toolUse.ToolInput,
-              toolResult: resultData?.result || serverResult,
-              toolError: resultData?.error || (wasTruncated && !resultData && !serverResult),
-              toolStartTime: resultData?.startTime,
-              toolEndTime: resultData?.endTime,
-              hasResult: !!resultData || !!serverResult || wasTruncated || isServerSideToolUse,
-              display: displayData,
-            });
-          });
-
-          if (needsMessageItem && textFollowsTools) {
-            items.push(messageItem(message, carried));
-          }
+      llmData.Content.forEach((content: LLMContent, index: number) => {
+        if (content.Type === 2) {
+          textContents.push(content);
+          if (firstTextIndex < 0 && (content.Text || "").trim()) firstTextIndex = index;
+        } else if (content.Type === 3 && (content.Thinking || content.Text)) {
+          // Non-empty thinking block. Adaptive-thinking models may emit a
+          // signature-only block (empty Thinking/Text); that one is not
+          // renderable, mirroring meaningfulContent in Message.vue.
+          hasThinking = true;
+        } else if (content.Type === 5 || content.Type === 7) {
+          toolUses.push(content);
+          lastToolIndex = index;
+        } else if (content.Type === 8 && content.ToolUseID && content.ToolResult) {
+          serverToolResults[content.ToolUseID] = content.ToolResult;
         }
-      } catch (err) {
-        console.error("Failed to parse message LLM data:", err);
+      });
+
+      const textString = textContents
+        .map((c) => c.Text || "")
+        .join("")
+        .trim();
+      // A turn with only thinking + tool calls (no text) still needs a
+      // message item, or the thinking block would never render.
+      const needsMessageItem = !!textString || hasThinking;
+      // Text written after every tool call is a reply to those calls, so
+      // its message item follows them. Everything else (preamble text,
+      // thinking-only turns) keeps its historical position ahead of the
+      // tools.
+      const textFollowsTools = !!textString && lastToolIndex >= 0 && firstTextIndex > lastToolIndex;
+      if (needsMessageItem && !textFollowsTools) {
+        items.push(messageItem(message, carried));
+      }
+
+      const wasTruncated = llmData.ExcludedFromContext === true;
+
+      toolUses.forEach((toolUse) => {
+        const resultData = toolUse.ID ? toolResultMap[toolUse.ID] : undefined;
+        const serverResult = toolUse.ID ? serverToolResults[toolUse.ID] : undefined;
+        const displayData = toolUse.ID ? displayDataMap[toolUse.ID] : undefined;
+        const isServerSideToolUse = toolUse.Type === 7;
+        items.push({
+          type: "tool",
+          generation: message.generation,
+          carried,
+          // Keep anchor placement stable when the later tool-result row
+          // arrives; the tool begins at its assistant invocation.
+          sourceSequenceID: message.sequence_id,
+          anchorKey: `tool:${toolUse.ID || `${message.message_id}-${toolUse.ToolName || "unknown"}`}`,
+          toolUseId: toolUse.ID,
+          toolName: toolUse.ToolName,
+          toolInput: toolUse.ToolInput,
+          toolResult: resultData?.result || serverResult,
+          toolError: resultData?.error || (wasTruncated && !resultData && !serverResult),
+          toolStartTime: resultData?.startTime,
+          toolEndTime: resultData?.endTime,
+          hasResult: !!resultData || !!serverResult || wasTruncated || isServerSideToolUse,
+          display: displayData,
+        });
+      });
+
+      if (needsMessageItem && textFollowsTools) {
         items.push(messageItem(message, carried));
       }
     } else {

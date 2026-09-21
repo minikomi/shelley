@@ -6,6 +6,7 @@
     <MessageRenderNode
       v-for="node in chunk.nodes"
       :key="node.key"
+      v-memo="nodeMemo(node)"
       :node="node"
       :conversation-id="conversationId"
       :on-open-diff-viewer="onOpenDiffViewer"
@@ -19,7 +20,7 @@
 
 <script setup lang="ts">
 import { computed, inject } from "vue";
-import type { RenderChunk } from "./renderNode";
+import type { RenderChunk, RenderNode } from "./renderNode";
 import { chunkMountKey } from "./chunkMount";
 import MessageRenderNode from "./MessageRenderNode.vue";
 import PendingChunk from "./PendingChunk.vue";
@@ -50,5 +51,24 @@ const mounted = computed(
 
 function reveal() {
   mount?.reveal(props.chunk.globalIndex);
+}
+
+function nodeMemo(node: RenderNode): unknown[] {
+  if (node.kind === "message") return [node.item.message];
+  if (node.kind === "tool-call") {
+    return [
+      node.item.toolResult,
+      node.item.toolError,
+      node.item.hasResult,
+      node.item.display,
+      node.item.toolStartTime,
+      node.item.toolEndTime,
+    ];
+  }
+  if (node.kind === "btw") return [node.exchanges];
+  if (node.kind === "carried-band") return [node.count, node.children];
+  if (node.kind === "timestamp") return [node.createdAt];
+  if (node.kind === "token-marker") return [node.label, node.ctx];
+  return [node.label];
 }
 </script>

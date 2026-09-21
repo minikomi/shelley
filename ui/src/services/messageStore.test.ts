@@ -2012,7 +2012,6 @@ async function main(): Promise<void> {
     const id = "c-reset-ephemera";
     s.setToolProgress(id, { tool_use_id: "tool-1", tool_name: "shell", output: "x" });
     s.setStreamedToolStart(id, 3, "task_graph");
-    s.appendStreamedToolInput(id, 3, '{"title":"Plan');
     s.appendStreamText(id, "hello");
     s.appendStreamThinking(id, "hmm");
     s.setAgentWorking(id, true);

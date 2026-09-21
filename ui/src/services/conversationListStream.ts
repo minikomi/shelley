@@ -3,7 +3,6 @@ import type {
   ConversationListPatchOp,
   ConversationWithState,
 } from "../types";
-import { perfCount } from "../utils/perf";
 
 function decodePointer(path: string): string[] {
   if (path === "") return [];
@@ -38,70 +37,83 @@ function getAt(doc: unknown, path: string): unknown {
   return cur;
 }
 
-function encodePointer(parts: string[]): string {
-  if (parts.length === 0) return "";
-  return `/${parts.map((part) => part.replace(/~/g, "~0").replace(/\//g, "~1")).join("/")}`;
-}
-
-function parentAndKey(doc: unknown, path: string): { parent: unknown; key: string } {
-  const parts = decodePointer(path);
-  if (parts.length === 0) {
-    throw new Error("root path has no parent");
-  }
-  return {
-    parent: parts.length === 1 ? doc : getAt(doc, encodePointer(parts.slice(0, -1))),
-    key: parts[parts.length - 1],
-  };
-}
-
 function setAt(doc: unknown, path: string, value: unknown, mustExist: boolean): unknown {
   if (path === "") return cloneValue(value);
-  const { parent, key } = parentAndKey(doc, path);
-  const nextValue = cloneValue(value);
-  if (Array.isArray(parent)) {
-    const idx = Number(key);
-    if (!Number.isInteger(idx) || idx < 0 || idx > parent.length) {
-      throw new Error(`bad array index in patch path: ${path} (len=${parent.length})`);
+  const parts = decodePointer(path);
+  const update = (node: unknown, depth: number): unknown => {
+    const key = parts[depth];
+    const final = depth === parts.length - 1;
+    if (Array.isArray(node)) {
+      const idx = Number(key);
+      const max = final && !mustExist ? node.length : node.length - 1;
+      if (!Number.isInteger(idx) || idx < 0 || idx > max) {
+        throw new Error(`bad array index in patch path: ${path} (len=${node.length})`);
+      }
+      const next = node.slice();
+      if (!final) {
+        next[idx] = update(node[idx], depth + 1);
+      } else if (idx === node.length) {
+        next.push(cloneValue(value));
+      } else if (mustExist) {
+        next[idx] = cloneValue(value);
+      } else {
+        next.splice(idx, 0, cloneValue(value));
+      }
+      return next;
     }
-    if (mustExist && idx >= parent.length) {
-      throw new Error(`array index out of range in patch path: ${path} (len=${parent.length})`);
+    if (node !== null && typeof node === "object") {
+      const current = node as Record<string, unknown>;
+      if (!final && !(key in current)) {
+        throw new Error(`cannot traverse patch path: ${path}`);
+      }
+      if (final && mustExist && !(key in current)) {
+        throw new Error(`missing object key in patch path: ${path}`);
+      }
+      return {
+        ...current,
+        [key]: final ? cloneValue(value) : update(current[key], depth + 1),
+      };
     }
-    if (idx === parent.length) {
-      parent.push(nextValue);
-    } else if (mustExist) {
-      parent[idx] = nextValue;
-    } else {
-      parent.splice(idx, 0, nextValue);
-    }
-    return doc;
-  }
-  if (parent !== null && typeof parent === "object") {
-    const obj = parent as Record<string, unknown>;
-    if (mustExist && !(key in obj)) {
-      throw new Error(`missing object key in patch path: ${path}`);
-    }
-    obj[key] = nextValue;
-    return doc;
-  }
-  throw new Error(`cannot set patch path: ${path}`);
+    throw new Error(`cannot traverse patch path: ${path}`);
+  };
+  return update(doc, 0);
 }
 
 function removeAt(doc: unknown, path: string): unknown {
   if (path === "") throw new Error("cannot remove document root");
-  const { parent, key } = parentAndKey(doc, path);
-  if (Array.isArray(parent)) {
-    const idx = Number(key);
-    if (!Number.isInteger(idx) || idx < 0 || idx >= parent.length) {
-      throw new Error(`bad array index in patch path: ${path} (len=${parent.length})`);
+  const parts = decodePointer(path);
+  const update = (node: unknown, depth: number): unknown => {
+    const key = parts[depth];
+    const final = depth === parts.length - 1;
+    if (Array.isArray(node)) {
+      const idx = Number(key);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= node.length) {
+        throw new Error(`bad array index in patch path: ${path} (len=${node.length})`);
+      }
+      const next = node.slice();
+      if (final) {
+        next.splice(idx, 1);
+      } else {
+        next[idx] = update(node[idx], depth + 1);
+      }
+      return next;
     }
-    parent.splice(idx, 1);
-    return doc;
-  }
-  if (parent !== null && typeof parent === "object") {
-    delete (parent as Record<string, unknown>)[key];
-    return doc;
-  }
-  throw new Error(`cannot remove patch path: ${path}`);
+    if (node !== null && typeof node === "object") {
+      const current = node as Record<string, unknown>;
+      if (!(key in current)) {
+        throw new Error(`cannot remove patch path: ${path}`);
+      }
+      const next = { ...current };
+      if (final) {
+        delete next[key];
+      } else {
+        next[key] = update(current[key], depth + 1);
+      }
+      return next;
+    }
+    throw new Error(`cannot remove patch path: ${path}`);
+  };
+  return update(doc, 0);
 }
 
 function validateOp(op: ConversationListPatchOp): void {
@@ -120,9 +132,7 @@ export function applyConversationListPatch(
   state: ConversationWithState[],
   patch: ConversationListPatchOp[],
 ): ConversationWithState[] {
-  const start = performance.now();
-  let doc: unknown = cloneValue(state);
-  perfCount("list.cloneAll", performance.now() - start);
+  let doc: unknown = state;
   for (const op of patch) {
     validateOp(op);
     switch (op.op) {

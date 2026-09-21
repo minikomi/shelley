@@ -1178,10 +1178,6 @@ func parseResponsesSSEStream(r io.Reader, onStream func(llm.StreamDelta)) (*resp
 			if onStream != nil && event.Item != nil && event.Item.Type == "function_call" {
 				onStream(llm.StreamDelta{Type: "tool_start", Text: event.Item.Name, Index: event.OutputIndex})
 			}
-		case "response.function_call_arguments.delta":
-			if onStream != nil {
-				onStream(llm.StreamDelta{Type: "tool_input", Text: event.Delta, Index: event.OutputIndex})
-			}
 		case "response.output_item.done":
 			if event.Item != nil {
 				outputItems[event.OutputIndex] = *event.Item

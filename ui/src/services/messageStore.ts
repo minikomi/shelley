@@ -326,7 +326,7 @@ export interface ConversationCacheRecord {
 
 export interface TransientState {
   toolProgress: Record<string, ToolProgress>;
-  streamedTools: Record<number, { toolName: string; input: string }>;
+  streamedTools: Record<number, { toolName: string }>;
   streamingText: string;
   streamingThinking: string;
   agentWorking: boolean;
@@ -1839,21 +1839,9 @@ export class MessageStore {
 
   setStreamedToolStart(id: string, index: number, toolName: string): void {
     const t = this.getTransient(id);
-    const prior = t.streamedTools[index];
     t.streamedTools = {
       ...t.streamedTools,
-      [index]: { toolName, input: prior?.input ?? "" },
-    };
-    this.notifyTransient(id);
-  }
-
-  appendStreamedToolInput(id: string, index: number, input: string): void {
-    if (!input) return;
-    const t = this.getTransient(id);
-    const prior = t.streamedTools[index];
-    t.streamedTools = {
-      ...t.streamedTools,
-      [index]: { toolName: prior?.toolName ?? "", input: (prior?.input ?? "") + input },
+      [index]: { toolName },
     };
     this.notifyTransient(id);
   }

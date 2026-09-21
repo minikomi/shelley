@@ -54,15 +54,29 @@ run("replace root", () => {
 });
 
 run("add, replace field, remove", () => {
-  let state = [conv("a", "alpha")];
+  const original = conv("a", "alpha");
+  let state = [original];
   state = applyConversationListPatch(state, [{ op: "add", path: "/0", value: conv("b", "beta") }]);
   assert(state.map((c) => c.conversation_id).join(",") === "b,a", "expected inserted item");
 
   state = applyConversationListPatch(state, [{ op: "replace", path: "/1/working", value: true }]);
   assert(state[1].working, "expected field replacement");
+  assert(!original.working, "expected input object to remain unchanged");
+  assert(state[0].conversation_id === "b", "expected untouched row to remain");
 
   state = applyConversationListPatch(state, [{ op: "remove", path: "/0" }]);
   assert(state.length === 1 && state[0].conversation_id === "a", "expected removal");
+});
+
+run("preserves untouched conversation identity", () => {
+  const first = conv("a", "alpha");
+  const second = conv("b", "beta");
+  const next = applyConversationListPatch(
+    [first, second],
+    [{ op: "replace", path: "/1/working", value: true }],
+  );
+  assert(next[0] === first, "expected untouched conversation identity");
+  assert(next[1] !== second, "expected changed conversation copy");
 });
 
 run("move", () => {
