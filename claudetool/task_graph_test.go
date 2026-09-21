@@ -104,6 +104,13 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"guessed audit tasks",
 		"not a task graph",
 		"critical path",
+		"delegation as an optimization, not a default",
+		"coupled builds with one owner",
+		"split work by discipline alone",
+		"substantial and connected",
+		"save more wall time",
+		"coordination, duplicated",
+		"contained work",
 		"concrete contract, acceptance criteria, and",
 		"cheap bounded inspection needed to",
 		"delegate implementation directly",
@@ -113,6 +120,8 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"implementation owner includes focused tests",
 		"separate test-mapping or review filler tasks",
 		"parent owns integration and final validation",
+		"exercise the real",
+		"API-only checks do not prove",
 		"cohesive, independently testable outcomes",
 		"file type",
 		"substantial enough to amortize",
@@ -163,6 +172,8 @@ func TestTaskGraphToolDescriptionRequiresGraphBeforeMultiScopeWork(t *testing.T)
 		"establish any shared manifests",
 		"shared configuration, interfaces",
 		"Await or cancel the affected tasks first",
+		"exact filenames, routes, exported signatures",
+		"must not infer them",
 	} {
 		if !strings.Contains(description, required) {
 			t.Errorf("task graph description missing %q", required)

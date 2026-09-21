@@ -26,6 +26,14 @@ inspect repository state, guidance files, manifests, and available test commands
 so the graph reflects real work rather than guessed audit tasks. A prose plan is
 not a task graph.
 
+Treat delegation as an optimization, not a default. Keep small or tightly
+coupled builds with one owner. Do not split work by discipline alone (for
+example backend, frontend, and tests) unless those scopes are independently
+substantial and connected by an already-stable contract. Each delegated scope
+should plausibly save more wall time than it adds in coordination, duplicated
+context, and integration work. When that is doubtful, do the contained work
+directly.
+
 When the user already supplies a concrete contract, acceptance criteria, and
 identifiable implementation scopes, do only cheap bounded inspection needed to
 stabilize interfaces, then delegate implementation directly. Keep that graph
@@ -35,6 +43,8 @@ implementation and the parent cannot resolve them cheaply.
 Each implementation owner includes focused tests for its scope.
 Do not create separate test-mapping or review filler tasks.
 The parent owns integration and final validation.
+For user-facing behavior, acceptance criteria must exercise the real interaction
+path; marker, schema, or API-only checks do not prove the feature works.
 
 Choose task boundaries by cohesive, independently testable outcomes, not by
 file type. A task is right-sized when it is substantial enough to amortize
@@ -96,6 +106,9 @@ contracts, directories, and test infrastructure those tasks need. While a graph
 is active, the parent may work on non-overlapping integration files, but must
 not change shared configuration, interfaces, or test/runtime infrastructure
 consumed by running children. Await or cancel the affected tasks first.
+Stable contracts name exact filenames, routes, exported signatures, and data
+shapes where applicable; concurrent tasks must not infer them by observing each
+other's partially written files.
 
 Choose the graph size and shape from the actual work. max_concurrency controls
 simultaneously running children, not graph size; omit it to use the server
