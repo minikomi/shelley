@@ -32,8 +32,8 @@
       {{ graph.serial_rationale }}
     </p>
 
-    <div v-if="!collapsed && topology.layered" class="task-graph-rows task-graph-flow">
-      <template v-for="(layer, layerIndex) in topology.layers" :key="layer.depth">
+    <div v-if="!collapsed" class="task-graph-rows task-graph-flow">
+      <template v-for="(layer, layerIndex) in layers" :key="layer.depth">
         <div
           class="task-flow-layer"
           :class="{ 'is-group': layer.tasks.length > 1, 'is-single': layer.tasks.length === 1 }"
@@ -77,56 +77,14 @@
           </div>
         </div>
         <div
-          v-if="layerIndex < topology.layers.length - 1"
+          v-if="layerIndex < layers.length - 1"
           class="task-flow-junction"
-          :class="{ 'is-finished': layer.tasks.every(({ task }) => task.state === 'complete') }"
+          :class="{ 'is-finished': junctionFinished(layerIndex) }"
           aria-hidden="true"
         >
           <span />
         </div>
       </template>
-    </div>
-
-    <div v-else-if="!collapsed" class="task-graph-rows">
-      <div
-        v-for="{ task, index, depth } in displayTasks"
-        :key="task.id"
-        class="task-graph-row"
-        :class="[`task-state-${task.state}`, { 'has-dependencies': depth > 0 }]"
-        :style="{ '--task-depth': Math.min(depth, 3) }"
-      >
-        <span v-if="depth > 0" class="task-tree-connector" aria-hidden="true" />
-        <span class="task-state-icon" aria-hidden="true">{{ taskIcon(task, index) }}</span>
-        <span class="task-graph-copy">
-          <button type="button" class="task-graph-title" @click="toggleBrief(task.id)">
-            <strong>{{ task.title }}</strong>
-          </button>
-          <small v-if="task.error">{{ task.error }}</small>
-          <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" :tasks="graph.tasks" />
-          <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
-            <span />
-          </span>
-        </span>
-        <button
-          v-if="task.slug && task.child_conversation_id"
-          type="button"
-          class="task-graph-action"
-          @click.stop="openTask(task.slug)"
-        >
-          {{ stateLabel(task.state) }}
-          <TaskGraphElapsedTime
-            v-if="task.state === 'running' || task.state === 'starting'"
-            :started-at="task.started_at"
-          />
-        </button>
-        <span v-else class="task-graph-state-label">
-          {{ stateLabel(task.state) }}
-          <TaskGraphElapsedTime
-            v-if="task.state === 'running' || task.state === 'starting'"
-            :started-at="task.started_at"
-          />
-        </span>
-      </div>
     </div>
   </div>
 </template>
@@ -201,30 +159,23 @@ const displayTasks = computed(() => {
   return props.graph.tasks.map((task, index) => ({ task, index, depth: depthFor(task) }));
 });
 
-const topology = computed(() => {
+const layers = computed(() => {
   const byDepth = new Map<number, (typeof displayTasks.value)[number][]>();
   for (const item of displayTasks.value) {
     const layer = byDepth.get(item.depth) || [];
     layer.push(item);
     byDepth.set(item.depth, layer);
   }
-  const layers = [...byDepth.entries()]
+  return [...byDepth.entries()]
     .sort(([left], [right]) => left - right)
     .map(([depth, tasks]) => ({ depth, tasks }));
-
-  const layered = layers.every((layer, index) => {
-    const expected = new Set(index === 0 ? [] : layers[index - 1].tasks.map(({ task }) => task.id));
-    return layer.tasks.every(({ task }) => {
-      const dependencies = task.depends_on || [];
-      if (index === 0) return dependencies.length === 0;
-      return (
-        dependencies.length > 0 && dependencies.every((dependency) => expected.has(dependency))
-      );
-    });
-  });
-
-  return { layered, layers };
 });
+
+function junctionFinished(layerIndex: number): boolean {
+  return layers.value
+    .slice(0, layerIndex + 1)
+    .every((layer) => layer.tasks.every(({ task }) => task.state === "complete"));
+}
 
 const tone = computed(() => {
   if (props.graph.state === "failed" || counts.value.failed) return "failed";
@@ -491,7 +442,6 @@ function openTask(slug: string) {
 }
 
 .task-graph-row {
-  --task-depth: 0;
   display: grid;
   grid-template-columns: 1.35rem minmax(0, 1fr) auto;
   align-items: center;
@@ -499,37 +449,6 @@ function openTask(slug: string) {
   min-height: 3.5rem;
   padding: 0.625rem 0.75rem;
   border-bottom: 1px solid var(--border);
-}
-
-.task-graph-row.has-dependencies {
-  grid-template-columns: 0.625rem 1.35rem minmax(0, 1fr) auto;
-  margin-left: calc(min(var(--task-depth), 3) * 0.75rem);
-}
-
-.task-tree-connector {
-  position: relative;
-  align-self: stretch;
-  width: 0.625rem;
-}
-
-.task-tree-connector::before {
-  position: absolute;
-  top: -0.625rem;
-  bottom: 50%;
-  left: 0.1875rem;
-  width: 1px;
-  background: var(--border);
-  content: "";
-}
-
-.task-tree-connector::after {
-  position: absolute;
-  top: 50%;
-  left: 0.1875rem;
-  width: 0.4375rem;
-  height: 1px;
-  background: var(--border);
-  content: "";
 }
 
 .task-graph-row:last-child {
@@ -806,10 +725,6 @@ function openTask(slug: string) {
   .task-graph-row {
     padding-right: 0.625rem;
     padding-left: 0.625rem;
-  }
-
-  .task-graph-row.has-dependencies {
-    margin-left: calc(min(var(--task-depth), 2) * 0.4rem);
   }
 
   .task-graph-dock .task-graph-header {
