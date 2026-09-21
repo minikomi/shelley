@@ -13,13 +13,15 @@ import (
 type taskGraphServiceStub struct {
 	created        []db.TaskGraphTaskCreate
 	awaitSnapshot  *db.TaskGraphSnapshot
+	context        string
 	maxConcurrency int
 }
 
-func (s *taskGraphServiceStub) CreateTaskGraph(_ context.Context, parent, title string, maxConcurrency int, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
+func (s *taskGraphServiceStub) CreateTaskGraph(_ context.Context, parent, title, sharedContext string, maxConcurrency int, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
 	s.created = tasks
+	s.context = sharedContext
 	s.maxConcurrency = maxConcurrency
-	return &db.TaskGraphSnapshot{GraphID: "graph", ParentConversationID: parent, Title: title, MaxConcurrency: maxConcurrency}, nil
+	return &db.TaskGraphSnapshot{GraphID: "graph", ParentConversationID: parent, Title: title, Context: sharedContext, MaxConcurrency: maxConcurrency}, nil
 }
 func (*taskGraphServiceStub) GetLatestTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error) {
 	return nil, nil
@@ -36,14 +38,21 @@ func (*taskGraphServiceStub) CancelTaskGraph(context.Context, string, string, []
 
 func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 	stub := &taskGraphServiceStub{}
-	tool := (&TaskGraphTool{Service: stub, ParentConversationID: "parent"}).Tool()
+	tool := (&TaskGraphTool{
+		Service:              stub,
+		ParentConversationID: "parent",
+		AvailableModels:      []AvailableModel{{ID: "test-model"}, {ID: "other-model"}},
+	}).Tool()
 	input, err := json.Marshal(taskGraphInput{
 		Action:         "create",
 		Title:          "Graph",
+		Context:        "Use the repository rules.",
+		Model:          "test-model",
+		Reasoning:      "low",
 		MaxConcurrency: 5,
 		Tasks: []taskGraphTask{
 			{ID: "z-research", Title: "Research", Prompt: "Research this", FileScopes: []string{"docs/research"}},
-			{ID: "a-design", Title: "Design", Prompt: "Design this", FileScopes: []string{"docs/design"}},
+			{ID: "a-design", Title: "Design", Prompt: "Design this", Model: "other-model", Reasoning: "high", FileScopes: []string{"docs/design"}},
 			{ID: "m-review", Title: "Review", Prompt: "Review the work", Dependencies: []string{"z-research", "a-design"}, FileScopes: []string{"docs"}},
 		},
 	})
@@ -69,6 +78,15 @@ func TestTaskGraphToolValidatesGraphAndReturnsSnapshot(t *testing.T) {
 	}
 	if stub.maxConcurrency != 5 || display.MaxConcurrency != 5 {
 		t.Fatalf("max concurrency stub=%d display=%d, want 5", stub.maxConcurrency, display.MaxConcurrency)
+	}
+	if stub.context != "Use the repository rules." || display.Context != stub.context {
+		t.Fatalf("context stub=%q display=%q", stub.context, display.Context)
+	}
+	if stub.created[0].Model != "test-model" || stub.created[0].Reasoning != "low" {
+		t.Fatalf("first task defaults = model %q reasoning %q", stub.created[0].Model, stub.created[0].Reasoning)
+	}
+	if stub.created[1].Model != "other-model" || stub.created[1].Reasoning != "high" {
+		t.Fatalf("second task overrides = model %q reasoning %q", stub.created[1].Model, stub.created[1].Reasoning)
 	}
 	if stub.created[0].ID != "z-research" || stub.created[1].ID != "a-design" || stub.created[2].ID != "m-review" {
 		t.Fatalf("created order = %q, %q, %q; want input order", stub.created[0].ID, stub.created[1].ID, stub.created[2].ID)

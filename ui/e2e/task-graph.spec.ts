@@ -37,6 +37,10 @@ test("task graph docks above the composer and collapses", async ({ page, request
       .locator(".task-graph-flow .task-graph-row strong")
       .filter({ hasText: /^Implement frontend$/ }),
   ).toBeVisible();
+  await graph.locator(".task-graph-title").first().click();
+  await expect(graph.locator(".task-brief").first()).toContainText(
+    "Keep changes small and validate only the delegated scope.",
+  );
   expect(await graph.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   await graph.locator(".task-graph-header").click();

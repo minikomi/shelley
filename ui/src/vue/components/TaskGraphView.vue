@@ -50,7 +50,12 @@
                 <strong>{{ task.title }}</strong>
               </button>
               <small v-if="task.error">{{ task.error }}</small>
-              <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" :tasks="graph.tasks" />
+              <TaskGraphTaskBrief
+                v-if="briefs.has(task.id)"
+                :task="task"
+                :tasks="graph.tasks"
+                :context="graph.context"
+              />
               <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
                 <span />
               </span>

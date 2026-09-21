@@ -51,6 +51,9 @@ polish. Stop when the focused validation passes. When available, use Luna with
 medium reasoning for extraction or read-only work, Terra with medium reasoning
 for routine implementation, and Sol or high reasoning only for genuinely
 difficult architecture or debugging.
+Put constraints and context shared by multiple tasks in the create-level
+context field instead of repeating them. Use create-level model and reasoning
+as defaults when most tasks use the same settings; task fields are overrides.
 
 Use create once per delegation wave to define delegated subagent runs only.
 The parent may own one non-overlapping implementation lane while tasks run once
@@ -107,7 +110,7 @@ invent audit, research, design, review, or implementation tasks merely to fill
 slots, create symmetry, or make the graph look busy.`
 
 type TaskGraphService interface {
-	CreateTaskGraph(context.Context, string, string, int, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
+	CreateTaskGraph(context.Context, string, string, string, int, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
 	GetLatestTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error)
 	GetTaskGraphSnapshot(context.Context, string, string) (*db.TaskGraphSnapshot, error)
 	AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error)
@@ -124,6 +127,9 @@ type taskGraphInput struct {
 	Action          string          `json:"action"`
 	GraphID         string          `json:"graph_id,omitempty"`
 	Title           string          `json:"title,omitempty"`
+	Context         string          `json:"context,omitempty"`
+	Model           string          `json:"model,omitempty"`
+	Reasoning       string          `json:"reasoning,omitempty"`
 	Tasks           []taskGraphTask `json:"tasks,omitempty"`
 	TaskIDs         []string        `json:"task_ids,omitempty"`
 	Timeout         int             `json:"timeout_seconds,omitempty"`
@@ -153,6 +159,9 @@ func (t *TaskGraphTool) Tool() *llm.Tool {
     "action": {"type": "string", "enum": ["create", "list", "await", "cancel"]},
     "graph_id": {"type": "string", "description": "Graph ID. list may omit it to get the latest graph."},
     "title": {"type": "string", "description": "Required for create."},
+    "context": {"type": "string", "description": "Context, constraints, and acceptance criteria shared by multiple tasks. Shelley includes it in every task prompt."},
+    "model": {"type": "string", "description": "Default model for create tasks. A task model overrides it."},
+    "reasoning": {"type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"], "description": "Default reasoning for create tasks. Task reasoning overrides it."},
     "max_concurrency": {"type": "integer", "minimum": 1, "description": "Maximum simultaneously running children for this graph. Omit to use the server default of 3."},
     "serial_rationale": {"type": "string", "description": "Required for a singleton or fully serial graph. Explain the concrete upstream output that prevents another delegated scope from starting now."},
     "tasks": {
@@ -191,7 +200,7 @@ func (t *TaskGraphTool) run(ctx context.Context, req taskGraphInput) llm.ToolOut
 		if err != nil {
 			return llm.ErrorfToolOut("%v", err)
 		}
-		snapshot, err := t.Service.CreateTaskGraph(ctx, t.ParentConversationID, strings.TrimSpace(req.Title), req.MaxConcurrency, tasks)
+		snapshot, err := t.Service.CreateTaskGraph(ctx, t.ParentConversationID, strings.TrimSpace(req.Title), strings.TrimSpace(req.Context), req.MaxConcurrency, tasks)
 		if err != nil {
 			return llm.ErrorfToolOut("create task graph: %v", err)
 		}
@@ -264,6 +273,12 @@ func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCr
 	if len(req.Tasks) == 0 {
 		return nil, fmt.Errorf("at least one delegated task is required")
 	}
+	if req.Reasoning != "" && !isValidReasoningLevel(req.Reasoning) {
+		return nil, fmt.Errorf("invalid default reasoning %q", req.Reasoning)
+	}
+	if req.Model != "" && !t.hasModel(req.Model) {
+		return nil, fmt.Errorf("unknown default model %q", req.Model)
+	}
 	byID := make(map[string]taskGraphTask, len(req.Tasks))
 	orderedIDs := make([]string, 0, len(req.Tasks))
 	for _, task := range req.Tasks {
@@ -277,6 +292,12 @@ func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCr
 		}
 		if strings.TrimSpace(task.Prompt) == "" {
 			return nil, fmt.Errorf("task %q requires a subagent prompt", task.ID)
+		}
+		if task.Model == "" {
+			task.Model = req.Model
+		}
+		if task.Reasoning == "" {
+			task.Reasoning = req.Reasoning
 		}
 		if task.Reasoning != "" && !isValidReasoningLevel(task.Reasoning) {
 			return nil, fmt.Errorf("task %q has invalid reasoning %q", task.ID, task.Reasoning)

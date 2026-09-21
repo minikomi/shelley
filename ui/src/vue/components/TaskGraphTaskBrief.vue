@@ -1,6 +1,7 @@
 <template>
   <div class="task-brief">
     <small v-if="meta">{{ meta }}</small>
+    <p v-if="context"><b>Shared context:</b> {{ context }}</p>
     <p>{{ task.prompt?.trim() || "No brief." }}</p>
   </div>
 </template>
@@ -12,6 +13,7 @@ import type { TaskGraphTask } from "../../taskGraph";
 const props = defineProps<{
   task: TaskGraphTask;
   tasks: TaskGraphTask[];
+  context?: string;
 }>();
 
 const meta = computed(() => {

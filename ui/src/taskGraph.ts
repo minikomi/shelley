@@ -31,6 +31,7 @@ export interface TaskGraphSnapshot {
   id: string;
   parent_conversation_id: string;
   title: string;
+  context?: string;
   state: TaskGraphState;
   max_concurrency?: number;
   serial_rationale?: string;

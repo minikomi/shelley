@@ -14,11 +14,11 @@ import (
 
 // CreateTaskGraph persists a validated graph before scheduling its ready
 // subagent tasks. Launches happen outside the persistence transaction.
-func (s *Server) CreateTaskGraph(ctx context.Context, parentID, title string, maxConcurrency int, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
+func (s *Server) CreateTaskGraph(ctx context.Context, parentID, title, sharedContext string, maxConcurrency int, tasks []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error) {
 	if _, err := s.db.GetConversationByID(ctx, parentID); err != nil {
 		return nil, err
 	}
-	snapshot, err := s.db.CreateTaskGraph(ctx, parentID, title, maxConcurrency, tasks)
+	snapshot, err := s.db.CreateTaskGraph(ctx, parentID, title, sharedContext, maxConcurrency, tasks)
 	if err != nil {
 		return nil, err
 	}
@@ -313,12 +313,15 @@ func taskGraphTaskPrompt(graph *db.TaskGraphSnapshot, task db.TaskGraphTask) str
 			}
 		}
 	}
-	if len(dependencies) == 0 {
-		return task.Prompt
-	}
-
 	var prompt strings.Builder
 	prompt.WriteString(task.Prompt)
+	if graph.Context != "" {
+		prompt.WriteString("\n\nShared context, constraints, and acceptance criteria:\n")
+		prompt.WriteString(graph.Context)
+	}
+	if len(dependencies) == 0 {
+		return prompt.String()
+	}
 	prompt.WriteString("\n\nCompleted direct dependency results follow. Use them as handoff context and verify claims against the shared working tree.")
 	for _, dependency := range dependencies {
 		result := dependency.Result

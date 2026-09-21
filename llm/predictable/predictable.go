@@ -315,6 +315,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		}
 
 		if delayStr, ok := strings.CutPrefix(inputText, "delay: "); ok {
+			delayStr, _, _ = strings.Cut(delayStr, "\n")
 			delaySeconds, err := strconv.ParseFloat(delayStr, 64)
 			if err == nil && delaySeconds > 0 {
 				delayDuration := time.Duration(delaySeconds * float64(time.Second))
@@ -1130,28 +1131,28 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 
 func (s *Service) makeTaskGraphDemoResponse(inputTokens uint64) *llm.Response {
 	input, _ := json.Marshal(map[string]any{
-		"action": "create",
-		"title":  "Build task graph demo",
+		"action":    "create",
+		"title":     "Build task graph demo",
+		"context":   "Keep changes small and validate only the delegated scope.",
+		"model":     "predictable",
+		"reasoning": "low",
 		"tasks": []map[string]any{
 			{
 				"id":          "inspect",
 				"title":       "Inspect repository",
 				"prompt":      "delay: 60",
-				"model":       "predictable",
 				"file_scopes": []string{"server"},
 			},
 			{
 				"id":          "verify",
 				"title":       "Verify UI states",
 				"prompt":      "delay: 60",
-				"model":       "predictable",
 				"file_scopes": []string{"ui"},
 			},
 			{
 				"id":     "scaffold",
 				"title":  "Scaffold application",
 				"prompt": "delay: 60",
-				"model":  "predictable",
 			},
 			{
 				"id":           "backend",

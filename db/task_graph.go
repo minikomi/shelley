@@ -31,6 +31,7 @@ type TaskGraphSnapshot struct {
 	GraphID              string          `json:"id"`
 	ParentConversationID string          `json:"parent_conversation_id"`
 	Title                string          `json:"title"`
+	Context              string          `json:"context,omitempty"`
 	Status               string          `json:"state"`
 	MaxConcurrency       int             `json:"max_concurrency"`
 	CreatedAt            time.Time       `json:"created_at"`
@@ -71,7 +72,7 @@ type taskGraphOptionsRow struct {
 	opts           ConversationOptions
 }
 
-func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title string, maxConcurrency int, tasks []TaskGraphTaskCreate) (*TaskGraphSnapshot, error) {
+func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title, sharedContext string, maxConcurrency int, tasks []TaskGraphTaskCreate) (*TaskGraphSnapshot, error) {
 	if maxConcurrency < 0 {
 		return nil, fmt.Errorf("max concurrency must be positive")
 	}
@@ -89,6 +90,7 @@ func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title s
 			GraphID:              graphID,
 			ParentConversationID: parentConversationID,
 			Title:                title,
+			Context:              sharedContext,
 			MaxConcurrency:       taskGraphMaxConcurrency(maxConcurrency),
 			CreatedAt:            now,
 			UpdatedAt:            now,

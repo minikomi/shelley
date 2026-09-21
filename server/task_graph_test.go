@@ -32,7 +32,7 @@ func TestGetTaskGraph(t *testing.T) {
 		t.Fatalf("empty response = %#v, want []", graphs)
 	}
 
-	graph, err := database.CreateTaskGraph(t.Context(), parent.ConversationID, "Plan", 0, []db.TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(t.Context(), parent.ConversationID, "Plan", "", 0, []db.TaskGraphTaskCreate{
 		{ID: "plan", Title: "Plan", Prompt: "Plan"},
 	})
 	if err != nil {
@@ -87,7 +87,7 @@ func TestTaskGraphAwaitedTreatsFailuresAsTerminal(t *testing.T) {
 }
 
 func TestTaskGraphTaskPromptIncludesDirectDependencyResults(t *testing.T) {
-	graph := &db.TaskGraphSnapshot{Tasks: []db.TaskGraphTask{
+	graph := &db.TaskGraphSnapshot{Context: "Follow the shared rules.", Tasks: []db.TaskGraphTask{
 		{ID: "research", Title: "Research API", Status: "complete", Result: "Use endpoint /v2."},
 		{ID: "schema", Title: "Define schema", Status: "complete"},
 		{ID: "unrelated", Title: "Unrelated", Status: "complete", Result: "Do not include me."},
@@ -100,6 +100,8 @@ func TestTaskGraphTaskPromptIncludesDirectDependencyResults(t *testing.T) {
 
 	got := taskGraphTaskPrompt(graph, task)
 	for _, want := range []string{
+		"Follow the shared rules.",
+		"Shared context, constraints, and acceptance criteria:",
 		"Implement the client.",
 		"Completed direct dependency results",
 		"dependency research: Research API",
@@ -145,11 +147,11 @@ func TestTaskGraphsAllowConcurrentActiveGraphs(t *testing.T) {
 		t.Fatalf("CreateConversation: %v", err)
 	}
 	tasks := []db.TaskGraphTaskCreate{{ID: "work", Title: "Work", Prompt: "Work"}}
-	first, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "First", 0, tasks)
+	first, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "First", "", 0, tasks)
 	if err != nil {
 		t.Fatalf("first CreateTaskGraph: %v", err)
 	}
-	second, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "Second", 0, tasks)
+	second, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "Second", "", 0, tasks)
 	if err != nil {
 		t.Fatalf("second CreateTaskGraph: %v", err)
 	}
@@ -183,7 +185,7 @@ func TestCancelConversationCancelsActiveTaskGraphs(t *testing.T) {
 	}
 	graphs := make([]activeTaskGraph, 0, 2)
 	for _, id := range []string{"research", "implement"} {
-		graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, id, 0, []db.TaskGraphTaskCreate{
+		graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, id, "", 0, []db.TaskGraphTaskCreate{
 			{ID: id, Title: id, Prompt: id},
 		})
 		if err != nil {
@@ -227,7 +229,7 @@ func TestTaskGraphSnapshotReadsResultFromChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, "Research", 0, []db.TaskGraphTaskCreate{
+	graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, "Research", "", 0, []db.TaskGraphTaskCreate{
 		{ID: "research", Title: "Research", Prompt: "Research"},
 	})
 	if err != nil {
