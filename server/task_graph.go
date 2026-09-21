@@ -194,8 +194,8 @@ func (s *Server) taskGraphWaitChannel() <-chan struct{} {
 }
 
 func (s *Server) recoverTaskGraphs() {
-	if err := s.db.ResetUnstartedTaskGraphTasks(context.Background()); err != nil {
-		s.logger.Error("Recover unstarted task graph tasks", "error", err)
+	if err := s.db.RecoverInterruptedTaskGraphTasks(context.Background()); err != nil {
+		s.logger.Error("Recover interrupted task graph tasks", "error", err)
 		return
 	}
 	graphs, err := s.db.ListTaskGraphsWithReadySubagentTasks(context.Background())

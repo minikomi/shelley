@@ -366,7 +366,10 @@ func (db *DB) SetTaskGraphTaskChildConversation(ctx context.Context, parentConve
 	})
 }
 
-func (db *DB) ResetUnstartedTaskGraphTasks(ctx context.Context) error {
+// RecoverInterruptedTaskGraphTasks runs at startup. Claimed tasks with no
+// child yet go back to ready; tasks whose child was mid-turn fail, since
+// subagent turns are not resumed across restarts.
+func (db *DB) RecoverInterruptedTaskGraphTasks(ctx context.Context) error {
 	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
 		rows, err := listTaskGraphOptions(ctx, tx.Rx)
@@ -379,14 +382,23 @@ func (db *DB) ResetUnstartedTaskGraphTasks(ctx context.Context) error {
 				graph := &row.opts.TaskGraphs[i]
 				for j := range graph.Tasks {
 					task := &graph.Tasks[j]
-					if task.Status == "running" && task.ChildConversationID == "" {
+					if task.Status != "running" {
+						continue
+					}
+					if task.ChildConversationID == "" {
 						task.Status = "ready"
 						task.StartedAt = nil
-						changed = true
+					} else {
+						task.Status = "failed"
+						task.Error = "interrupted by server restart"
+						now := tx.Now
+						task.CompletedAt = &now
 					}
+					changed = true
 				}
 				if changed {
 					graph.UpdatedAt = tx.Now
+					cancelBlockedTaskGraphTasks(graph, tx.Now)
 					refreshTaskGraphStatus(graph)
 				}
 			}

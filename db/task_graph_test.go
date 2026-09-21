@@ -155,12 +155,48 @@ func TestTaskGraphRecoversClaimWithoutChild(t *testing.T) {
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("first claim = %d, %v; want one task", len(claimed), err)
 	}
-	if err := database.ResetUnstartedTaskGraphTasks(t.Context()); err != nil {
-		t.Fatalf("ResetUnstartedTaskGraphTasks: %v", err)
+	if err := database.RecoverInterruptedTaskGraphTasks(t.Context()); err != nil {
+		t.Fatalf("RecoverInterruptedTaskGraphTasks: %v", err)
 	}
 	claimed, err = database.ClaimReadyTaskGraphSubagentTasks(t.Context(), parentID, graph.GraphID)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("recovered claim = %d, %v; want one task", len(claimed), err)
+	}
+}
+
+func TestTaskGraphRecoveryFailsInterruptedChild(t *testing.T) {
+	database, cleanup := NewTestDB(t)
+	defer cleanup()
+	parentID := createTaskGraphParent(t, database)
+	graph, err := database.CreateTaskGraph(t.Context(), parentID, "Recover", 0, []TaskGraphTaskCreate{
+		{ID: "work", Title: "Work", Prompt: "Work"},
+		{ID: "next", Title: "Next", Prompt: "Next", Dependencies: []string{"work"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskGraph: %v", err)
+	}
+	if _, err := database.ClaimReadyTaskGraphSubagentTasks(t.Context(), parentID, graph.GraphID); err != nil {
+		t.Fatalf("ClaimReadyTaskGraphSubagentTasks: %v", err)
+	}
+	child, err := database.CreateSubagentConversation(t.Context(), "child", parentID, nil)
+	if err != nil {
+		t.Fatalf("CreateSubagentConversation: %v", err)
+	}
+	if err := database.SetTaskGraphTaskChildConversation(t.Context(), parentID, graph.GraphID, "work", child.ConversationID, "child"); err != nil {
+		t.Fatalf("SetTaskGraphTaskChildConversation: %v", err)
+	}
+	if err := database.RecoverInterruptedTaskGraphTasks(t.Context()); err != nil {
+		t.Fatalf("RecoverInterruptedTaskGraphTasks: %v", err)
+	}
+	snapshot, err := database.GetTaskGraphSnapshot(t.Context(), parentID, graph.GraphID)
+	if err != nil {
+		t.Fatalf("GetTaskGraphSnapshot: %v", err)
+	}
+	if snapshot.Status != "failed" || taskGraphStatus(snapshot, "work") != "failed" || taskGraphStatus(snapshot, "next") != "cancelled" {
+		t.Fatalf("recovered graph = %#v, want failed work, cancelled next", snapshot)
+	}
+	if got := findTaskGraphTask(snapshot, "work").Error; got != "interrupted by server restart" {
+		t.Fatalf("work error = %q", got)
 	}
 }
 
