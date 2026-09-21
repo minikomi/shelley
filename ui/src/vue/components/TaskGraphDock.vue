@@ -26,10 +26,7 @@ const collapsed = ref(true);
 let refreshTimer: number | null = null;
 let requestID = 0;
 
-const visibleGraph = computed(() => {
-  if (!graph.value) return null;
-  return graph.value.state === "complete" || graph.value.state === "cancelled" ? null : graph.value;
-});
+const visibleGraph = computed(() => (graph.value?.state === "active" ? graph.value : null));
 
 function clearRefreshTimer() {
   if (refreshTimer !== null) {
