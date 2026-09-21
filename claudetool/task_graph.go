@@ -63,10 +63,13 @@ Each task prompt is a bounded context packet: state the objective, acceptance
 criteria, owned scope, stable interfaces, source-of-truth files, non-goals, and
 one focused validation command. When the user asks for concise or minimal work,
 include a simple implementation-size limit and explicitly exclude optional
-polish. Stop when the focused validation passes. When available, use Luna with
-medium reasoning for extraction or read-only work, Terra with medium reasoning
-for routine implementation, and Sol or high reasoning only for genuinely
-difficult architecture or debugging.
+polish. Quote fragile contract values such as exact IDs, severity labels,
+thresholds, routes, selectors, and wire values instead of merely saying to
+match them exactly. Focused tests should assert those quoted values rather than
+reconstructing them from memory. Stop when the focused validation passes. When
+available, use Luna with medium reasoning for extraction or read-only work,
+Terra with medium reasoning for routine implementation, and Sol or high
+reasoning only for genuinely difficult architecture or debugging.
 Give each task operational purpose, not just a deliverable: explain how it
 shortens the request's critical path, what decisions it owns, which contracts it
 can trust without inspecting sibling work, and exactly when it should stop.
