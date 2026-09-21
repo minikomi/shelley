@@ -703,7 +703,10 @@ function openTask(slug: string) {
 }
 
 .task-graph-inline {
-  margin: 0.5rem 0;
+  margin: 0;
+  border-color: var(--border);
+  border-radius: 0.25rem;
+  background: var(--bg-base);
 }
 
 .task-graph-inline.collapsed .task-graph-header {

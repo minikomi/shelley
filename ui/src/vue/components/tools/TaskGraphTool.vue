@@ -18,8 +18,11 @@
         <ToolChevron :expanded="!collapsed" />
       </button>
     </div>
-    <div v-if="!collapsed" class="tool-details task-graph-tool-details">
-      <TaskGraphView :graph="graph" :show-header="false" variant="inline" />
+    <div v-if="!collapsed" class="tool-details">
+      <div class="tool-section">
+        <div class="tool-label">Tasks:</div>
+        <TaskGraphView :graph="graph" :show-header="false" variant="inline" />
+      </div>
     </div>
   </div>
   <div
@@ -145,9 +148,3 @@ onUnmounted(() => {
   clearRefreshTimer();
 });
 </script>
-
-<style scoped>
-.task-graph-tool-details {
-  padding: 0;
-}
-</style>
