@@ -225,10 +225,8 @@ const topology = computed(() => {
     const expected = new Set(index === 0 ? [] : layers[index - 1].tasks.map(({ task }) => task.id));
     return layer.tasks.every(({ task }) => {
       const dependencies = task.depends_on || [];
-      return (
-        dependencies.length === expected.size &&
-        dependencies.every((dependency) => expected.has(dependency))
-      );
+      if (index === 0) return dependencies.length === 0;
+      return dependencies.length > 0 && dependencies.every((dependency) => expected.has(dependency));
     });
   });
 

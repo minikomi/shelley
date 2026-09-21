@@ -1150,13 +1150,26 @@ func (s *Service) makeTaskGraphDemoResponse(inputTokens uint64) *llm.Response {
 			{
 				"id":     "scaffold",
 				"title":  "Scaffold application",
-				"prompt": "Build the independent application shell.",
+				"prompt": "delay: 60",
+				"model":  "predictable",
+			},
+			{
+				"id":           "backend",
+				"title":        "Implement backend",
+				"prompt":       "Implement the backend from the repository inspection and application shell.",
+				"dependencies": []string{"inspect", "scaffold"},
+			},
+			{
+				"id":           "frontend",
+				"title":        "Implement frontend",
+				"prompt":       "Implement the frontend from the UI verification and application shell.",
+				"dependencies": []string{"verify", "scaffold"},
 			},
 			{
 				"id":           "integrate",
 				"title":        "Review the delegated results",
 				"prompt":       "Review the completed delegated work and report integration risks. Do not integrate it.",
-				"dependencies": []string{"inspect", "verify", "scaffold"},
+				"dependencies": []string{"backend", "frontend"},
 			},
 		},
 	})
