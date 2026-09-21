@@ -115,13 +115,12 @@ class ApiService {
     return response.json();
   }
 
-  async getLatestTaskGraph(conversationId: string): Promise<TaskGraphSnapshot | null> {
+  async getTaskGraphs(conversationId: string): Promise<TaskGraphSnapshot[]> {
     const response = await fetch(
-      `${this.baseUrl}/conversation/${encodeURIComponent(conversationId)}/task-graph`,
+      `${this.baseUrl}/conversation/${encodeURIComponent(conversationId)}/task-graphs`,
     );
-    if (response.status === 404) return null;
     if (!response.ok) {
-      throw await responseError(response, "Failed to get task graph");
+      throw await responseError(response, "Failed to get task graphs");
     }
     return response.json();
   }

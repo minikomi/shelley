@@ -26,9 +26,7 @@ type TaskGraphTaskCreate struct {
 
 const DefaultTaskGraphMaxConcurrency = 3
 
-// TaskGraphSnapshot is persisted in its parent conversation's options. A
-// parent may retain finished graphs so list/get calls can still address them;
-// only one graph may be active at a time.
+// TaskGraphSnapshot is persisted in its parent conversation's options.
 type TaskGraphSnapshot struct {
 	GraphID              string          `json:"id"`
 	ParentConversationID string          `json:"parent_conversation_id"`
@@ -86,12 +84,6 @@ func (db *DB) CreateTaskGraph(ctx context.Context, parentConversationID, title s
 			return err
 		}
 		opts := ParseConversationOptions(parent.ConversationOptions)
-		for i := range opts.TaskGraphs {
-			refreshTaskGraphStatus(&opts.TaskGraphs[i])
-			if opts.TaskGraphs[i].Status == "active" {
-				return fmt.Errorf("conversation already has an active task graph %q", opts.TaskGraphs[i].GraphID)
-			}
-		}
 		now := tx.Now
 		graph := TaskGraphSnapshot{
 			GraphID:              graphID,
@@ -152,6 +144,23 @@ func (db *DB) GetLatestTaskGraphSnapshot(ctx context.Context, parentConversation
 		return nil
 	})
 	return graph, err
+}
+
+func (db *DB) ListTaskGraphSnapshots(ctx context.Context, parentConversationID string) ([]TaskGraphSnapshot, error) {
+	graphs := make([]TaskGraphSnapshot, 0)
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		parent, err := generated.New(rx.Conn()).GetConversation(ctx, parentConversationID)
+		if err != nil {
+			return err
+		}
+		opts := ParseConversationOptions(parent.ConversationOptions)
+		for _, graph := range opts.TaskGraphs {
+			refreshTaskGraphStatus(&graph)
+			graphs = append(graphs, graph)
+		}
+		return nil
+	})
+	return graphs, err
 }
 
 func (db *DB) GetTaskGraphSnapshot(ctx context.Context, parentConversationID, graphID string) (*TaskGraphSnapshot, error) {

@@ -1,10 +1,11 @@
 <template>
   <TaskGraphView
-    v-if="visibleGraph"
-    :graph="visibleGraph"
-    :collapsed="collapsed"
+    v-for="graph in activeGraphs"
+    :key="graph.id"
+    :graph="graph"
+    :collapsed="!expanded.has(graph.id)"
     variant="dock"
-    @toggle="collapsed = !collapsed"
+    @toggle="toggle(graph.id)"
   />
 </template>
 
@@ -21,12 +22,16 @@ const props = defineProps<{
 }>();
 
 const enabled = useFeatureFlag("task-graph");
-const graph = ref<TaskGraphSnapshot | null>(null);
-const collapsed = ref(true);
+const graphs = ref<TaskGraphSnapshot[]>([]);
+const expanded = ref(new Set<string>());
 let refreshTimer: number | null = null;
 let requestID = 0;
 
-const visibleGraph = computed(() => (graph.value?.state === "active" ? graph.value : null));
+const activeGraphs = computed(() => graphs.value.filter((graph) => graph.state === "active"));
+
+function toggle(id: string) {
+  if (!expanded.value.delete(id)) expanded.value.add(id);
+}
 
 function clearRefreshTimer() {
   if (refreshTimer !== null) {
@@ -37,26 +42,25 @@ function clearRefreshTimer() {
 
 function scheduleRefresh() {
   clearRefreshTimer();
-  if (graph.value?.state !== "active") return;
-  refreshTimer = window.setTimeout(() => void loadGraph(), 1500);
+  if (activeGraphs.value.length === 0) return;
+  refreshTimer = window.setTimeout(() => void loadGraphs(), 1500);
 }
 
-async function loadGraph() {
+async function loadGraphs() {
   const conversationId = props.conversationId;
   const id = ++requestID;
   clearRefreshTimer();
   if (!conversationId || !enabled.value) {
-    graph.value = null;
+    graphs.value = [];
     return;
   }
   try {
-    const next = await api.getLatestTaskGraph(conversationId);
+    const next = await api.getTaskGraphs(conversationId);
     if (id !== requestID || conversationId !== props.conversationId) return;
-    if (next?.id !== graph.value?.id) collapsed.value = true;
-    graph.value = next;
+    graphs.value = next;
   } catch (error) {
     if (id !== requestID) return;
-    console.error("Failed to refresh task graph:", error);
+    console.error("Failed to refresh task graphs:", error);
   }
   scheduleRefresh();
 }
@@ -64,18 +68,18 @@ async function loadGraph() {
 watch(
   () => props.conversationId,
   () => {
-    graph.value = null;
-    collapsed.value = true;
-    void loadGraph();
+    graphs.value = [];
+    expanded.value.clear();
+    void loadGraphs();
   },
 );
 
 watch(
   () => [props.refreshToken, enabled.value],
-  () => void loadGraph(),
+  () => void loadGraphs(),
 );
 
-onMounted(() => void loadGraph());
+onMounted(() => void loadGraphs());
 onUnmounted(() => {
   requestID++;
   clearRefreshTimer();

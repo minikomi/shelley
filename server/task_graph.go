@@ -18,13 +18,6 @@ func (s *Server) CreateTaskGraph(ctx context.Context, parentID, title string, ma
 	if _, err := s.db.GetConversationByID(ctx, parentID); err != nil {
 		return nil, err
 	}
-	latest, err := s.db.GetLatestTaskGraphSnapshot(ctx, parentID)
-	if err != nil {
-		return nil, err
-	}
-	if latest != nil && latest.Status == "active" {
-		return nil, fmt.Errorf("conversation already has an active task graph %q", latest.GraphID)
-	}
 	snapshot, err := s.db.CreateTaskGraph(ctx, parentID, title, maxConcurrency, tasks)
 	if err != nil {
 		return nil, err
@@ -146,18 +139,22 @@ func (s *Server) cancelTaskGraphChild(ctx context.Context, parentID, graphID, ta
 }
 
 func (s *Server) cancelActiveTaskGraph(ctx context.Context, parentID string) error {
-	snapshot, err := s.db.GetLatestTaskGraphSnapshot(ctx, parentID)
+	snapshots, err := s.db.ListTaskGraphSnapshots(ctx, parentID)
 	if err != nil {
 		return err
 	}
-	if snapshot == nil || snapshot.Status != "active" {
-		return nil
+	var uncancelled []string
+	for _, snapshot := range snapshots {
+		if snapshot.Status != "active" {
+			continue
+		}
+		_, running, err := s.CancelTaskGraph(ctx, parentID, snapshot.GraphID, nil)
+		if err != nil {
+			return err
+		}
+		uncancelled = append(uncancelled, running...)
 	}
-	_, uncancelled, err := s.CancelTaskGraph(ctx, parentID, snapshot.GraphID, nil)
-	if err != nil {
-		return err
-	}
-	if len(uncancelled) != 0 {
+	if len(uncancelled) > 0 {
 		return fmt.Errorf("task graph tasks could not be cancelled: %s", strings.Join(uncancelled, ", "))
 	}
 	return nil
@@ -341,28 +338,19 @@ func (s *Server) failTaskGraphLaunch(parentID, graphID, taskID string, cause err
 	s.signalTaskGraphChange()
 }
 
-func (s *Server) handleGetTaskGraph(w http.ResponseWriter, r *http.Request, parentID string) {
-	snapshot, err := s.db.GetLatestTaskGraphSnapshot(r.Context(), parentID)
+func (s *Server) handleListTaskGraphs(w http.ResponseWriter, r *http.Request, parentID string) {
+	snapshots, err := s.db.ListTaskGraphSnapshots(r.Context(), parentID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "task graph not found", http.StatusNotFound)
+			http.Error(w, "conversation not found", http.StatusNotFound)
 			return
 		}
-		s.logger.Error("Get task graph", "conversationID", parentID, "error", err)
-		http.Error(w, "failed to get task graph", http.StatusInternalServerError)
-		return
-	}
-	if snapshot == nil {
-		http.Error(w, "task graph not found", http.StatusNotFound)
-		return
-	}
-	if err := s.fillTaskGraphResults(r.Context(), snapshot); err != nil {
-		s.logger.Error("Get task graph results", "conversationID", parentID, "error", err)
-		http.Error(w, "failed to get task graph", http.StatusInternalServerError)
+		s.logger.Error("List task graphs", "conversationID", parentID, "error", err)
+		http.Error(w, "failed to list task graphs", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
-		s.logger.Error("Encode task graph", "conversationID", parentID, "error", err)
+	if err := json.NewEncoder(w).Encode(snapshots); err != nil {
+		s.logger.Error("Encode task graphs", "conversationID", parentID, "error", err)
 	}
 }

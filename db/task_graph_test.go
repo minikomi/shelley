@@ -110,6 +110,43 @@ func TestTaskGraphClaimCapsConcurrentSubagents(t *testing.T) {
 	}
 }
 
+func TestListTaskGraphSnapshots(t *testing.T) {
+	database, cleanup := NewTestDB(t)
+	defer cleanup()
+	parentID := createTaskGraphParent(t, database)
+
+	empty, err := database.ListTaskGraphSnapshots(t.Context(), parentID)
+	if err != nil {
+		t.Fatalf("ListTaskGraphSnapshots: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty graphs = %#v, want []", empty)
+	}
+
+	first, err := database.CreateTaskGraph(t.Context(), parentID, "First", 0, []TaskGraphTaskCreate{
+		{ID: "first", Title: "First", Prompt: "First"},
+	})
+	if err != nil {
+		t.Fatalf("first CreateTaskGraph: %v", err)
+	}
+	second, err := database.CreateTaskGraph(t.Context(), parentID, "Second", 0, []TaskGraphTaskCreate{
+		{ID: "second", Title: "Second", Prompt: "Second"},
+	})
+	if err != nil {
+		t.Fatalf("second CreateTaskGraph: %v", err)
+	}
+	graphs, err := database.ListTaskGraphSnapshots(t.Context(), parentID)
+	if err != nil {
+		t.Fatalf("ListTaskGraphSnapshots: %v", err)
+	}
+	if len(graphs) != 2 || graphs[0].GraphID != first.GraphID || graphs[1].GraphID != second.GraphID {
+		t.Fatalf("graphs = %#v, want %q then %q", graphs, first.GraphID, second.GraphID)
+	}
+	if _, err := database.ListTaskGraphSnapshots(t.Context(), "missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("ListTaskGraphSnapshots missing = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestTaskGraphLaunchFailureCancelsDependents(t *testing.T) {
 	database, cleanup := NewTestDB(t)
 	defer cleanup()

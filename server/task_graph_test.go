@@ -19,10 +19,17 @@ func TestGetTaskGraph(t *testing.T) {
 		t.Fatalf("CreateConversation: %v", err)
 	}
 
-	notFound := httptest.NewRecorder()
-	server.handleGetTaskGraph(notFound, httptest.NewRequest(http.MethodGet, "/", nil), parent.ConversationID)
-	if notFound.Code != http.StatusNotFound {
-		t.Fatalf("empty graph status = %d, want 404", notFound.Code)
+	empty := httptest.NewRecorder()
+	server.handleListTaskGraphs(empty, httptest.NewRequest(http.MethodGet, "/", nil), parent.ConversationID)
+	if empty.Code != http.StatusOK {
+		t.Fatalf("empty graph status = %d: %s", empty.Code, empty.Body.String())
+	}
+	var graphs []db.TaskGraphSnapshot
+	if err := json.Unmarshal(empty.Body.Bytes(), &graphs); err != nil {
+		t.Fatalf("decode empty response: %v", err)
+	}
+	if graphs == nil || len(graphs) != 0 {
+		t.Fatalf("empty response = %#v, want []", graphs)
 	}
 
 	graph, err := database.CreateTaskGraph(t.Context(), parent.ConversationID, "Plan", 0, []db.TaskGraphTaskCreate{
@@ -32,16 +39,15 @@ func TestGetTaskGraph(t *testing.T) {
 		t.Fatalf("CreateTaskGraph: %v", err)
 	}
 	w := httptest.NewRecorder()
-	server.handleGetTaskGraph(w, httptest.NewRequest(http.MethodGet, "/", nil), parent.ConversationID)
+	server.handleListTaskGraphs(w, httptest.NewRequest(http.MethodGet, "/", nil), parent.ConversationID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("graph status = %d: %s", w.Code, w.Body.String())
 	}
-	var body db.TaskGraphSnapshot
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+	if err := json.Unmarshal(w.Body.Bytes(), &graphs); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.GraphID != graph.GraphID {
-		t.Fatalf("response graph = %#v, want %q", body, graph.GraphID)
+	if len(graphs) != 1 || graphs[0].GraphID != graph.GraphID {
+		t.Fatalf("response graphs = %#v, want %q", graphs, graph.GraphID)
 	}
 }
 
@@ -112,22 +118,38 @@ func TestTaskGraphChangeWakesAllWaiters(t *testing.T) {
 	}
 }
 
-func TestTaskGraphRejectsSecondActiveGraph(t *testing.T) {
+func TestTaskGraphsAllowConcurrentActiveGraphs(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	parent, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
 	tasks := []db.TaskGraphTaskCreate{{ID: "work", Title: "Work", Prompt: "Work"}}
-	if _, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "First", 0, tasks); err != nil {
+	first, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "First", 0, tasks)
+	if err != nil {
 		t.Fatalf("first CreateTaskGraph: %v", err)
 	}
-	if _, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "Second", 0, tasks); err == nil {
-		t.Fatal("second active task graph was accepted")
+	second, err := server.CreateTaskGraph(t.Context(), parent.ConversationID, "Second", 0, tasks)
+	if err != nil {
+		t.Fatalf("second CreateTaskGraph: %v", err)
+	}
+	latest, err := database.GetLatestTaskGraphSnapshot(t.Context(), parent.ConversationID)
+	if err != nil {
+		t.Fatalf("GetLatestTaskGraphSnapshot: %v", err)
+	}
+	if latest == nil || latest.GraphID != second.GraphID || latest.Status != "active" {
+		t.Fatalf("latest graph = %#v, want active %q", latest, second.GraphID)
+	}
+	firstSnapshot, err := database.GetTaskGraphSnapshot(t.Context(), parent.ConversationID, first.GraphID)
+	if err != nil {
+		t.Fatalf("GetTaskGraphSnapshot: %v", err)
+	}
+	if firstSnapshot.Status != "active" {
+		t.Fatalf("first graph status = %q, want active", firstSnapshot.Status)
 	}
 }
 
-func TestCancelConversationCancelsActiveTaskGraph(t *testing.T) {
+func TestCancelConversationCancelsActiveTaskGraphs(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 	ctx := t.Context()
@@ -135,36 +157,46 @@ func TestCancelConversationCancelsActiveTaskGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
-	graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, "Research", 0, []db.TaskGraphTaskCreate{
-		{ID: "research", Title: "Research", Prompt: "Research"},
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskGraph: %v", err)
+	type activeTaskGraph struct {
+		graph db.TaskGraphSnapshot
+		child string
 	}
-	claimed, err := database.ClaimReadyTaskGraphSubagentTasks(ctx, parent.ConversationID, graph.GraphID)
-	if err != nil || len(claimed) != 1 {
-		t.Fatalf("ClaimReadyTaskGraphSubagentTasks = %d, %v; want one", len(claimed), err)
+	graphs := make([]activeTaskGraph, 0, 2)
+	for _, id := range []string{"research", "implement"} {
+		graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, id, 0, []db.TaskGraphTaskCreate{
+			{ID: id, Title: id, Prompt: id},
+		})
+		if err != nil {
+			t.Fatalf("CreateTaskGraph(%q): %v", id, err)
+		}
+		claimed, err := database.ClaimReadyTaskGraphSubagentTasks(ctx, parent.ConversationID, graph.GraphID)
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("ClaimReadyTaskGraphSubagentTasks(%q) = %d, %v; want one", id, len(claimed), err)
+		}
+		child, err := database.CreateSubagentConversation(ctx, id+"-child", parent.ConversationID, nil)
+		if err != nil {
+			t.Fatalf("CreateSubagentConversation(%q): %v", id, err)
+		}
+		if err := database.SetTaskGraphTaskChildConversation(ctx, parent.ConversationID, graph.GraphID, id, child.ConversationID, id+"-child"); err != nil {
+			t.Fatalf("SetTaskGraphTaskChildConversation(%q): %v", id, err)
+		}
+		startSlowTurn(t, server, child.ConversationID)
+		graphs = append(graphs, activeTaskGraph{graph: *graph, child: child.ConversationID})
 	}
-	child, err := database.CreateSubagentConversation(ctx, "research-child", parent.ConversationID, nil)
-	if err != nil {
-		t.Fatalf("CreateSubagentConversation: %v", err)
-	}
-	if err := database.SetTaskGraphTaskChildConversation(ctx, parent.ConversationID, graph.GraphID, "research", child.ConversationID, "research-child"); err != nil {
-		t.Fatalf("SetTaskGraphTaskChildConversation: %v", err)
-	}
-	startSlowTurn(t, server, child.ConversationID)
 
 	cancelConversation(t, server, parent.ConversationID)
 
-	waitFor(t, 5*time.Second, func() bool {
-		return !server.IsAgentWorking(child.ConversationID)
-	})
-	snapshot, err := database.GetTaskGraphSnapshot(ctx, parent.ConversationID, graph.GraphID)
-	if err != nil {
-		t.Fatalf("GetTaskGraphSnapshot: %v", err)
-	}
-	if snapshot.Status != "cancelled" || len(snapshot.Tasks) != 1 || snapshot.Tasks[0].Status != "cancelled" {
-		t.Fatalf("graph after stop = %#v, want cancelled graph and task", snapshot)
+	for _, graph := range graphs {
+		waitFor(t, 5*time.Second, func() bool {
+			return !server.IsAgentWorking(graph.child)
+		})
+		snapshot, err := database.GetTaskGraphSnapshot(ctx, parent.ConversationID, graph.graph.GraphID)
+		if err != nil {
+			t.Fatalf("GetTaskGraphSnapshot: %v", err)
+		}
+		if snapshot.Status != "cancelled" || len(snapshot.Tasks) != 1 || snapshot.Tasks[0].Status != "cancelled" {
+			t.Fatalf("graph after stop = %#v, want cancelled graph and task", snapshot)
+		}
 	}
 }
 

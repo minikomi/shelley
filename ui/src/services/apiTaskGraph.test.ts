@@ -24,44 +24,40 @@ async function run(name: string, fn: () => Promise<void>): Promise<void> {
   }
 }
 
-await run("getLatestTaskGraph requests the conversation graph", async () => {
+await run("getTaskGraphs requests the conversation graphs", async () => {
   let requestedURL = "";
   await withFetch(
     (async (input) => {
       requestedURL = String(input);
-      return Response.json({
-        id: "graph-1",
-        parent_conversation_id: "parent/id",
-        title: "Build feature",
-        state: "active",
-        created_at: "2026-09-20T00:00:00Z",
-        updated_at: "2026-09-20T00:00:00Z",
-        tasks: [],
-      });
+      return Response.json([
+        {
+          id: "graph-1",
+          parent_conversation_id: "parent/id",
+          title: "Build feature",
+          state: "active",
+          created_at: "2026-09-20T00:00:00Z",
+          updated_at: "2026-09-20T00:00:00Z",
+          tasks: [],
+        },
+      ]);
     }) as typeof globalThis.fetch,
     async () => {
-      const graph = await api.getLatestTaskGraph("parent/id");
-      assert(graph?.id === "graph-1", `graph = ${JSON.stringify(graph)}`);
+      const graphs = await api.getTaskGraphs("parent/id");
+      assert(
+        graphs.length === 1 && graphs[0].id === "graph-1",
+        `graphs = ${JSON.stringify(graphs)}`,
+      );
     },
   );
-  assert(requestedURL === "/api/conversation/parent%2Fid/task-graph", `url = ${requestedURL}`);
+  assert(requestedURL === "/api/conversation/parent%2Fid/task-graphs", `url = ${requestedURL}`);
 });
 
-await run("getLatestTaskGraph returns null when no graph exists", async () => {
-  await withFetch(
-    (async () => new Response(null, { status: 404 })) as typeof globalThis.fetch,
-    async () => {
-      assert((await api.getLatestTaskGraph("parent")) === null, "expected no graph");
-    },
-  );
-});
-
-await run("getLatestTaskGraph propagates server failures", async () => {
+await run("getTaskGraphs propagates server failures", async () => {
   await withFetch(
     (async () => new Response("boom", { status: 500 })) as typeof globalThis.fetch,
     async () => {
       try {
-        await api.getLatestTaskGraph("parent");
+        await api.getTaskGraphs("parent");
         throw new Error("expected task graph request to reject");
       } catch (error) {
         assert(error instanceof ApiError, `error = ${String(error)}`);

@@ -903,8 +903,8 @@ func (s *Server) conversationMux() *http.ServeMux {
 	mux.HandleFunc("GET /{id}/subagent-usage", func(w http.ResponseWriter, r *http.Request) {
 		s.handleSubagentUsage(w, r, r.PathValue("id"))
 	})
-	mux.HandleFunc("GET /{id}/task-graph", func(w http.ResponseWriter, r *http.Request) {
-		s.handleGetTaskGraph(w, r, r.PathValue("id"))
+	mux.HandleFunc("GET /{id}/task-graphs", func(w http.ResponseWriter, r *http.Request) {
+		s.handleListTaskGraphs(w, r, r.PathValue("id"))
 	})
 	// GET /api/conversation/<id>/stream - legacy SSE stream. Compression is
 	// negotiated inside the handler (zstd/gzip per Accept-Encoding) with a

@@ -28,27 +28,9 @@
       </svg>
     </button>
 
-    <details v-if="!collapsed" class="task-graph-plan">
-      <summary>
-        <span>Plan details</span>
-        <small>
-          {{ graph.tasks.length }} tasks
-          <template v-if="graph.max_concurrency">
-            · concurrency {{ graph.max_concurrency }}
-          </template>
-        </small>
-      </summary>
-      <div class="task-graph-plan-body">
-        <p v-if="graph.serial_rationale" class="task-graph-plan-rationale">
-          {{ graph.serial_rationale }}
-        </p>
-        <article v-for="task in graph.tasks" :key="task.id">
-          <strong>{{ task.title }}</strong>
-          <small>{{ taskPlanMeta(task) }}</small>
-          <p>{{ taskBrief(task) }}</p>
-        </article>
-      </div>
-    </details>
+    <p v-if="!collapsed && graph.serial_rationale" class="task-graph-rationale">
+      {{ graph.serial_rationale }}
+    </p>
 
     <div v-if="!collapsed && topology.layered" class="task-graph-rows task-graph-flow">
       <template v-for="(layer, layerIndex) in topology.layers" :key="layer.depth">
@@ -64,8 +46,11 @@
           >
             <span class="task-state-icon" aria-hidden="true">{{ taskIcon(task, index) }}</span>
             <span class="task-graph-copy">
-              <strong>{{ task.title }}</strong>
+              <button type="button" class="task-graph-title" @click="toggleBrief(task.id)">
+                <strong>{{ task.title }}</strong>
+              </button>
               <TaskGraphTaskDetail :task="task" :fallback="taskDetail(task)" />
+              <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" />
               <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
                 <span />
               </span>
@@ -114,8 +99,11 @@
         <span v-if="depth > 0" class="task-tree-connector" aria-hidden="true" />
         <span class="task-state-icon" aria-hidden="true">{{ taskIcon(task, index) }}</span>
         <span class="task-graph-copy">
-          <strong>{{ task.title }}</strong>
+          <button type="button" class="task-graph-title" @click="toggleBrief(task.id)">
+            <strong>{{ task.title }}</strong>
+          </button>
           <TaskGraphTaskDetail :task="task" :fallback="taskDetail(task)" />
+          <TaskGraphTaskBrief v-if="briefs.has(task.id)" :task="task" />
           <span v-if="task.state === 'running'" class="task-progress" aria-hidden="true">
             <span />
           </span>
@@ -146,11 +134,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import type { TaskGraphSnapshot, TaskGraphTask, TaskState } from "../../taskGraph";
 import { navigateToConversationSlug } from "../composables/subagentLive";
 import TaskGraphElapsedTime from "./TaskGraphElapsedTime.vue";
 import TaskGraphRunningLabel from "./TaskGraphRunningLabel.vue";
+import TaskGraphTaskBrief from "./TaskGraphTaskBrief.vue";
 import TaskGraphTaskDetail from "./TaskGraphTaskDetail.vue";
 
 const props = withDefaults(
@@ -168,6 +157,12 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{ toggle: [] }>();
+
+const briefs = ref(new Set<string>());
+
+function toggleBrief(id: string) {
+  if (!briefs.value.delete(id)) briefs.value.add(id);
+}
 
 const counts = computed(() => {
   const tasks = props.graph.tasks;
@@ -226,7 +221,9 @@ const topology = computed(() => {
     return layer.tasks.every(({ task }) => {
       const dependencies = task.depends_on || [];
       if (index === 0) return dependencies.length === 0;
-      return dependencies.length > 0 && dependencies.every((dependency) => expected.has(dependency));
+      return (
+        dependencies.length > 0 && dependencies.every((dependency) => expected.has(dependency))
+      );
     });
   });
 
@@ -259,9 +256,7 @@ const summary = computed(() => {
 const dockSummary = computed(() => {
   const parts = [];
   if (counts.value.running) {
-    parts.push(
-      `${counts.value.running} subagent${counts.value.running === 1 ? "" : "s"} running`,
-    );
+    parts.push(`${counts.value.running} subagent${counts.value.running === 1 ? "" : "s"} running`);
   }
   if (counts.value.remaining) parts.push(`${counts.value.remaining} remaining`);
   if (counts.value.failed) parts.push(`${counts.value.failed} failed`);
@@ -296,7 +291,6 @@ function taskIcon(task: TaskGraphTask, index: number): string {
 
 function taskDetail(task: TaskGraphTask): string {
   if (task.error) return task.error;
-  if (task.state === "complete" && task.result) return task.result.split("\n")[0];
   const dependencies = (task.depends_on || [])
     .map((id) => props.graph.tasks.find((candidate) => candidate.id === id)?.title || id)
     .join(", ");
@@ -307,25 +301,6 @@ function taskDetail(task: TaskGraphTask): string {
     return `${task.state === "pending" ? "Waiting for" : "After"} ${dependencies}`;
   }
   return task.model || "Subagent task";
-}
-
-function taskPlanMeta(task: TaskGraphTask): string {
-  const dependencies = (task.depends_on || [])
-    .map((id) => props.graph.tasks.find((candidate) => candidate.id === id)?.title || id)
-    .join(", ");
-  return [
-    task.model,
-    task.reasoning ? `${task.reasoning} reasoning` : "",
-    dependencies ? `after ${dependencies}` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-function taskBrief(task: TaskGraphTask): string {
-  const prompt = task.prompt?.trim().replace(/\s+/g, " ");
-  if (!prompt) return "No additional brief.";
-  return prompt.length > 240 ? `${prompt.slice(0, 237)}...` : prompt;
 }
 
 function openTask(slug: string) {
@@ -340,6 +315,10 @@ function openTask(slug: string) {
   border-radius: 0.625rem;
   background: var(--bg-secondary);
   color: var(--text-primary);
+}
+
+.task-graph-dock + .task-graph-dock {
+  border-top: 0;
 }
 
 .task-graph-dock {
@@ -504,86 +483,29 @@ function openTask(slug: string) {
   border-top: 1px solid var(--border);
 }
 
-.task-graph-plan {
+.task-graph-rationale {
+  margin: 0;
+  padding: 0.375rem 0.625rem;
   border-top: 1px solid var(--border);
   color: var(--text-secondary);
-}
-
-.task-graph-plan summary {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.375rem 0.625rem;
-  list-style: none;
-  font-size: 0.6875rem;
-  cursor: pointer;
-}
-
-.task-graph-plan summary::-webkit-details-marker {
-  display: none;
-}
-
-.task-graph-plan summary::after {
-  margin-left: auto;
-  content: "›";
-  transition: transform 0.15s ease;
-}
-
-.task-graph-plan[open] summary::after {
-  transform: rotate(90deg);
-}
-
-.task-graph-plan summary span {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.task-graph-plan summary small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-graph-plan-body {
-  border-top: 1px solid var(--border);
-}
-
-.task-graph-plan article,
-.task-graph-plan-rationale {
-  margin: 0;
-  padding: 0.5rem 0.625rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.task-graph-plan article:last-child {
-  border-bottom: 0;
-}
-
-.task-graph-plan article {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-}
-
-.task-graph-plan article strong {
-  color: var(--text-primary);
-  font-size: 0.75rem;
-}
-
-.task-graph-plan article small,
-.task-graph-plan article p,
-.task-graph-plan-rationale {
   font-size: 0.625rem;
   line-height: 1.4;
 }
 
-.task-graph-plan article p {
-  display: -webkit-box;
-  margin: 0.125rem 0 0;
-  overflow: hidden;
-  color: var(--text-secondary);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+.task-graph-title {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-graph-title strong {
+  display: block;
 }
 
 .task-graph-row {

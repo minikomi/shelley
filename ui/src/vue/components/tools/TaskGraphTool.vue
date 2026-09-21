@@ -109,14 +109,12 @@ async function refreshGraph() {
   const parentConversationId = current?.parent_conversation_id || currentConversationId?.value;
   if (!parentConversationId) return;
   try {
-    const latest = await api.getLatestTaskGraph(parentConversationId);
+    const graphs = await api.getTaskGraphs(parentConversationId);
     if (id !== requestID) return;
+    const latest = current
+      ? graphs.find((candidate) => candidate.id === current.id)
+      : [...graphs].reverse().find((candidate) => candidate.title === requestedTitle.value);
     if (!latest) {
-      if (props.isRunning) scheduleRefresh();
-      return;
-    }
-    if (current && latest.id !== current.id) return;
-    if (!current && requestedTitle.value && latest.title !== requestedTitle.value) {
       if (props.isRunning) scheduleRefresh();
       return;
     }
