@@ -3,7 +3,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, watch } from "vue";
 import { api } from "../../services/api";
 import { messageStore } from "../../services/messageStore";
 import type { TaskGraphTask } from "../../taskGraph";
@@ -23,16 +23,20 @@ const liveActivity = computed(() => {
   return activity.value;
 });
 
-onMounted(async () => {
-  const id = props.task.child_conversation_id;
-  if (!id || (props.task.state !== "running" && props.task.state !== "starting")) return;
-  if (messageStore.peek(id)?.messages.length) return;
-  try {
-    messageStore.applyFullHistory(id, await api.getConversationWithProgress(id));
-  } catch (error) {
-    console.error("Failed to load task graph subagent activity:", error);
-  }
-});
+watch(
+  () => [props.task.child_conversation_id, props.task.state],
+  async () => {
+    const id = props.task.child_conversation_id;
+    if (!id || (props.task.state !== "running" && props.task.state !== "starting")) return;
+    if (messageStore.peek(id)?.messages.length) return;
+    try {
+      messageStore.applyFullHistory(id, await api.getConversationWithProgress(id));
+    } catch (error) {
+      console.error("Failed to load task graph subagent activity:", error);
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <style scoped>

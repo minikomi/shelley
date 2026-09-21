@@ -55,6 +55,7 @@ const collapsed = ref(true);
 const graph = ref<TaskGraphSnapshot | null>(taskGraphSnapshot(props.display));
 const currentConversationId = inject(CurrentConversationIdKey, null);
 let refreshTimer: number | null = null;
+let requestID = 0;
 
 const action = computed(() => {
   if (!props.toolInput || typeof props.toolInput !== "object") return "";
@@ -100,6 +101,7 @@ function scheduleRefresh() {
 }
 
 async function refreshGraph() {
+  const id = ++requestID;
   clearRefreshTimer();
   if (!visibleInTimeline.value) return;
   const current = graph.value;
@@ -108,6 +110,7 @@ async function refreshGraph() {
   if (!parentConversationId) return;
   try {
     const latest = await api.getLatestTaskGraph(parentConversationId);
+    if (id !== requestID) return;
     if (!latest) {
       if (props.isRunning) scheduleRefresh();
       return;
@@ -122,6 +125,7 @@ async function refreshGraph() {
       scheduleRefresh();
     }
   } catch (error) {
+    if (id !== requestID) return;
     console.error("Failed to refresh inline task graph:", error);
     if (props.isRunning || current?.state === "active") scheduleRefresh();
   }
@@ -138,7 +142,10 @@ watch(
 );
 
 onMounted(() => void refreshGraph());
-onUnmounted(clearRefreshTimer);
+onUnmounted(() => {
+  requestID++;
+  clearRefreshTimer();
+});
 </script>
 
 <style scoped>

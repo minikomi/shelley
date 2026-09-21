@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"shelley.exe.dev/db"
+	"shelley.exe.dev/llm"
 )
 
 func TestGetTaskGraph(t *testing.T) {
@@ -61,9 +62,9 @@ func TestTaskGraphAwaitedTreatsFailuresAsTerminal(t *testing.T) {
 
 func TestTaskGraphTaskPromptIncludesDirectDependencyResults(t *testing.T) {
 	graph := &db.TaskGraphSnapshot{Tasks: []db.TaskGraphTask{
-		{ID: "research", Title: "Research API", Status: "complete", FinalResponse: "Use endpoint /v2."},
+		{ID: "research", Title: "Research API", Status: "complete", Result: "Use endpoint /v2."},
 		{ID: "schema", Title: "Define schema", Status: "complete"},
-		{ID: "unrelated", Title: "Unrelated", Status: "complete", FinalResponse: "Do not include me."},
+		{ID: "unrelated", Title: "Unrelated", Status: "complete", Result: "Do not include me."},
 	}}
 	task := db.TaskGraphTask{
 		ID:           "implement",
@@ -140,7 +141,7 @@ func TestCancelConversationCancelsActiveTaskGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTaskGraph: %v", err)
 	}
-	claimed, err := database.ClaimReadyTaskGraphSubagentTasks(ctx, graph.GraphID)
+	claimed, err := database.ClaimReadyTaskGraphSubagentTasks(ctx, parent.ConversationID, graph.GraphID)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("ClaimReadyTaskGraphSubagentTasks = %d, %v; want one", len(claimed), err)
 	}
@@ -148,7 +149,7 @@ func TestCancelConversationCancelsActiveTaskGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSubagentConversation: %v", err)
 	}
-	if err := database.SetTaskGraphTaskChildConversation(ctx, graph.GraphID, "research", child.ConversationID, "research-child"); err != nil {
+	if err := database.SetTaskGraphTaskChildConversation(ctx, parent.ConversationID, graph.GraphID, "research", child.ConversationID, "research-child"); err != nil {
 		t.Fatalf("SetTaskGraphTaskChildConversation: %v", err)
 	}
 	startSlowTurn(t, server, child.ConversationID)
@@ -158,11 +159,61 @@ func TestCancelConversationCancelsActiveTaskGraph(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		return !server.IsAgentWorking(child.ConversationID)
 	})
-	snapshot, err := database.GetTaskGraphSnapshot(ctx, graph.GraphID)
+	snapshot, err := database.GetTaskGraphSnapshot(ctx, parent.ConversationID, graph.GraphID)
 	if err != nil {
 		t.Fatalf("GetTaskGraphSnapshot: %v", err)
 	}
 	if snapshot.Status != "cancelled" || len(snapshot.Tasks) != 1 || snapshot.Tasks[0].Status != "cancelled" {
 		t.Fatalf("graph after stop = %#v, want cancelled graph and task", snapshot)
+	}
+}
+
+func TestTaskGraphSnapshotReadsResultFromChild(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	ctx := t.Context()
+	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	graph, err := database.CreateTaskGraph(ctx, parent.ConversationID, "Research", 0, []db.TaskGraphTaskCreate{
+		{ID: "research", Title: "Research", Prompt: "Research"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskGraph: %v", err)
+	}
+	if _, err := database.ClaimReadyTaskGraphSubagentTasks(ctx, parent.ConversationID, graph.GraphID); err != nil {
+		t.Fatalf("ClaimReadyTaskGraphSubagentTasks: %v", err)
+	}
+	child, err := database.CreateSubagentConversation(ctx, "research-child", parent.ConversationID, nil)
+	if err != nil {
+		t.Fatalf("CreateSubagentConversation: %v", err)
+	}
+	if err := database.SetTaskGraphTaskChildConversation(ctx, parent.ConversationID, graph.GraphID, "research", child.ConversationID, "research-child"); err != nil {
+		t.Fatalf("SetTaskGraphTaskChildConversation: %v", err)
+	}
+	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: child.ConversationID,
+		Type:           db.MessageTypeAgent,
+		LLMData:        llm.Message{Role: llm.MessageRoleAssistant, Content: llm.TextContent("Use endpoint /v2.")},
+	}); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if _, _, err := database.CompleteTaskGraphChild(ctx, child.ConversationID); err != nil {
+		t.Fatalf("CompleteTaskGraphChild: %v", err)
+	}
+
+	snapshot, err := server.GetTaskGraphSnapshot(ctx, parent.ConversationID, graph.GraphID)
+	if err != nil {
+		t.Fatalf("GetTaskGraphSnapshot: %v", err)
+	}
+	if snapshot.Tasks[0].Result != "Use endpoint /v2." {
+		t.Fatalf("task result = %q, want child response", snapshot.Tasks[0].Result)
+	}
+	stored, err := database.GetConversationByID(ctx, parent.ConversationID)
+	if err != nil {
+		t.Fatalf("GetConversationByID: %v", err)
+	}
+	if strings.Contains(stored.ConversationOptions, "/v2") {
+		t.Fatalf("result was persisted in conversation options: %s", stored.ConversationOptions)
 	}
 }

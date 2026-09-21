@@ -110,7 +110,7 @@ slots, create symmetry, or make the graph look busy.`
 type TaskGraphService interface {
 	CreateTaskGraph(context.Context, string, string, int, []db.TaskGraphTaskCreate) (*db.TaskGraphSnapshot, error)
 	GetLatestTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error)
-	GetTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error)
+	GetTaskGraphSnapshot(context.Context, string, string) (*db.TaskGraphSnapshot, error)
 	AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error)
 	CancelTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, []string, error)
 }
@@ -252,14 +252,7 @@ func (t *TaskGraphTool) snapshot(ctx context.Context, graphID string) (*db.TaskG
 	if graphID == "" {
 		return t.Service.GetLatestTaskGraphSnapshot(ctx, t.ParentConversationID)
 	}
-	snapshot, err := t.Service.GetTaskGraphSnapshot(ctx, graphID)
-	if err != nil || snapshot == nil {
-		return snapshot, err
-	}
-	if snapshot.ParentConversationID != t.ParentConversationID {
-		return nil, fmt.Errorf("task graph not found")
-	}
-	return snapshot, nil
+	return t.Service.GetTaskGraphSnapshot(ctx, t.ParentConversationID, graphID)
 }
 
 func (t *TaskGraphTool) validateCreate(req taskGraphInput) ([]db.TaskGraphTaskCreate, error) {

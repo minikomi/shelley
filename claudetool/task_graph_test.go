@@ -24,7 +24,7 @@ func (s *taskGraphServiceStub) CreateTaskGraph(_ context.Context, parent, title 
 func (*taskGraphServiceStub) GetLatestTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error) {
 	return nil, nil
 }
-func (*taskGraphServiceStub) GetTaskGraphSnapshot(context.Context, string) (*db.TaskGraphSnapshot, error) {
+func (*taskGraphServiceStub) GetTaskGraphSnapshot(context.Context, string, string) (*db.TaskGraphSnapshot, error) {
 	return nil, nil
 }
 func (s *taskGraphServiceStub) AwaitTaskGraph(context.Context, string, string, []string) (*db.TaskGraphSnapshot, error) {

@@ -38,7 +38,7 @@ function clearRefreshTimer() {
 
 function scheduleRefresh() {
   clearRefreshTimer();
-  if (!visibleGraph.value) return;
+  if (graph.value?.state !== "active") return;
   refreshTimer = window.setTimeout(() => void loadGraph(), 1500);
 }
 
@@ -55,8 +55,9 @@ async function loadGraph() {
     if (id !== requestID || conversationId !== props.conversationId) return;
     if (next?.id !== graph.value?.id) collapsed.value = true;
     graph.value = next;
-  } catch {
-    if (id === requestID) graph.value = null;
+  } catch (error) {
+    if (id !== requestID) return;
+    console.error("Failed to refresh task graph:", error);
   }
   scheduleRefresh();
 }

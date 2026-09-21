@@ -30,33 +30,55 @@ func (s *Server) CreateTaskGraph(ctx context.Context, parentID, title string, ma
 		return nil, err
 	}
 	s.signalTaskGraphChange()
-	go s.scheduleTaskGraph(snapshot.GraphID)
+	go s.scheduleTaskGraph(parentID, snapshot.GraphID)
 	return snapshot, nil
 }
 
 func (s *Server) GetLatestTaskGraphSnapshot(ctx context.Context, parentID string) (*db.TaskGraphSnapshot, error) {
-	return s.db.GetLatestTaskGraphSnapshot(ctx, parentID)
+	snapshot, err := s.db.GetLatestTaskGraphSnapshot(ctx, parentID)
+	if err != nil || snapshot == nil {
+		return snapshot, err
+	}
+	return snapshot, s.fillTaskGraphResults(ctx, snapshot)
 }
 
-func (s *Server) GetTaskGraphSnapshot(ctx context.Context, graphID string) (*db.TaskGraphSnapshot, error) {
-	return s.db.GetTaskGraphSnapshot(ctx, graphID)
+func (s *Server) GetTaskGraphSnapshot(ctx context.Context, parentID, graphID string) (*db.TaskGraphSnapshot, error) {
+	snapshot, err := s.db.GetTaskGraphSnapshot(ctx, parentID, graphID)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, s.fillTaskGraphResults(ctx, snapshot)
+}
+
+// fillTaskGraphResults reads each completed task's final response from its
+// child conversation.
+func (s *Server) fillTaskGraphResults(ctx context.Context, snapshot *db.TaskGraphSnapshot) error {
+	for i := range snapshot.Tasks {
+		task := &snapshot.Tasks[i]
+		if task.Status != "complete" || task.ChildConversationID == "" {
+			continue
+		}
+		result, _, err := s.lastAgentText(ctx, task.ChildConversationID)
+		if err != nil {
+			return fmt.Errorf("read task %q result: %w", task.ID, err)
+		}
+		task.Result = result
+	}
+	return nil
 }
 
 func (s *Server) AwaitTaskGraph(ctx context.Context, parentID, graphID string, taskIDs []string) (*db.TaskGraphSnapshot, error) {
 	for {
 		wake := s.taskGraphWaitChannel()
-		snapshot, err := s.db.GetTaskGraphSnapshot(ctx, graphID)
+		snapshot, err := s.db.GetTaskGraphSnapshot(ctx, parentID, graphID)
 		if err != nil {
 			return nil, err
-		}
-		if snapshot.ParentConversationID != parentID {
-			return nil, fmt.Errorf("task graph not found")
 		}
 		if err := validateTaskGraphAwaitTasks(snapshot, taskIDs); err != nil {
 			return nil, err
 		}
 		if taskGraphAwaited(snapshot, taskIDs) {
-			return snapshot, nil
+			return snapshot, s.fillTaskGraphResults(ctx, snapshot)
 		}
 		select {
 		case <-ctx.Done():
@@ -83,10 +105,7 @@ func validateTaskGraphAwaitTasks(snapshot *db.TaskGraphSnapshot, taskIDs []strin
 }
 
 func (s *Server) CancelTaskGraph(ctx context.Context, parentID, graphID string, taskIDs []string) (*db.TaskGraphSnapshot, []string, error) {
-	if err := s.ensureTaskGraphParent(ctx, graphID, parentID); err != nil {
-		return nil, nil, err
-	}
-	running, snapshot, err := s.db.CancelTaskGraph(ctx, graphID, taskIDs)
+	running, snapshot, err := s.db.CancelTaskGraph(ctx, parentID, graphID, taskIDs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -101,25 +120,29 @@ func (s *Server) CancelTaskGraph(ctx context.Context, parentID, graphID string, 
 			uncancelled = append(uncancelled, taskID)
 			continue
 		}
-		manager, err := s.getOrCreateSubagentConversationManager(ctx, task.ChildConversationID)
-		if err != nil {
-			uncancelled = append(uncancelled, taskID)
-			continue
-		}
-		if err := manager.CancelConversation(ctx); err != nil {
-			uncancelled = append(uncancelled, taskID)
-			continue
-		}
-		if _, err := s.db.CancelRunningTaskGraphTask(ctx, graphID, taskID); err != nil {
+		if err := s.cancelTaskGraphChild(ctx, parentID, graphID, taskID, task.ChildConversationID); err != nil {
+			s.logger.Error("Cancel task graph task", "graphID", graphID, "taskID", taskID, "error", err)
 			uncancelled = append(uncancelled, taskID)
 		}
 	}
-	snapshot, err = s.db.GetTaskGraphSnapshot(ctx, graphID)
+	snapshot, err = s.db.GetTaskGraphSnapshot(ctx, parentID, graphID)
 	if err != nil {
 		return nil, nil, err
 	}
 	s.signalTaskGraphChange()
-	return snapshot, uncancelled, nil
+	return snapshot, uncancelled, s.fillTaskGraphResults(ctx, snapshot)
+}
+
+func (s *Server) cancelTaskGraphChild(ctx context.Context, parentID, graphID, taskID, childID string) error {
+	manager, err := s.getOrCreateSubagentConversationManager(ctx, childID)
+	if err != nil {
+		return err
+	}
+	if err := manager.CancelConversation(ctx); err != nil {
+		return err
+	}
+	_, err = s.db.CancelRunningTaskGraphTask(ctx, parentID, graphID, taskID)
+	return err
 }
 
 func (s *Server) cancelActiveTaskGraph(ctx context.Context, parentID string) error {
@@ -136,17 +159,6 @@ func (s *Server) cancelActiveTaskGraph(ctx context.Context, parentID string) err
 	}
 	if len(uncancelled) != 0 {
 		return fmt.Errorf("task graph tasks could not be cancelled: %s", strings.Join(uncancelled, ", "))
-	}
-	return nil
-}
-
-func (s *Server) ensureTaskGraphParent(ctx context.Context, graphID, parentID string) error {
-	snapshot, err := s.db.GetTaskGraphSnapshot(ctx, graphID)
-	if err != nil {
-		return err
-	}
-	if snapshot.ParentConversationID != parentID {
-		return fmt.Errorf("task graph not found")
 	}
 	return nil
 }
@@ -186,13 +198,13 @@ func (s *Server) recoverTaskGraphs() {
 		s.logger.Error("Recover unstarted task graph tasks", "error", err)
 		return
 	}
-	graphIDs, err := s.db.ListTaskGraphsWithReadySubagentTasks(context.Background())
+	graphs, err := s.db.ListTaskGraphsWithReadySubagentTasks(context.Background())
 	if err != nil {
 		s.logger.Error("Recover task graphs", "error", err)
 		return
 	}
-	for _, graphID := range graphIDs {
-		s.scheduleTaskGraph(graphID)
+	for _, graph := range graphs {
+		s.scheduleTaskGraph(graph.ParentConversationID, graph.GraphID)
 	}
 }
 
@@ -203,7 +215,7 @@ func (s *Server) scheduleTaskGraphForChild(childConversationID string) {
 		return
 	}
 	if task != nil {
-		s.scheduleTaskGraph(task.GraphID)
+		s.scheduleTaskGraph(task.ParentConversationID, task.GraphID)
 	}
 }
 
@@ -218,32 +230,34 @@ func (s *Server) taskGraphTaskForChild(ctx context.Context, childConversationID 
 // scheduleTaskGraph claims a bounded deterministic batch. Every call only
 // starts tasks it claimed durably, so duplicate triggers cannot double-start a
 // child conversation.
-func (s *Server) scheduleTaskGraph(graphID string) {
-	tasks, err := s.db.ClaimReadyTaskGraphSubagentTasks(context.Background(), graphID)
+func (s *Server) scheduleTaskGraph(parentID, graphID string) {
+	tasks, err := s.db.ClaimReadyTaskGraphSubagentTasks(context.Background(), parentID, graphID)
 	if err != nil {
 		s.logger.Error("Claim task graph tasks", "graphID", graphID, "error", err)
 		return
 	}
 	for _, task := range tasks {
-		s.launchTaskGraphTask(graphID, task)
+		s.launchTaskGraphTask(parentID, graphID, task)
 	}
 	if len(tasks) > 0 {
 		s.signalTaskGraphChange()
 	}
 }
 
-func (s *Server) launchTaskGraphTask(graphID string, task db.TaskGraphTask) {
+func (s *Server) launchTaskGraphTask(parentID, graphID string, task db.TaskGraphTask) {
 	ctx := context.Background()
-	graph, err := s.db.GetTaskGraphSnapshot(ctx, graphID)
+	fail := func(err error) {
+		s.logger.Error("Launch task graph task", "graphID", graphID, "taskID", task.ID, "error", err)
+		s.failTaskGraphLaunch(parentID, graphID, task.ID, err)
+	}
+	graph, err := s.GetTaskGraphSnapshot(ctx, parentID, graphID)
 	if err != nil {
-		s.logger.Error("Load task graph for launch", "graphID", graphID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.ID, err)
+		fail(err)
 		return
 	}
-	parent, err := s.db.GetConversationByID(ctx, graph.ParentConversationID)
+	parent, err := s.db.GetConversationByID(ctx, parentID)
 	if err != nil {
-		s.logger.Error("Load task graph parent for launch", "graphID", graphID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.ID, err)
+		fail(err)
 		return
 	}
 	cwd := ""
@@ -255,15 +269,13 @@ func (s *Server) launchTaskGraphTask(graphID string, task db.TaskGraphTask) {
 		slug = task.Slug
 	}
 	slug = "task-" + strings.ReplaceAll(graphID, "-", "") + "-" + slug
-	childID, actualSlug, err := (&db.SubagentDBAdapter{DB: s.db}).GetOrCreateSubagentConversation(ctx, slug, graph.ParentConversationID, cwd)
+	childID, actualSlug, err := (&db.SubagentDBAdapter{DB: s.db}).GetOrCreateSubagentConversation(ctx, slug, parentID, cwd)
 	if err != nil {
-		s.logger.Error("Create task graph child conversation", "graphID", graphID, "taskID", task.ID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.ID, err)
+		fail(err)
 		return
 	}
-	if err := s.db.SetTaskGraphTaskChildConversation(ctx, graphID, task.ID, childID, actualSlug); err != nil {
-		s.logger.Error("Associate task graph child conversation", "graphID", graphID, "taskID", task.ID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.ID, err)
+	if err := s.db.SetTaskGraphTaskChildConversation(ctx, parentID, graphID, task.ID, childID, actualSlug); err != nil {
+		fail(err)
 		return
 	}
 	model := ""
@@ -279,9 +291,18 @@ func (s *Server) launchTaskGraphTask(graphID string, task db.TaskGraphTask) {
 		reasoning = db.ParseConversationOptions(parent.ConversationOptions).ThinkingLevel
 	}
 	prompt := taskGraphTaskPrompt(graph, task)
+	current, err := s.db.GetTaskGraphSnapshot(ctx, parentID, graphID)
+	if err != nil {
+		fail(err)
+		return
+	}
+	for _, candidate := range current.Tasks {
+		if candidate.ID == task.ID && candidate.Status != "running" {
+			return
+		}
+	}
 	if _, err := NewSubagentRunner(s).RunSubagent(ctx, childID, prompt, false, 0, model, reasoning); err != nil {
-		s.logger.Error("Launch task graph child", "graphID", graphID, "taskID", task.ID, "error", err)
-		s.failTaskGraphLaunch(graphID, task.ID, err)
+		fail(err)
 	}
 }
 
@@ -303,7 +324,7 @@ func taskGraphTaskPrompt(graph *db.TaskGraphSnapshot, task db.TaskGraphTask) str
 	prompt.WriteString(task.Prompt)
 	prompt.WriteString("\n\nCompleted direct dependency results follow. Use them as handoff context and verify claims against the shared working tree.")
 	for _, dependency := range dependencies {
-		result := dependency.FinalResponse
+		result := dependency.Result
 		if result == "" {
 			result = "(completed without a final response)"
 		}
@@ -313,8 +334,8 @@ func taskGraphTaskPrompt(graph *db.TaskGraphSnapshot, task db.TaskGraphTask) str
 	return prompt.String()
 }
 
-func (s *Server) failTaskGraphLaunch(graphID, taskID string, cause error) {
-	if _, err := s.db.FailTaskGraphTask(context.Background(), graphID, taskID, cause.Error()); err != nil {
+func (s *Server) failTaskGraphLaunch(parentID, graphID, taskID string, cause error) {
+	if _, err := s.db.FailTaskGraphTask(context.Background(), parentID, graphID, taskID, cause.Error()); err != nil {
 		s.logger.Error("Mark task graph task failed", "graphID", graphID, "taskID", taskID, "error", err)
 	}
 	s.signalTaskGraphChange()
@@ -333,6 +354,11 @@ func (s *Server) handleGetTaskGraph(w http.ResponseWriter, r *http.Request, pare
 	}
 	if snapshot == nil {
 		http.Error(w, "task graph not found", http.StatusNotFound)
+		return
+	}
+	if err := s.fillTaskGraphResults(r.Context(), snapshot); err != nil {
+		s.logger.Error("Get task graph results", "conversationID", parentID, "error", err)
+		http.Error(w, "failed to get task graph", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

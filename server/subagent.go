@@ -646,10 +646,12 @@ func (s *Server) dispatchSubagentDone(subagentConversationID string) {
 	if !ok {
 		return
 	}
-	matched, _, err := s.db.CompleteTaskGraphChild(context.Background(), subagentConversationID, response)
+	matched, _, err := s.db.CompleteTaskGraphChild(context.Background(), subagentConversationID)
 	if err != nil {
 		s.logger.Error("Failed to complete task graph child", "conversationID", subagentConversationID, "error", err)
-	} else if matched {
+		return
+	}
+	if matched {
 		s.signalTaskGraphChange()
 		go s.scheduleTaskGraphForChild(subagentConversationID)
 		return
