@@ -13,6 +13,7 @@ import (
 
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/llmhttp"
 )
 
 var errMessagePersistence = errors.New("message persistence failed")
@@ -54,6 +55,9 @@ type Config struct {
 	// issues. Per-conversation override; ThinkingLevelDefault means "use the
 	// service default".
 	ThinkingLevel llm.ThinkingLevel
+	// PromptCacheKey overrides provider cache affinity for the loop's main LLM
+	// requests. Tool-initiated LLM calls retain conversation-local affinity.
+	PromptCacheKey string
 	// GetWorkingDir returns the current working directory for tools.
 	// If set, this is called at end of turn to check for git state changes.
 	// If nil, Config.WorkingDir is used as a static value.
@@ -101,6 +105,7 @@ type Loop struct {
 	onStreamDone     func()
 	injectMessages   func(ctx context.Context) []llm.Message
 	thinkingLevel    llm.ThinkingLevel
+	promptCacheKey   string
 	notify           chan struct{} // signaled when a message is queued or retry requested
 	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
 }
@@ -137,6 +142,7 @@ func NewLoop(config Config) *Loop {
 		onStreamDone:     config.OnStreamDone,
 		injectMessages:   config.InjectMessages,
 		thinkingLevel:    config.ThinkingLevel,
+		promptCacheKey:   config.PromptCacheKey,
 		notify:           make(chan struct{}, 1),
 	}
 }
@@ -416,6 +422,9 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		sendWithRetry := func(req *llm.Request) (*llm.Response, error) {
 			llmCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
 			defer cancel()
+			if l.promptCacheKey != "" {
+				llmCtx = llmhttp.WithPromptCacheKey(llmCtx, l.promptCacheKey)
+			}
 			llmCtx, requestTrace = llm.WithRequestTrace(llmCtx)
 			const maxRetries = 2
 			var resp *llm.Response

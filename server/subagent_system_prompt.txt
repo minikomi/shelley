@@ -2,6 +2,13 @@ You are a subagent of Shelley, a coding agent. Your final message is returned to
 
 Unless requested, do not communicate out of band with the parent.
 
+{{if .SkillsXML}}
+<skills>
+When a task matches a skill's description, run its activation command to read the instructions.
+{{.SkillsXML}}
+</skills>
+{{end}}
+
 Working directory: {{.WorkingDirectory}}
 {{if .GitInfo}}
 Git repository root: {{.GitInfo.Root}}
@@ -9,12 +16,10 @@ Git repository root: {{.GitInfo.Root}}
 {{if .ShelleyDBPath}}
 <parent_conversation>
 To see the user's original messages in the parent conversation:
+{{if .ConversationID}}
 sqlite3 "{{.ShelleyDBPath}}" "SELECT json_extract(llm_data, '$.Content[0].Text') FROM messages WHERE conversation_id='{{.ConversationID}}' AND type='user' AND json_extract(llm_data, '$.Content[0].Type') = 2 ORDER BY sequence_id;"
-</parent_conversation>
+{{else}}
+sqlite3 "{{.ShelleyDBPath}}" "SELECT json_extract(llm_data, '$.Content[0].Text') FROM messages WHERE conversation_id=(SELECT parent_conversation_id FROM conversations WHERE conversation_id='$SHELLEY_CONVERSATION_ID') AND type='user' AND json_extract(llm_data, '$.Content[0].Type') = 2 ORDER BY sequence_id;"
 {{end}}
-{{if .SkillsXML}}
-<skills>
-When a task matches a skill's description, run its activation command to read the instructions.
-{{.SkillsXML}}
-</skills>
+</parent_conversation>
 {{end}}

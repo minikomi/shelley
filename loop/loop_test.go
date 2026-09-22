@@ -16,6 +16,7 @@ import (
 
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/llm/predictable"
 )
 
@@ -44,6 +45,36 @@ func TestNewLoop(t *testing.T) {
 
 	if len(loop.messageQueue) != 0 {
 		t.Errorf("expected empty message queue, got %d", len(loop.messageQueue))
+	}
+}
+
+type promptCacheCapturingService struct {
+	*predictable.Service
+	key string
+}
+
+func (s *promptCacheCapturingService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	s.key = llmhttp.PromptCacheKeyFromContext(ctx)
+	return s.Service.Do(ctx, req)
+}
+
+func TestLoopAppliesPromptCacheKeyToMainRequest(t *testing.T) {
+	service := &promptCacheCapturingService{Service: predictable.NewService()}
+	agentLoop := NewLoop(Config{
+		LLM:            service,
+		PromptCacheKey: "shared-subagent-prefix",
+		RecordMessage:  func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
+	})
+	agentLoop.QueueUserMessage(llm.UserStringMessage("hello"))
+	ctx := llmhttp.WithConversationID(t.Context(), "child-conversation")
+	if err := agentLoop.ProcessOneTurn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if service.key != "shared-subagent-prefix" {
+		t.Fatalf("prompt cache key = %q, want shared-subagent-prefix", service.key)
+	}
+	if got := llmhttp.PromptCacheKeyFromContext(ctx); got != "child-conversation" {
+		t.Fatalf("base context cache key = %q, want conversation-local fallback", got)
 	}
 }
 

@@ -31,6 +31,13 @@ func TestContextFunctions(t *testing.T) {
 	if got := ConversationIDFromContext(ctx); got != "conv-123" {
 		t.Errorf("ConversationIDFromContext() = %q, want %q", got, "conv-123")
 	}
+	if got := PromptCacheKeyFromContext(ctx); got != "conv-123" {
+		t.Errorf("PromptCacheKeyFromContext() = %q, want conversation fallback", got)
+	}
+	ctx = WithPromptCacheKey(ctx, "shared-prefix")
+	if got := PromptCacheKeyFromContext(ctx); got != "shared-prefix" {
+		t.Errorf("PromptCacheKeyFromContext() = %q, want explicit key", got)
+	}
 
 	// Test ModelID
 	ctx = WithModelID(ctx, "model-456")
@@ -112,13 +119,13 @@ func TestTransportProviderCacheAffinityHeaders(t *testing.T) {
 	tests := []struct {
 		provider, sessionAffinity, sessionID string
 	}{
-		{"fireworks", "test-conv-id", ""},
-		{"openai", "", "test-conv-id"},
+		{"fireworks", "shared-prefix", ""},
+		{"openai", "", "shared-prefix"},
 		{"anthropic", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
-			ctx := WithProvider(WithConversationID(t.Context(), "test-conv-id"), tt.provider)
+			ctx := WithProvider(WithPromptCacheKey(t.Context(), "shared-prefix"), tt.provider)
 			req, _ := http.NewRequestWithContext(ctx, "POST", server.URL, nil)
 			resp, err := NewClient(nil).Do(req)
 			if err != nil {

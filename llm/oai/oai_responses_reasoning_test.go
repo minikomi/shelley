@@ -332,7 +332,7 @@ func TestResponsesServiceCodexRequestContract(t *testing.T) {
 		ProviderName:  "openai",
 		ThinkingLevel: llm.ThinkingLevelMedium,
 	}
-	ctx := llmhttp.WithConversationID(t.Context(), "conversation-123")
+	ctx := llmhttp.WithPromptCacheKey(llmhttp.WithConversationID(t.Context(), "conversation-123"), "shared-subagent-prefix")
 	_, err := svc.Do(ctx, &llm.Request{
 		Messages: []llm.Message{{
 			Role:    llm.MessageRoleUser,
@@ -364,7 +364,7 @@ func TestResponsesServiceCodexRequestContract(t *testing.T) {
 	if _, ok := got["previous_response_id"]; ok {
 		t.Fatalf("stateless full-history request contains previous_response_id: %#v", got["previous_response_id"])
 	}
-	if got["prompt_cache_key"] != "conversation-123" {
+	if got["prompt_cache_key"] != "shared-subagent-prefix" {
 		t.Fatalf("prompt_cache_key = %#v", got["prompt_cache_key"])
 	}
 	reasoning, ok := got["reasoning"].(map[string]any)

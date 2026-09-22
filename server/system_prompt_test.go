@@ -844,6 +844,42 @@ This is a test skill.
 	}
 }
 
+func TestSubagentSystemPromptKeepsStableSkillsFirst(t *testing.T) {
+	oldDBPath := DBPath
+	DBPath = "/tmp/shelley-test.db"
+	t.Cleanup(func() { DBPath = oldDBPath })
+
+	prompt, _, err := generateSubagentSystemPromptWithIntegrationSkills(t.TempDir(), []skills.Skill{{
+		Name:        "stable-prefix",
+		Description: "Keep reusable guidance first.",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillsAt := strings.Index(prompt, "<skills>")
+	workingDirAt := strings.Index(prompt, "Working directory:")
+	if skillsAt < 0 || workingDirAt < 0 || skillsAt > workingDirAt {
+		t.Fatalf("skills are not before dynamic context:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "conversation_id='$SHELLEY_CONVERSATION_ID'") {
+		t.Fatalf("parent lookup does not use the child environment:\n%s", prompt)
+	}
+}
+
+func TestGenerateSubagentSystemPromptKeepsLiteralParentCompatibility(t *testing.T) {
+	oldDBPath := DBPath
+	DBPath = "/tmp/shelley-test.db"
+	t.Cleanup(func() { DBPath = oldDBPath })
+
+	prompt, err := GenerateSubagentSystemPrompt(t.TempDir(), "parent-conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "conversation_id='parent-conversation'") {
+		t.Fatalf("exported helper lost literal parent lookup:\n%s", prompt)
+	}
+}
+
 func TestNewConversationHookAppliesSlug(t *testing.T) {
 	h := NewTestHarness(t)
 
@@ -1170,7 +1206,7 @@ func TestIntegrationSkillSnapshotIncludedInTopLevelAndSubagentPrompts(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	subagent, subSkills, err := generateSubagentSystemPromptWithIntegrationSkills(workingDir, "parent-id", integrationSkills)
+	subagent, subSkills, err := generateSubagentSystemPromptWithIntegrationSkills(workingDir, integrationSkills)
 	if err != nil {
 		t.Fatal(err)
 	}
