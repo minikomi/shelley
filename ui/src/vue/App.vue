@@ -302,6 +302,8 @@
       <div v-if="drawerOpen" class="backdrop hide-on-desktop" @click="drawerOpen = false" />
     </div>
 
+    <LiveSitePreview v-if="floatingPreviewEnabled && isExeDev" />
+
     <!-- Recomputation-counter overlay (performance-hud flag). -->
     <PerfHud v-if="perfHudEnabled" />
   </template>
@@ -310,6 +312,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch, shallowRef } from "vue";
 import ChatInterface from "./components/ChatInterface.vue";
+import LiveSitePreview from "./components/LiveSitePreview.vue";
 import type { RecordingMode } from "./components/recordingDestination";
 import { isImeComposing } from "../utils/imeComposing";
 import { conversationTitle } from "../utils/conversationTitle";
@@ -370,6 +373,7 @@ import type { ActionRunSummary } from "../services/workspace";
 import PerfHud from "./components/PerfHud.vue";
 
 const perfHudEnabled = useFeatureFlag("performance-hud");
+const floatingPreviewEnabled = useFeatureFlag("floating-preview");
 
 const { t } = useI18n();
 
@@ -436,6 +440,7 @@ function updatePageTitle(conversation: Conversation | undefined) {
 }
 
 const banner = window.__SHELLEY_INIT__?.banner;
+const isExeDev = window.__SHELLEY_INIT__?.is_exe_dev === true;
 // The server runs a newer UI build; the page reloads once hidden.
 const uiUpdated = ref(false);
 const reloadPage = () => window.location.reload();

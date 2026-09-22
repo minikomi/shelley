@@ -18,6 +18,12 @@ var FlagPerformanceHUD = featureflags.Register(featureflags.Flag{
 	Default:     false,
 })
 
+var FlagFloatingPreview = featureflags.Register(featureflags.Flag{
+	Name:        "floating-preview",
+	Description: "Show the experimental floating preview for local web ports.",
+	Default:     false,
+})
+
 // FlagWorkspace turns on workspace mode: a pinned Assistant at / that routes
 // work into projects, and the drawer grouped by project by default. Set at
 // VM creation (POST /feature-flags {"name":"workspace","value":true}); the

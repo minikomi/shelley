@@ -744,6 +744,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 
+	mux.Handle(previewPrefix, s.floatingPreviewHandler())
+
 	// Serve embedded UI assets
 	mux.Handle("/", s.staticHandler(ui.Assets()))
 }
@@ -1997,7 +1999,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	s.RegisterRoutes(mux)
 
 	tcpServer := &http.Server{
-		Handler: s.tcpHandler(mux),
+		Handler: s.tcpHandler(PreviewRefererMiddleware(mux)),
 	}
 
 	// Listen on the socket before serving: conversations export it as SHELLEY_SOCKET.

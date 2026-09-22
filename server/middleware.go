@@ -27,14 +27,17 @@ func LoggerMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return sloghttp.NewWithConfig(logger, config)
 }
 
-// RequireHeaderMiddleware requires a specific header to be present on API
-// requests and the MCP login and debug pages. This is used to ensure requests
-// come through an authenticated proxy.
+// RequireHeaderMiddleware requires a specific header to be present on API,
+// preview, MCP login, and debug requests. This is used to ensure requests come
+// through an authenticated proxy.
 func RequireHeaderMiddleware(headerName string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p := r.URL.Path
-			if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/mcp/") || p == "/debug/mcp" {
+			if strings.HasPrefix(p, "/api/") ||
+				strings.HasPrefix(p, previewPrefix) ||
+				strings.HasPrefix(p, "/mcp/") ||
+				p == "/debug/mcp" {
 				if r.Header.Get(headerName) == "" {
 					http.Error(w, "missing required header: "+headerName, http.StatusForbidden)
 					return

@@ -31,6 +31,11 @@ export const SLASH_COMMANDS = {
     description: "opens the diff viewer",
     takesArgs: false,
   },
+  PREVIEW: {
+    command: "/preview",
+    description: "opens the live site preview",
+    takesArgs: true,
+  },
   SHELL: {
     command: "/shell",
     description: "runs in shell (! alias)",
@@ -66,8 +71,12 @@ export const SLASH_COMMANDS = {
   },
 } as const satisfies Record<string, SlashCommand>;
 
-export function slashCommandsForConversation(isChildConversation: boolean): SlashCommand[] {
-  return Object.values(SLASH_COMMANDS).filter(
-    (item) => !isChildConversation || item.command !== SLASH_COMMANDS.BTW.command,
-  );
+export function slashCommandsForConversation(
+  isChildConversation: boolean,
+  previewEnabled = false,
+): SlashCommand[] {
+  return Object.values(SLASH_COMMANDS).filter((item) => {
+    if (!previewEnabled && item.command === SLASH_COMMANDS.PREVIEW.command) return false;
+    return !isChildConversation || item.command !== SLASH_COMMANDS.BTW.command;
+  });
 }

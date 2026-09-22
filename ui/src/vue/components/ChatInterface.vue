@@ -62,11 +62,13 @@
           :can-export="!!(conversationId && messages.length > 0)"
           :has-update="hasUpdate"
           :message-user="messageUserEnabled"
+          :show-live-preview="floatingPreviewEnabled"
           @open-command-palette="props.onOpenCommandPalette?.()"
           @open-directory-picker="showDirectoryPicker = true"
           @open-diffs="showDiffViewer = true"
           @open-git-graph="showGitGraph = true"
           @open-terminal="openInAppTerminal"
+          @open-live-preview="openPreview"
           @open-external-link="openExternalLink"
           @archive="archiveFromMenu"
           @export="openExport"
@@ -515,6 +517,7 @@
       :model-options="readyModels"
       :current-model-id="selectedModel"
       :is-child-conversation="!!currentConversation?.parent_conversation_id"
+      :preview-enabled="floatingPreviewEnabled"
       @clear-injected-text="
         diffCommentText = '';
         terminalInjectedText = null;
@@ -765,6 +768,14 @@ import {
 } from "../../utils/conversationView";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import { replaceLocationFragment } from "../../utils/locationFragment";
+import {
+  closeLivePreview,
+  isPreviewCommand,
+  mostRecentPreviewEndpoint,
+  openLivePreview,
+  parsePreviewCommand,
+} from "../composables/livePreview";
+import { useFeatureFlag } from "../composables/featureFlags";
 import {
   btwAnchor,
   btwExchangesByAnchor,
@@ -2442,6 +2453,7 @@ const proxyURL = computed(() => `https://${hostname}/`);
 // On exe.dev hosts the welcome message advertises the proxy features; off
 // exe.dev those don't apply, so show a shorter variant without proxy details.
 const isExeDev = window.__SHELLEY_INIT__?.is_exe_dev ?? false;
+const floatingPreviewEnabled = useFeatureFlag("floating-preview");
 const welcomeParts = computed(() =>
   t(isExeDev ? "welcomeMessage" : "welcomeMessageLocal").split(
     /(\{hostname\}|\{openSourceLink\}|\{customizeLink\}|\{docsLink\}|\{proxyLink\})/,
@@ -3825,9 +3837,45 @@ function clearSubmittedDraft(conversationId: string, text: string) {
   }
 }
 
+function historyTexts(): string[] {
+  const texts: string[] = [];
+  for (const prior of messages.value) {
+    if ((prior.type !== "user" && prior.type !== "agent") || !prior.llm_data) continue;
+    try {
+      const llm = typeof prior.llm_data === "string" ? JSON.parse(prior.llm_data) : prior.llm_data;
+      for (const content of (llm?.Content || []) as LLMContent[]) {
+        if (content.Type === 2 && typeof content.Text === "string") texts.push(content.Text);
+      }
+    } catch {
+      // malformed llm_data has no text to offer
+    }
+  }
+  return texts;
+}
+
+function openPreview(port?: number, path?: string) {
+  const inferred = port === undefined ? mostRecentPreviewEndpoint(historyTexts()) : null;
+  openLivePreview(port ?? inferred?.port, path ?? inferred?.path);
+}
+
 async function sendMessage(message: string, skills: string[] = []) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
+  if (floatingPreviewEnabled.value && isPreviewCommand(trimmedMessage)) {
+    try {
+      const command = parsePreviewCommand(trimmedMessage);
+      if (command.action === "close") {
+        closeLivePreview();
+      } else {
+        openPreview(command.port, command.path);
+      }
+      error.value = null;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "Failed to open live preview";
+      throw err;
+    }
+    return;
+  }
   const transcriptionCommand =
     trimmedMessage === SLASH_COMMANDS.TRANSCRIPTION.command ||
     trimmedMessage.startsWith(`${SLASH_COMMANDS.TRANSCRIPTION.command} `);

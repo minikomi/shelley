@@ -623,6 +623,8 @@ const props = withDefaults(
     cwd?: string;
     /** Child conversations cannot start nested BTW readers. */
     isChildConversation?: boolean;
+    /** Offer the experimental /preview command. */
+    previewEnabled?: boolean;
   }>(),
   {
     recordingInlineAvailable: true,
@@ -633,6 +635,7 @@ const props = withDefaults(
     autoFocus: false,
     initialRows: 1,
     isChildConversation: false,
+    previewEnabled: false,
   },
 );
 
@@ -1304,7 +1307,7 @@ const slashQuery = computed(() => {
 });
 const slashSuggestions = computed(() => {
   if (slashQuery.value === null) return [];
-  return slashCommandsForConversation(props.isChildConversation).filter((item) =>
+  return slashCommandsForConversation(props.isChildConversation, props.previewEnabled).filter((item) =>
     item.command.slice(1).startsWith(slashQuery.value!),
   );
 });
@@ -1532,7 +1535,7 @@ async function handleQueueMessage() {
   if (interceptSkillSubmission()) return;
   const dispatch = composerDispatch(message.value, { intent: "queue" });
   if (openTerminalIfRequested(dispatch)) return;
-  if (dispatch.route === "btw") {
+  if (dispatch.route === "btw" || dispatch.route === "send") {
     await handleSendNow();
     return;
   }

@@ -109,6 +109,16 @@
         {{ link.title }}
       </button>
       <div class="overflow-menu-divider" />
+      <button
+        v-if="showLivePreview"
+        class="overflow-menu-item"
+        data-testid="live-site-preview-menu-item"
+        @click="onLivePreview"
+      >
+        <i class="pi pi-window-maximize chat-menu-icon" aria-hidden="true" />
+        {{ t("livePreview") }}
+        <span class="overflow-menu-shortcut"><kbd>/preview</kbd></span>
+      </button>
       <button class="overflow-menu-item overflow-desktop-action" @click="onEditFile">
         <WorkspaceActionIcon action="editFile" class="chat-menu-icon" />
         {{ t("editFile") }}
@@ -360,6 +370,7 @@ const props = defineProps<{
   archiveNote: string;
   canExport: boolean;
   hasUpdate: boolean;
+  showLivePreview: boolean;
   // The conversation has the message_user tool: offer the brief (chat only)
   // view instead of end-of-turn.
   messageUser: boolean;
@@ -371,6 +382,7 @@ const emit = defineEmits<{
   (e: "open-diffs"): void;
   (e: "open-git-graph"): void;
   (e: "open-terminal"): void;
+  (e: "open-live-preview"): void;
   (e: "open-external-link", url: string): void;
   (e: "archive"): void;
   (e: "export"): void;
@@ -404,6 +416,7 @@ const onDirectory = () => (emit("open-directory-picker"), hide());
 const onDiffs = () => (emit("open-diffs"), hide());
 const onGitGraph = () => (emit("open-git-graph"), hide());
 const onTerminal = () => (emit("open-terminal"), hide());
+const onLivePreview = () => (emit("open-live-preview"), hide());
 const onArchive = () => (emit("archive"), hide());
 const onExport = () => (emit("export"), hide());
 const onEditAgentsMd = () => (emit("edit-agents-md"), hide());
