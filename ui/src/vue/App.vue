@@ -46,6 +46,7 @@
 
       <div class="main-content">
         <ChatInterface
+          ref="chatInterfaceRef"
           :conversation-id="currentConversationId"
           :stream-status="streamStatus"
           :reconnect-nonce="reconnectNonce"
@@ -88,6 +89,9 @@
         :conversations="topLevelConversations"
         :current-conversation="currentConversation || null"
         :has-cwd="commandPaletteHasCwd"
+        :can-record-audio="chatInterfaceRef?.canRecordAudio ?? false"
+        :can-record-screen="chatInterfaceRef?.canRecordScreen ?? false"
+        @record="beginRecording"
         @close="onCommandPaletteClose"
         @new-conversation="
           () => {
@@ -217,6 +221,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import ChatInterface from "./components/ChatInterface.vue";
+import type { RecordingMode } from "./components/recordingDestination";
+import { isImeComposing } from "../utils/imeComposing";
+import { comboMatches, MENU_COMBOS } from "../utils/menuShortcuts";
 import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import ModelsModal from "./components/ModelsModal.vue";
@@ -767,6 +774,14 @@ async function handleDistillNewGeneration(
   }
 }
 
+const chatInterfaceRef = ref<InstanceType<typeof ChatInterface> | null>(null);
+function beginRecording(mode: RecordingMode) {
+  // The palette can open over another modal; don't hide a live recorder behind it.
+  if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+  commandPaletteOpen.value = false;
+  void chatInterfaceRef.value?.beginRecording(mode);
+}
+
 // ---- global keyboard shortcuts (incl. Ctrl+M chord) ----
 let chordPending = false;
 let chordTimer: number | null = null;
@@ -780,6 +795,17 @@ function clearChord() {
 const isMac = navigator.platform.toUpperCase().includes("MAC");
 
 function handleKeyDown(e: KeyboardEvent) {
+  const recordingMode = comboMatches(e, MENU_COMBOS.recordAudio)
+    ? "microphone"
+    : comboMatches(e, MENU_COMBOS.recordScreen) ? "screen" : null;
+  if (recordingMode) {
+    if (e.defaultPrevented || isImeComposing(e)) return;
+    e.preventDefault();
+    clearChord();
+    if (!e.repeat) beginRecording(recordingMode);
+    return;
+  }
+
   if (chordPending) {
     clearChord();
     if (e.key === "n" || e.key === "N") {

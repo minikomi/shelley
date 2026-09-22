@@ -1792,14 +1792,6 @@ body {
   overflow-wrap: anywhere;
 }
 
-.tool-result-status.success {
-  color: var(--success-text);
-}
-
-.tool-result-status.error {
-  color: var(--error-text);
-}
-
 .tool-result-time {
   font-size: 0.75rem;
   color: var(--text-tertiary);
@@ -1952,23 +1944,8 @@ body {
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-/* ToolStatusIcon: the ✓/✗ in a tool card header. The colour comes from the
-   per-card .*-success / .*-error class the caller passes; this only handles
-   the box, so the glyph sits on the text baseline like the emoji beside it. */
-.tool-status-icon {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
 .tool-success {
   color: var(--success-text);
-  font-size: 0.875rem;
-  flex-shrink: 0;
-}
-
-.tool-error {
-  color: var(--error-text);
   font-size: 0.875rem;
   flex-shrink: 0;
 }
@@ -2054,9 +2031,8 @@ body {
   color: var(--text-primary);
 }
 
-/* Error output is signalled by the ✗ status icon in the header, not by
- * painting the whole output box red, so `.tool-code.error` carries no
- * styling (it intentionally renders like a normal code block). */
+/* Expanded output labels identify failures without painting the whole
+ * output box red, so `.tool-code.error` renders like a normal code block. */
 
 /* Bash Tool Component - uses shared tool styles */
 .bash-tool {
@@ -2133,24 +2109,6 @@ body {
   font-style: italic;
   flex-shrink: 0;
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-.bash-tool-success {
-  color: var(--success-text);
-  font-size: 0.875rem;
-  flex-shrink: 0;
-}
-
-.bash-tool-error {
-  color: var(--error-text);
-  font-size: 0.875rem;
-  flex-shrink: 0;
-}
-
-.bash-tool-cancelled {
-  color: var(--error-text);
-  font-size: 0.875rem;
-  flex-shrink: 0;
 }
 
 .bash-tool-toggle {
@@ -2351,16 +2309,6 @@ body {
   font-style: italic;
   flex-shrink: 0;
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-.patch-tool-success {
-  color: var(--success-text);
-  flex-shrink: 0;
-}
-
-.patch-tool-error {
-  color: var(--text-secondary);
-  flex-shrink: 0;
 }
 
 .patch-tool-header-controls {
@@ -2667,18 +2615,6 @@ diffs-container {
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-.screenshot-tool-success {
-  color: var(--success-text);
-  font-size: 0.875rem;
-  flex-shrink: 0;
-}
-
-.screenshot-tool-error {
-  color: var(--error-text);
-  font-size: 0.875rem;
-  flex-shrink: 0;
-}
-
 .screenshot-tool-toggle {
   background: none;
   border: none;
@@ -2809,18 +2745,6 @@ diffs-container {
   align-items: center;
 }
 
-.screencast-tool-success {
-  color: var(--green-600);
-  font-weight: bold;
-  margin-left: 0.25rem;
-}
-
-.screencast-tool-error {
-  color: var(--error-text);
-  font-weight: bold;
-  margin-left: 0.25rem;
-}
-
 .screencast-tool-details {
   padding: 0 0.75rem 0.75rem;
 }
@@ -2937,18 +2861,6 @@ diffs-container {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
-}
-
-.output-iframe-tool-success {
-  color: var(--success-text);
-  font-weight: 600;
-  margin-left: 0.5rem;
-}
-
-.output-iframe-tool-error {
-  color: var(--error-text);
-  font-weight: 600;
-  margin-left: 0.5rem;
 }
 
 .output-iframe-tool-actions {
@@ -7388,6 +7300,98 @@ svg {
   min-width: 0;
 }
 
+.tour-file-heading {
+  margin-top: 0.125rem;
+}
+
+.diff-viewer-tour-contents-tree .tour-change-row {
+  gap: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  cursor: default;
+}
+
+.tour-visibility-control,
+.tour-change-link {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.tour-visibility-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  flex: 0 0 16px;
+  padding: 0 2px;
+}
+
+button.tour-visibility-control,
+.tour-change-link {
+  cursor: pointer;
+}
+
+button.tour-visibility-control:hover .tour-visibility-icon {
+  color: inherit;
+}
+
+button.tour-visibility-control:focus-visible,
+.tour-change-link:focus-visible {
+  outline: 1px solid var(--primary);
+  outline-offset: 1px;
+  border-radius: 0.125rem;
+}
+
+.tour-change-link {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.2rem 0 0.2rem 0.35rem;
+  text-align: left;
+}
+
+.tour-visibility-icon {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  color: var(--text-secondary);
+}
+
+.tour-change-row.active .tour-visibility-icon {
+  color: inherit;
+}
+
+.tour-change-row .tour-change-range {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  color: inherit;
+}
+
+.tour-change-collapsed:not(.active) {
+  color: var(--text-secondary);
+}
+
+.tour-trivial-label {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: inherit;
+  font-family: var(--font-sans, sans-serif);
+  font-size: 0.625rem;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
 .tour-file-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -7407,7 +7411,7 @@ svg {
 
 .diff-viewer-tour-contents-tree .diff-tree-decoration,
 .diff-viewer-tour-contents-tree .diff-tree-row.active .diff-tree-decoration {
-  font-size: 0.5625rem;
+  font-size: inherit;
   background: transparent;
 }
 
@@ -8455,7 +8459,7 @@ svg {
 }
 
 .command-palette-item-title {
-  font-size: 0.875rem;
+  font-size: 1rem;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;

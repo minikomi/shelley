@@ -29,7 +29,6 @@ import (
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
-	"shelley.exe.dev/skills"
 	"shelley.exe.dev/subpub"
 	"shelley.exe.dev/ui"
 )
@@ -371,7 +370,7 @@ type Server struct {
 	notifDispatcher          *notifications.Dispatcher
 	conversationListStream   *conversationListStream
 	conversationListGitCache *conversationListGitCache
-	integrationSkills        []skills.Skill
+	integrationSkills        *integrationSkillCache
 	// fileListCache memoizes working-directory file listings for the fuzzy
 	// file finder (/api/find-files) so a burst of queries lists the tree once.
 	fileListCache *fileListCache
@@ -461,7 +460,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	s.streamPub = subpub.New[StreamResponse]()
 	s.conversationListGitCache = newConversationListGitCache()
 	s.fileListCache = newFileListCache()
-	s.integrationSkills = discoverIntegrationSkillsAtStartup(logger)
+	s.integrationSkills = newIntegrationSkillCache(logger, currentIntegrationSkillDiscoverer(logger))
 
 	// Persistent terminal sessions live alongside the database so that they
 	// survive shelley restarts. In tests DBPath is empty; use a unique
@@ -1006,8 +1005,7 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		if btwReader {
 			managerConfig.SubagentDepth++
 		}
-		manager := NewConversationManager(conversationID, s.db, s.logger, managerConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
-		manager.integrationSkills = append([]skills.Skill(nil), s.integrationSkills...)
+		manager := NewConversationManager(conversationID, s.db, s.logger, managerConfig, s.integrationSkills, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
 		manager.onTurnStartRejected = func() { go manager.drainPendingMessages(s) }
 		manager.userEmail = userEmail
 		manager.serverPort = s.listenPort
@@ -1078,8 +1076,7 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 
 		subagentConfig := s.toolSetConfig
 		subagentConfig.SubagentDepth++
-		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
-		manager.integrationSkills = append([]skills.Skill(nil), s.integrationSkills...)
+		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, s.integrationSkills, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
 		manager.onTurnStartRejected = func() { go manager.drainPendingMessages(s) }
 		manager.serverPort = s.listenPort
 		manager.onDone = func() { s.dispatchSubagentDone(conversationID) }

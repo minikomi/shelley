@@ -3,7 +3,7 @@
      .screenshot-tool-emoji 📷, .screenshot-tool-filename, .screenshot-tool-toggle,
      .screenshot-tool-details, .screenshot-tool-section, .screenshot-tool-label,
      .screenshot-tool-time, .screenshot-tool-image-container, .tool-image-responsive,
-     .screenshot-tool-error, .screenshot-tool-success, .screenshot-tool-error-message,
+     .screenshot-tool-error-message,
      data-testid tool-call-running/completed. -->
 <template>
   <div
@@ -14,8 +14,6 @@
       <div class="screenshot-tool-summary">
         <span class="screenshot-tool-emoji" :class="{ running: isRunning }">📷</span>
         <span class="screenshot-tool-filename" :title="filename">{{ filename }}</span>
-        <ToolStatusIcon v-if="isComplete && hasError" state="error" class="screenshot-tool-error" />
-        <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="screenshot-tool-success" />
       </div>
       <button
         class="screenshot-tool-toggle"
@@ -69,7 +67,6 @@ import type { LLMContent } from "../../../types";
 import CommentableImage from "../CommentableImage.vue";
 import { displayNeedsAutoOrient, displaySourceSize } from "../../../utils/imageComment";
 import ToolChevron from "./ToolChevron.vue";
-import ToolStatusIcon from "./ToolStatusIcon.vue";
 
 const props = defineProps<{
   toolInput?: unknown;

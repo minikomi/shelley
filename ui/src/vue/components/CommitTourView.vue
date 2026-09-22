@@ -1,5 +1,5 @@
 <template>
-  <div ref="viewRef" class="commit-tour-view" @scroll.passive="scheduleActiveAnchor">
+  <div ref="viewRef" class="commit-tour-view" @scroll.passive="handleScroll">
     <article ref="documentRef" class="commit-tour-document">
       <div v-if="!isMobile" class="commit-tour-toolbar">
         <button
@@ -68,9 +68,11 @@
           :id="tourEntryAnchor(position)"
           :data-tour-anchor="tourEntryAnchor(position)"
           :entry="entry"
+          :expanded="!entry.trivial || expandedAnchors.has(tourEntryAnchor(position))"
           :theme-type="themeType"
           :side-by-side="sideBySide"
           :overflow="isMobile ? 'wrap' : 'scroll'"
+          @update:expanded="emit('expand-change', tourEntryAnchor(position), $event)"
           @comment="emit('open-comment', $event)"
           @line-comment="emit('open-comment', $event)"
         />
@@ -110,10 +112,12 @@ import { TOUR_OVERVIEW_ANCHOR, tourEntryAnchor } from "./commitTourContents";
 const props = defineProps<{
   tour: GitTourResponse;
   commitMessage: GitCommitMessage | null;
+  expandedAnchors: Set<string>;
 }>();
 const emit = defineEmits<{
   (e: "open-comment", target: TourCommentTarget): void;
   (e: "active-anchor-change", anchor: string): void;
+  (e: "expand-change", anchor: string, expanded: boolean): void;
 }>();
 
 const themeType = ref<ThemeTypes>(isDarkModeActive() ? "dark" : "light");
@@ -133,6 +137,55 @@ let tourResizeObserver: ResizeObserver | null = null;
 let selectionFrame: number | null = null;
 let scrollFrame: number | null = null;
 let activeAnchor = "";
+// Retain an explicit selection through lazy layout and bottom clamping, but
+// release it on any independent scroll (including focus and native scrollbars).
+let navigationTarget: HTMLElement | null = null;
+let navigationPosition = { top: 0, height: 0, viewport: 0 };
+
+function releaseMovedNavigation() {
+  const view = viewRef.value;
+  if (!view || !navigationTarget) return;
+  // Lazy diffs can change the scroll extent and clamp/anchor scrollTop. Only
+  // correct those layout shifts; all scrolling within a stable layout is free.
+  if (
+    view.scrollTop !== navigationPosition.top &&
+    view.scrollHeight === navigationPosition.height &&
+    view.clientHeight === navigationPosition.viewport
+  )
+    navigationTarget = null;
+}
+
+function handleScroll() {
+  releaseMovedNavigation();
+  scheduleActiveAnchor();
+}
+
+function alignNavigationTarget() {
+  releaseMovedNavigation();
+  const view = viewRef.value;
+  if (!view || !navigationTarget) return;
+  navigationTarget.scrollIntoView({ block: "start" });
+  navigationPosition = {
+    top: view.scrollTop,
+    height: view.scrollHeight,
+    viewport: view.clientHeight,
+  };
+}
+
+// Either eye controls or inline disclosure can change visibility. Release the
+// previous jump before that layout change, rather than pulling the reader back.
+watch(
+  () => Array.from(props.expandedAnchors),
+  () => {
+    navigationTarget = null;
+  },
+  { flush: "sync" },
+);
+
+function handleTourResize() {
+  alignNavigationTarget();
+  scheduleActiveAnchor();
+}
 
 function isHeaderEntry(entry: GitTourEntry): entry is GitTourHeaderEntry {
   return "header" in entry;
@@ -215,6 +268,9 @@ function updateActiveAnchor() {
   if (canScroll && view.scrollTop + view.clientHeight >= view.scrollHeight - 1) {
     current = anchors.at(-1)?.dataset.tourAnchor ?? current;
   }
+  if (navigationTarget) {
+    current = navigationTarget.dataset.tourAnchor ?? current;
+  }
   if (!current || current === activeAnchor) return;
   activeAnchor = current;
   emit("active-anchor-change", current);
@@ -226,7 +282,16 @@ function scheduleActiveAnchor() {
 }
 
 function scrollToAnchor(anchor: string) {
-  viewRef.value?.querySelector<HTMLElement>(`#${anchor}`)?.scrollIntoView({ block: "start" });
+  navigationTarget = viewRef.value?.querySelector<HTMLElement>(`#${anchor}`) ?? null;
+  const view = viewRef.value;
+  if (view) {
+    navigationPosition = {
+      top: view.scrollTop,
+      height: view.scrollHeight,
+      viewport: view.clientHeight,
+    };
+  }
+  alignNavigationTarget();
   scheduleActiveAnchor();
 }
 
@@ -234,6 +299,7 @@ watch(
   () => props.tour,
   () => {
     activeAnchor = "";
+    navigationTarget = null;
     nextTick(scheduleActiveAnchor);
   },
   { flush: "post" },
@@ -252,7 +318,7 @@ onMounted(() => {
     }
   });
   themeObserver.observe(document.documentElement, { attributes: true });
-  tourResizeObserver = new ResizeObserver(scheduleActiveAnchor);
+  tourResizeObserver = new ResizeObserver(handleTourResize);
   if (viewRef.value) tourResizeObserver.observe(viewRef.value);
   if (documentRef.value) tourResizeObserver.observe(documentRef.value);
   document.addEventListener("selectionchange", handleSelectionChange);

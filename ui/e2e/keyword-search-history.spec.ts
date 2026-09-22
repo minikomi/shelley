@@ -53,7 +53,8 @@ for (const { hasError, searchTerms } of [
     });
     await expect(card).toBeVisible();
     await expect(card.locator(".tool-emoji")).toHaveText("🔍");
-    await expect(card.locator(hasError ? ".tool-error" : ".tool-success")).toBeVisible();
+    await expect(card.locator(".tool-header .tool-status-icon")).toHaveCount(0);
+    await expect(card.locator(".tool-header")).not.toContainText(/[✓✗]/);
     await expect(card.locator(".tool-details")).toBeHidden();
 
     await card.locator(".tool-header").click();

@@ -51,7 +51,12 @@ test.describe('Conversation Cancellation', () => {
 
     // Verify we see the cancelled tool result
     const cancelledTool = page.locator('.bash-tool[data-testid="tool-call-completed"]').filter({ hasText: 'sleep 100' });
-    await expect(cancelledTool.locator('.bash-tool-cancelled')).toBeVisible({ timeout: 5000 });
+    await expect(cancelledTool).toBeVisible({ timeout: 5000 });
+    await expect(cancelledTool.locator('.bash-tool-header')).not.toContainText(/[✓✗]/);
+    await expect(cancelledTool.locator('.tool-status-icon')).toHaveCount(0);
+    await cancelledTool.locator('.bash-tool-header').click();
+    await expect(cancelledTool.locator('.bash-tool-label').filter({ hasText: 'Output' })).toContainText('Output (cancelled):');
+    await expect(cancelledTool.locator('.bash-tool-label').filter({ hasText: 'Output' })).not.toContainText('exit code');
 
     // Verify we see the [Operation cancelled] message in the chat messages
     // (scoped to .messages-container so the conversation drawer preview row,
@@ -72,7 +77,10 @@ test.describe('Conversation Cancellation', () => {
     await expect(page.locator('.status-stop-button')).toBeHidden();
 
     // The cancelled messages should still be visible
-    await expect(page.locator('.bash-tool[data-testid="tool-call-completed"]').filter({ hasText: 'sleep 100' }).locator('.bash-tool-cancelled')).toBeVisible();
+    await expect(cancelledTool).toBeVisible();
+    await expect(cancelledTool.locator('.bash-tool-details')).toHaveCount(0);
+    await cancelledTool.locator('.bash-tool-header').click();
+    await expect(cancelledTool.locator('.bash-tool-label').filter({ hasText: 'Output' })).toContainText('Output (cancelled):');
     await expect(page.locator('.messages-container').locator('text=/\\[Operation cancelled\\]/i')).toBeVisible();
 
     // Verify we can continue the conversation after cancellation

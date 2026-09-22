@@ -6,9 +6,10 @@
         type="button"
         class="commit-tour-chunk-toggle"
         :aria-expanded="expanded"
-        @click="expanded = !expanded"
+        @click="emit('update:expanded', !expanded)"
       >
         <ToolChevron :expanded="expanded" />
+        <span class="tour-trivial-label">trivial</span>
         <code :title="chunkLabel">{{ chunkLabel }}</code>
         <span class="commit-tour-chunk-stats">
           <span class="commit-tour-additions">+{{ chunkStats.additions }}</span>
@@ -56,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import type { FileDiffMetadata, FileDiffOptions, ThemeTypes, ThemesType } from "@pierre/diffs";
 import { getSingularPatch } from "@pierre/diffs";
 import type { GitTourPatchEntry } from "../../services/api";
@@ -73,28 +74,22 @@ import ToolChevron from "./tools/ToolChevron.vue";
 
 const props = defineProps<{
   entry: GitTourPatchEntry;
+  expanded: boolean;
   themeType: ThemeTypes;
   sideBySide: boolean;
   overflow: "scroll" | "wrap";
 }>();
 const emit = defineEmits<{
+  (e: "update:expanded", expanded: boolean): void;
   (e: "comment", target: TourCommentTarget): void;
   (e: "line-comment", target: TourCommentTarget): void;
 }>();
 
 const DIFF_THEMES: ThemesType = { dark: "github-dark", light: "github-light" };
 const MAX_CLICK_MOVEMENT_SQUARED = 25;
-const expanded = ref(!props.entry.trivial);
 const diffHostEl = ref<HTMLElement | null>(null);
 const nearViewport = useNearViewport(diffHostEl);
 let pointerDownPos: { x: number; y: number } | null = null;
-
-watch(
-  () => [props.entry.patch, props.entry.trivial] as const,
-  () => {
-    expanded.value = !props.entry.trivial;
-  },
-);
 
 const patchInfo = computed(() => analyzeTourPatch(props.entry.patch));
 const paths = computed(() => ({
@@ -115,7 +110,7 @@ const isHunk = computed(() => patchInfo.value.isHunk);
 const isBinary = computed(() => patchInfo.value.isBinary);
 
 const fileDiff = computed<FileDiffMetadata | null>(() => {
-  if (!expanded.value || !nearViewport.value || !isHunk.value) return null;
+  if (!props.expanded || !nearViewport.value || !isHunk.value) return null;
   try {
     return getSingularPatch(props.entry.patch);
   } catch (error) {
@@ -185,7 +180,7 @@ const placeholderHeight = computed(
   () => `${Math.min(Math.max(props.entry.patch.split("\n").length, 4) * 18, 1600)}px`,
 );
 const diffError = computed(
-  () => expanded.value && nearViewport.value && isHunk.value && fileDiff.value == null,
+  () => props.expanded && nearViewport.value && isHunk.value && fileDiff.value == null,
 );
 
 const { rendered } = useFileDiffInstance(diffHostEl, () => {

@@ -60,7 +60,10 @@ test.describe("Patch tool open-in-editor", () => {
       const patchTool = page.locator('.patch-tool[data-testid="tool-call-completed"]').first();
       await expect(patchTool).toBeVisible({ timeout: 15000 });
       await expect(patchTool.locator(".patch-tool-filename")).toHaveText("./sub/notes.txt");
-      await expect(patchTool.locator(".patch-tool-error")).toBeVisible();
+      await expect(patchTool.locator(".patch-tool-header .tool-status-icon")).toHaveCount(0);
+      await expect(patchTool.locator(".patch-tool-details")).toHaveCount(0);
+      await patchTool.locator(".patch-tool-header").click();
+      await expect(patchTool.locator(".patch-tool-error-message")).toBeVisible();
 
       await patchTool.getByRole("button", { name: "Open in editor" }).click();
 

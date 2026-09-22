@@ -25,18 +25,6 @@
       <div class="patch-tool-summary">
         <span class="patch-tool-emoji" :class="{ running: isRunning }">🖋️</span>
         <span class="patch-tool-filename" :title="filename">{{ filename }}</span>
-        <ToolStatusIcon
-          v-if="isComplete && hasError"
-          state="error"
-          class="patch-tool-error"
-          label="Patch failed"
-        />
-        <ToolStatusIcon
-          v-if="isComplete && !hasError"
-          state="ok"
-          class="patch-tool-success"
-          label="Patch applied"
-        />
       </div>
       <div class="patch-tool-header-controls">
         <button
@@ -163,7 +151,6 @@ import { useFileDiffInstance } from "../../composables/fileDiffInstance";
 import { useNearViewport } from "../../composables/nearViewport";
 import { useOpenFileEditor } from "../../composables/fileEditor";
 import ToolChevron from "./ToolChevron.vue";
-import ToolStatusIcon from "./ToolStatusIcon.vue";
 import PatchFileDiff from "./PatchFileDiff.vue";
 
 const DIFF_THEMES: ThemesType = { dark: "github-dark", light: "github-light" };

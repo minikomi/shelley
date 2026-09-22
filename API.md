@@ -72,7 +72,7 @@ Unless noted, results exclude **archived** conversations.
   ```json
   {
     "message": "run the tests",
-    "model": "glm-5.2-fireworks",
+    "model": "glm-5.3-fireworks",
     "conversation_options": {
       "thinking_level": "high",
       "tool_overrides": {"bash": "off"},

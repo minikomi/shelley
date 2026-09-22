@@ -1,3 +1,5 @@
+export type RecordingMode = "microphone" | "screen";
+
 // A recording is bound at start, never to the conversation selected at stop.
 export interface RecordingDestination {
   conversationId: string;

@@ -1,7 +1,7 @@
 <!-- Vue port of components/BashTool.tsx. Preserves the exact DOM classes and
      data-testid contract the e2e tests rely on (.bash-tool,
      .bash-tool-command, .bash-tool-code, .bash-tool-details,
-     .bash-tool-header, .bash-tool-cancelled, tool-call-running/completed). -->
+     .bash-tool-header, tool-call-running/completed). -->
 <template>
   <div class="bash-tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
     <div class="bash-tool-header" @click="isExpanded = !isExpanded">
@@ -16,13 +16,6 @@
         <span v-if="displayData?.workingDir" class="bash-tool-cwd" :title="displayData.workingDir">
           in {{ displayData.workingDir }}
         </span>
-        <span v-if="isComplete && isCancelled" class="bash-tool-cancelled">✗ cancelled</span>
-        <ToolStatusIcon
-          v-if="isComplete && hasError && !isCancelled"
-          state="error"
-          class="bash-tool-error"
-        />
-        <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="bash-tool-success" />
       </div>
       <button
         class="bash-tool-toggle"
@@ -71,7 +64,7 @@
 
       <div v-if="isComplete" class="bash-tool-section">
         <div class="bash-tool-label">
-          Output{{ hasError ? " (Error)" : "" }}:
+          {{ outputLabel }}:
           <span v-if="executionTime" class="bash-tool-time">{{ executionTime }}</span>
         </div>
         <AnsiText
@@ -89,11 +82,11 @@ import type { LLMContent } from "../../../types";
 import HighlightedCode from "../HighlightedCode.vue";
 import AnsiText from "./AnsiText.vue";
 import ToolChevron from "./ToolChevron.vue";
-import ToolStatusIcon from "./ToolStatusIcon.vue";
 import { isCancelledToolResult } from "../../utils/toolStatus";
 
 interface BashDisplayData {
   workingDir: string;
+  exitCode?: number;
 }
 
 const props = defineProps<{
@@ -171,6 +164,13 @@ const output = computed(() =>
 );
 
 const isCancelled = computed(() => props.hasError && isCancelledToolResult(output.value));
+
+const outputLabel = computed(() => {
+  if (isCancelled.value) return "Output (cancelled)";
+  const exitCode = displayData.value?.exitCode;
+  if (typeof exitCode === "number") return `Output (exit code ${exitCode})`;
+  return props.hasError ? "Output (Error)" : "Output";
+});
 
 const displayCommand = computed(() => {
   const cmd = command.value;

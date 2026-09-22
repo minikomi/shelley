@@ -56,6 +56,8 @@
           {{ t("recordingReturn") }}
         </button>
         <RecordingPanel
+          :initial-mode="recordingSubmission!.mode"
+          :initial-screen="recordingSubmission?.screen"
           :preserved-text="recordingSubmission?.message"
           :on-complete="handleRecordingComplete"
           @close="closeRecording"
@@ -315,14 +317,24 @@
           </svg>
         </button>
         <button
+          v-if="recordingSubmission && !recordingActive"
+          type="button"
+          class="btn btn-secondary"
+          data-testid="recording-pending-cancel-button"
+          @click="closeRecording"
+        >
+          {{ t("cancel") }}
+        </button>
+        <button
           v-if="mediaRecordingAvailable"
           type="button"
-          :disabled="isDisabled || uploadsInProgress > 0 || !!recordingSubmission"
+          :disabled="!canRecordAudio"
           :aria-busy="!!recordingSubmission && !recordingActive"
           class="message-voice-btn"
           :aria-label="t('recordingTitle')"
+          :title="`${t('recordingTitle')} (${menuShortcutLabel('recordAudio')})`"
           data-testid="voice-button"
-          @click="beginRecording"
+          @click="beginRecording('microphone')"
         >
           <span v-if="recordingSubmission && !recordingActive" class="spinner spinner-small" />
           <svg
@@ -513,7 +525,8 @@ import {
 } from "./composerDispatch";
 import { isImeComposing } from "../../utils/imeComposing";
 import RecordingPanel from "./RecordingPanel.vue";
-import type { RecordingDestination } from "./recordingDestination";
+import type { RecordingDestination, RecordingMode } from "./recordingDestination";
+import { menuShortcutLabel } from "../../utils/menuShortcuts";
 import {
   CONCRETE_THINKING_LEVELS,
   supportedThinkingLevels,
@@ -616,6 +629,8 @@ const sendSelectedLevel = ref<ContextUsageLevel>("");
 
 const message = ref(props.draftSeed?.value ?? "");
 type RecordingSubmission = {
+  mode: RecordingMode;
+  screen?: Promise<MediaStream>;
   destination?: RecordingDestination;
   message: string;
   context: string;
@@ -697,9 +712,28 @@ function handleResize() {
   isSmallScreen.value = window.innerWidth < 480;
 }
 
-async function beginRecording() {
-  if (recordingSubmission.value) return;
+const canRecordAudio = computed(
+  () => mediaRecordingAvailable && props.recordingInlineAvailable && !isDisabled.value &&
+    !submitting.value && uploadsInProgress.value === 0 && !recordingSubmission.value,
+);
+const canRecordScreen = computed(() => canRecordAudio.value && screenRecordingAvailable);
+
+defineExpose({ canRecordAudio, canRecordScreen, beginRecording });
+
+// Before the panel mounts, the composer owns the requested screen stream.
+function releasePendingScreen(submission: RecordingSubmission) {
+  if (submission.destination || !submission.screen) return;
+  void submission.screen.then(
+    (stream) => stream.getTracks().forEach((track) => track.stop()),
+    () => {}, // A rejected picker owns no media.
+  );
+  submission.screen = undefined;
+}
+
+async function beginRecording(mode: RecordingMode) {
+  if (!(mode === "screen" ? canRecordScreen.value : canRecordAudio.value)) return;
   const submission: RecordingSubmission = {
+    mode,
     message: message.value,
     context: composeMessageWithAttachments(message.value),
     attachmentIDs: readyAttachments.value.map(({ id }) => id),
@@ -707,8 +741,17 @@ async function beginRecording() {
   };
   recordingSubmission.value = submission;
   try {
+    if (mode === "screen") {
+      // Keep the picker in the initiating key/click handler, before draft I/O.
+      submission.screen = navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      // The panel presents picker failures after the destination is ready.
+      void submission.screen.catch(() => {});
+    }
     const destination = await props.onStartRecording(submission.message);
-    if (recordingSubmission.value !== submission) return;
+    if (recordingSubmission.value !== submission) {
+      releasePendingScreen(submission);
+      return;
+    }
     // A new draft may have finished creating after navigation away from /new.
     if (attachmentSessions.get(null) === submission.attachmentSession) {
       attachmentSessions.delete(null);
@@ -716,7 +759,8 @@ async function beginRecording() {
     attachmentSessions.set(destination.conversationId, submission.attachmentSession);
     recordingSubmission.value = { ...submission, destination };
   } catch {
-    // The parent surfaces destination-creation errors. No media was acquired.
+    // The parent surfaces destination-creation errors. Release any selected screen.
+    releasePendingScreen(submission);
     if (recordingSubmission.value === submission) recordingSubmission.value = null;
     if (![...attachmentSessions.values()].includes(submission.attachmentSession)) {
       clearAttachments(submission.attachmentSession);
@@ -744,6 +788,7 @@ function handleRecordingComplete(path: string) {
 
 async function closeRecording() {
   const wasInline = !recordingFloating.value;
+  if (recordingSubmission.value) releasePendingScreen(recordingSubmission.value);
   recordingSubmission.value = null;
   await nextTick();
   if (wasInline) textareaRef.value?.focus();
@@ -1480,6 +1525,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (recordingSubmission.value) releasePendingScreen(recordingSubmission.value);
   recordingSubmission.value = null;
   window.removeEventListener("resize", handleResize);
   if (typeof window !== "undefined" && window.visualViewport) {

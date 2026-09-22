@@ -71,9 +71,7 @@
                 />
               </svg>
               <span class="tool-result-name text-sm font-medium text-blue">{{ toolName }}</span>
-              <span :class="`tool-result-status text-xs ${toolError ? 'error' : 'success'}`">
-                {{ toolError ? "\u2717" : "\u2713" }} {{ summary }}
-              </span>
+              <span class="tool-result-status text-xs">{{ summary }}</span>
             </div>
             <div class="tool-result-time">
               <span v-if="executionTime">{{ executionTime }}</span>

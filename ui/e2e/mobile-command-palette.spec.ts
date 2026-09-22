@@ -31,7 +31,12 @@ test.describe("Command palette from overflow menu", () => {
     const search = page.locator(".command-palette-input");
     await expect(search).toBeVisible();
     await search.fill("notification");
-    await expect(page.locator(".command-palette-item").first()).toBeVisible();
+    const firstCommand = page.locator(".command-palette-item").first();
+    await expect(firstCommand).toBeVisible();
+    await expect(firstCommand.locator(".command-palette-item-title")).toHaveCSS(
+      "font-size",
+      "16px",
+    );
 
     // Escape closes it again.
     await page.keyboard.press("Escape");

@@ -9,8 +9,6 @@
       <div class="screencast-tool-summary">
         <span class="screencast-tool-emoji" :class="{ running: isRunning }">{{ emoji }}</span>
         <span class="screencast-tool-label">{{ label }}</span>
-        <ToolStatusIcon v-if="isComplete && hasError" state="error" class="screencast-tool-error" />
-        <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="screencast-tool-success" />
       </div>
       <button
         class="screencast-tool-toggle"
@@ -65,7 +63,6 @@
 import { computed, ref } from "vue";
 import type { LLMContent } from "../../../types";
 import ToolChevron from "./ToolChevron.vue";
-import ToolStatusIcon from "./ToolStatusIcon.vue";
 
 const props = defineProps<{
   toolInput?: unknown;

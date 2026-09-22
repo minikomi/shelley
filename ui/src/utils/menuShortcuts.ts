@@ -4,8 +4,8 @@
 //                              handler the menu click would
 //
 // Command Palette (Cmd/Ctrl+K) and Edit File (Cmd/Ctrl+Shift+P) are matched in
-// App.vue, which owns those two modals; their display labels live here too so
-// the menu can render a consistent hint for every row.
+// App.vue, which owns those two modals. Recording shortcuts also live in App.vue.
+// Their display labels live here too so menus can render consistent hints.
 //
 // Design notes (see issue #248):
 //   - Browsers reserve most single Cmd/Ctrl+<letter> combos (Cmd+T new tab,
@@ -30,12 +30,15 @@ export type MenuActionId =
   | "export"
   | "editAgentsMd"
   | "editFile"
-  | "checkVersion";
+  | "checkVersion"
+  | "recordAudio"
+  | "recordScreen";
 
 interface Combo {
   // "mod" = Cmd on mac / Ctrl elsewhere. "ctrl" = Ctrl on both platforms.
   mod: "mod" | "ctrl";
   shift: boolean;
+  alt?: boolean;
   code: string; // KeyboardEvent.code, e.g. "KeyD", "Comma", "Backquote"
   label: string; // glyph shown in the hint, e.g. "D", ",", "`"
 }
@@ -50,10 +53,12 @@ export const MENU_COMBOS: Record<MenuActionId, Combo> = {
   editAgentsMd: { mod: "mod", shift: true, code: "Comma", label: "," },
   editFile: { mod: "mod", shift: true, code: "KeyP", label: "P" },
   checkVersion: { mod: "mod", shift: true, code: "KeyU", label: "U" },
+  recordAudio: { mod: "mod", shift: true, code: "KeyM", label: "M" },
+  recordScreen: { mod: "mod", alt: true, shift: true, code: "KeyM", label: "M" },
 };
 
 // Menu actions whose keydown is handled inside ChatInterface (i.e. everything
-// except the palette and file finder, which App.vue owns).
+// except the palette, file finder, and recording, which App.vue owns).
 export const CHAT_INTERFACE_ACTIONS: readonly MenuActionId[] = [
   "diffs",
   "gitGraph",
@@ -71,9 +76,11 @@ export function menuShortcutLabel(id: MenuActionId): string {
     const ctrl = c.mod === "ctrl" ? "\u2303" : ""; // ⌃
     const cmd = c.mod === "mod" ? "\u2318" : ""; // ⌘
     const shift = c.shift ? "\u21e7" : ""; // ⇧
-    return `${ctrl}${cmd}${shift}${c.label}`;
+    const alt = c.alt ? "\u2325" : ""; // ⌥
+    return `${ctrl}${cmd}${alt}${shift}${c.label}`;
   }
   const parts = ["Ctrl"]; // both "mod" and "ctrl" are Ctrl off-mac
+  if (c.alt) parts.push("Alt");
   if (c.shift) parts.push("Shift");
   parts.push(c.label);
   return parts.join("+");
@@ -82,7 +89,7 @@ export function menuShortcutLabel(id: MenuActionId): string {
 /** Does a keydown event match this combo? Matches physical key + modifiers. */
 export function comboMatches(e: KeyboardEvent, c: Combo): boolean {
   if (e.code !== c.code) return false;
-  if (e.altKey) return false;
+  if (e.altKey !== !!c.alt) return false;
   if (c.shift !== e.shiftKey) return false;
   if (c.mod === "ctrl") return e.ctrlKey && !e.metaKey;
   // "mod": Cmd-only on mac, Ctrl-only elsewhere.

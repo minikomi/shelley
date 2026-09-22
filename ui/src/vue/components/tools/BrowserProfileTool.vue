@@ -6,8 +6,6 @@
       <div class="tool-summary">
         <span class="tool-emoji" :class="{ running: isRunning }">📊</span>
         <span class="tool-command">{{ summary }}</span>
-        <ToolStatusIcon v-if="isComplete && hasError" state="error" class="tool-error" />
-        <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="tool-success" />
       </div>
       <button
         class="tool-toggle"
@@ -64,7 +62,6 @@
 import { computed, ref } from "vue";
 import type { LLMContent } from "../../../types";
 import ToolChevron from "./ToolChevron.vue";
-import ToolStatusIcon from "./ToolStatusIcon.vue";
 
 interface ProfileInput {
   action?: string;

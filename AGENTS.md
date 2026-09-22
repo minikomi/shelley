@@ -7,7 +7,7 @@
    a thing. This is useful for interactive testing with a browser, since you don't rely on a model,
    and can fabricate some inputs and outputs. To test things, launch shelley with the relevant flag
    to only expose this model, and use shelley with a browser.
-6. Build the UI (`make ui` or `cd ui && pnpm install && pnpm run build`) before running Go tests so `ui/dist` exists for the embed.
+6. Build the UI (`make ui` or `cd ui && pnpm install && pnpm run build`) before running Go tests so `ui/dist` exists for the embed. `make templates` and `make exe-scroll` supply the other embedded assets (`*.tar.gz`, the exe-scroll binary); `make build` does all of it.
 7. **Always run `cd ui && pnpm run type-check && pnpm run type-check:vue` after modifying any `.ts`, `.tsx`, or `.vue` file.** Fix all errors before committing. Run linting with `pnpm run lint`.
 8. Run Go unit tests with `go test ./server` (or narrower packages while iterating) once the UI bundle is built.
 9. To programmatically type into the message input (e.g., in browser automation), set the
@@ -29,7 +29,7 @@
     ```
     Then use browser tools to navigate to http://localhost:8002/ and interact with the UI.
 13. NEVER use alert(), confirm(), or prompt(). Use proper UI components like tooltips, modals, or toasts instead.
-14. SQL migrations and frontend changes require rebuilding the binary (`make build` or `go generate ./... && cd ui && pnpm run build`).
+14. SQL migrations and frontend changes require rebuilding the binary (`make build` or `go generate ./... && cd ui && pnpm run build`). `Error: UI build is stale!` compares `ui/src` against the build info embedded in `bin/shelley`, so rebuilding `dist/` alone never clears it; rebuild the binary.
 15. Tool changes and UI tool widget updates go hand in hand. When you add, rename, remove, or
     restructure a tool (in `claudetool/`), you MUST update the UI components that render it:
     - `ui/src/vue/components/CoalescedToolCall.vue` (`TOOL_COMPONENTS` map) and the tool

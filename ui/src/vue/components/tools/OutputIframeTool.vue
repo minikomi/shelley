@@ -18,16 +18,6 @@
       <div class="output-iframe-tool-summary">
         <span class="output-iframe-tool-emoji" :class="{ running: isRunning }">✨</span>
         <span class="output-iframe-tool-title" :title="title">{{ title }}</span>
-        <ToolStatusIcon
-          v-if="isComplete && hasError"
-          state="error"
-          class="output-iframe-tool-error"
-        />
-        <ToolStatusIcon
-          v-if="isComplete && !hasError"
-          state="ok"
-          class="output-iframe-tool-success"
-        />
       </div>
       <div class="output-iframe-tool-actions">
         <template v-if="isComplete && !hasError && html">
@@ -130,7 +120,6 @@ import { computed, ref, onMounted, onUnmounted } from "vue";
 import JSZip from "jszip";
 import type { LLMContent } from "../../../types";
 import ToolChevron from "./ToolChevron.vue";
-import ToolStatusIcon from "./ToolStatusIcon.vue";
 
 interface EmbeddedFile {
   name: string;

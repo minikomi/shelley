@@ -117,6 +117,7 @@ import { useI18n } from "../composables/i18n";
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
 import { menuShortcutLabel } from "../../utils/menuShortcuts";
+import type { RecordingMode } from "./recordingDestination";
 
 interface CommandItem {
   id: string;
@@ -138,9 +139,12 @@ const props = defineProps<{
   conversations: ConversationWithState[];
   currentConversation: ConversationWithState | null;
   hasCwd: boolean;
+  canRecordAudio: boolean;
+  canRecordScreen: boolean;
 }>();
 
 const emit = defineEmits<{
+  (e: "record", mode: RecordingMode): void;
   (e: "close"): void;
   (e: "new-conversation"): void;
   (e: "new-conversation-with-cwd", cwd: string): void;
@@ -177,6 +181,8 @@ let searchTimeout: number | null = null;
 // --- Icon markup (identical to the React JSX icons) ---
 const SVG_OPEN =
   '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">';
+const ICON_MICROPHONE = `${SVG_OPEN}<rect x="9" y="2" width="6" height="12" rx="3" /><path stroke-linecap="round" stroke-linejoin="round" d="M5 10v2a7 7 0 0014 0v-2M12 19v3m-4 0h8" /></svg>`;
+const ICON_SCREEN = `${SVG_OPEN}<rect x="3" y="5" width="13" height="14" rx="2" /><path stroke-linecap="round" stroke-linejoin="round" d="m16 10 5-3v10l-5-3z" /></svg>`;
 const ICON_PLUS = `${SVG_OPEN}<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>`;
 const ICON_DOWN = `${SVG_OPEN}<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>`;
 const ICON_UP = `${SVG_OPEN}<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" /></svg>`;
@@ -293,6 +299,24 @@ const actionItems = computed<CommandItem[]>(() => {
     },
     keywords: ["new", "create", "start", "conversation", "chat"],
   });
+
+  for (const mode of ["microphone", "screen"] as const) {
+    if (!(mode === "screen" ? props.canRecordScreen : props.canRecordAudio)) continue;
+    items.push({
+      id: `record-${mode}`,
+      type: "action",
+      title: mode === "screen" ? "Record audio and screen" : "Record audio",
+      shortcut: menuShortcutLabel(mode === "screen" ? "recordScreen" : "recordAudio"),
+      icon: mode === "screen" ? ICON_SCREEN : ICON_MICROPHONE,
+      action: () => {
+        emit("record", mode);
+        emit("close");
+      },
+      keywords: mode === "screen"
+        ? ["record", "audio", "voice", "microphone", "screen", "window", "video", "capture"]
+        : ["record", "audio", "voice", "microphone", "dictation", "transcribe"],
+    });
+  }
 
   const homeDir = window.__SHELLEY_INIT__?.home_dir;
   if (homeDir) {

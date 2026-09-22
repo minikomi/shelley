@@ -11,6 +11,95 @@ import (
 	"github.com/josharian/sockpath"
 )
 
+func TestBashToolExitCode(t *testing.T) {
+	workingDir := t.TempDir()
+	tool := (&BashTool{WorkingDir: NewMutableWorkingDir(workingDir)}).Tool()
+
+	t.Run("success", func(t *testing.T) {
+		out := tool.Run(t.Context(), json.RawMessage(`{"command":"printf unchanged"}`))
+		if out.Error != nil {
+			t.Fatalf("Run() error = %v", out.Error)
+		}
+		if got := out.LLMContent[0].Text; got != "unchanged" {
+			t.Fatalf("LLM output = %q, want %q", got, "unchanged")
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.WorkingDir != workingDir {
+			t.Errorf("WorkingDir = %q, want %q", display.WorkingDir, workingDir)
+		}
+		if display.ExitCode == nil || *display.ExitCode != 0 {
+			t.Errorf("ExitCode = %v, want 0", display.ExitCode)
+		}
+		encoded, err := json.Marshal(display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(encoded), `"exitCode":0`) {
+			t.Errorf("marshaled display = %s, want exitCode 0", encoded)
+		}
+	})
+
+	t.Run("nonzero exit", func(t *testing.T) {
+		out := tool.Run(t.Context(), json.RawMessage(`{"command":"printf unchanged; exit 7"}`))
+		if out.Error == nil {
+			t.Fatal("Run() error = nil, want non-nil")
+		}
+		if got, want := out.Error.Error(), "[command failed: exit status 7]\nunchanged"; got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.WorkingDir != workingDir {
+			t.Errorf("WorkingDir = %q, want %q", display.WorkingDir, workingDir)
+		}
+		if display.ExitCode == nil || *display.ExitCode != 7 {
+			t.Errorf("ExitCode = %v, want 7", display.ExitCode)
+		}
+	})
+
+	t.Run("cancelled before execution", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		out := tool.Run(ctx, json.RawMessage(`{"command":"printf should-not-run"}`))
+		if out.Error == nil {
+			t.Fatal("Run() error = nil, want non-nil")
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.WorkingDir != workingDir {
+			t.Errorf("WorkingDir = %q, want %q", display.WorkingDir, workingDir)
+		}
+		if display.ExitCode != nil {
+			t.Errorf("ExitCode = %v, want unknown", *display.ExitCode)
+		}
+		encoded, err := json.Marshal(display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "exitCode") {
+			t.Errorf("marshaled display = %s, want exitCode omitted", encoded)
+		}
+	})
+
+	t.Run("signal", func(t *testing.T) {
+		out := tool.Run(t.Context(), json.RawMessage(`{"command":"kill -TERM $$"}`))
+		if out.Error == nil {
+			t.Fatal("Run() error = nil, want non-nil")
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.ExitCode != nil {
+			t.Errorf("ExitCode = %v, want unknown", *display.ExitCode)
+		}
+	})
+}
+
+func bashDisplayData(t *testing.T, value any) BashDisplayData {
+	t.Helper()
+	display, ok := value.(BashDisplayData)
+	if !ok {
+		t.Fatalf("Display = %T, want BashDisplayData", value)
+	}
+	return display
+}
+
 func TestBashSlowOk(t *testing.T) {
 	// Test that slow_ok flag is properly handled
 	t.Run("SlowOk Flag", func(t *testing.T) {
@@ -121,6 +210,9 @@ func TestBashTool(t *testing.T) {
 			t.Errorf("Expected timeout error, got none")
 		} else if !strings.Contains(toolOut.Error.Error(), "timed out") {
 			t.Errorf("Expected timeout error, got: %v", toolOut.Error)
+		}
+		if display := bashDisplayData(t, toolOut.Display); display.ExitCode != nil {
+			t.Errorf("ExitCode = %v, want unknown after timeout", *display.ExitCode)
 		}
 	})
 

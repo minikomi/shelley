@@ -1,5 +1,5 @@
 <!-- Inline recording takeover for the message composer. Starts with the
-     microphone immediately, buffers one-second chunks, and can discard and
+     requested media immediately, buffers one-second chunks, and can discard and
      restart the capture with screen/window video plus microphone audio. -->
 <template>
   <div
@@ -123,11 +123,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "../composables/i18n";
+import type { RecordingMode } from "./recordingDestination";
 
-type RecordingMode = "microphone" | "screen";
 type RecordingState = "starting" | "preroll" | "recording" | "stopping" | "error";
 
 const props = defineProps<{
+  initialMode: RecordingMode;
+  initialScreen?: Promise<MediaStream>;
   preservedText?: string;
   onComplete: (path: string) => void;
 }>();
@@ -136,7 +138,7 @@ const emit = defineEmits<{
 }>();
 const { t } = useI18n();
 
-const mode = ref<RecordingMode>("microphone");
+const mode = ref<RecordingMode>(props.initialMode);
 const state = ref<RecordingState>("starting");
 const errorMessage = ref("");
 const elapsedMs = ref(0);
@@ -326,13 +328,7 @@ async function responseError(response: Response, action: string): Promise<Error>
   return new Error(`${action}: ${detail}`);
 }
 
-async function createScreenStream(selectedScreen?: MediaStream): Promise<MediaStream> {
-  const screen =
-    selectedScreen ?? (await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }));
-  displayStream.value = screen;
-  screen.getVideoTracks()[0]?.addEventListener("ended", onDisplayEnded, { once: true });
-  if (discarding) throw new DOMException("Recording cancelled", "AbortError");
-
+async function createScreenStream(screen: MediaStream): Promise<MediaStream> {
   microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   if (discarding) throw new DOMException("Recording cancelled", "AbortError");
 
@@ -349,11 +345,8 @@ async function createScreenStream(selectedScreen?: MediaStream): Promise<MediaSt
   return new MediaStream([...screen.getVideoTracks(), ...microphoneTracks]);
 }
 
-async function createRecordingStream(
-  recordingMode: RecordingMode,
-  selectedScreen?: MediaStream,
-): Promise<MediaStream> {
-  if (recordingMode === "screen") return createScreenStream(selectedScreen);
+async function createRecordingStream(recordingMode: RecordingMode): Promise<MediaStream> {
+  if (recordingMode === "screen") return createScreenStream(displayStream.value!);
   microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   return microphoneStream;
 }
@@ -408,7 +401,10 @@ function onDisplayEnded() {
   else if (state.value === "starting") void presentFailure(new Error(t("recordingScreenEnded")));
 }
 
-async function startRecording(recordingMode: RecordingMode, selectedScreen?: MediaStream) {
+async function startRecording(
+  recordingMode: RecordingMode,
+  selectedScreen?: MediaStream | Promise<MediaStream>,
+) {
   mode.value = recordingMode;
   discarding = false;
   errorMessage.value = "";
@@ -418,10 +414,24 @@ async function startRecording(recordingMode: RecordingMode, selectedScreen?: Med
   recordedChunks = [];
 
   try {
+    if (recordingMode === "screen") {
+      // Initial capture is requested by the composer; retries request it here
+      // before yielding, while still in the Retry button's click handler.
+      displayStream.value = await (
+        selectedScreen ?? navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      );
+      if (discarding || disposed) {
+        await cleanupMedia();
+        return;
+      }
+      const video = displayStream.value.getVideoTracks()[0];
+      if (!video || video.readyState === "ended") throw new Error(t("recordingScreenEnded"));
+      video.addEventListener("ended", onDisplayEnded, { once: true });
+    }
     await afterNextPaint();
     if (discarding || disposed) return;
 
-    recordingStream = await createRecordingStream(recordingMode, selectedScreen);
+    recordingStream = await createRecordingStream(recordingMode);
     if (discarding || disposed) {
       await cleanupMedia();
       return;
@@ -556,6 +566,7 @@ async function restartWithScreen() {
   state.value = "stopping";
   await discardCapture();
   if (!disposed) await startRecording("screen", screen);
+  else screen.getTracks().forEach((track) => track.stop());
 }
 
 async function retry() {
@@ -570,7 +581,7 @@ async function cancelRecording() {
   if (!disposed) emit("close");
 }
 
-onMounted(() => void startRecording("microphone"));
+onMounted(() => void startRecording(props.initialMode, props.initialScreen));
 
 onBeforeUnmount(() => {
   disposed = true;

@@ -335,7 +335,9 @@
                   v-else-if="tourContents.length > 0"
                   :items="tourContents"
                   :active-anchor="activeTourAnchor"
+                  :expanded-anchors="expandedTourAnchors"
                   @select="scrollToTourAnchor"
+                  @expand-change="setTourExpanded"
                 />
                 <div v-else class="diff-viewer-file-list-empty">No tour sections</div>
               </div>
@@ -374,6 +376,8 @@
               ref="tourViewRef"
               :tour="tourResponse"
               :commit-message="selectedTourCommitMessage"
+              :expanded-anchors="expandedTourAnchors"
+              @expand-change="setTourExpanded"
               @active-anchor-change="handleTourActiveAnchor"
               @open-comment="openTourComment"
             />
@@ -592,6 +596,7 @@ const tourResponse = ref<GitTourResponse | null>(null);
 const tourViewRef = ref<{ scrollToAnchor: (anchor: string) => void } | null>(null);
 const tourContentsScrollRef = ref<HTMLElement | null>(null);
 const activeTourAnchor = ref<string | null>(null);
+const expandedTourAnchors = ref(new Set<string>());
 let tourContentsResizeObserver: ResizeObserver | null = null;
 const tourLoading = ref(false);
 const tourError = ref<string | null>(null);
@@ -667,6 +672,7 @@ watch(
     const requestId = ++tourRequestId;
     tourResponse.value = null;
     activeTourAnchor.value = null;
+    expandedTourAnchors.value = new Set();
     tourError.value = null;
     tourLoading.value = false;
     tourCommentTarget.value = null;
@@ -1489,6 +1495,11 @@ const tourContents = computed(() =>
 
 function scrollToTourAnchor(anchor: string) {
   tourViewRef.value?.scrollToAnchor(anchor);
+}
+
+function setTourExpanded(anchor: string, expanded: boolean) {
+  if (expanded) expandedTourAnchors.value.add(anchor);
+  else expandedTourAnchors.value.delete(anchor);
 }
 
 function handleTourActiveAnchor(anchor: string) {

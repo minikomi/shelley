@@ -1,5 +1,4 @@
-<!-- Narrative-order prefix tree for commit-tour filenames. Reuses the diff
-     tree row styling without the diff tree's sorting or collapse behavior. -->
+<!-- Narrative-order file groups. Each filename is shown once above its change links. -->
 <template>
   <nav aria-label="Tour contents">
     <ol class="diff-viewer-tour-contents">
@@ -52,15 +51,13 @@
                 <span class="diff-tree-label">{{ row.label }}</span>
               </div>
               <button
-                v-else
+                v-else-if="row.kind === 'file'"
                 type="button"
-                :class="['diff-tree-row', { active: row.item.anchor === activeAnchor }]"
+                class="diff-tree-row tour-file-heading"
                 :style="{ paddingLeft: `calc(0.375rem + ${row.depth} * 0.85rem)` }"
-                :data-tour-target="row.item.anchor"
-                :title="row.item.label"
-                :aria-label="row.item.label"
-                :aria-current="row.item.anchor === activeAnchor ? 'location' : undefined"
-                @click="emit('select', row.item.anchor)"
+                :title="row.label"
+                :aria-label="`Go to first change in ${row.label}`"
+                @click="emit('select', row.anchor)"
               >
                 <span class="diff-tree-icon" aria-hidden="true">
                   <svg width="12" height="12" viewBox="0 0 16 16">
@@ -78,26 +75,76 @@
                     row.filenameSuffix
                   }}</span>
                 </span>
-                <span
-                  v-if="row.item.decoration"
-                  class="diff-tree-decoration"
-                  :title="row.item.decorationTitle"
-                  aria-hidden="true"
-                  >{{ row.item.decoration }}</span
-                >
-                <span
-                  v-if="row.item.additions > 0 || row.item.deletions > 0"
-                  class="diff-tree-changes"
-                  aria-hidden="true"
-                >
-                  <span v-if="row.item.additions > 0" class="diff-tree-changes-added"
-                    >+{{ row.item.additions }}</span
-                  >
-                  <span v-if="row.item.deletions > 0" class="diff-tree-changes-deleted"
-                    >&minus;{{ row.item.deletions }}</span
-                  >
-                </span>
               </button>
+              <div
+                v-else
+                :class="[
+                  'diff-tree-row tour-change-row',
+                  {
+                    active: row.item.anchor === activeAnchor,
+                    'tour-change-collapsed': isChangeHidden(row.item),
+                  },
+                ]"
+                :style="{ paddingLeft: `calc(0.375rem + ${row.depth} * 0.85rem)` }"
+              >
+                <component
+                  :is="row.item.trivial ? 'button' : 'span'"
+                  :type="row.item.trivial ? 'button' : undefined"
+                  class="tour-visibility-control"
+                  :title="row.item.trivial ? visibilityLabel(row.item) : undefined"
+                  :aria-label="row.item.trivial ? visibilityLabel(row.item) : undefined"
+                  :aria-expanded="row.item.trivial ? !isChangeHidden(row.item) : undefined"
+                  :aria-controls="row.item.trivial ? row.item.anchor : undefined"
+                  @click="toggleVisibility(row.item)"
+                >
+                  <svg
+                    class="tour-visibility-icon"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path
+                      v-if="isChangeHidden(row.item)"
+                      d="M3 10q9 10 18 0 M5 12l-2 2 M12 15v3 M19 12l2 2"
+                    />
+                    <template v-else>
+                      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+                      <circle cx="12" cy="12" r="2.5" />
+                    </template>
+                  </svg>
+                </component>
+                <button
+                  type="button"
+                  class="tour-change-link"
+                  :data-tour-target="row.item.anchor"
+                  :title="changeLabel(row.item)"
+                  :aria-label="changeLabel(row.item)"
+                  :aria-current="row.item.anchor === activeAnchor ? 'location' : undefined"
+                  @click="emit('select', row.item.anchor)"
+                >
+                  <span class="diff-tree-decoration tour-change-range" aria-hidden="true">
+                    {{ row.item.decoration || "File change" }}
+                  </span>
+                  <span
+                    v-if="row.item.additions > 0 || row.item.deletions > 0"
+                    class="diff-tree-changes"
+                    aria-hidden="true"
+                  >
+                    <span v-if="row.item.additions > 0" class="diff-tree-changes-added"
+                      >+{{ row.item.additions }}</span
+                    >
+                    <span v-if="row.item.deletions > 0" class="diff-tree-changes-deleted"
+                      >&minus;{{ row.item.deletions }}</span
+                    >
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </li>
@@ -110,6 +157,7 @@
 import { computed } from "vue";
 import {
   buildTourContentsLayout,
+  type TourChangeItem,
   type TourContentsGroup,
   type TourContentsItem,
 } from "./commitTourContents";
@@ -117,10 +165,31 @@ import {
 const props = defineProps<{
   items: TourContentsItem[];
   activeAnchor: string | null;
+  expandedAnchors: Set<string>;
 }>();
-const emit = defineEmits<{ (e: "select", anchor: string): void }>();
+const emit = defineEmits<{
+  (e: "select", anchor: string): void;
+  (e: "expand-change", anchor: string, expanded: boolean): void;
+}>();
 
 const layout = computed(() => buildTourContentsLayout(props.items));
+
+function isChangeHidden(item: TourChangeItem): boolean {
+  return item.trivial && !props.expandedAnchors.has(item.anchor);
+}
+
+function visibilityLabel(item: TourChangeItem): string {
+  return `${isChangeHidden(item) ? "Show" : "Hide"} ${item.label}`;
+}
+
+function toggleVisibility(item: TourChangeItem) {
+  if (item.trivial) emit("expand-change", item.anchor, isChangeHidden(item));
+}
+
+function changeLabel(item: TourChangeItem): string {
+  if (!item.trivial) return item.label;
+  return `${item.label} — trivial change (${isChangeHidden(item) ? "hidden" : "shown"})`;
+}
 
 function groupKey(group: TourContentsGroup): string {
   return group.section?.anchor ?? group.rows[0]?.key ?? "empty";

@@ -354,6 +354,7 @@
          re-seed from a stale draft seed. Text sync across conversation
          switches is handled by MessageInput's draftSeed watch. -->
     <MessageInput
+      ref="messageInputRef"
       v-show="!currentConversation?.archived"
       :on-send="sendMessage"
       :on-start-recording="prepareRecording"
@@ -575,7 +576,7 @@ import {
 import { SELECTED_MODEL_KEY, pickReadyModel, storedSelectedModel } from "./selectedModel";
 
 import MessageInput from "./MessageInput.vue";
-import type { RecordingDestination } from "./recordingDestination";
+import type { RecordingDestination, RecordingMode } from "./recordingDestination";
 import ConversationTOC from "./ConversationTOC.vue";
 import ModelBar from "./ModelBar.vue";
 import SystemPromptView from "./SystemPromptView.vue";
@@ -686,6 +687,14 @@ const {
 } = useVersionChecker();
 
 // ---- core state ----
+const messageInputRef = ref<InstanceType<typeof MessageInput> | null>(null);
+// Call through synchronously: screen capture must retain the user gesture.
+defineExpose({
+  canRecordAudio: computed(() => messageInputRef.value?.canRecordAudio ?? false),
+  canRecordScreen: computed(() => messageInputRef.value?.canRecordScreen ?? false),
+  beginRecording: (mode: RecordingMode) => messageInputRef.value?.beginRecording(mode),
+});
+
 const messages = ref<Message[]>([]);
 const btwExchanges = ref<BtwExchange[]>([]);
 

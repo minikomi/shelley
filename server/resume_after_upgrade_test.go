@@ -440,6 +440,7 @@ func TestPreclaimFailureBecomesManualInterruption(t *testing.T) {
 		database,
 		srv.logger,
 		srv.toolSetConfig,
+		srv.integrationSkills,
 		nil,
 		nil,
 		nil,

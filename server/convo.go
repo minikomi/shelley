@@ -134,7 +134,7 @@ type ConversationManager struct {
 	recordTurnStartMessage turnStartRecordFunc
 	logger                 *slog.Logger
 	toolSetConfig          claudetool.ToolSetConfig
-	integrationSkills      []skills.Skill
+	integrationSkills      *integrationSkillCache
 	toolSet                *claudetool.ToolSet // created per-conversation when loop starts
 
 	subpub *subpub.SubPub[StreamResponse]
@@ -315,7 +315,7 @@ type messageBatchRecordFunc func(ctx context.Context, msgs []recordMessageInput)
 // NewConversationManager constructs a manager with dependencies but defers hydration until needed.
 type turnStartRecordFunc func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) (*generated.Message, error)
 
-func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage loop.MessageRecordFunc, recordTurnStartMessage turnStartRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
+func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, integrationSkills *integrationSkillCache, recordMessage loop.MessageRecordFunc, recordTurnStartMessage turnStartRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
 	logger := baseLogger
 	if logger == nil {
 		logger = slog.Default()
@@ -331,6 +331,7 @@ func NewConversationManager(conversationID string, database *db.DB, baseLogger *
 		recordMessageBatch:     recordMessageBatch,
 		logger:                 logger,
 		toolSetConfig:          toolSetConfig,
+		integrationSkills:      integrationSkills,
 		subpub:                 subpub.New[StreamResponse](),
 		streamPub:              streamPub,
 		onStateChange:          onStateChange,
@@ -2321,7 +2322,7 @@ func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generat
 	if cm.userEmail != "" {
 		opts = append(opts, WithUserEmail(cm.userEmail))
 	}
-	systemPrompt, promptSkills, err := generateSystemPromptWithIntegrationSkills(cm.cwd, cm.integrationSkills, opts...)
+	systemPrompt, promptSkills, err := generateSystemPromptWithIntegrationSkills(cm.cwd, cm.integrationSkills.Skills(ctx), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate system prompt: %w", err)
 	}
@@ -2448,7 +2449,7 @@ func (cm *ConversationManager) systemPromptDisplayData(promptSkills []skills.Ski
 }
 
 func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context, parentConversationID string) (*generated.Message, error) {
-	systemPrompt, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(cm.cwd, parentConversationID, cm.integrationSkills)
+	systemPrompt, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(cm.cwd, parentConversationID, cm.integrationSkills.Skills(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate subagent system prompt: %w", err)
 	}

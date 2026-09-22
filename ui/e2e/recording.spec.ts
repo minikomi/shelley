@@ -5,6 +5,7 @@ async function installMediaMocks(page: Page, screenCapture = true) {
   await page.addInitScript((screenCaptureAvailable) => {
     const mock = {
       displayRequests: 0,
+      synchronousDisplayRequests: 0,
       microphoneRequests: 0,
       audioSources: 0,
       stoppedTracks: 0,
@@ -111,6 +112,16 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       async close() {}
     }
 
+    // eventPhase returns to NONE after dispatch, unlike userActivation which
+    // can remain active across awaits. Native events run microtasks between
+    // listeners, so clearing a capture-phase flag in a microtask is too early.
+    let interactionEvent: Event | null = null;
+    const markInteractionTurn = (event: Event) => {
+      interactionEvent = event;
+    };
+    document.addEventListener("keydown", markInteractionTurn, { capture: true });
+    document.addEventListener("click", markInteractionTurn, { capture: true });
+
     const mediaSources = new WeakMap<HTMLMediaElement, unknown>();
     Object.defineProperty(HTMLMediaElement.prototype, "srcObject", {
       configurable: true,
@@ -142,6 +153,9 @@ async function installMediaMocks(page: Page, screenCapture = true) {
     if (screenCaptureAvailable) {
       mediaDevices.getDisplayMedia = async () => {
         mock.displayRequests++;
+        if (interactionEvent && interactionEvent.eventPhase !== Event.NONE) {
+          mock.synchronousDisplayRequests++;
+        }
         if (mock.displayError) throw new DOMException(mock.displayError, "NotAllowedError");
         const video = new MockTrack("video");
         mock.endDisplay = () => video.dispatchEvent(new Event("ended"));
@@ -290,6 +304,27 @@ async function pasteAttachment(page: Page, filename: string, contents = "attachm
   await expect(page.locator(".message-attachment-ready")).toHaveCount(1);
 }
 
+function recordingPaletteItem(page: Page, title: "Record audio" | "Record audio and screen") {
+  return page.locator(".command-palette-item", {
+    has: page.getByText(title, { exact: true }),
+  });
+}
+
+async function recordingShortcut(page: Page, mode: "microphone" | "screen") {
+  const modifier = await page.evaluate(() =>
+    navigator.platform.toUpperCase().includes("MAC") ? "Meta" : "Control",
+  );
+  await page.keyboard.press(`${modifier}+${mode === "screen" ? "Alt+" : ""}Shift+KeyM`);
+}
+
+async function openRecordingPalette(page: Page) {
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.locator(".command-palette-input");
+  await expect(search).toBeVisible();
+  await search.fill("Record audio");
+  return search;
+}
+
 function floatingAncestor(page: Page) {
   return page
     .getByTestId("recording-panel")
@@ -299,6 +334,413 @@ function floatingAncestor(page: Page) {
 test.describe("media recording composer", () => {
   test.beforeEach(async ({ page }) => {
     await installMediaMocks(page);
+  });
+
+  test("offers exact palette actions and starts audio by click and screen by Enter", async ({
+    page,
+    request,
+  }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "platform", { configurable: true, value: "Linux x86_64" });
+    });
+    const conversation = await createConversationViaAPIWithDetails(
+      request,
+      "echo: recording palette actions",
+    );
+    await page.goto(`/c/${conversation.slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
+
+    const search = await openRecordingPalette(page);
+    const audio = recordingPaletteItem(page, "Record audio");
+    const screen = recordingPaletteItem(page, "Record audio and screen");
+    await expect(audio).toBeVisible();
+    await expect(audio.locator(".command-palette-item-shortcut")).toHaveText("Ctrl+Shift+M");
+    await expect(screen).toBeVisible();
+    await expect(screen.locator(".command-palette-item-shortcut")).toHaveText("Ctrl+Alt+Shift+M");
+
+    await audio.click();
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "microphone");
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+    await page.getByTestId("recording-cancel-button").click();
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+
+    await openRecordingPalette(page);
+    await search.fill("audio and screen");
+    await expect(screen).toBeVisible();
+    await expect(screen).toHaveClass(/selected/);
+    await search.press("Enter");
+
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "screen");
+    await expect(page.getByTestId("recording-preview")).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          display: window.__recordingMock.displayRequests,
+          synchronousDisplay: window.__recordingMock.synchronousDisplayRequests,
+          microphone: window.__recordingMock.microphoneRequests,
+          starts: window.__recordingMock.recorderStarts,
+        })),
+      )
+      .toEqual({ display: 1, synchronousDisplay: 1, microphone: 2, starts: 2 });
+
+    await openRecordingPalette(page);
+    await expect(recordingPaletteItem(page, "Record audio")).toHaveCount(0);
+    await expect(recordingPaletteItem(page, "Record audio and screen")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await page.getByTestId("recording-cancel-button").click();
+  });
+
+  test("uses Command shortcuts and matching palette hints on Macs", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+    });
+    await page.goto("/new");
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+    await page.keyboard.press("Meta+k");
+    const search = page.locator(".command-palette-input");
+    await expect(search).toBeVisible();
+    await search.fill("Record audio");
+    await expect(recordingPaletteItem(page, "Record audio").locator("kbd")).toHaveText("⌘⇧M");
+    await expect(recordingPaletteItem(page, "Record audio and screen").locator("kbd")).toHaveText(
+      "⌘⌥⇧M",
+    );
+    await search.press("Escape");
+    for (const mode of ["microphone", "screen"] as const) {
+      await recordingShortcut(page, mode);
+      await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", mode);
+      await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+      await page.getByTestId("recording-cancel-button").click();
+      await expect(page.getByTestId("voice-button")).toBeEnabled();
+    }
+    expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(2);
+    expect(await page.evaluate(() => window.__recordingMock.synchronousDisplayRequests)).toBe(1);
+  });
+
+  test("ignores repeated, composing, and consumed recording shortcuts", async ({ page }) => {
+    await page.goto("/new");
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+    await page.evaluate(() => {
+      const mac = navigator.platform.toUpperCase().includes("MAC");
+      const options = {
+        key: "M",
+        code: "KeyM",
+        metaKey: mac,
+        ctrlKey: !mac,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      };
+      for (const state of [{ repeat: true }, { isComposing: true }]) {
+        document.dispatchEvent(new KeyboardEvent("keydown", { ...options, ...state }));
+      }
+      const consumed = new KeyboardEvent("keydown", options);
+      consumed.preventDefault();
+      document.dispatchEvent(consumed);
+    });
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+    expect(await page.evaluate(() => window.__recordingMock.microphoneRequests)).toBe(0);
+    await recordingShortcut(page, "microphone");
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "microphone");
+    await page.getByTestId("recording-cancel-button").click();
+  });
+
+  test("does not start recording behind another dialog", async ({ page }) => {
+    await page.goto("/new");
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+    const search = await openRecordingPalette(page);
+    await search.fill("Notification Settings");
+    await page.getByText("Notification Settings", { exact: true }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await recordingShortcut(page, "microphone");
+    await recordingShortcut(page, "screen");
+    // Cmd-K can also open above an existing modal: neither its shortcuts nor
+    // its action rows may start an inaccessible recorder behind that modal.
+    for (const mode of ["microphone", "screen"] as const) {
+      await openRecordingPalette(page);
+      await recordingShortcut(page, mode);
+      await expect(page.locator(".command-palette-input")).toBeVisible();
+      const paletteInput = page.locator(".command-palette-input");
+      await paletteInput.fill(mode === "screen" ? "Record audio and screen" : "Record audio");
+      await paletteInput.press("Enter");
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    }
+    expect(await page.evaluate(() => window.__recordingMock.microphoneRequests)).toBe(0);
+    expect(await page.evaluate(() => window.__recordingMock.displayRequests)).toBe(0);
+  });
+
+  test("requests the screen in the shortcut turn before a delayed draft and blocks duplicates", async ({
+    page,
+  }) => {
+    const draftStarted = deferred();
+    const releaseDraftResponse = deferred();
+    let draftRequests = 0;
+    let displayRequestsWhenDraftStarted = 0;
+    await page.route("**/api/conversations/draft", async (route) => {
+      draftRequests++;
+      displayRequestsWhenDraftStarted = await page.evaluate(
+        () => window.__recordingMock.displayRequests,
+      );
+      const response = await route.fetch();
+      draftStarted.resolve();
+      await releaseDraftResponse.promise;
+      await route.fulfill({ response });
+    });
+
+    await page.goto("/new");
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
+    await recordingShortcut(page, "screen");
+    await draftStarted.promise;
+
+    expect(displayRequestsWhenDraftStarted).toBe(1);
+    expect(
+      await page.evaluate(() => ({
+        display: window.__recordingMock.displayRequests,
+        synchronousDisplay: window.__recordingMock.synchronousDisplayRequests,
+        microphone: window.__recordingMock.microphoneRequests,
+        starts: window.__recordingMock.recorderStarts,
+      })),
+    ).toEqual({ display: 1, synchronousDisplay: 1, microphone: 0, starts: 0 });
+
+    try {
+      await openRecordingPalette(page);
+      await expect(recordingPaletteItem(page, "Record audio")).toHaveCount(0);
+      await expect(recordingPaletteItem(page, "Record audio and screen")).toHaveCount(0);
+      await page.keyboard.press("Escape");
+
+      await recordingShortcut(page, "microphone");
+      await recordingShortcut(page, "screen");
+      expect(draftRequests).toBe(1);
+      expect(await page.evaluate(() => window.__recordingMock.displayRequests)).toBe(1);
+
+      releaseDraftResponse.resolve();
+      await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "screen");
+      await expect
+        .poll(() =>
+          page.evaluate(() => ({
+            display: window.__recordingMock.displayRequests,
+            microphone: window.__recordingMock.microphoneRequests,
+            starts: window.__recordingMock.recorderStarts,
+          })),
+        )
+        .toEqual({ display: 1, microphone: 1, starts: 1 });
+
+      await recordingShortcut(page, "microphone");
+      await recordingShortcut(page, "screen");
+      expect(
+        await page.evaluate(() => ({
+          display: window.__recordingMock.displayRequests,
+          microphone: window.__recordingMock.microphoneRequests,
+          starts: window.__recordingMock.recorderStarts,
+        })),
+      ).toEqual({ display: 1, microphone: 1, starts: 1 });
+      await page.getByTestId("recording-cancel-button").click();
+    } finally {
+      releaseDraftResponse.resolve();
+    }
+  });
+
+  test("cancels selected screen capture while draft creation is pending", async ({ page }) => {
+    const draftStarted = deferred();
+    const releaseDraft = deferred();
+    await page.route("**/api/conversations/draft", async (route) => {
+      const response = await route.fetch();
+      draftStarted.resolve();
+      await releaseDraft.promise;
+      await route.fulfill({ response });
+    });
+    await page.goto("/new");
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+    await recordingShortcut(page, "screen");
+    await draftStarted.promise;
+    try {
+      await page.getByTestId("recording-pending-cancel-button").click({ timeout: 5000 });
+      await expect(page.getByTestId("voice-button")).toBeEnabled();
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(2);
+      expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(0);
+      const response = page.waitForResponse("**/api/conversations/draft");
+      releaseDraft.resolve();
+      await response;
+      await expect(page).toHaveURL(/\/c\//);
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+      await recordingShortcut(page, "microphone");
+      await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "microphone");
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+      expect(await page.evaluate(() => window.__recordingMock.displayRequests)).toBe(1);
+      await page.getByTestId("recording-cancel-button").click();
+    } finally {
+      releaseDraft.resolve();
+    }
+  });
+
+  for (const menu of ["palette", "file menu"] as const) {
+    test(`does not record plain typing after the ${menu} consumes Escape`, async ({ page }) => {
+      await page.goto("/new");
+      const input = page.getByTestId("message-input");
+      await expect(page.getByTestId("voice-button")).toBeEnabled();
+      const prefix = menu === "file menu" ? "@example" : "";
+      if (menu === "palette") await openRecordingPalette(page);
+      else {
+        await input.fill(prefix);
+        await expect(page.getByTestId("file-completion-menu")).toBeVisible();
+      }
+      await page.keyboard.press("Control+m");
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".command-palette-input")).toHaveCount(0);
+      await expect(page.getByTestId("file-completion-menu")).toHaveCount(0);
+      await input.focus();
+      await page.keyboard.press("a");
+      await expect(input).toHaveValue(`${prefix}a`);
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+      expect(await page.evaluate(() => window.__recordingMock.microphoneRequests)).toBe(0);
+      expect(await page.evaluate(() => window.__recordingMock.displayRequests)).toBe(0);
+    });
+  }
+
+  test("preserves the composer after a rejected chooser and retries screen capture in a click turn", async ({
+    page,
+    request,
+  }) => {
+    const conversation = await createConversationViaAPIWithDetails(
+      request,
+      "echo: screen chooser retry",
+    );
+    await page.goto(`/c/${conversation.slug}`);
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible({ timeout: 30_000 });
+    await input.fill("Keep this draft through screen failures.");
+    await page.evaluate(() => {
+      window.__recordingMock.displayError = "Screen sharing was cancelled";
+    });
+
+    await recordingShortcut(page, "screen");
+    await expect(page.getByTestId("recording-error")).toHaveText("Screen sharing was cancelled");
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "screen");
+    await expect(page.getByTestId("recording-preserved-text")).toHaveText(
+      "Keep this draft through screen failures.",
+    );
+    expect(
+      await page.evaluate(() => ({
+        display: window.__recordingMock.displayRequests,
+        synchronousDisplay: window.__recordingMock.synchronousDisplayRequests,
+        microphone: window.__recordingMock.microphoneRequests,
+        starts: window.__recordingMock.recorderStarts,
+      })),
+    ).toEqual({ display: 1, synchronousDisplay: 1, microphone: 0, starts: 0 });
+
+    await page.evaluate(() => {
+      window.__recordingMock.displayError = "";
+    });
+    await page.getByTestId("recording-retry-button").click();
+    await expect(page.getByTestId("recording-status")).toHaveText("Recording screen + microphone…");
+    expect(
+      await page.evaluate(() => ({
+        display: window.__recordingMock.displayRequests,
+        synchronousDisplay: window.__recordingMock.synchronousDisplayRequests,
+        microphone: window.__recordingMock.microphoneRequests,
+        starts: window.__recordingMock.recorderStarts,
+      })),
+    ).toEqual({ display: 2, synchronousDisplay: 2, microphone: 1, starts: 1 });
+
+    await page.getByTestId("recording-cancel-button").click();
+    await expect(input).toHaveValue("Keep this draft through screen failures.");
+    await expect(input).toBeEnabled();
+  });
+
+  test("releases a selected screen and preserves the draft when destination creation fails", async ({
+    page,
+  }) => {
+    let draftBody: Record<string, unknown> | null = null;
+    await page.route("**/api/conversations/draft", async (route) => {
+      draftBody = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({ status: 500, body: "draft unavailable" });
+    });
+    await page.goto("/new");
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible({ timeout: 30_000 });
+    await input.fill("Do not lose this failed recording draft.");
+
+    await recordingShortcut(page, "screen");
+
+    await expect
+      .poll(() => draftBody)
+      .toMatchObject({
+        draft: "Do not lose this failed recording draft.",
+      });
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    await expect(input).toHaveValue("Do not lose this failed recording draft.");
+    await expect(input).toBeEnabled();
+    await expect
+      .poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks))
+      .toBeGreaterThanOrEqual(2);
+    expect(
+      await page.evaluate(() => ({
+        display: window.__recordingMock.displayRequests,
+        synchronousDisplay: window.__recordingMock.synchronousDisplayRequests,
+        microphone: window.__recordingMock.microphoneRequests,
+        starts: window.__recordingMock.recorderStarts,
+      })),
+    ).toEqual({ display: 1, synchronousDisplay: 1, microphone: 0, starts: 0 });
+  });
+
+  test("hides recording palette actions while an attachment uploads", async ({ page, request }) => {
+    const conversation = await createConversationViaAPIWithDetails(
+      request,
+      "echo: recording action upload guard",
+    );
+    const releaseUpload = deferred();
+    await page.route("**/api/upload", async (route) => {
+      await releaseUpload.promise;
+      await route.continue();
+    });
+    await page.goto(`/c/${conversation.slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
+    await page.evaluate(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["pending"], "pending.txt", { type: "text/plain" }));
+      document
+        .querySelector(".message-input-container")
+        ?.dispatchEvent(
+          new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+        );
+    });
+    await expect(page.locator(".message-attachment-uploading")).toHaveCount(1);
+
+    try {
+      await openRecordingPalette(page);
+      await expect(recordingPaletteItem(page, "Record audio")).toHaveCount(0);
+      await expect(recordingPaletteItem(page, "Record audio and screen")).toHaveCount(0);
+      await page.keyboard.press("Escape");
+    } finally {
+      releaseUpload.resolve();
+    }
+    await expect(page.locator(".message-attachment-ready")).toHaveCount(1);
+    await openRecordingPalette(page);
+    await expect(recordingPaletteItem(page, "Record audio")).toBeVisible();
+    await expect(recordingPaletteItem(page, "Record audio and screen")).toBeVisible();
+  });
+
+  test("hides recording palette actions in an archived conversation", async ({ page, request }) => {
+    const archived = await createConversationViaAPIWithDetails(
+      request,
+      "echo: archived recording action guard",
+    );
+    const response = await request.post(`/api/conversation/${archived.conversationId}/archive`);
+    expect(response.ok()).toBeTruthy();
+
+    await page.goto("/new");
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
+    const openDrawer = page.getByRole("button", { name: "Open conversations" });
+    if (await openDrawer.isVisible()) await openDrawer.click();
+    await page.getByRole("button", { name: "View archived" }).click();
+    await page
+      .locator(`.conversation-item[data-conversation-id="${archived.conversationId}"]`)
+      .click();
+    await expect(page.getByTestId("message-input")).toBeHidden();
+
+    await openRecordingPalette(page);
+    await expect(recordingPaletteItem(page, "Record audio")).toHaveCount(0);
+    await expect(recordingPaletteItem(page, "Record audio and screen")).toHaveCount(0);
   });
 
   for (const originKind of ["draft", "conversation"] as const) {
@@ -1403,12 +1845,27 @@ test.describe("media recording composer", () => {
   });
 });
 
-test("uses a microphone icon when screen capture is unavailable", async ({ page }) => {
+test("keeps audio recording available without screen capture", async ({ page }) => {
   await installMediaMocks(page, false);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/new");
   await expect(page.getByTestId("voice-microphone-icon")).toBeVisible();
   await expect(page.getByTestId("voice-video-icon")).toHaveCount(0);
+  await openRecordingPalette(page);
+  await expect(recordingPaletteItem(page, "Record audio")).toBeVisible();
+  await expect(recordingPaletteItem(page, "Record audio and screen")).toHaveCount(0);
+});
+
+test("hides recording palette actions when media recording is unavailable", async ({ page }) => {
+  await installMediaMocks(page);
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, "MediaRecorder");
+  });
+  await page.goto("/new");
+  await expect(page.getByTestId("voice-button")).toHaveCount(0);
+  await openRecordingPalette(page);
+  await expect(recordingPaletteItem(page, "Record audio")).toHaveCount(0);
+  await expect(recordingPaletteItem(page, "Record audio and screen")).toHaveCount(0);
 });
 
 declare global {
@@ -1416,6 +1873,7 @@ declare global {
     __recordingPreviewSource: MediaProvider | null;
     __recordingMock: {
       displayRequests: number;
+      synchronousDisplayRequests: number;
       microphoneRequests: number;
       audioSources: number;
       stoppedTracks: number;

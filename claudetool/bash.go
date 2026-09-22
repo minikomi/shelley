@@ -3,6 +3,7 @@ package claudetool
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -143,6 +144,7 @@ type bashInput struct {
 // BashDisplayData is the display data sent to the UI for bash tool results.
 type BashDisplayData struct {
 	WorkingDir string `json:"workingDir"`
+	ExitCode   *int   `json:"exitCode,omitempty"`
 }
 
 func (i *bashInput) timeout(t *Timeouts) time.Duration {
@@ -194,8 +196,17 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 
 	out, execErr := b.executeBashInDir(ctx, req, timeout, wd)
 	if execErr != nil {
-		return llm.ErrorToolOut(execErr)
+		var exitErr *exec.ExitError
+		if errors.As(execErr, &exitErr) && exitErr.ProcessState.Exited() {
+			exitCode := exitErr.ExitCode()
+			display.ExitCode = &exitCode
+		}
+		toolOut := llm.ErrorToolOut(execErr)
+		toolOut.Display = display
+		return toolOut
 	}
+	exitCode := 0
+	display.ExitCode = &exitCode
 	if paths := bashkit.ChainedCdPaths(req.Command); len(paths) > 0 {
 		out = chainedCdHint(paths, wd) + "\n\n" + out
 	}

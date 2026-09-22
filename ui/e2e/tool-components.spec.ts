@@ -37,6 +37,7 @@ test.describe('Tool Component Verification', () => {
       { timeout: 30000 },
     );
     await mountAllToolCards(page);
+    await expect(page.locator(".tool-status-icon")).toHaveCount(0);
 
     // The generic-shaped cards (.tool) are identified by their header summary;
     // each must render its specialized component's emoji. Assert on attachment
@@ -114,8 +115,8 @@ test.describe('Tool Component Verification', () => {
                   <span class="tool-result-name text-sm font-medium text-blue">
                     openai_audio_transcription
                   </span>
-                  <span class="tool-result-status text-xs success">
-                    ✓ {"duration_ms":1731,"model":"gpt-transcribe"}...
+                  <span class="tool-result-status text-xs">
+                    {"duration_ms":1731,"model":"gpt-transcribe"}...
                   </span>
                 </div>
                 <div class="tool-result-time"></div>

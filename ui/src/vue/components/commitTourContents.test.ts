@@ -47,6 +47,7 @@ run("tour contents follows narrative order with unique anchors", () => {
         anchor: "tour-entry-1",
         label: "src/example.ts · 2–2 +1 −1",
         kind: "change",
+        trivial: false,
         treePath: ["src", "example.ts"],
         decoration: "L2",
         decorationTitle: "2–2",
@@ -57,6 +58,7 @@ run("tour contents follows narrative order with unique anchors", () => {
         anchor: "tour-entry-2",
         label: "src/example.ts · 18–18 +1 −1",
         kind: "change",
+        trivial: false,
         treePath: ["src", "example.ts"],
         decoration: "L18",
         decorationTitle: "18–18",
@@ -68,9 +70,13 @@ run("tour contents follows narrative order with unique anchors", () => {
   );
   assertEqual(
     buildTourContentsLayout(contents).groups[0]?.rows.map((row) =>
-      row.kind === "directory" ? `directory:${row.label}` : `change:${row.item.anchor}`,
+      row.kind === "directory"
+        ? `directory:${row.label}`
+        : row.kind === "file"
+          ? `file:${row.label}`
+          : `change:${row.item.anchor}`,
     ),
-    ["directory:src", "change:tour-entry-1", "change:tour-entry-2"],
+    ["directory:src", "file:src/example.ts", "change:tour-entry-1", "change:tour-entry-2"],
     "same-directory rows",
   );
 });
@@ -93,15 +99,20 @@ run("tour filename trees preserve narrative order and file extensions", () => {
     layout.groups[0]?.rows.map((row) =>
       row.kind === "directory"
         ? `directory:${row.label}`
-        : `change:${row.filenameStem}|${row.filenameSuffix}|${row.item.anchor}`,
+        : row.kind === "file"
+          ? `file:${row.filenameStem}|${row.filenameSuffix}|${row.anchor}`
+          : `change:${row.item.anchor}`,
     ),
     [
       "directory:zeta",
-      "change:really-long-name|.test.ts|tour-entry-1",
+      "file:really-long-name|.test.ts|tour-entry-1",
+      "change:tour-entry-1",
       "directory:alpha",
-      "change:first|.go|tour-entry-2",
+      "file:first|.go|tour-entry-2",
+      "change:tour-entry-2",
       "directory:zeta",
-      "change:again|.ts|tour-entry-3",
+      "file:again|.ts|tour-entry-3",
+      "change:tour-entry-3",
     ],
     "ordered rows",
   );
@@ -116,6 +127,7 @@ run("a tour without overview content starts at its first change", () => {
         anchor: "tour-entry-0",
         label: "src/example.ts · 7–7 +1 −1",
         kind: "change",
+        trivial: true,
         treePath: ["src", "example.ts"],
         decoration: "L7",
         decorationTitle: "7–7",
@@ -162,5 +174,58 @@ run("tour contents shows per-chunk counts for additions, deletions, and metadata
       ["script.sh", undefined, 0, 0],
     ],
     "change counts and compact labels",
+  );
+});
+
+run("file grouping respects narrative boundaries and full paths", () => {
+  const contents = buildTourContents(
+    {
+      version: 1,
+      chunks: [
+        { patch: patch(2, "first/example.ts") },
+        { patch: patch(8, "first/example.ts"), trivial: true },
+        { patch: patch(4, "second/example.ts") },
+        { patch: patch(18, "first/example.ts") },
+        { header: "## Next section" },
+        { patch: patch(28, "first/example.ts") },
+        { patch: patch(2, "root.ts") },
+        { patch: patch(8, "root.ts") },
+      ],
+    },
+    false,
+  );
+  assertEqual(
+    buildTourContentsLayout(contents).groups.map((group) =>
+      group.rows.map((row) =>
+        row.kind === "directory"
+          ? `directory:${row.label}`
+          : row.kind === "file"
+            ? `file:${row.label}:${row.depth}`
+            : `change:${row.item.anchor}:${row.depth}`,
+      ),
+    ),
+    [
+      [
+        "directory:first",
+        "file:first/example.ts:1",
+        "change:tour-entry-0:2",
+        "change:tour-entry-1:2",
+        "directory:second",
+        "file:second/example.ts:1",
+        "change:tour-entry-2:2",
+        "directory:first",
+        "file:first/example.ts:1",
+        "change:tour-entry-3:2",
+      ],
+      [
+        "directory:first",
+        "file:first/example.ts:1",
+        "change:tour-entry-5:2",
+        "file:root.ts:0",
+        "change:tour-entry-6:1",
+        "change:tour-entry-7:1",
+      ],
+    ],
+    "grouped narrative",
   );
 });

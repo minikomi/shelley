@@ -19,6 +19,7 @@ export interface TourChangeItem {
   anchor: string;
   label: string;
   kind: "change";
+  trivial: boolean;
   treePath: string[];
   decoration?: string;
   decorationTitle?: string;
@@ -38,6 +39,13 @@ export type TourContentsRow =
       kind: "change";
       key: string;
       item: TourChangeItem;
+      depth: number;
+    }
+  | {
+      kind: "file";
+      key: string;
+      anchor: string;
+      label: string;
       filenameStem: string;
       filenameSuffix: string;
       depth: number;
@@ -97,6 +105,7 @@ export function buildTourContents(tour: GitTour, includeOverview: boolean): Tour
       anchor: tourEntryAnchor(position),
       label: `${patch.label}${patch.additions ? ` +${patch.additions}` : ""}${patch.deletions ? ` −${patch.deletions}` : ""}`,
       kind: "change",
+      trivial: !!entry.trivial,
       treePath: patch.fileLabel.split("/"),
       decoration,
       decorationTitle: patch.displayRange
@@ -114,6 +123,7 @@ export function buildTourContentsLayout(items: TourContentsItem[]): TourContents
   const groups: TourContentsGroup[] = [];
   let current: TourContentsGroup = { section: null, rows: [] };
   let previousDirectory = "";
+  let previousFile = "";
 
   const finishGroup = () => {
     if (current.section || current.rows.length > 0) groups.push(current);
@@ -125,6 +135,7 @@ export function buildTourContentsLayout(items: TourContentsItem[]): TourContents
       finishGroup();
       current = { section: item, rows: [] };
       previousDirectory = "";
+      previousFile = "";
       continue;
     }
 
@@ -139,18 +150,26 @@ export function buildTourContentsLayout(items: TourContentsItem[]): TourContents
     }
     previousDirectory = directory;
 
-    const filename = item.treePath.at(-1) || item.label;
-    const lastDot = filename.lastIndexOf(".");
-    const previousDot = lastDot > 0 ? filename.lastIndexOf(".", lastDot - 1) : -1;
-    const suffixStart = previousDot > 0 ? previousDot : lastDot;
-    current.rows.push({
-      kind: "change",
-      key: item.anchor,
-      item,
-      filenameStem: suffixStart > 0 ? filename.slice(0, suffixStart) : filename,
-      filenameSuffix: suffixStart > 0 ? filename.slice(suffixStart) : "",
-      depth: directories.length > 0 ? 1 : 0,
-    });
+    // Only coalesce consecutive chunks: sorting by file would reorder the narrative.
+    const file = item.treePath.join("/");
+    const depth = directories.length > 0 ? 1 : 0;
+    if (file !== previousFile) {
+      const filename = item.treePath.at(-1) || item.label;
+      const lastDot = filename.lastIndexOf(".");
+      const previousDot = lastDot > 0 ? filename.lastIndexOf(".", lastDot - 1) : -1;
+      const suffixStart = previousDot > 0 ? previousDot : lastDot;
+      current.rows.push({
+        kind: "file",
+        key: `file:${item.anchor}`,
+        anchor: item.anchor,
+        label: file,
+        filenameStem: suffixStart > 0 ? filename.slice(0, suffixStart) : filename,
+        filenameSuffix: suffixStart > 0 ? filename.slice(suffixStart) : "",
+        depth,
+      });
+    }
+    previousFile = file;
+    current.rows.push({ kind: "change", key: item.anchor, item, depth: depth + 1 });
   }
   finishGroup();
 

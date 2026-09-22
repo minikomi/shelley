@@ -882,7 +882,7 @@ Connecting over HTTP with auth headers:
 
 Examples:
   # Start a high-reasoning conversation without bash, tagged benchmark
-  ID=$(shelley client chat -model glm-5.2-fireworks -reasoning high \
+  ID=$(shelley client chat -model glm-5.3-fireworks -reasoning high \
     -tool bash=off -tag benchmark -p "list files" | jq -r .conversation_id)
   shelley client read -wait "$ID"
 
