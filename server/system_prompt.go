@@ -971,22 +971,26 @@ type SubagentSystemPromptData struct {
 	WorkingDirectory string
 	GitInfo          *GitInfo
 	ShelleyDBPath    string
-	ConversationID   string // Parent conversation ID for querying user messages
+	ConversationID   string
 	SkillsXML        string // XML block for available skills
 	Skills           []skills.Skill
 }
 
 // GenerateSubagentSystemPrompt generates a minimal system prompt for subagent conversations.
 func GenerateSubagentSystemPrompt(workingDir, parentConversationID string) (string, error) {
-	prompt, _, err := generateSubagentSystemPrompt(workingDir, parentConversationID)
+	prompt, _, err := generateSubagentSystemPromptData(workingDir, parentConversationID, nil)
 	return prompt, err
 }
 
-func generateSubagentSystemPrompt(workingDir, parentConversationID string) (string, []skills.Skill, error) {
-	return generateSubagentSystemPromptWithIntegrationSkills(workingDir, parentConversationID, nil)
+func generateSubagentSystemPrompt(workingDir string) (string, []skills.Skill, error) {
+	return generateSubagentSystemPromptWithIntegrationSkills(workingDir, nil)
 }
 
-func generateSubagentSystemPromptWithIntegrationSkills(workingDir, parentConversationID string, integrationSkills []skills.Skill) (string, []skills.Skill, error) {
+func generateSubagentSystemPromptWithIntegrationSkills(workingDir string, integrationSkills []skills.Skill) (string, []skills.Skill, error) {
+	return generateSubagentSystemPromptData(workingDir, "", integrationSkills)
+}
+
+func generateSubagentSystemPromptData(workingDir, parentConversationID string, integrationSkills []skills.Skill) (string, []skills.Skill, error) {
 	wd := workingDir
 	if wd == "" {
 		var err error

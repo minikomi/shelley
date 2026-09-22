@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -761,7 +762,7 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 		if cm.btwReader {
 			systemMsg, err = cm.recreateBtwReaderSystemPrompt(ctx)
 		} else if managedChild {
-			systemMsg, err = cm.createSubagentSystemPrompt(ctx, *conversation.ParentConversationID)
+			systemMsg, err = cm.createSubagentSystemPrompt(ctx)
 		} else if conversation.UserInitiated {
 			systemMsg, err = cm.createSystemPrompt(ctx)
 		}
@@ -2448,8 +2449,8 @@ func (cm *ConversationManager) systemPromptDisplayData(promptSkills []skills.Ski
 	return systemPromptDisplayData(cfg, promptSkills)
 }
 
-func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context, parentConversationID string) (*generated.Message, error) {
-	systemPrompt, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(cm.cwd, parentConversationID, cm.integrationSkills.Skills(ctx))
+func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context) (*generated.Message, error) {
+	systemPrompt, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(cm.cwd, cm.integrationSkills.Skills(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate subagent system prompt: %w", err)
 	}
@@ -2477,6 +2478,15 @@ func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context, p
 
 	cm.logger.Info("Stored subagent system prompt", "length", len(systemPrompt))
 	return created, nil
+}
+
+func subagentPromptCacheKey(system []llm.SystemContent, modelID string) string {
+	hash := sha256.New()
+	fmt.Fprintf(hash, "%s\x00", modelID)
+	for _, item := range system {
+		fmt.Fprintf(hash, "%s\x00%s\x00", item.Type, item.Text)
+	}
+	return fmt.Sprintf("subagent-%x", hash.Sum(nil)[:16])
 }
 
 func (cm *ConversationManager) partitionMessages(messages []generated.Message) ([]llm.Message, []llm.SystemContent, error) {
@@ -2649,6 +2659,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	toolSetConfig := cm.toolSetConfig
 	conversationID := cm.conversationID
 	conversationOpts := cm.conversationOptions
+	managedChild := cm.managedChild
 	database := cm.db
 	toolSetConfig.Env = claudetool.ShelleyEnv{
 		ConversationSlug: cm.slug,
@@ -2742,12 +2753,17 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		toolSet.Cleanup()
 		return fmt.Errorf("decorate LLM service: %w", err)
 	}
+	promptCacheKey := ""
+	if managedChild && !cm.btwReader {
+		promptCacheKey = subagentPromptCacheKey(system, modelID)
+	}
 	loopInstance := loop.NewLoop(loop.Config{
-		LLM:           service,
-		History:       history,
-		Tools:         toolSet.Tools(),
-		ThinkingLevel: llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
-		RecordMessage: recordMessage,
+		LLM:            service,
+		History:        history,
+		Tools:          toolSet.Tools(),
+		ThinkingLevel:  llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),
+		PromptCacheKey: promptCacheKey,
+		RecordMessage:  recordMessage,
 		RecordWarning: func(ctx context.Context, text string) error {
 			return cm.recordWarning(ctx, text)
 		},

@@ -10,6 +10,7 @@ import (
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
+	"shelley.exe.dev/llm"
 	"shelley.exe.dev/skills"
 )
 
@@ -38,6 +39,20 @@ func TestPendingDrainCoalescesWakeup(t *testing.T) {
 		t.Fatal("drain requested an extra pass without another wakeup")
 	}
 	<-done
+}
+
+func TestSubagentPromptCacheKeyUsesPromptAndModel(t *testing.T) {
+	system := []llm.SystemContent{{Type: "text", Text: "stable prompt"}}
+	first := subagentPromptCacheKey(system, "model-a")
+	if first != subagentPromptCacheKey(system, "model-a") {
+		t.Fatal("identical prompts and models produced different cache keys")
+	}
+	if first == subagentPromptCacheKey([]llm.SystemContent{{Type: "text", Text: "changed prompt"}}, "model-a") {
+		t.Fatal("different prompts unexpectedly share a cache key")
+	}
+	if first == subagentPromptCacheKey(system, "model-b") {
+		t.Fatal("different models unexpectedly share a cache key")
+	}
 }
 
 func TestSystemPromptDisplayDataIncludesSourceMetadata(t *testing.T) {

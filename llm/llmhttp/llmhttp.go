@@ -23,6 +23,7 @@ type contextKey int
 
 const (
 	conversationIDKey contextKey = iota
+	promptCacheKey
 	modelIDKey
 	providerKey
 )
@@ -79,6 +80,21 @@ func ConversationIDFromContext(ctx context.Context) string {
 		return v.(string)
 	}
 	return ""
+}
+
+// WithPromptCacheKey overrides provider cache affinity while preserving the
+// conversation ID used for request attribution.
+func WithPromptCacheKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, promptCacheKey, key)
+}
+
+// PromptCacheKeyFromContext returns the explicit cache key, falling back to
+// the conversation ID for normal conversation-local caching.
+func PromptCacheKeyFromContext(ctx context.Context) string {
+	if v := ctx.Value(promptCacheKey); v != nil {
+		return v.(string)
+	}
+	return ConversationIDFromContext(ctx)
 }
 
 // WithModelID returns a context with the model ID attached.
@@ -172,21 +188,24 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		trace.Set("shelley_request_id", requestID)
 	}
 
-	// Add conversation ID header if present
+	// Add conversation ID header if present.
 	if conversationID := ConversationIDFromContext(req.Context()); conversationID != "" {
 		req.Header.Set("Shelley-Conversation-Id", conversationID)
+	}
 
-		// Provider-specific prompt-cache affinity keys.
+	// Add provider-specific prompt-cache affinity when either an explicit key
+	// or the conversation fallback is present.
+	if cacheKey := PromptCacheKeyFromContext(req.Context()); cacheKey != "" {
 		switch ProviderFromContext(req.Context()) {
 		case "fireworks":
-			req.Header.Set("x-session-affinity", conversationID)
+			req.Header.Set("x-session-affinity", cacheKey)
 		case "openai":
-			// The Responses request body also carries the conversation ID as
+			// The Responses request body also carries the cache key as
 			// prompt_cache_key, but the ChatGPT Codex backend (behind
 			// subscription proxies) ignores it and mints a random key per
 			// request unless session-id is set, which then becomes the cache
 			// key. Codex CLI does the same. api.openai.com ignores the header.
-			req.Header.Set("session-id", conversationID)
+			req.Header.Set("session-id", cacheKey)
 		}
 	}
 

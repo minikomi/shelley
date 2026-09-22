@@ -733,7 +733,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 		req.Include = []string{"reasoning.encrypted_content"}
 		req.ToolChoice = "auto"
 		req.ParallelToolCalls = true
-		req.PromptCacheKey = llmhttp.ConversationIDFromContext(ctx)
+		req.PromptCacheKey = llmhttp.PromptCacheKeyFromContext(ctx)
 		if model.TextVerbosity != "" {
 			req.Text = &responsesText{Verbosity: model.TextVerbosity}
 		}
