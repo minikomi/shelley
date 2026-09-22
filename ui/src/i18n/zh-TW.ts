@@ -20,6 +20,7 @@ export const zhTW: TranslationKeys = {
   diffs: "差異比較",
   gitGraph: "Git 圖",
   terminal: "終端機",
+  livePreview: "即時預覽",
   archiveConversation: "封存對話",
   exportConversation: "匯出對話",
   checkForNewVersion: "檢查新版本",

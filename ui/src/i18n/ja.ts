@@ -20,6 +20,7 @@ export const ja: TranslationKeys = {
   diffs: "差分",
   gitGraph: "Git グラフ",
   terminal: "ターミナル",
+  livePreview: "ライブプレビュー",
   archiveConversation: "会話をアーカイブ",
   exportConversation: "会話をエクスポート",
   checkForNewVersion: "新しいバージョンを確認",

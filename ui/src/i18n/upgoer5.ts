@@ -20,6 +20,7 @@ export const upgoer5: TranslationKeys = {
   diffs: "Changes",
   gitGraph: "Story Tree",
   terminal: "Computer Window",
+  livePreview: "Live Web Page",
   archiveConversation: "Put Away Talk",
   exportConversation: "Save Out Talk",
   checkForNewVersion: "Look for a newer one",

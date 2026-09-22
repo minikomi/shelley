@@ -20,6 +20,7 @@ export const es: TranslationKeys = {
   diffs: "Diferencias",
   gitGraph: "Grafo de Git",
   terminal: "Terminal",
+  livePreview: "Vista previa en vivo",
   archiveConversation: "Archivar conversación",
   exportConversation: "Exportar conversación",
   checkForNewVersion: "Buscar nueva versión",

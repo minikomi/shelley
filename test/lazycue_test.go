@@ -160,6 +160,15 @@ func TestNewPageSendEnables(t *testing.T) {
 	lazyTest(t, `Navigate to /new. Type the text "hello world" into the message input (data-testid "message-input"). After typing, the send button (data-testid "send-button") should become enabled.`)
 }
 
+func TestNewPageLiveSitePreview(t *testing.T) {
+	lazyTest(t, `Navigate to /new. Fill the message input (data-testid "message-input") with "echo: Server at http://localhost:8001/aaa/bbb" and click the send button (data-testid "send-button"). Wait for an agent message (selector ".message-agent") to be visible and assert it contains ":8001/aaa/bbb" (Shelley may rewrite localhost to its public exe.dev hostname). Click selector "button[aria-label='More options']". Wait for the menu button (data-testid "live-site-preview-menu-item") to be visible, assert its text contains both "Live Preview" and "/preview", then click it. Wait for the endpoint button (data-testid "live-site-preview-endpoint") to be visible and assert its exact text is ":8001/aaa/bbb". Assert selector "[data-testid='live-site-preview']" matches exactly one element. Evaluate "(function(){var u=new URL(document.querySelector('[data-testid=\"live-site-preview-frame\"]').src);return u.pathname;})()" and expect "/__preview/8001/aaa/bbb".
+The iframe (data-testid "live-site-preview-frame") must have sandbox attribute exactly "allow-scripts allow-same-origin allow-forms" and no referrerpolicy attribute. Evaluate "parseFloat(document.querySelector('[data-testid=\"live-site-preview-frame\"]').style.width)" and expect "1280".
+Click the endpoint button (data-testid "live-site-preview-endpoint"). Fill the path input (data-testid "live-site-preview-path-input") with "/changed/path?tab=one", then click the save button (data-testid "live-site-preview-endpoint-save"). Wait for the endpoint button to be visible again and assert its exact text is ":8001/changed/path?tab=one". Evaluate "(function(){var u=new URL(document.querySelector('[data-testid=\"live-site-preview-frame\"]').src);return u.pathname+u.search;})()" and expect "/__preview/8001/changed/path?tab=one".
+Save the iframe identity and panel position before switching: evaluate "(function(){var p=document.querySelector('[data-testid=\"live-site-preview\"]');var r=p.getBoundingClientRect();window.previewTest={frame:document.querySelector('[data-testid=\"live-site-preview-frame\"]'),left:r.left,top:r.top};return 'saved';})()" and expect "saved".
+Click the viewport toggle (data-testid "live-site-preview-viewport-toggle"). Evaluate "parseFloat(document.querySelector('[data-testid=\"live-site-preview-frame\"]').style.width)" and expect "390". Then evaluate "(function(){var p=document.querySelector('[data-testid=\"live-site-preview\"]');var f=document.querySelector('[data-testid=\"live-site-preview-frame\"]');var r=p.getBoundingClientRect();return f===window.previewTest.frame&&r.height>r.width&&r.left===window.previewTest.left&&r.top===window.previewTest.top?'pass':'fail';})()" and expect "pass".
+Click the close button (data-testid "live-site-preview-close"), then assert selector "[data-testid='live-site-preview']" matches exactly zero elements.`)
+}
+
 // Regression test for the mobile "double UI" bug: on the Pixel 5 mobile
 // viewport the harness uses, typing into the composer promotes the new
 // conversation into a draft (the URL gains a "/c/" segment) while the
@@ -693,7 +702,7 @@ func startPredictableServer() (*httptest.Server, func()) {
 	mux := http.NewServeMux()
 	svr.RegisterRoutes(mux)
 
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewServer(server.PreviewRefererMiddleware(mux))
 	return ts, func() {
 		ts.Close()
 		database.Close()

@@ -1,3 +1,5 @@
+import { isPreviewCommand } from "../composables/livePreview";
+
 export type ComposerSubmissionIntent =
   | "send"
   | "send-now"
@@ -28,6 +30,7 @@ export function composerDispatch(
     if (options.isChildConversation) return { route: "btw-blocked" };
     return { route: "btw", question };
   }
+  if (isPreviewCommand(message)) return { route: "send" };
 
   const intent = options.intent ?? "send";
   if (intent === "queue" || intent === "auto-queue") return { route: "queue" };

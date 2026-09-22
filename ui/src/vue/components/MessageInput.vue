@@ -597,6 +597,8 @@ const props = withDefaults(
     cwd?: string;
     /** Child conversations cannot start nested BTW readers. */
     isChildConversation?: boolean;
+    /** Exe.dev hosts offer local live-preview commands. */
+    isExeDev?: boolean;
   }>(),
   {
     recordingInlineAvailable: true,
@@ -608,6 +610,7 @@ const props = withDefaults(
     autoFocus: false,
     initialRows: 1,
     isChildConversation: false,
+    isExeDev: false,
   },
 );
 
@@ -1064,7 +1067,7 @@ const slashQuery = computed(() => {
 });
 const slashSuggestions = computed(() => {
   if (slashQuery.value === null) return [];
-  return slashCommandsForConversation(props.isChildConversation).filter((item) =>
+  return slashCommandsForConversation(props.isChildConversation, props.isExeDev).filter((item) =>
     item.command.slice(1).startsWith(slashQuery.value!),
   );
 });
@@ -1299,7 +1302,7 @@ async function handleSubmit(e: Event) {
 
 async function handleQueueMessage() {
   const dispatch = composerDispatch(message.value, { intent: "queue" });
-  if (dispatch.route === "btw") {
+  if (dispatch.route === "btw" || dispatch.route === "send") {
     await handleSendNow();
     return;
   }
@@ -1327,7 +1330,7 @@ async function handleSelectSend() {
  * compaction completes. Kicks off compaction and queues in one gesture. */
 async function handleCompactAndSend() {
   const dispatch = composerDispatch(message.value, { intent: "compact-and-send" });
-  if (dispatch.route === "btw") {
+  if (dispatch.route === "btw" || dispatch.route === "send") {
     await handleSendNow();
     return;
   }

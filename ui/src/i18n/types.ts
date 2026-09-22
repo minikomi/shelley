@@ -20,6 +20,7 @@ export interface TranslationKeys {
   diffs: string;
   gitGraph: string;
   terminal: string;
+  livePreview: string;
   archiveConversation: string;
   exportConversation: string;
   checkForNewVersion: string;

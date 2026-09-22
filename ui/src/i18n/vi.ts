@@ -20,6 +20,7 @@ export const vi: TranslationKeys = {
   diffs: "Thay đổi",
   gitGraph: "Biểu đồ Git",
   terminal: "Terminal",
+  livePreview: "Xem trước trực tiếp",
   archiveConversation: "Hội thoại đã lưu trữ",
   exportConversation: "Xuất hội thoại",
   checkForNewVersion: "Kiểm tra cập nhật",

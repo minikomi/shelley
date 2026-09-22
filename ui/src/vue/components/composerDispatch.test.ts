@@ -39,6 +39,9 @@ const routeCases: Array<
   ["!git status", {}, "send"],
   ["/btwfoo", {}, "send"],
   ["/btw question", { isChildConversation: true }, "btw-blocked"],
+  ["/preview 8001", { intent: "queue" }, "send"],
+  ["/preview", { intent: "compact-and-send" }, "send"],
+  ["/previewing", { intent: "queue" }, "queue"],
 ];
 for (const [message, options, route] of routeCases) {
   assert.equal(composerDispatch(message, options).route, route, `${message} uses ${route}`);

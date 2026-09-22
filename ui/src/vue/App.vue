@@ -213,6 +213,8 @@
       <div v-if="drawerOpen" class="backdrop hide-on-desktop" @click="drawerOpen = false" />
     </div>
 
+    <LiveSitePreview v-if="isExeDev" />
+
     <!-- Recomputation-counter overlay (performance-hud flag). -->
     <PerfHud v-if="perfHudEnabled" />
   </template>
@@ -221,6 +223,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import ChatInterface from "./components/ChatInterface.vue";
+import LiveSitePreview from "./components/LiveSitePreview.vue";
 import type { RecordingMode } from "./components/recordingDestination";
 import { isImeComposing } from "../utils/imeComposing";
 import { comboMatches, MENU_COMBOS } from "../utils/menuShortcuts";
@@ -319,6 +322,7 @@ function updatePageTitle(conversation: Conversation | undefined) {
 }
 
 const banner = window.__SHELLEY_INIT__?.banner;
+const isExeDev = window.__SHELLEY_INIT__?.is_exe_dev === true;
 
 // ---- state ----
 const conversations = ref<ConversationWithState[]>([]);

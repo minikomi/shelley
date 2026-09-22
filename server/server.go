@@ -600,6 +600,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
 	mux.Handle("GET /debug/pprof/trace", http.HandlerFunc(pprof.Trace))
 
+	mux.Handle(previewPrefix, previewProxyHandler())
+
 	// Serve embedded UI assets
 	mux.Handle("/", s.staticHandler(ui.Assets()))
 }
@@ -1973,7 +1975,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	s.RegisterRoutes(mux)
 
 	// TCP handler: full middleware (applied in reverse order: last added = first executed)
-	tcpHandler := LoggerMiddleware(s.logger)(mux)
+	tcpHandler := LoggerMiddleware(s.logger)(PreviewRefererMiddleware(mux))
 	cop := http.NewCrossOriginProtection()
 	tcpHandler = cop.Handler(tcpHandler)
 	if s.requireHeader != "" {

@@ -71,11 +71,13 @@
           "
           :can-export="!!(conversationId && messages.length > 0)"
           :has-update="hasUpdate"
+          :show-live-preview="isExeDev"
           @open-command-palette="props.onOpenCommandPalette?.()"
           @open-directory-picker="showDirectoryPicker = true"
           @open-diffs="showDiffViewer = true"
           @open-git-graph="showGitGraph = true"
           @open-terminal="openInAppTerminal"
+          @open-live-preview="openPreview"
           @open-external-link="openExternalLink"
           @archive="archiveFromMenu"
           @export="openExport"
@@ -382,6 +384,7 @@
       :model-options="readyModels"
       :current-model-id="selectedModel"
       :is-child-conversation="!!currentConversation?.parent_conversation_id"
+      :is-exe-dev="isExeDev"
       @clear-injected-text="
         diffCommentText = '';
         terminalInjectedText = null;
@@ -541,6 +544,13 @@ import {
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import { replaceLocationFragment } from "../../utils/locationFragment";
 import { applyCommitTourStatus } from "../../services/commitTourStatus";
+import {
+  closeLivePreview,
+  isPreviewCommand,
+  mostRecentPreviewEndpoint,
+  openLivePreview,
+  parsePreviewCommand,
+} from "../composables/livePreview";
 import { contextUsageLevel } from "../../utils/contextUsage";
 import {
   btwAnchor,
@@ -2891,9 +2901,45 @@ function clearSubmittedDraft(conversationId: string, text: string) {
   }
 }
 
+function historyTexts(): string[] {
+  const texts: string[] = [];
+  for (const prior of messages.value) {
+    if ((prior.type !== "user" && prior.type !== "agent") || !prior.llm_data) continue;
+    try {
+      const llm = typeof prior.llm_data === "string" ? JSON.parse(prior.llm_data) : prior.llm_data;
+      for (const content of (llm?.Content || []) as LLMContent[]) {
+        if (content.Type === 2 && typeof content.Text === "string") texts.push(content.Text);
+      }
+    } catch {
+      // malformed llm_data has no text to offer
+    }
+  }
+  return texts;
+}
+
+function openPreview(port?: number, path?: string) {
+  const inferred = port === undefined ? mostRecentPreviewEndpoint(historyTexts()) : null;
+  openLivePreview(port ?? inferred?.port, path ?? inferred?.path);
+}
+
 async function sendMessage(message: string) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
+  if (isExeDev && isPreviewCommand(trimmedMessage)) {
+    try {
+      const command = parsePreviewCommand(trimmedMessage);
+      if (command.action === "close") {
+        closeLivePreview();
+      } else {
+        openPreview(command.port, command.path);
+      }
+      error.value = null;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "Failed to open live preview";
+      throw err;
+    }
+    return;
+  }
   const transcriptionCommand =
     trimmedMessage === SLASH_COMMANDS.TRANSCRIPTION.command ||
     trimmedMessage.startsWith(`${SLASH_COMMANDS.TRANSCRIPTION.command} `);

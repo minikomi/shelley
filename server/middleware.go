@@ -25,13 +25,12 @@ func LoggerMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return sloghttp.NewWithConfig(logger, config)
 }
 
-// RequireHeaderMiddleware requires a specific header to be present on all API requests.
+// RequireHeaderMiddleware requires a specific header on API and preview requests.
 // This is used to ensure requests come through an authenticated proxy.
 func RequireHeaderMiddleware(headerName string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Only check API routes
-			if strings.HasPrefix(r.URL.Path, "/api/") {
+			if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, previewPrefix) {
 				if r.Header.Get(headerName) == "" {
 					http.Error(w, "missing required header: "+headerName, http.StatusForbidden)
 					return
