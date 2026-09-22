@@ -419,13 +419,12 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 	}
 
 	return claudetool.ToolSetConfig{
-		WorkingDir:            wd,
-		LLMProvider:           llmProvider,
-		EnableJITInstall:      claudetool.EnableBashToolJITInstall,
-		EnableBrowser:         true,
-		BuildAvailableModels:  buildAvailableModels,
-		PatchSimpleEnabled:    flagEnabled(server.FlagPatchSimple.Name),
-		PatchOpenAIRawEnabled: flagEnabled(server.FlagPatchOpenAIRaw.Name),
+		WorkingDir:           wd,
+		LLMProvider:          llmProvider,
+		EnableJITInstall:     claudetool.EnableBashToolJITInstall,
+		EnableBrowser:        true,
+		BuildAvailableModels: buildAvailableModels,
+		PatchSimpleEnabled:   flagEnabled(server.FlagPatchSimple.Name),
 	}
 }
 

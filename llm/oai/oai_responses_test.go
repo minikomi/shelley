@@ -1878,8 +1878,10 @@ func TestResponsesServiceStallTimeout(t *testing.T) {
 }
 
 func TestResponsesServicePatchProfile(t *testing.T) {
-	if got := (&ResponsesService{ProviderName: "openai", Model: Model{SupportsApplyPatch: true}}).PatchProfile(); got != "codex_apply_patch" {
-		t.Fatalf("capable OpenAI Responses profile = %q", got)
+	for _, model := range []Model{GPT6Astra, GPT6Sol, GPT6Luna} {
+		if got := (&ResponsesService{ProviderName: "openai", Model: model}).PatchProfile(); got != "codex_apply_patch" {
+			t.Fatalf("%s OpenAI Responses profile = %q", model.ModelName, got)
+		}
 	}
 	if got := (&ResponsesService{ProviderName: "openai"}).PatchProfile(); got != "flat" {
 		t.Fatalf("uncatalogued OpenAI Responses profile = %q", got)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestRemovedFlagsNotRegistered(t *testing.T) {
-	for _, name := range []string{"tool-pills", "reflection-emoji-favicon"} {
+	for _, name := range []string{"tool-pills", "reflection-emoji-favicon", "patch-openai-raw"} {
 		if _, ok := featureflags.Lookup(name); ok {
 			t.Errorf("removed flag %q is still registered", name)
 		}
@@ -24,14 +24,12 @@ func TestFlagCompactSendThresholdsRegisteredOff(t *testing.T) {
 	}
 }
 
-func TestPatchStrategyFlagsRegisteredOff(t *testing.T) {
-	for _, name := range []string{"patch-simple", "patch-openai-raw"} {
-		flag, ok := featureflags.Lookup(name)
-		if !ok {
-			t.Fatalf("%s not registered", name)
-		}
-		if flag.Default != false {
-			t.Fatalf("%s default = %v, want false", name, flag.Default)
-		}
+func TestPatchSimpleRegisteredOff(t *testing.T) {
+	flag, ok := featureflags.Lookup("patch-simple")
+	if !ok {
+		t.Fatal("patch-simple not registered")
+	}
+	if flag.Default != false {
+		t.Fatalf("patch-simple default = %v, want false", flag.Default)
 	}
 }

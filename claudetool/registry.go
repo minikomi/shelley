@@ -29,9 +29,7 @@ var ToolRegistry = []ToolInfo{
 
 // ToolInfoByName returns registry metadata for a tool.
 func ToolInfoByName(name string) (ToolInfo, bool) {
-	if name == "apply_patch" {
-		name = "patch"
-	}
+	name = registeredToolName(name)
 	for _, tool := range ToolRegistry {
 		if tool.Name == name {
 			return tool, true
@@ -40,10 +38,18 @@ func ToolInfoByName(name string) (ToolInfo, bool) {
 	return ToolInfo{}, false
 }
 
+func registeredToolName(name string) string {
+	if name == ApplyPatchName {
+		return PatchName
+	}
+	return name
+}
+
 // IsToolEnabled reports whether a tool with the given name is enabled for a
 // conversation given the override map and a global "disable all" flag.
 // overrides maps tool name to "on" or "off"; any other value is ignored.
 func IsToolEnabled(name string, overrides map[string]string, disableAll bool) bool {
+	name = registeredToolName(name)
 	switch overrides[name] {
 	case "on":
 		return true

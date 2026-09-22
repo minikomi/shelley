@@ -695,29 +695,28 @@ func (p *rawPatchProvider) GetWorkhorseService(modelID string) (llm.Service, err
 	return p.GetService(modelID)
 }
 
-func TestNewToolSetPatchStrategyFlags(t *testing.T) {
+func TestNewToolSetPatchStrategy(t *testing.T) {
 	boolFn := func(value bool) func() bool { return func() bool { return value } }
 	for _, tt := range []struct {
-		name, want  string
-		simple, raw bool
+		name, want string
+		simple     bool
 	}{
-		{name: "both off uses full nested", want: "patch"},
-		{name: "simple on uses simplified nested", simple: true, want: "patch"},
-		{name: "raw overrides full nested", raw: true, want: "apply_patch"},
-		{name: "raw overrides simple", simple: true, raw: true, want: "apply_patch"},
+		{name: "capable service uses apply_patch", want: "apply_patch"},
+		{name: "capable service overrides simple", simple: true, want: "apply_patch"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ts := NewToolSet(t.Context(), ToolSetConfig{
-				LLMProvider:           &rawPatchProvider{},
-				ModelID:               "test",
-				PatchSimpleEnabled:    boolFn(tt.simple),
-				PatchOpenAIRawEnabled: boolFn(tt.raw),
+				LLMProvider:        &rawPatchProvider{},
+				ModelID:            "test",
+				PatchSimpleEnabled: boolFn(tt.simple),
 			})
 			var patch *llm.Tool
 			for _, tool := range ts.Tools() {
 				if tool.Name == "patch" || tool.Name == "apply_patch" {
+					if patch != nil {
+						t.Fatal("multiple patch tools exposed")
+					}
 					patch = tool
-					break
 				}
 			}
 			if patch == nil || patch.Name != tt.want {
@@ -739,28 +738,72 @@ func TestNewToolSetPatchStrategyFlags(t *testing.T) {
 	}
 }
 
-func TestNewToolSetRawFlagDoesNotOverrideUnsupportedService(t *testing.T) {
-	ts := NewToolSet(t.Context(), ToolSetConfig{
-		LLMProvider:           &mockLLMProvider{},
-		ModelID:               "test-model",
-		PatchOpenAIRawEnabled: func() bool { return true },
-	})
-	for _, tool := range ts.Tools() {
-		if tool.Name == "apply_patch" {
-			t.Fatal("unsupported service received raw apply_patch")
-		}
-		if tool.Name == "patch" {
-			var schema struct {
-				Properties map[string]json.RawMessage `json:"properties"`
+func TestNewToolSetPatchStrategyUnsupportedService(t *testing.T) {
+	for _, tt := range []struct {
+		name, property string
+		simple         bool
+	}{
+		{name: "nested", property: "patches"},
+		{name: "simple", property: "edits", simple: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := NewToolSet(t.Context(), ToolSetConfig{
+				LLMProvider:        &mockLLMProvider{},
+				ModelID:            "test-model",
+				PatchSimpleEnabled: func() bool { return tt.simple },
+			})
+			for _, tool := range ts.Tools() {
+				if tool.Name == "apply_patch" {
+					t.Fatal("unsupported service received apply_patch")
+				}
+				if tool.Name == "patch" {
+					var schema struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					}
+					if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+						t.Fatal(err)
+					}
+					if _, ok := schema.Properties[tt.property]; !ok {
+						t.Fatalf("unsupported service missing %q patch schema", tt.property)
+					}
+					return
+				}
 			}
-			if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
-				t.Fatal(err)
-			}
-			if _, ok := schema.Properties["patches"]; !ok {
-				t.Fatal("raw flag changed unsupported service from nested strategy")
-			}
-			return
-		}
+			t.Fatal("patch tool not found")
+		})
 	}
-	t.Fatal("patch tool not found")
+}
+
+func TestNewToolSetApplyPatchRespectsOverrides(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		overrides  map[string]string
+		disableAll bool
+		want       bool
+	}{
+		{name: "patch off", overrides: map[string]string{"patch": "off"}},
+		{name: "disable all", disableAll: true},
+		{name: "patch on overrides disable all", overrides: map[string]string{"patch": "on"}, disableAll: true, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := NewToolSet(t.Context(), ToolSetConfig{
+				LLMProvider:     &rawPatchProvider{},
+				ModelID:         "test",
+				ToolOverrides:   tt.overrides,
+				DisableAllTools: tt.disableAll,
+			})
+			defer ts.Cleanup()
+			for _, tool := range ts.Tools() {
+				if tool.Name == "apply_patch" {
+					if !tt.want {
+						t.Fatal("apply_patch exposed despite patch being disabled")
+					}
+					return
+				}
+			}
+			if tt.want {
+				t.Fatal("apply_patch missing despite patch being enabled")
+			}
+		})
+	}
 }
