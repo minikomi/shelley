@@ -153,19 +153,36 @@ func TestSteeringSection(t *testing.T) {
 }
 
 func TestExtractPiFileOps(t *testing.T) {
+	native, err := json.Marshal(map[string]string{"input": `*** Begin Patch
+*** Add File: add.go
++content
+*** Update File: old.go
+*** Move to: moved.go
+@@
+-before
++after
+*** Update File: updated.go
+@@
+-old
++new
+*** Delete File: delete.go
+*** End Patch`})
+	if err != nil {
+		t.Fatal(err)
+	}
 	msgs := []llm.Message{
 		{Role: llm.MessageRoleAssistant, Content: []llm.Content{
 			{Type: llm.ContentTypeToolUse, ToolName: "read_image", ToolInput: json.RawMessage(`{"path":"a.go"}`)},
 			{Type: llm.ContentTypeToolUse, ToolName: "patch", ToolInput: json.RawMessage(`{"path":"b.go"}`)},
+			{Type: llm.ContentTypeToolUse, ToolName: "apply_patch", ToolInput: native},
 		}},
 	}
 	read, modified := extractPiFileOps(msgs)
-	// a.go was read (read_image), b.go was patched.
 	if len(read) != 1 || read[0] != "a.go" {
 		t.Errorf("read files = %v, want [a.go]", read)
 	}
-	if len(modified) != 1 || modified[0] != "b.go" {
-		t.Errorf("modified files = %v, want [b.go]", modified)
+	if got, want := strings.Join(modified, ","), "add.go,b.go,delete.go,moved.go,old.go,updated.go"; got != want {
+		t.Errorf("modified files = %v, want %s", modified, want)
 	}
 }
 

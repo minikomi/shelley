@@ -262,18 +262,25 @@ func extractPiFileOps(messages []llm.Message) (readFiles, modifiedFiles []string
 			if err := json.Unmarshal(c.ToolInput, &args); err != nil {
 				continue
 			}
-			path := jsonStringField(args, "path")
-			if path == "" {
-				continue
-			}
-			// Shelley tool names that carry a "path" argument. There is no
-			// plain "read" tool (file reads go through bash); "patch" is the
-			// only file-mutating tool with a path.
 			switch c.ToolName {
 			case "read_image":
-				read[path] = true
+				if path := jsonStringField(args, "path"); path != "" {
+					read[path] = true
+				}
 			case "patch":
-				modified[path] = true
+				if path := jsonStringField(args, "path"); path != "" {
+					modified[path] = true
+				}
+			case "apply_patch":
+				for _, line := range strings.Split(jsonStringField(args, "input"), "\n") {
+					line = strings.TrimSuffix(line, "\r")
+					for _, prefix := range []string{"*** Add File: ", "*** Update File: ", "*** Move to: ", "*** Delete File: "} {
+						if path, ok := strings.CutPrefix(line, prefix); ok && path != "" {
+							modified[path] = true
+							break
+						}
+					}
+				}
 			}
 		}
 	}
