@@ -25,10 +25,12 @@ chunks JSON into your context for anything beyond a small commit.
 
    This prints the commit subject and one line per suggested chunk — id,
    +adds/-dels, and `@@` header — grouped by file, with no patch bodies.
-   Classify files into tiers: data model / schema / API first, then core
-   logic, tests, and finally generated files (sqlc, protobuf), lock files,
-   and boilerplate. Whole tiers of generated or mechanical chunks can be
-   marked trivial without ever reading their bodies.
+   Chunks tagged `[trivial: reason]` are provably mechanical (generated
+   files, whitespace-only hunks, renames, binaries): the
+   scaffold already collapses them, so never read or comment on them.
+   Classify the rest into tiers: data model / schema / API first, then core
+   logic, tests, and finally boilerplate. Small edits are not pre-marked;
+   judge those yourself.
 
 2. Read only the chunks you need to write commentary for:
 
@@ -52,7 +54,7 @@ chunks JSON into your context for anything beyond a small commit.
    ```
 
    The scaffold lists every chunk as a `{"ref": <id>}` entry in diff order,
-   with lock files and codegen output pre-marked trivial, so coverage is
+   with generated files and mechanical hunks pre-marked trivial, so coverage is
    guaranteed by construction. Then reorder entries by importance, insert
    headers, and add comments:
 

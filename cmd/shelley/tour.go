@@ -70,6 +70,9 @@ func runTour(args []string) {
 				if hunk == "" {
 					hunk = "(no hunk: mode/rename/binary)"
 				}
+				if reason := mechanicalReason(fragments[id]); reason != "" {
+					hunk += "  [trivial: " + reason + "]"
+				}
 				fmt.Printf("  %3d  +%d -%d  %s\n", id, meta.Adds, meta.Dels, hunk)
 			}
 			return
@@ -115,7 +118,7 @@ func runTour(args []string) {
 		tour := committour.Tour{Version: 1, Title: subject, Chunks: []committour.TourChunk{}}
 		for id := range fragments {
 			entry := committour.TourChunk{Ref: &id}
-			if generatedPath(committour.Meta(fragments[id]).File) {
+			if mechanicalReason(fragments[id]) != "" {
 				entry.Trivial = true
 			}
 			tour.Chunks = append(tour.Chunks, entry)
@@ -194,6 +197,49 @@ func tourUsage() {
 	fmt.Fprintln(os.Stderr, "  shelley tour verify [-C dir] <commit> <tour.json>  Verify a tour against the commit tree")
 	fmt.Fprintln(os.Stderr, "  shelley tour attach [-C dir] <commit> <tour.json>  Verify, then store the tour as a git note")
 	fmt.Fprintln(os.Stderr, "  shelley tour show [-C dir] <commit>                Print the stored tour note")
+}
+
+// mechanicalReason names why a fragment needs no narration, or returns ""
+// when a reader should judge it. Only structurally provable cases qualify;
+// small edits are never mechanical just because they are small.
+func mechanicalReason(fragment string) string {
+	if generatedPath(committour.Meta(fragment).File) {
+		return "generated"
+	}
+	if strings.Contains(fragment, "\nGIT binary patch\n") || strings.Contains(fragment, "\nBinary files ") {
+		return "binary"
+	}
+	if !strings.Contains(fragment, "\n@@") {
+		if strings.Contains(fragment, "\nrename from ") || strings.Contains(fragment, "\nold mode ") {
+			return "rename-or-mode"
+		}
+		return ""
+	}
+	var adds, dels []string
+	inHunk := false
+	for _, line := range strings.Split(fragment, "\n") {
+		switch {
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+		case inHunk && strings.HasPrefix(line, "+"):
+			adds = append(adds, line[1:])
+		case inHunk && strings.HasPrefix(line, "-"):
+			dels = append(dels, line[1:])
+		}
+	}
+	if len(adds) == len(dels) && len(adds) > 0 {
+		same := true
+		for i := range adds {
+			if strings.Join(strings.Fields(adds[i]), "") != strings.Join(strings.Fields(dels[i]), "") {
+				same = false
+				break
+			}
+		}
+		if same {
+			return "whitespace-only"
+		}
+	}
+	return ""
 }
 
 // generatedPath reports whether a path looks machine-generated or otherwise

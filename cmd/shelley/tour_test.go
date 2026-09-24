@@ -197,3 +197,24 @@ func TestGeneratedPath(t *testing.T) {
 		}
 	}
 }
+
+func TestMechanicalReason(t *testing.T) {
+	hunk := func(file, body string) string {
+		return "diff --git a/" + file + " b/" + file + "\n--- a/" + file + "\n+++ b/" + file + "\n@@ -1,3 +1,3 @@\n" + body
+	}
+	for name, tc := range map[string]struct{ fragment, want string }{
+		"go import":      {hunk("a.go", " import (\n+\t\"errors\"\n \t\"fmt\"\n"), ""},
+		"whitespace":     {hunk("a.go", "-\tx :=  f( a,b )\n+\tx := f(a, b)\n"), "whitespace-only"},
+		"generated":      {hunk("db/generated/q.sql.go", "+\tFoo int\n"), "generated"},
+		"rename":         {"diff --git a/x.go b/y.go\nsimilarity index 100%\nrename from x.go\nrename to y.go\n", "rename-or-mode"},
+		"binary":         {"diff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n", "binary"},
+		"one-line edit":  {hunk("a.ts", "+  contention.value = summarize(missed(), pending());\n"), ""},
+		"removed const":  {hunk("a.ts", "-const DIRTY_PREFIX = \"dirty:\";\n"), ""},
+		"string in list": {hunk("a.go", " names := []string{\n+\t\"errors\",\n }\n"), ""},
+		"real change":    {hunk("a.go", "-\tif x > 1 {\n+\tif x >= 1 {\n"), ""},
+	} {
+		if got := mechanicalReason(tc.fragment); got != tc.want {
+			t.Errorf("%s: mechanicalReason = %q, want %q", name, got, tc.want)
+		}
+	}
+}
