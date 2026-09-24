@@ -47,6 +47,12 @@
           class="working-indicator drawer-working-indicator"
           :title="ctx.t('agentIsWorking')"
         />
+        <span
+          v-else-if="convState.turn_interrupted && !conversation.parent_conversation_id"
+          class="drawer-interrupted-indicator"
+          title="Interrupted — open to continue"
+          aria-label="Conversation interrupted"
+        />
         <div
           v-if="!isDraft && !itemArchived"
           class="conversation-actions drawer-actions-row drawer-actions-top"
