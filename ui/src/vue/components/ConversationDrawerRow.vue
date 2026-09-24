@@ -31,7 +31,15 @@
           </div>
           <div v-else class="conversation-title">
             <em v-if="!conversation.slug">untitled</em>
-            <template v-else>{{ conversation.slug }}</template>
+            <template v-else>
+              <template
+                v-for="(seg, i) in highlightSearchMatches(conversation.slug, ctx.searchText.value)"
+                :key="i"
+              >
+                <mark v-if="seg.mark" class="conversation-snippet-mark">{{ seg.text }}</mark>
+                <template v-else>{{ seg.text }}</template>
+              </template>
+            </template>
           </div>
         </div>
         <span
@@ -389,6 +397,7 @@ import type { MenuItem } from "primevue/menuitem";
 import OverflowDotsIcon from "./OverflowDotsIcon.vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import { isImeComposing } from "../../utils/imeComposing";
+import { highlightSearchMatches } from "../../utils/searchHighlight";
 import {
   DrawerCtxKey,
   parseTags,
