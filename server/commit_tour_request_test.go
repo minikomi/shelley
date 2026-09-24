@@ -840,13 +840,17 @@ func TestCommitTourSubagentDoesNotNotifyParent(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
 		t.Fatal(err)
 	}
+	before, err := database.ListMessages(t.Context(), conversation.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := commitTourJobDone(t, server, accepted.Tour.Repository, hash)
 	<-done
 	messages, err := database.ListMessages(t.Context(), conversation.ConversationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 0 {
+	if len(messages) != len(before) {
 		t.Fatalf("tour subagent changed parent history: %#v", messages)
 	}
 }

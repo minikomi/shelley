@@ -15218,6 +15218,7 @@ kbd {
   .conversation-loading-bar-fill,
   .export-spinner,
   .message-voice-btn.listening,
+  .msg-tour-building .working-indicator,
   .patch-tool-running,
   .recording-status-dot.recording,
   .recording-status-dot.starting,
