@@ -83,7 +83,7 @@
                 <template
                   v-for="(seg, i) in highlightSearchMatches(
                     item.title,
-                    item.type === 'conversation' && item.url ? query : '',
+                    item.type === 'conversation' && item.url ? query.trim() : '',
                   )"
                   :key="i"
                 >
@@ -188,7 +188,6 @@ const newConvGitRepoRoot = ref<string | null>(null);
 const newConvGitWorktreeRoot = ref<string | null>(null);
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
-let searchTimeout: number | null = null;
 
 // --- Icon markup (identical to the React JSX icons) ---
 const SVG_OPEN =
@@ -237,32 +236,28 @@ function fuzzyMatch(q: string, text: string): number {
   return score;
 }
 
-// Search conversations on the server (debounced via the query watcher).
-async function searchConversations(searchQuery: string) {
-  if (!searchQuery.trim()) {
-    searchResults.value = [];
-    isSearching.value = false;
-    return;
-  }
-  isSearching.value = true;
-  try {
-    searchResults.value = await api.searchConversations(searchQuery);
-  } catch (err) {
-    console.error("Failed to search conversations:", err);
-    searchResults.value = [];
-  } finally {
-    isSearching.value = false;
-  }
-}
+watch(query, (q, _old, onCleanup) => {
+  const searchQuery = q.trim();
+  searchResults.value = [];
+  isSearching.value = false;
+  if (!searchQuery) return;
 
-watch(query, (q) => {
-  if (searchTimeout) clearTimeout(searchTimeout);
-  if (q.trim()) {
-    searchTimeout = window.setTimeout(() => void searchConversations(q), 150);
-  } else {
-    searchResults.value = [];
-    isSearching.value = false;
-  }
+  const controller = new AbortController();
+  isSearching.value = true;
+  const timeout = window.setTimeout(async () => {
+    try {
+      const results = await api.searchConversationsFTS(searchQuery, controller.signal);
+      if (!controller.signal.aborted) searchResults.value = results;
+    } catch (err) {
+      if (!controller.signal.aborted) console.error("Failed to search conversations:", err);
+    } finally {
+      if (!controller.signal.aborted) isSearching.value = false;
+    }
+  }, 150);
+  onCleanup(() => {
+    clearTimeout(timeout);
+    controller.abort();
+  });
 });
 
 // When the palette opens, look up git roots for the locally-selected cwd.
