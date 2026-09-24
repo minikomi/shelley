@@ -13,11 +13,21 @@ interface CanonicalEntry {
 }
 
 type Listener = (status: GitTourBuildStatus) => void;
+export interface CommitTourRequest {
+  conversationId: string;
+  cwd: string;
+  hash: string;
+  path: string;
+  startedAt: number;
+}
+
+type RequestListener = (request: CommitTourRequest) => void;
 
 const DEFAULT_TTL_MS = 30_000;
 const BUILDING_TTL_MS = 1_000;
 const cache = new Map<string, CacheEntry>();
 const listeners = new Map<string, Set<Listener>>();
+const requestListeners = new Set<RequestListener>();
 const canonicalKeys = new Map<string, Set<string>>();
 const keyCanonical = new Map<string, string>();
 const canonicalValues = new Map<string, CanonicalEntry>();
@@ -131,6 +141,21 @@ export function subscribeCommitTourStatus(
   };
 }
 
+export function subscribeCommitTourRequests(listener: RequestListener): () => void {
+  requestListeners.add(listener);
+  return () => requestListeners.delete(listener);
+}
+
+export function announceCommitTourRequest(
+  conversationId: string,
+  cwd: string,
+  hash: string,
+  path: string,
+  startedAt: number,
+) {
+  for (const listener of requestListeners) listener({ conversationId, cwd, hash, path, startedAt });
+}
+
 export async function loadCommitTourStatus(
   cwd: string,
   hash: string,
@@ -162,8 +187,14 @@ export async function requestCommitTour(
   cwd: string,
   hash: string,
 ): Promise<GitTourBuildStatus> {
+  const path = window.location.pathname;
+  const startedAt = performance.now();
   const status = await api.requestGitTour(conversationId, cwd, hash);
-  return publish(commitTourStatusKey(cwd, hash), status);
+  const published = publish(commitTourStatusKey(cwd, hash), status);
+  if (published.status === "building") {
+    announceCommitTourRequest(conversationId, cwd, published.hash, path, startedAt);
+  }
+  return published;
 }
 
 export function applyCommitTourStatus(cwd: string, hash: string, status: GitTourBuildStatus) {

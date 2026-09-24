@@ -429,6 +429,12 @@
       :is-open="showGitGraph"
       :covered="showDiffViewer"
       :can-open-diff="true"
+      :conversation-id="conversationId"
+      :can-request-tour="
+        !!currentConversation &&
+        !currentConversation.parent_conversation_id &&
+        !currentConversation.is_draft
+      "
       @close="
         showGitGraph = false;
         focusMessageInputIfUnfocused();
@@ -540,7 +546,15 @@ import {
 } from "../../utils/conversationView";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import { replaceLocationFragment } from "../../utils/locationFragment";
-import { applyCommitTourStatus } from "../../services/commitTourStatus";
+import {
+  announceCommitTourRequest,
+  applyCommitTourStatus,
+  commitTourStatusKey,
+  loadCommitTourStatus,
+  subscribeCommitTourRequests,
+  subscribeCommitTourStatus,
+  type CommitTourRequest,
+} from "../../services/commitTourStatus";
 import { contextUsageLevel } from "../../utils/contextUsage";
 import {
   btwAnchor,
@@ -2991,13 +3005,21 @@ async function sendMessage(message: string) {
     try {
       sending.value = true;
       error.value = null;
+      const path = window.location.pathname;
+      const startedAt = performance.now();
       const accepted = await api.sendMessage(props.conversationId, {
         message: trimmedMessage,
         model: selectedModel.value,
       });
-      const hash = trimmedMessage.slice(SLASH_COMMANDS.TOUR.command.length).trim();
-      const cwd = props.currentConversation?.cwd || selectedCwd.value;
-      if (accepted.tour && cwd && hash) applyCommitTourStatus(cwd, hash, accepted.tour);
+      const cwd = trimmedMessage.split("\n")[1]?.trim() || props.currentConversation?.cwd || selectedCwd.value;
+      if (accepted.tour && cwd) {
+        applyCommitTourStatus(cwd, accepted.tour.hash, accepted.tour);
+        if (accepted.tour.status === "present") {
+          handleOpenDiffViewer(accepted.tour.hash, cwd);
+        } else if (accepted.tour.status === "building") {
+          announceCommitTourRequest(props.conversationId, cwd, accepted.tour.hash, path, startedAt);
+        }
+      }
     } catch (err) {
       console.error("Failed to run /tour:", err);
       error.value = err instanceof Error ? err.message : "Failed to request tour";
@@ -3254,6 +3276,53 @@ function handleOpenDiffViewer(commit: string, cwd?: string) {
   diffViewerInitialCommit.value = commit;
   diffViewerCwd.value = cwd;
   showDiffViewer.value = true;
+}
+
+const activeTourRequests = new Map<string, () => void>();
+let unsubscribeTourRequests: (() => void) | null = null;
+let lastUserActivityAt = 0;
+const tourActivityEvents = ["pointerdown", "keydown", "wheel", "touchstart"] as const;
+
+function markTourUserActivity() {
+  lastUserActivityAt = performance.now();
+}
+
+function watchRequestedTour({ conversationId, cwd, hash, path, startedAt }: CommitTourRequest) {
+  const key = commitTourStatusKey(cwd, hash);
+  if (activeTourRequests.has(key)) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let unsubscribe = () => {};
+  const stop = () => {
+    if (timer) clearTimeout(timer);
+    unsubscribe();
+    activeTourRequests.delete(key);
+  };
+  activeTourRequests.set(key, stop);
+  unsubscribe = subscribeCommitTourStatus(cwd, hash, (status) => {
+    if (status.status === "building") return;
+    stop();
+    if (
+      status.status === "present" &&
+      props.conversationId === conversationId &&
+      window.location.pathname === path &&
+      lastUserActivityAt <= startedAt &&
+      document.visibilityState === "visible" &&
+      !showDiffViewer.value &&
+      !draftText.trim()
+    ) {
+      handleOpenDiffViewer(hash, cwd);
+    }
+  });
+  const poll = async () => {
+    try {
+      await loadCommitTourStatus(cwd, hash, true);
+    } catch (error) {
+      console.error("Failed to check commit tour:", error);
+    } finally {
+      if (activeTourRequests.has(key)) timer = setTimeout(() => void poll(), 2_000);
+    }
+  };
+  if (activeTourRequests.has(key)) timer = setTimeout(() => void poll(), 2_000);
 }
 
 function handleMessageComment(messageId: string, snippet: string) {
@@ -4728,9 +4797,14 @@ onMounted(() => {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   document.addEventListener("keydown", handleScrollKeyDown);
   document.addEventListener("keydown", handleMenuShortcut);
+  unsubscribeTourRequests = subscribeCommitTourRequests(watchRequestedTour);
+  for (const event of tourActivityEvents) document.addEventListener(event, markTourUserActivity, true);
 });
 
 onUnmounted(() => {
+  unsubscribeTourRequests?.();
+  for (const stop of activeTourRequests.values()) stop();
+  for (const event of tourActivityEvents) document.removeEventListener(event, markTourUserActivity, true);
   teardownSubscriptions();
   stopBottomPin();
   tailSweepToken++; // cancel any in-flight background mount sweep

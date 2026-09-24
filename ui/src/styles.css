@@ -10823,8 +10823,46 @@ kbd {
   gap: 0.3em;
 }
 
+.msg-tour-building .working-indicator {
+  width: 10px;
+  height: 10px;
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
 .msg-tour-failed {
   color: var(--error-text);
+}
+
+.git-graph-tour-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  padding: 0.3rem 0.7rem;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.git-graph-tour-action:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+
+.git-graph-tour-action:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.git-graph-tour-action .spinner {
+  width: 11px;
+  height: 11px;
+  border-width: 1.5px;
 }
 
 .msg-distill-container {

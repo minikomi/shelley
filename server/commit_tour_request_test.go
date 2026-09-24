@@ -69,7 +69,8 @@ func TestParseCommitTourCommand(t *testing.T) {
 	}{
 		{"/tour abc1234", "abc1234", "", true, false},
 		{"  /tour\tabc1234\n/tmp/a repo  ", "abc1234", "/tmp/a repo", true, false},
-		{"/tour", "", "", true, true},
+		{"/tour", "", "", true, false},
+		{"/tour  ", "", "", true, false},
 		{"/tour abc1234 extra", "", "", true, true},
 		{"/tourx abc1234", "", "", false, false},
 		{"please /tour abc1234", "", "", false, false},
@@ -85,6 +86,12 @@ func TestCommitTourCommandStartsDetachedWorker(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
 	repo := setupTestGitRepo(t)
+	olderHash := commitTourTestHash(t, repo)
+	attachCommitTourTestNote(t, repo, olderHash)
+	commit := exec.Command("git", "-C", repo, "commit", "--allow-empty", "-m", "New untoured HEAD")
+	if output, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("commit new HEAD: %v: %s", err, output)
+	}
 	hash := commitTourTestHash(t, repo)
 	model := "predictable"
 	conversation, err := database.CreateConversation(t.Context(), nil, true, &repo, &model, db.ConversationOptions{})
@@ -112,7 +119,7 @@ func TestCommitTourCommandStartsDetachedWorker(t *testing.T) {
 		}
 	}
 
-	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/tour "+hash)
+	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/tour")
 	req := httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversation.ConversationID+"/chat", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	server.handleChatConversation(w, req, conversation.ConversationID)
@@ -125,7 +132,7 @@ func TestCommitTourCommandStartsDetachedWorker(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
 		t.Fatal(err)
 	}
-	if accepted.Tour.Status != commitTourStatusBuilding || accepted.Tour.WorkerSlug == "" {
+	if accepted.Tour.Status != commitTourStatusBuilding || accepted.Tour.Hash != hash || accepted.Tour.WorkerSlug == "" {
 		t.Fatalf("tour response = %#v", accepted.Tour)
 	}
 	<-started
@@ -145,8 +152,19 @@ func TestCommitTourCommandStartsDetachedWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parentMessages) != 0 {
-		t.Fatalf("tour command changed parent history: %#v", parentMessages)
+	if len(parentMessages) != 1 || parentMessages[0].Type != string(db.MessageTypeGitInfo) || parentMessages[0].UserData == nil {
+		t.Fatalf("tour command did not record a status message: %#v", parentMessages)
+	}
+	var marker struct {
+		TourRequest bool   `json:"tour_request"`
+		Commit      string `json:"commit"`
+		Worktree    string `json:"worktree"`
+	}
+	if err := json.Unmarshal([]byte(*parentMessages[0].UserData), &marker); err != nil {
+		t.Fatal(err)
+	}
+	if !marker.TourRequest || marker.Commit != hash || marker.Worktree != repo {
+		t.Fatalf("tour marker = %#v", marker)
 	}
 
 	done := commitTourJobDone(t, server, accepted.Tour.Repository, hash)
@@ -158,6 +176,110 @@ func TestCommitTourCommandStartsDetachedWorker(t *testing.T) {
 	}
 	if status.Status != commitTourStatusFailed {
 		t.Fatalf("status after worker without note = %#v", status)
+	}
+}
+
+func TestCommitTourRequestMessageIsOnlyRecordedForNewWorker(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	repo := setupTestGitRepo(t)
+	hash := commitTourTestHash(t, repo)
+	model := "predictable"
+	conversation, err := database.CreateConversation(t.Context(), nil, true, &repo, &model, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server.commitTourRun = func(ctx context.Context, _ string, _ commitTourTarget, _, _, _ string) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	request := func() CommitTourStatus {
+		body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/tour")
+		w := httptest.NewRecorder()
+		server.handleChatConversation(w, httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversation.ConversationID+"/chat", strings.NewReader(body)), conversation.ConversationID)
+		if w.Code != http.StatusAccepted && w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		var accepted struct {
+			Tour CommitTourStatus `json:"tour"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
+			t.Fatal(err)
+		}
+		return accepted.Tour
+	}
+
+	first := request()
+	<-started
+	second := request()
+	if first.Hash != hash || second.WorkerConversationID != first.WorkerConversationID {
+		t.Fatalf("requests = %#v, %#v", first, second)
+	}
+	messages, err := database.ListMessages(t.Context(), conversation.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("request markers = %#v", messages)
+	}
+	done := commitTourJobDone(t, server, first.Repository, hash)
+	close(release)
+	<-done
+
+	attachCommitTourTestNote(t, repo, hash)
+	third := request()
+	if third.Status != commitTourStatusPresent || third.Hash != hash {
+		t.Fatalf("verified HEAD request = %#v", third)
+	}
+	messages, err = database.ListMessages(t.Context(), conversation.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("verified HEAD request added markers: %#v", messages)
+	}
+}
+
+func TestCommitTourRequestMessageRejectsUnbornHEAD(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	repo := t.TempDir()
+	if err := exec.Command("git", "init", repo).Run(); err != nil {
+		t.Fatal(err)
+	}
+	model := "predictable"
+	conversation, err := database.CreateConversation(t.Context(), nil, true, &repo, &model, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/tour")
+	w := httptest.NewRecorder()
+	server.handleChatConversation(w, httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversation.ConversationID+"/chat", strings.NewReader(body)), conversation.ConversationID)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "no commit at HEAD") {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	children, err := database.GetSubagents(t.Context(), conversation.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 0 {
+		t.Fatalf("workers = %#v", children)
+	}
+	messages, err := database.ListMessages(t.Context(), conversation.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("markers = %#v", messages)
 	}
 }
 

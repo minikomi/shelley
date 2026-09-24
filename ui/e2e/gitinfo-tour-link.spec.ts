@@ -154,3 +154,122 @@ test("missing tour requests a visible background subagent", async ({ page, reque
     await expect(gitInfo.getByTestId("gitinfo-tour-link")).toBeVisible({ timeout: 10_000 });
   });
 });
+
+test("untouched /tour shows a compact event and opens when ready", async ({ page, request }) => {
+  await withTempDir("shelley-tour-auto-open-", async (tempDir) => {
+    const repo = join(tempDir, "repo");
+    mkdirSync(repo);
+    git(repo, "init");
+    git(repo, "config", "user.name", "Tour Test");
+    git(repo, "config", "user.email", "tour@example.com");
+    writeFileSync(join(repo, "example.txt"), "before\n");
+    git(repo, "add", "example.txt");
+    git(repo, "commit", "-m", "Marker commit");
+    const hash = git(repo, "rev-parse", "HEAD");
+    const { slug } = await createConversationViaAPIWithDetails(request, "Hello", { cwd: repo });
+
+    let state: "building" | "present" = "building";
+    await page.route("**/api/git/tour/status?*", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: state,
+          hash,
+          worker_slug: state === "building" ? "tour-worker" : undefined,
+        }),
+      });
+    });
+    await page.goto(`/c/${slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
+    await page.evaluate(() => {
+      const textarea = document.querySelector('[data-testid="message-input"]') as HTMLTextAreaElement;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "/tour");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page.getByRole("button", { name: "Send message" }).click();
+    const event = page.getByTestId("message-tour-request");
+    await expect(event).toHaveClass(/message-gitinfo/);
+    await expect(event).not.toHaveClass(/message-agent/);
+    await expect(event.getByRole("link", { name: /^Building ↗$/ })).toHaveAttribute(
+      "href",
+      "/c/tour-worker",
+    );
+    const spinner = event.locator(".working-indicator");
+    await expect(spinner).toHaveCSS("animation-name", "spin");
+    await expect(spinner).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+
+    const scaffold = JSON.parse(
+      execFileSync(shelleyBin, ["tour", "scaffold", "-C", repo, hash], { encoding: "utf8" }),
+    );
+    const tourPath = join(tempDir, "tour.json");
+    writeFileSync(
+      tourPath,
+      JSON.stringify({
+        ...scaffold,
+        title: "Auto-open tour",
+        chunks: scaffold.chunks.map((chunk: { ref: number }) => ({
+          ...chunk,
+          comment: "The guided change.",
+        })),
+      }),
+    );
+    execFileSync(shelleyBin, ["tour", "attach", "-C", repo, hash, tourPath]);
+    state = "present";
+    await expect(event.getByRole("link", { name: "Open tour" })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".commit-tour-introduction h1")).toHaveText("Auto-open tour", {
+      timeout: 15_000,
+    });
+    await page.locator(".diff-viewer-container .diff-viewer-close:visible").first().click();
+    await page.reload();
+    await expect(event.getByRole("link", { name: "Open tour" })).toBeVisible();
+  });
+});
+
+test("bare and explicit /tour open an attached HEAD tour", async ({ page, request }) => {
+  await withTempDir("shelley-bare-tour-", async (tempDir) => {
+    const repo = join(tempDir, "repo");
+    mkdirSync(repo);
+    git(repo, "init");
+    git(repo, "config", "user.name", "Tour Test");
+    git(repo, "config", "user.email", "tour@example.com");
+    writeFileSync(join(repo, "example.txt"), "the change\n");
+    git(repo, "add", "example.txt");
+    git(repo, "commit", "-m", "Tour HEAD");
+    const hash = git(repo, "rev-parse", "HEAD");
+    const scaffold = JSON.parse(
+      execFileSync(shelleyBin, ["tour", "scaffold", "-C", repo, hash], { encoding: "utf8" }),
+    );
+    const tourPath = join(tempDir, "tour.json");
+    writeFileSync(
+      tourPath,
+      JSON.stringify({
+        ...scaffold,
+        title: "HEAD tour",
+        intro: "The HEAD commit adds the change.",
+        chunks: scaffold.chunks.map((chunk: { ref: number }) => ({
+          ...chunk,
+          comment: "The guided change.",
+        })),
+      }),
+    );
+    execFileSync(shelleyBin, ["tour", "attach", "-C", repo, hash, tourPath]);
+
+    const { slug } = await createConversationViaAPIWithDetails(request, "Hello", { cwd: repo });
+    await page.goto(`/c/${slug}`);
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible();
+    for (const command of ["/tour", `/tour ${hash}`]) {
+      await page.evaluate((value) => {
+        const textarea = document.querySelector('[data-testid="message-input"]') as HTMLTextAreaElement;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      }, command);
+      await page.getByRole("button", { name: "Send message" }).click();
+      await expect(page.locator(".commit-tour-introduction h1")).toHaveText("HEAD tour");
+      await page.locator(".diff-viewer-container .diff-viewer-close:visible").first().click();
+      await expect(page.locator(".commit-tour-introduction h1")).toHaveCount(0);
+    }
+  });
+});

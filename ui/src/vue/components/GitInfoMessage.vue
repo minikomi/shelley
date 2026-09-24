@@ -7,10 +7,46 @@
     v-if="commitHash"
     ref="containerRef"
     class="message message-gitinfo msg-gitinfo-container"
-    data-testid="message-gitinfo"
+    :data-testid="isTourRequest ? 'message-tour-request' : 'message-gitinfo'"
     @mouseenter="refreshTour"
   >
-    <span>
+    <span v-if="isTourRequest">
+      Tour for <code class="msg-commit-hash">{{ commitHash.slice(0, 8) }}</code>
+      <template v-if="tourState === 'building'">
+        {{ " · " }}
+        <a
+          v-if="tourStatus?.worker_slug"
+          :href="`/c/${tourStatus.worker_slug}`"
+          class="msg-tour-building"
+          @click="onWorkerLinkClick"
+        >
+          <span class="working-indicator" aria-hidden="true" /> Building ↗
+        </a>
+        <span v-else class="msg-tour-building">
+          <span class="working-indicator" aria-hidden="true" /> Building
+        </span>
+      </template>
+      <template v-else-if="tourState === 'present'">
+        {{ " is ready · " }}
+        <a v-if="canShowDiff" :href="diffHref" class="msg-diff-link" @click="onDiffLinkClick"
+          >Open tour →</a
+        >
+      </template>
+      <template v-else-if="tourState === 'failed' || tourState === 'absent'">
+        {{ " could not be built · " }}
+        <button
+          v-if="canRequestTour"
+          type="button"
+          class="msg-tour-action"
+          :disabled="requestingTour"
+          v-tooltip.top="tourStatus?.error || 'The subagent did not attach a valid tour'"
+          @click="requestTour"
+          >{{ requestingTour ? "Building tour" : "Retry" }}</button
+        >
+      </template>
+      <template v-else>{{ " · Checking tour" }}</template>
+    </span>
+    <span v-else>
       <span v-if="worktree" class="msg-worktree">{{ worktree }}</span>
       <span v-if="branch" class="msg-branch">{{ branch }}</span>
       {{ branch ? " now at " : "now at " }}
@@ -84,7 +120,7 @@
           v-tooltip.top="'Build a guided tour in a subagent'"
           @click="requestTour"
         >
-          {{ requestingTour ? "requesting tour…" : "request tour" }}
+          {{ requestingTour ? "requesting tour" : "request tour" }}
         </button>
       </template>
       <template v-else-if="tourState === 'building'">
@@ -97,10 +133,10 @@
           v-tooltip.top="'Open the subagent building this tour'"
           @click="onWorkerLinkClick"
         >
-          <span class="working-indicator" aria-hidden="true" /> building tour…
+          <span class="working-indicator" aria-hidden="true" /> building tour
         </a>
         <span v-else class="msg-tour-building" data-testid="gitinfo-tour-building">
-          <span class="working-indicator" aria-hidden="true" /> building tour…
+          <span class="working-indicator" aria-hidden="true" /> building tour
         </span>
       </template>
       <template v-else-if="tourState === 'failed' && canRequestTour">
@@ -152,6 +188,8 @@ const parsed = computed(() => {
   let subject: string | null = null;
   let branch: string | null = null;
   let worktree: string | null = null;
+  let tourRequest = false;
+
   if (props.message.user_data) {
     try {
       const userData =
@@ -162,13 +200,15 @@ const parsed = computed(() => {
       if (userData.subject) subject = userData.subject;
       if (userData.branch) branch = userData.branch;
       if (userData.worktree) worktree = userData.worktree;
+      tourRequest = userData.tour_request === true;
     } catch (err) {
       console.error("Failed to parse gitinfo user_data:", err);
     }
   }
-  return { commitHash, subject, branch, worktree };
+  return { commitHash, subject, branch, worktree, tourRequest };
 });
 
+const isTourRequest = computed(() => parsed.value.tourRequest);
 const commitHash = computed(() => parsed.value.commitHash);
 const subject = computed(() => parsed.value.subject);
 const branch = computed(() => parsed.value.branch);
@@ -230,7 +270,12 @@ async function probeTour(force = false) {
   } catch (error) {
     if (disposed) return;
     console.error("Failed to check commit tour:", error);
-    scheduleTourPoll();
+    if (isTourRequest.value && tourState.value !== "building") {
+      if (tourPollTimer) clearTimeout(tourPollTimer);
+      tourPollTimer = setTimeout(() => void probeTour(true), 2_000);
+    } else {
+      scheduleTourPoll();
+    }
   }
 }
 

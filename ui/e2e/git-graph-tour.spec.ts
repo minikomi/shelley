@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createConversationViaAPI, withTempDir } from "./helpers";
+import { createConversationViaAPI, createConversationViaAPIWithDetails, withTempDir } from "./helpers";
 
 const shelleyBin = resolve(fileURLToPath(new URL("../../bin/shelley", import.meta.url)));
 
@@ -91,5 +91,112 @@ test("git graph shows and opens an attached commit tour", async ({ page, request
     await overlay.getByRole("button", { name: "Close (Esc)" }).click();
     await expect(tourRow).toHaveClass(/git-graph-row-selected/);
     await expect(graph.locator(".git-graph-detail-sheet-open")).toHaveCount(0);
+  });
+});
+
+test("git graph links to the builder and exposes the tour on return", async ({ page, request }) => {
+  await withTempDir("shelley-git-graph-build-tour-", async (tempDir) => {
+    const repo = join(tempDir, "repo");
+    mkdirSync(repo);
+    git(repo, "init");
+    git(repo, "config", "user.name", "Tour Test");
+    git(repo, "config", "user.email", "tour@example.com");
+    writeFileSync(join(repo, "example.txt"), "before\n");
+    git(repo, "add", "example.txt");
+    git(repo, "commit", "-m", "Base commit");
+    writeFileSync(join(repo, "example.txt"), "after\n");
+    git(repo, "commit", "-am", "Build a graph tour");
+    const hash = git(repo, "rev-parse", "HEAD");
+
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "Hello",
+      { cwd: repo },
+    );
+    const { slug: builderSlug } = await createConversationViaAPIWithDetails(
+      request,
+      "Hello",
+      { cwd: repo },
+    );
+    let state: "absent" | "building" | "present" = "absent";
+    let failNextStatus = false;
+    await page.route("**/api/git/tour/status?*", async (route) => {
+      if (failNextStatus) {
+        failNextStatus = false;
+        await route.fulfill({ status: 503, body: "temporary" });
+        return;
+      }
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: state,
+          hash,
+          worker_slug: state === "building" ? builderSlug : undefined,
+        }),
+      });
+    });
+    await page.route(`**/api/conversation/${conversationId}/chat`, async (route) => {
+      const body = route.request().postDataJSON() as { message?: string };
+      if (!body.message?.startsWith("/tour ")) return route.continue();
+      state = "building";
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "accepted",
+          tour: { status: "building", hash, worker_slug: builderSlug },
+        }),
+      });
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`/c/${slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
+    await page.locator(".chat-overflow-menu-wrapper .btn-icon").click();
+    await page.locator(".overflow-menu-item", { hasText: /git graph/i }).click();
+    const graph = page.locator(".git-graph-container");
+    const actions = graph.locator(".git-graph-detail-actions");
+    await expect(actions.getByRole("link", { name: "Open diff" })).toBeVisible();
+    await actions.getByRole("button", { name: "Build tour" }).click();
+    await expect(actions.getByRole("link", { name: "Open diff" })).toBeVisible();
+    const building = actions.getByRole("link", { name: "Building tour" });
+    await expect(building).toHaveAttribute("href", `/c/${builderSlug}`);
+    await expect(building.locator(".spinner")).toBeVisible();
+    await expect(actions.getByRole("button", { name: "Build tour" })).toHaveCount(0);
+    await building.click();
+    await expect(page).toHaveURL(new RegExp(`/c/${builderSlug}$`));
+
+    const failedProbe = page.waitForResponse(
+      (response) => response.url().includes("/api/git/tour/status?") && response.status() === 503,
+    );
+    failNextStatus = true;
+    await failedProbe;
+    const scaffold = JSON.parse(
+      execFileSync(shelleyBin, ["tour", "scaffold", "-C", repo, hash], { encoding: "utf8" }),
+    );
+    const tourPath = join(tempDir, "tour.json");
+    writeFileSync(
+      tourPath,
+      JSON.stringify({
+        ...scaffold,
+        title: "Graph tour",
+        chunks: scaffold.chunks.map((chunk: { ref: number }) => ({
+          ...chunk,
+          comment: "The guided change.",
+        })),
+      }),
+    );
+    execFileSync(shelleyBin, ["tour", "attach", "-C", repo, hash, tourPath]);
+    state = "present";
+    await expect(page.locator(".diff-viewer-container:not(.git-graph-container)")).toHaveCount(0);
+    await page.goto(`/c/${slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
+    await page.locator(".chat-overflow-menu-wrapper .btn-icon").click();
+    await page.locator(".overflow-menu-item", { hasText: /git graph/i }).click();
+    const returnedGraph = page.locator(".git-graph-container");
+    await expect(returnedGraph.getByRole("link", { name: "Open tour" })).toBeVisible();
+    await expect(returnedGraph.locator(".git-graph-row-selected").getByTestId("git-graph-tour-link")).toBeVisible();
+    await returnedGraph.getByRole("link", { name: "Open tour" }).click();
+    await expect(page.locator(".commit-tour-introduction h1")).toHaveText("Graph tour");
   });
 });

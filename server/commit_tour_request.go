@@ -71,7 +71,7 @@ func parseCommitTourCommand(message string) (hash, cwd string, ok bool, err erro
 	message = strings.TrimLeft(message, " \t\r\n")
 	const command = "/tour"
 	if message == command {
-		return "", "", true, errors.New("usage: /tour <commit>")
+		return "", "", true, nil
 	}
 	if !strings.HasPrefix(message, command) || len(message) == len(command) {
 		return "", "", false, nil
@@ -84,7 +84,7 @@ func parseCommitTourCommand(message string) (hash, cwd string, ok bool, err erro
 
 	remainder := strings.TrimSpace(message[len(command):])
 	if remainder == "" {
-		return "", "", true, errors.New("usage: /tour <commit>")
+		return "", "", true, nil
 	}
 	commandLine, cwd, _ := strings.Cut(remainder, "\n")
 	fields := strings.Fields(commandLine)
@@ -123,7 +123,7 @@ func canonicalCommitTourPath(path string) (string, error) {
 }
 
 func resolveCommitTourTarget(cwd, hash string) (commitTourTarget, error) {
-	if !validCommitTourHash(hash) {
+	if hash != "" && !validCommitTourHash(hash) {
 		return commitTourTarget{}, errors.New("invalid commit hash")
 	}
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() {
@@ -138,10 +138,17 @@ func resolveCommitTourTarget(cwd, hash string) (commitTourTarget, error) {
 		return commitTourTarget{}, fmt.Errorf("resolve git worktree: %w", err)
 	}
 
-	fullHashCmd := exec.Command("git", "rev-parse", "--verify", hash+"^{commit}")
+	ref := hash
+	if ref == "" {
+		ref = "HEAD"
+	}
+	fullHashCmd := exec.Command("git", "rev-parse", "--verify", ref+"^{commit}")
 	fullHashCmd.Dir = gitRoot
 	fullHashBytes, err := fullHashCmd.Output()
 	if err != nil {
+		if hash == "" {
+			return commitTourTarget{}, errors.New("working directory has no commit at HEAD")
+		}
 		return commitTourTarget{}, errors.New("failed to read commit")
 	}
 	fullHash := strings.TrimSpace(string(fullHashBytes))
@@ -821,6 +828,24 @@ func (s *Server) handleCommitTourCommand(ctx context.Context, w http.ResponseWri
 		s.logger.Error("Failed to request commit tour", "conversationID", conversation.ConversationID, "hash", target.Hash, "error", err)
 		http.Error(w, "failed to request commit tour", http.StatusInternalServerError)
 		return true
+	}
+	if started {
+		marker, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
+			ConversationID: conversation.ConversationID,
+			Type:           db.MessageTypeGitInfo,
+			UserData: map[string]any{
+				"tour_request": true,
+				"commit":       target.Hash,
+				"worktree":     target.Worktree,
+			},
+			BumpTimestamp: true,
+		})
+		if err != nil {
+			s.logger.Error("Failed to record commit tour request", "conversationID", conversation.ConversationID, "hash", target.Hash, "error", err)
+			http.Error(w, "failed to record commit tour request", http.StatusInternalServerError)
+			return true
+		}
+		go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversation.ConversationID, marker)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if started {
