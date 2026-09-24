@@ -187,6 +187,7 @@ LIMIT ? OFFSET ?;
 -- Search conversations by slug OR message content (user messages and agent responses, not system prompts)
 -- Includes both top-level conversations and subagent conversations
 SELECT DISTINCT sqlc.embed(c),
+  CAST(CASE WHEN c.slug LIKE '%' || sqlc.arg('query') || '%' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
   -- See preview_packed note on ListConversations. Inner messages alias is
   -- pm here to avoid colliding with the outer LEFT JOIN messages m.
   CAST(COALESCE((
@@ -219,16 +220,16 @@ FROM conversations c
 LEFT JOIN messages m ON c.conversation_id = m.conversation_id AND m.type IN ('user', 'agent')
 WHERE c.archived = FALSE
   AND (
-    c.slug LIKE '%' || ? || '%'
-    OR json_extract(m.user_data, '$.text') LIKE '%' || ? || '%'
-    OR m.llm_data LIKE '%' || ? || '%'
+    c.slug LIKE '%' || sqlc.arg('query') || '%'
+    OR json_extract(m.user_data, '$.text') LIKE '%' || sqlc.arg('query') || '%'
+    OR m.llm_data LIKE '%' || sqlc.arg('query') || '%'
   )
-ORDER BY c.updated_at DESC
-LIMIT ? OFFSET ?;
+ORDER BY slug_rank, c.updated_at DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: SearchConversationsFTSList :many
--- Top-level conversations (active first, then archived) matching either a
--- slug substring or an FTS5 MATCH against messages_fts. The caller builds
+-- Top-level conversations matching either a slug substring or an FTS5 MATCH
+-- against messages_fts, with slug matches first. The caller builds
 -- both the LIKE pattern (with %, _, \ pre-escaped) and the MATCH
 -- expression from user input.
 WITH fts_hits AS (
@@ -238,6 +239,7 @@ WITH fts_hits AS (
   WHERE messages_fts MATCH @fts_match
 )
 SELECT sqlc.embed(c),
+  CAST(CASE WHEN c.slug LIKE sqlc.arg('slug_like') ESCAPE '\' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
   -- preview_packed: locate the newest agent message that actually contains a
   -- text block (the EXISTS short-circuits on the first one), then pull that
   -- block. The outer ORDER BY rides idx_messages_conv_type_seq, so we stop at
@@ -279,7 +281,7 @@ WHERE c.parent_conversation_id IS NULL
     c.slug LIKE @slug_like ESCAPE '\'
     OR c.conversation_id IN (SELECT conversation_id FROM fts_hits)
   )
-ORDER BY c.archived ASC, c.updated_at DESC
+ORDER BY slug_rank, c.archived ASC, c.updated_at DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: SearchArchivedConversations :many

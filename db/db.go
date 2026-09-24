@@ -1037,18 +1037,16 @@ func (db *DB) SearchConversations(ctx context.Context, query string, limit, offs
 	return items, err
 }
 
-// SearchConversationsWithMessages searches for conversations containing the query in slug or message content
+// SearchConversationsWithMessages searches slug or message content, with slug matches first.
 func (db *DB) SearchConversationsWithMessages(ctx context.Context, query string, limit, offset int64) ([]ConversationListItem, error) {
 	queryPtr := &query
 	var items []ConversationListItem
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		rows, err := q.SearchConversationsWithMessages(ctx, generated.SearchConversationsWithMessagesParams{
-			Column1: queryPtr,
-			Column2: queryPtr,
-			Column3: queryPtr,
-			Limit:   limit,
-			Offset:  offset,
+			Query:  queryPtr,
+			Limit:  limit,
+			Offset: offset,
 		})
 		if err != nil {
 			return err
@@ -1087,8 +1085,9 @@ const (
 
 // SearchConversationsFTS performs a full-text search over user/agent message
 // content (via the messages_fts FTS5 virtual table) and slug substring across
-// ALL top-level conversations (active and archived). Active conversations are
-// returned first, then archived; both buckets are ordered by updated_at DESC.
+// ALL top-level conversations (active and archived). Slug matches come first;
+// within each match tier, active conversations precede archived conversations,
+// then results are ordered by updated_at DESC.
 // Each FTS hit comes with a Snippet drawn from the best-ranking message;
 // slug-only matches have an empty snippet.
 // The query is the raw user input; this function handles tokenisation and

@@ -1301,6 +1301,7 @@ WITH fts_hits AS (
   WHERE messages_fts MATCH ?4
 )
 SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, c.cwd, c.archived, c.parent_conversation_id, c.model, c.conversation_options, c.current_generation, c.agent_working, c.tags, c.is_draft, c.draft, c.queued_messages, c.turn_interrupted,
+  CAST(CASE WHEN c.slug LIKE ?1 ESCAPE '\' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
   -- preview_packed: locate the newest agent message that actually contains a
   -- text block (the EXISTS short-circuits on the first one), then pull that
   -- block. The outer ORDER BY rides idx_messages_conv_type_seq, so we stop at
@@ -1342,7 +1343,7 @@ WHERE c.parent_conversation_id IS NULL
     c.slug LIKE ?1 ESCAPE '\'
     OR c.conversation_id IN (SELECT conversation_id FROM fts_hits)
   )
-ORDER BY c.archived ASC, c.updated_at DESC
+ORDER BY slug_rank, c.archived ASC, c.updated_at DESC
 LIMIT ?3 OFFSET ?2
 `
 
@@ -1355,13 +1356,14 @@ type SearchConversationsFTSListParams struct {
 
 type SearchConversationsFTSListRow struct {
 	Conversation     Conversation `json:"conversation"`
+	SlugRank         int64        `json:"slug_rank"`
 	PreviewPacked    string       `json:"preview_packed"`
 	MaxSequenceID    int64        `json:"max_sequence_id"`
 	ParticipantsJson string       `json:"participants_json"`
 }
 
-// Top-level conversations (active first, then archived) matching either a
-// slug substring or an FTS5 MATCH against messages_fts. The caller builds
+// Top-level conversations matching either a slug substring or an FTS5 MATCH
+// against messages_fts, with slug matches first. The caller builds
 // both the LIKE pattern (with %, _, \ pre-escaped) and the MATCH
 // expression from user input.
 func (q *Queries) SearchConversationsFTSList(ctx context.Context, arg SearchConversationsFTSListParams) ([]SearchConversationsFTSListRow, error) {
@@ -1396,6 +1398,7 @@ func (q *Queries) SearchConversationsFTSList(ctx context.Context, arg SearchConv
 			&i.Conversation.Draft,
 			&i.Conversation.QueuedMessages,
 			&i.Conversation.TurnInterrupted,
+			&i.SlugRank,
 			&i.PreviewPacked,
 			&i.MaxSequenceID,
 			&i.ParticipantsJson,
@@ -1487,6 +1490,7 @@ func (q *Queries) SearchConversationsFTSSnippets(ctx context.Context, arg Search
 
 const searchConversationsWithMessages = `-- name: SearchConversationsWithMessages :many
 SELECT DISTINCT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, c.cwd, c.archived, c.parent_conversation_id, c.model, c.conversation_options, c.current_generation, c.agent_working, c.tags, c.is_draft, c.draft, c.queued_messages, c.turn_interrupted,
+  CAST(CASE WHEN c.slug LIKE '%' || ?1 || '%' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
   -- See preview_packed note on ListConversations. Inner messages alias is
   -- pm here to avoid colliding with the outer LEFT JOIN messages m.
   CAST(COALESCE((
@@ -1519,24 +1523,23 @@ FROM conversations c
 LEFT JOIN messages m ON c.conversation_id = m.conversation_id AND m.type IN ('user', 'agent')
 WHERE c.archived = FALSE
   AND (
-    c.slug LIKE '%' || ? || '%'
-    OR json_extract(m.user_data, '$.text') LIKE '%' || ? || '%'
-    OR m.llm_data LIKE '%' || ? || '%'
+    c.slug LIKE '%' || ?1 || '%'
+    OR json_extract(m.user_data, '$.text') LIKE '%' || ?1 || '%'
+    OR m.llm_data LIKE '%' || ?1 || '%'
   )
-ORDER BY c.updated_at DESC
-LIMIT ? OFFSET ?
+ORDER BY slug_rank, c.updated_at DESC
+LIMIT ?3 OFFSET ?2
 `
 
 type SearchConversationsWithMessagesParams struct {
-	Column1 *string `json:"column_1"`
-	Column2 *string `json:"column_2"`
-	Column3 *string `json:"column_3"`
-	Limit   int64   `json:"limit"`
-	Offset  int64   `json:"offset"`
+	Query  *string `json:"query"`
+	Offset int64   `json:"offset"`
+	Limit  int64   `json:"limit"`
 }
 
 type SearchConversationsWithMessagesRow struct {
 	Conversation     Conversation `json:"conversation"`
+	SlugRank         int64        `json:"slug_rank"`
 	PreviewPacked    string       `json:"preview_packed"`
 	MaxSequenceID    int64        `json:"max_sequence_id"`
 	ParticipantsJson string       `json:"participants_json"`
@@ -1545,13 +1548,7 @@ type SearchConversationsWithMessagesRow struct {
 // Search conversations by slug OR message content (user messages and agent responses, not system prompts)
 // Includes both top-level conversations and subagent conversations
 func (q *Queries) SearchConversationsWithMessages(ctx context.Context, arg SearchConversationsWithMessagesParams) ([]SearchConversationsWithMessagesRow, error) {
-	rows, err := q.db.QueryContext(ctx, searchConversationsWithMessages,
-		arg.Column1,
-		arg.Column2,
-		arg.Column3,
-		arg.Limit,
-		arg.Offset,
-	)
+	rows, err := q.db.QueryContext(ctx, searchConversationsWithMessages, arg.Query, arg.Offset, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1577,6 +1574,7 @@ func (q *Queries) SearchConversationsWithMessages(ctx context.Context, arg Searc
 			&i.Conversation.Draft,
 			&i.Conversation.QueuedMessages,
 			&i.Conversation.TurnInterrupted,
+			&i.SlugRank,
 			&i.PreviewPacked,
 			&i.MaxSequenceID,
 			&i.ParticipantsJson,

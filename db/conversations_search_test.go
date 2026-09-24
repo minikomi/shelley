@@ -2,12 +2,108 @@ package db
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"shelley.exe.dev/db/generated"
 )
+
+func TestSearchConversationsPreferSlugMatches(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	ctx := t.Context()
+
+	fixtures := []struct {
+		slug     *string
+		archived bool
+		message  bool
+		updated  string
+	}{
+		{stringPtr("pelican-older"), false, false, "2024-01-01 00:00:00"},
+		{stringPtr("project-pelican-notes"), false, true, "2024-01-02 00:00:00"},
+		{stringPtr("archived-pelican"), true, false, "2024-01-03 00:00:00"},
+		{stringPtr("active-notes"), false, true, "2024-01-04 00:00:00"},
+		{nil, false, true, "2024-01-05 00:00:00"},
+		{stringPtr("active-latest"), false, true, "2024-01-06 00:00:00"},
+		{stringPtr("archived-notes"), true, true, "2024-01-07 00:00:00"},
+		{stringPtr("unrelated"), false, false, "2024-01-08 00:00:00"},
+	}
+	ids := make([]string, len(fixtures))
+	for i, fixture := range fixtures {
+		conv, err := db.CreateConversation(ctx, fixture.slug, true, nil, nil, ConversationOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = conv.ConversationID
+		if fixture.message {
+			for range 2 {
+				if _, err := db.CreateMessage(ctx, CreateMessageParams{
+					ConversationID: conv.ConversationID,
+					Type:           MessageTypeAgent,
+					LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "A pelican by the bay"}}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if fixture.archived {
+			if _, err := db.ArchiveConversation(ctx, conv.ConversationID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.Pool().Exec(ctx, "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?", fixture.updated, conv.ConversationID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		search func(context.Context, string, int64, int64) ([]ConversationListItem, error)
+		want   []string
+	}{
+		{
+			name: "FTS",
+			search: func(ctx context.Context, query string, limit, offset int64) ([]ConversationListItem, error) {
+				hits, err := db.SearchConversationsFTS(ctx, query, limit, offset)
+				items := make([]ConversationListItem, len(hits))
+				for i, hit := range hits {
+					items[i] = hit.ConversationListItem
+				}
+				return items, err
+			},
+			want: []string{ids[1], ids[0], ids[2], ids[5], ids[4], ids[3], ids[6]},
+		},
+		{
+			name:   "WithMessages",
+			search: db.SearchConversationsWithMessages,
+			want:   []string{ids[1], ids[0], ids[5], ids[4], ids[3]},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(limit, offset int64, want []string) {
+				t.Helper()
+				results, err := tc.search(ctx, "PELICAN", limit, offset)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := make([]string, len(results))
+				for i, result := range results {
+					got[i] = result.ConversationID
+				}
+				if !slices.Equal(got, want) {
+					t.Fatalf("limit=%d offset=%d: got %v, want %v", limit, offset, got, want)
+				}
+			}
+			check(50, 0, tc.want)
+			for i, id := range tc.want {
+				check(1, int64(i), []string{id})
+			}
+			check(1, int64(len(tc.want)), nil)
+		})
+	}
+}
 
 func TestSearchConversationsFTS(t *testing.T) {
 	db := setupTestDB(t)

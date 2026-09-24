@@ -79,7 +79,18 @@
           >
             <div class="command-palette-item-icon" v-html="item.icon"></div>
             <div class="command-palette-item-content">
-              <div class="command-palette-item-title">{{ item.title }}</div>
+              <div class="command-palette-item-title">
+                <template
+                  v-for="(seg, i) in highlightSearchMatches(
+                    item.title,
+                    item.type === 'conversation' && item.url ? query : '',
+                  )"
+                  :key="i"
+                >
+                  <mark v-if="seg.mark" class="conversation-snippet-mark">{{ seg.text }}</mark>
+                  <template v-else>{{ seg.text }}</template>
+                </template>
+              </div>
               <div v-if="item.subtitle" class="command-palette-item-subtitle">
                 {{ item.subtitle }}
               </div>
@@ -116,6 +127,7 @@ import { useMarkdownMode } from "../composables/markdownMode";
 import { useI18n } from "../composables/i18n";
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
+import { highlightSearchMatches } from "../../utils/searchHighlight";
 import { menuShortcutLabel } from "../../utils/menuShortcuts";
 import type { RecordingMode } from "./recordingDestination";
 
