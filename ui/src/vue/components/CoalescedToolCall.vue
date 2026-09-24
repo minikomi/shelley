@@ -4,11 +4,28 @@
      tool-running / tool-result-details class + testid contract. -->
 <template>
   <div v-if="toolUseId" class="toc-tool-anchor" :data-tool-use-id="toolUseId" aria-hidden="true" />
-  <component
-    :is="toolComponent"
+  <div
     v-if="toolComponent && mountSpecializedCard"
-    v-bind="toolComponentProps"
-  />
+    ref="toolCardShellEl"
+    :class="[
+      'tool-card-shell',
+      { 'tool-card-shell--elapsed-expanded': statusVisible && specializedCardExpanded },
+    ]"
+    @click="refreshSpecializedCardExpanded"
+  >
+    <component :is="toolComponent" v-bind="toolComponentProps" />
+    <div
+      v-if="statusVisible && specializedCardExpanded"
+      class="tool-elapsed-status"
+      data-testid="tool-elapsed-status"
+    >
+      <template v-if="toolInterrupted">Interrupted</template>
+      <template v-else>
+        {{ props.hasResult ? "Finished" : "Running" }}:
+        <span class="tool-elapsed-status-time">{{ elapsedStatus }}</span>
+      </template>
+    </div>
+  </div>
   <div
     v-else-if="toolComponent"
     ref="mountPlaceholderEl"
@@ -113,8 +130,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { LLMContent } from "../../types";
+import { formatFinishedToolDuration, formatRunningToolDuration } from "../../utils/toolDuration";
 import { useNearViewport } from "../composables/nearViewport";
 import { usePerfLifecycle } from "../composables/perfLifecycle";
 import { useToolStreamingOutput } from "../composables/toolProgress";
@@ -149,6 +167,7 @@ const props = defineProps<{
   toolStartTime?: string | null;
   toolEndTime?: string | null;
   hasResult?: boolean;
+  toolInterrupted?: boolean;
   display?: unknown;
   onCommentTextChange?: (text: string) => void;
   toolUseId?: string;
@@ -159,6 +178,7 @@ const props = defineProps<{
 // says the card is near the viewport. Cards that started running stay eager
 // and never get torn down on completion.
 const mountPlaceholderEl = ref<HTMLElement | null>(null);
+const toolCardShellEl = ref<HTMLElement | null>(null);
 const nearViewport = useNearViewport(mountPlaceholderEl);
 const startedEager = !props.hasResult;
 const mountSpecializedCard = computed(() => startedEager || !props.hasResult || nearViewport.value);
@@ -171,6 +191,50 @@ const placeholderKind = computed(() =>
 // per-second progress events re-render only the running tool's card instead
 // of invalidating a toolProgress prop on every rendered component.
 const streamingOutput = useToolStreamingOutput(() => props.toolUseId);
+
+const specializedCardExpanded = ref(false);
+const nowMs = ref(Date.now());
+let elapsedTimer: ReturnType<typeof setInterval> | undefined;
+
+const toolStartMs = computed(() => {
+  if (!props.toolStartTime) return null;
+  const timestamp = Date.parse(props.toolStartTime);
+  return Number.isFinite(timestamp) ? timestamp : null;
+});
+
+const runningElapsed = computed(() => {
+  if (props.hasResult || props.toolInterrupted || toolStartMs.value === null) return "";
+  return formatRunningToolDuration(nowMs.value - toolStartMs.value);
+});
+
+function stopElapsedTimer() {
+  if (elapsedTimer === undefined) return;
+  clearInterval(elapsedTimer);
+  elapsedTimer = undefined;
+}
+
+function syncElapsedTimer() {
+  stopElapsedTimer();
+  nowMs.value = Date.now();
+  if (!props.hasResult && !props.toolInterrupted && toolStartMs.value !== null) {
+    elapsedTimer = setInterval(() => {
+      nowMs.value = Date.now();
+    }, 1000);
+  }
+}
+
+async function refreshSpecializedCardExpanded() {
+  await nextTick();
+  specializedCardExpanded.value = !!toolCardShellEl.value?.querySelector('[aria-expanded="true"]');
+}
+
+watch([() => props.hasResult, () => props.toolInterrupted, toolStartMs], syncElapsedTimer, {
+  immediate: true,
+});
+// Cards may collapse themselves on completion (BashTool does), so re-read.
+watch(() => props.hasResult, refreshSpecializedCardExpanded);
+onMounted(refreshSpecializedCardExpanded);
+onBeforeUnmount(stopElapsedTimer);
 
 // Component churn counters (see utils/perf.ts / the performance-hud flag).
 usePerfLifecycle("toolCall");
@@ -207,20 +271,27 @@ const TOOL_COMPONENTS: Record<string, any> = {
 const executionTime = computed(() => {
   if (props.hasResult && props.toolStartTime && props.toolEndTime) {
     const diffMs = new Date(props.toolEndTime).getTime() - new Date(props.toolStartTime).getTime();
-    return diffMs < 1000 ? `${diffMs}ms` : `${(diffMs / 1000).toFixed(1)}s`;
+    return formatFinishedToolDuration(diffMs);
   }
   return "";
 });
 
+const elapsedStatus = computed(() => executionTime.value || runningElapsed.value);
+const statusVisible = computed(() => !!props.toolInterrupted || !!elapsedStatus.value);
+
 const toolComponent = computed(() => TOOL_COMPONENTS[props.toolName] || null);
+
+const interruptedToolResult: LLMContent[] = [
+  { Type: 2, Text: "Interrupted by server restart" } as LLMContent,
+];
 
 const toolComponentProps = computed<Record<string, unknown>>(() => {
   const base: Record<string, unknown> = {
     toolInput: props.toolInput,
-    isRunning: !props.hasResult,
-    toolResult: props.toolResult,
-    hasError: props.toolError,
-    executionTime: executionTime.value,
+    isRunning: !props.hasResult && !props.toolInterrupted,
+    toolResult: props.toolInterrupted ? interruptedToolResult : props.toolResult,
+    hasError: props.toolError || props.toolInterrupted,
+    executionTime: "",
     display: props.display,
   };
   if (props.toolName === "patch" && props.onCommentTextChange) {

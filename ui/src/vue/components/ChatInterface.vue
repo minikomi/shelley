@@ -1534,6 +1534,28 @@ watch(conversationInterrupted, (interrupted) => {
   if (!interrupted) resumingInterrupted.value = false;
 });
 
+// Tool calls left without a result by a restart. Remembered by ID so they stay
+// resolved after Continue clears the conversation's interrupted flag.
+const interruptedToolUseIDs = ref<Set<string>>(new Set());
+watch(
+  () => props.conversationId,
+  () => {
+    interruptedToolUseIDs.value = new Set();
+  },
+);
+watch(
+  [conversationInterrupted, messages, () => props.currentConversation?.current_generation],
+  ([interrupted, currentMessages, generation]) => {
+    if (!interrupted || generation === undefined) return;
+    interruptedToolUseIDs.value = new Set(
+      coalesceMessages(currentMessages)
+        .filter((item) => item.generation === generation && !item.hasResult && !!item.toolUseId)
+        .map((item) => item.toolUseId!),
+    );
+  },
+  { immediate: true },
+);
+
 const selectedModelInfo = computed(() => models.value.find((m) => m.id === selectedModel.value));
 // 0 when the model's context window is unknown: the readout then shows the
 // count alone rather than a made-up denominator.
@@ -1746,7 +1768,9 @@ const welcomeParts = computed(() =>
 );
 
 const coalescedItems = computed(() => {
-  const items = perfWrap("chat.coalesceMessages", () => coalesceMessages(messages.value))();
+  const items = perfWrap("chat.coalesceMessages", () =>
+    coalesceMessages(messages.value, interruptedToolUseIDs.value),
+  )();
   if (conversationViewMode.value === "all") return items;
   return items.filter(
     (item) =>

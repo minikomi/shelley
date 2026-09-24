@@ -23,7 +23,7 @@ for (const exitCode of [0, 7]) {
     const label = card.locator(".bash-tool-label").filter({ hasText: "Output" });
     await expect(label).toContainText(`Output (exit code ${exitCode}):`);
     await expect(card.locator(".bash-tool-details")).toContainText("kept output");
-    await expect(card.locator(".bash-tool-time")).toBeVisible();
+    await expect(page.getByTestId("tool-elapsed-status")).toHaveText(/Finished: (?:<1s|\d+s)/);
 
     await header.click();
     await expect(card.locator(".bash-tool-details")).toHaveCount(0);

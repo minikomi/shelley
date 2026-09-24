@@ -1881,6 +1881,32 @@ body {
   --tool-card-placeholder-outer-size: 282px;
 }
 
+.tool-card-shell--elapsed-expanded {
+  margin: 0.5rem 0;
+  border-radius: 0.5rem;
+  background: var(--gray-100);
+}
+
+.dark .tool-card-shell--elapsed-expanded {
+  background: var(--gray-800);
+}
+
+.tool-card-shell--elapsed-expanded > :first-child {
+  margin-block: 0;
+}
+
+.tool-elapsed-status {
+  padding: 0 1rem 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-align: left;
+}
+
+.tool-elapsed-status-time {
+  font-weight: 400;
+}
+
 /* Tool Component (shared styles for all tools) */
 .tool,
 .message-conversation {

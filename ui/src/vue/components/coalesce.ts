@@ -26,10 +26,14 @@ export interface CoalescedItem {
   toolStartTime?: string | null;
   toolEndTime?: string | null;
   hasResult?: boolean;
+  toolInterrupted?: boolean;
   display?: unknown;
 }
 
-export function coalesceMessages(messages: Message[]): CoalescedItem[] {
+export function coalesceMessages(
+  messages: Message[],
+  interruptedToolUseIDs: ReadonlySet<string> = new Set(),
+): CoalescedItem[] {
   if (messages.length === 0) return [];
 
   const items: CoalescedItem[] = [];
@@ -201,6 +205,7 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
             const serverResult = toolUse.ID ? serverToolResults[toolUse.ID] : undefined;
             const displayData = toolUse.ID ? displayDataMap[toolUse.ID] : undefined;
             const isServerSideToolUse = toolUse.Type === 7;
+            const hasResult = !!resultData || !!serverResult || wasTruncated || isServerSideToolUse;
             items.push({
               type: "tool",
               generation: message.generation,
@@ -214,9 +219,10 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
               toolInput: toolUse.ToolInput,
               toolResult: resultData?.result || serverResult,
               toolError: resultData?.error || (wasTruncated && !resultData && !serverResult),
-              toolStartTime: resultData?.startTime,
+              toolStartTime: resultData?.startTime || message.created_at,
               toolEndTime: resultData?.endTime,
-              hasResult: !!resultData || !!serverResult || wasTruncated || isServerSideToolUse,
+              hasResult,
+              toolInterrupted: !hasResult && !!toolUse.ID && interruptedToolUseIDs.has(toolUse.ID),
               display: displayData,
             });
           });

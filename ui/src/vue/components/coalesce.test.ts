@@ -26,6 +26,7 @@ function agentMessage(content: LLMContent[]): Message {
     type: "agent",
     generation: 1,
     llm_data: JSON.stringify(llm),
+    created_at: "2026-07-30T14:36:00Z",
   } as unknown as Message;
 }
 function text(t: string): LLMContent {
@@ -81,6 +82,26 @@ function serverToolUse(id: string): LLMContent {
 {
   const items = coalesceMessages([agentMessage([toolUse("t4")])]);
   check("tool only -> tool item only", items.length === 1 && items[0].type === "tool", items);
+  check(
+    "running tool starts at its invocation message",
+    items[0].toolStartTime === "2026-07-30T14:36:00Z",
+    items[0],
+  );
+}
+
+// --- A restart interruption resolves dangling tool calls ---
+{
+  const items = coalesceMessages(
+    [agentMessage([toolUse("interrupted")])],
+    new Set(["interrupted"]),
+  );
+  check(
+    "interrupted tool call is marked, not running",
+    items.length === 1 && items[0].type === "tool" && items[0].toolInterrupted === true,
+    items,
+  );
+  const resolved = coalesceMessages([agentMessage([toolUse("other")])], new Set(["interrupted"]));
+  check("unrelated tool call is not marked", resolved[0].toolInterrupted === false, resolved);
 }
 
 // --- Text written after the tool calls renders after them ---

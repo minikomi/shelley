@@ -30,6 +30,17 @@ test("a running bash card previews the tail of its streamed output", async ({ pa
   // it: what is running must not be displaced by its own output.
   await expect(card.locator(".bash-tool-command")).toContainText("some-really-long-builder-name");
 
+  // Elapsed time stays out of the compact card, then updates live while the
+  // running card is expanded.
+  const elapsed = page.getByTestId("tool-elapsed-status");
+  await expect(elapsed).toHaveCount(0);
+  await card.locator(".bash-tool-header").click();
+  await expect(elapsed).toHaveText(/Running: \d+s/);
+  const firstElapsed = await elapsed.textContent();
+  await expect.poll(() => elapsed.textContent(), { timeout: 5000 }).not.toBe(firstElapsed);
+  await card.locator(".bash-tool-header").click();
+  await expect(elapsed).toHaveCount(0);
+
   // The preview tracks the newest line rather than sticking at the first one,
   // and shows only the tail (5 lines) with a way to see the rest. Reads 0 once
   // the tool finishes (the preview is replaced by the completed card), which
@@ -67,10 +78,18 @@ test("a running bash card previews the tail of its streamed output", async ({ pa
     )
     .toBeGreaterThan(5);
 
+  // Leave the card expanded into completion: it collapses itself when the
+  // tool finishes and the status row must go with it, not linger.
+  await expect(card).toHaveAttribute("data-testid", "tool-call-running");
+  await card.locator(".bash-tool-header").click();
+  await expect(elapsed).toHaveText(/Running: \d+s/);
+
   // Once the tool completes the preview is gone and the finished card, with
   // its own output section, takes over.
   await expect(card).toHaveAttribute("data-testid", "tool-call-completed", { timeout: 60000 });
   await expect(card.locator(".bash-tool-preview")).toHaveCount(0);
+  await expect(elapsed).toHaveCount(0);
   await card.locator(".bash-tool-header").click();
   await expect(card.locator(".bash-tool-details")).toContainText("tick-60");
+  await expect(elapsed).toHaveText(/Finished: \d+s/);
 });
