@@ -30,6 +30,7 @@ function conversation(
     is_draft: isDraft,
     draft: isDraft ? "unfinished message" : "",
     queued_messages: "[]",
+    turn_interrupted: false,
     working: false,
     subagent_count: 0,
     preview: "Preview",
@@ -68,6 +69,25 @@ function exactQueryToken(editor: Locator, kind: "tag" | "user", raw: string) {
 }
 
 test.describe("conversation drawer startup and app bar", () => {
+  test("shows a pause mark when a restart interrupted a conversation", async ({ page }) => {
+    const interrupted = conversation("interrupted");
+    interrupted.turn_interrupted = true;
+    const running = conversation("running");
+    running.working = true;
+    running.agent_working = true;
+    await stubConversationList(page, [interrupted, running]);
+
+    await page.goto("/new");
+
+    const interruptedRow = page.locator('[data-conversation-id="interrupted"]');
+    await expect(interruptedRow.locator(".drawer-interrupted-indicator")).toBeVisible();
+    await expect(interruptedRow.locator(".drawer-working-indicator")).toHaveCount(0);
+
+    const runningRow = page.locator('[data-conversation-id="running"]');
+    await expect(runningRow.locator(".drawer-working-indicator")).toBeVisible();
+    await expect(runningRow.locator(".drawer-interrupted-indicator")).toHaveCount(0);
+  });
+
   test("highlights matching slug text in drawer and command-palette searches", async ({ page }) => {
     const slugHit = conversation("Pelican-project-pelican");
     const messageHit = conversation("message-only");

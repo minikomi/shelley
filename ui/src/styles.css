@@ -11974,6 +11974,32 @@ kbd {
   margin-top: 0.35rem;
 }
 
+.drawer-interrupted-indicator {
+  width: 8px;
+  height: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--warning-text);
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 0.35rem;
+}
+
+.drawer-interrupted-indicator::before,
+.drawer-interrupted-indicator::after {
+  content: "";
+  width: 1.5px;
+  height: 7px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.conversation-item.active .drawer-interrupted-indicator {
+  color: currentColor;
+}
+
 .drawer-subagent-count-badge-text {
   font-weight: 500;
 }
