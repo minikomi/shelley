@@ -75,7 +75,6 @@ test.describe("conversation drawer startup and app bar", () => {
     messageHit.search_snippet = "A \x02pelican\x03 by the bay";
     const conversations = [slugHit, messageHit];
     await stubConversationList(page, conversations);
-    await page.route("**/api/conversations?**", (route) => route.fulfill({ json: conversations }));
     await page.goto("/new");
 
     const title = page.locator(
@@ -119,6 +118,55 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(actions.locator("mark")).toHaveCount(0);
     await paletteInput.fill("");
     await expect(paletteTitle.locator("mark")).toHaveCount(0);
+  });
+
+  test("command palette uses indexed search and cancels superseded requests", async ({ page }) => {
+    const recent = conversation("recent");
+    const slugHit = conversation("needle-archived");
+    slugHit.archived = true;
+    const messageHit = conversation("message-only");
+    await stubConversationList(page, [recent]);
+    const searches: string[] = [];
+    const legacySearches: string[] = [];
+    await page.route("**/api/conversations?**", (route) => {
+      legacySearches.push(route.request().url());
+      return route.fulfill({ json: [] });
+    });
+    await page.route("**/api/conversations/search**", (route) => {
+      const query = new URL(route.request().url()).searchParams.get("q")!;
+      searches.push(query);
+      if (query === "slow" || query === "cleared") return;
+      return route.fulfill({ json: [slugHit, messageHit] });
+    });
+    await page.goto("/new");
+    await page.keyboard.press("ControlOrMeta+k");
+    const input = page.locator(".command-palette-input");
+    const titles = page.locator(".command-palette-item-title");
+    await expect(titles.filter({ hasText: "recent" })).toBeVisible();
+
+    const slowRequest = page.waitForRequest(
+      (request) => new URL(request.url()).searchParams.get("q") === "slow",
+    );
+    await input.fill("slow");
+    const slow = await slowRequest;
+    const slowCancelled = page.waitForEvent("requestfailed", (request) => request === slow);
+    await input.fill(" needle ");
+    await slowCancelled;
+    await expect(titles).toHaveText(["needle-archived", "message-only"]);
+    await expect(titles.first().locator("mark")).toHaveText(["needle"]);
+
+    const pendingRequest = page.waitForRequest(
+      (request) => new URL(request.url()).searchParams.get("q") === "cleared",
+    );
+    await input.fill("cleared");
+    const pending = await pendingRequest;
+    const pendingCancelled = page.waitForEvent("requestfailed", (request) => request === pending);
+    await input.fill("");
+    await pendingCancelled;
+    await expect(titles.filter({ hasText: "recent" })).toBeVisible();
+    await expect(titles.filter({ hasText: "needle-archived" })).toHaveCount(0);
+    expect(searches).toEqual(["slow", "needle", "cleared"]);
+    expect(legacySearches).toEqual([]);
   });
 
   test("single-user lists have no participant filter", async ({ page }) => {
