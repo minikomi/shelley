@@ -248,6 +248,60 @@ func TestCommitTourRequestMessageIsOnlyRecordedForNewWorker(t *testing.T) {
 	}
 }
 
+func TestCommitTourRequestSkipsMarkerUnderGitInfoForSameCommit(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	repo := setupTestGitRepo(t)
+	hash := commitTourTestHash(t, repo)
+	model := "predictable"
+	conversation, err := database.CreateConversation(t.Context(), nil, true, &repo, &model, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateMessage(t.Context(), db.CreateMessageParams{
+		ConversationID: conversation.ConversationID,
+		Type:           db.MessageTypeGitInfo,
+		UserData:       GitInfoUserData{Worktree: repo, Commit: hash},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	release := make(chan struct{})
+	server.commitTourRun = func(ctx context.Context, _ string, _ commitTourTarget, _, _, _ string) error {
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	body := fmt.Sprintf(`{"message":%q,"model":"predictable"}`, "/tour")
+	w := httptest.NewRecorder()
+	server.handleChatConversation(w, httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversation.ConversationID+"/chat", strings.NewReader(body)), conversation.ConversationID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var accepted struct {
+		Tour CommitTourStatus `json:"tour"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Tour.Status != commitTourStatusBuilding || accepted.Tour.Hash != hash {
+		t.Fatalf("tour response = %#v", accepted.Tour)
+	}
+	messages, err := database.ListMessages(t.Context(), conversation.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("tour under gitinfo for the same commit added a marker: %#v", messages)
+	}
+	done := commitTourJobDone(t, server, accepted.Tour.Repository, hash)
+	close(release)
+	<-done
+}
+
 func TestCommitTourRequestMessageRejectsUnbornHEAD(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
