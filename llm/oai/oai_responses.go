@@ -203,13 +203,14 @@ type responsesOutputItem struct {
 	Input            string             `json:"input,omitempty"`             // for custom_tool_call
 	Summary          []responsesSummary `json:"summary,omitempty"`           // for reasoning
 	EncryptedContent string             `json:"encrypted_content,omitempty"` // for reasoning
-	Action           *responsesAction   `json:"action,omitempty"`            // for web_search_call (queries)
+	Action           *responsesAction   `json:"action,omitempty"`            // for web_search_call
 }
 
 // responsesAction is the action descriptor for server-side tool calls like
-// web_search_call. For web_search, it carries the actual search queries.
+// web_search_call. Search actions may carry one query or several queries.
 type responsesAction struct {
 	Type    string   `json:"type,omitempty"`
+	Query   string   `json:"query,omitempty"`
 	Queries []string `json:"queries,omitempty"`
 }
 
@@ -554,7 +555,11 @@ func (s *ResponsesService) toLLMResponseFromResponses(resp *responsesResponse, h
 			// message text (handled above).
 			var queries []string
 			if item.Action != nil {
-				queries = item.Action.Queries
+				if item.Action.Query != "" {
+					queries = []string{item.Action.Query}
+				} else {
+					queries = item.Action.Queries
+				}
 			}
 			input := map[string]any{}
 			switch len(queries) {

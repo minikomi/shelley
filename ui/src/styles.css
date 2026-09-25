@@ -1913,6 +1913,14 @@ body {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.tool-header--static {
+  cursor: default;
+}
+
+.tool-header.tool-header--static:hover {
+  background: transparent;
+}
+
 .tool-summary {
   display: flex;
   align-items: center;
@@ -13822,8 +13830,18 @@ kbd {
 }
 
 /* Web Search Tool */
+.web-search-details {
+  padding: 0 1rem 0.75rem;
+}
+
+.web-search-queries {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .web-search-results {
-  padding: 0.5rem 0.75rem;
+  padding-top: 0.75rem;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -13873,7 +13891,7 @@ kbd {
   color: var(--text-tertiary);
 }
 
-.web-search-query {
+.web-search-query-preview {
   font-style: italic;
   color: var(--text-secondary);
 }

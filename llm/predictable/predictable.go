@@ -195,6 +195,9 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		// citations render as inline source markers).
 		return s.makeWebSearchCitationsResponse(inputTokens), nil
 
+	case "web search without results":
+		return s.makeWebSearchWithoutResultsResponse(inputTokens), nil
+
 	case "tool smorgasbord":
 		// Return a response with all tool types for testing
 		return s.makeToolSmorgasbordResponse(inputTokens), nil
@@ -924,6 +927,18 @@ func (s *Service) makeWebSearchCitationsResponse(inputTokens uint64) *llm.Respon
 			CostUSD:      0.003,
 		},
 	}
+}
+
+func (s *Service) makeWebSearchWithoutResultsResponse(inputTokens uint64) *llm.Response {
+	resp := s.makeWebSearchCitationsResponse(inputTokens)
+	content := resp.Content[:0]
+	for _, block := range resp.Content {
+		if block.Type != llm.ContentTypeWebSearchToolResult {
+			content = append(content, block)
+		}
+	}
+	resp.Content = content
+	return resp
 }
 
 // makeToolSmorgasbordResponse creates a response that uses all available tool types
