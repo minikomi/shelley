@@ -7,6 +7,8 @@ package modelsources
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -22,6 +24,7 @@ import (
 	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/models/modelsdev"
+	"shelley.exe.dev/transcription"
 )
 
 // providerConn is the connection configuration for one upstream provider
@@ -245,8 +248,9 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 	return out
 }
 
-// TranscriptionModels returns the exact audio transcription routes advertised
-// by discovered LLM integrations.
+// TranscriptionModels returns managed audio transcription routes advertised by
+// discovered LLM integrations. IDs are stable across process restarts and do
+// not depend on list order.
 func TranscriptionModels(sources []Source) []models.TranscriptionModel {
 	var out []models.TranscriptionModel
 	for _, src := range sources {
@@ -254,14 +258,67 @@ func TranscriptionModels(sources []Source) []models.TranscriptionModel {
 			continue
 		}
 		for _, model := range src.integration.TranscriptionModels {
+			protocol, ok := integrationTranscriptionProtocol(model)
+			if !ok {
+				continue
+			}
+			prompted, timecoded := integrationTranscriptionCapabilities(model, protocol)
+			endpointPath := "/v1/audio/transcriptions"
+			if protocol == transcription.ProtocolDeepgram {
+				endpointPath = "/v1/listen"
+			}
+			displayName := model.ID
+			if displayName == "" {
+				displayName = model.apiModelName()
+			}
 			out = append(out, models.TranscriptionModel{
-				Model:    model.apiModelName(),
-				Endpoint: strings.TrimSuffix(src.integration.URL, "/") + "/v1/audio/transcriptions",
-				Source:   src.integration.Host,
+				ID:                managedTranscriptionModelID(src.integration.Host, model.ID),
+				DisplayName:       displayName,
+				Protocol:          protocol,
+				Provider:          model.Provider,
+				Model:             model.apiModelName(),
+				Endpoint:          strings.TrimSuffix(src.integration.URL, "/") + endpointPath,
+				SupportsPrompted:  prompted,
+				SupportsTimecodes: timecoded,
+				Managed:           true,
+				Source:            src.integration.Host,
 			})
 		}
 	}
 	return out
+}
+
+func managedTranscriptionModelID(host, catalogID string) string {
+	sum := sha256.Sum256([]byte(host + "\x00" + catalogID))
+	return "managed-" + hex.EncodeToString(sum[:12])
+}
+
+func integrationTranscriptionProtocol(model IntegrationModel) (transcription.Protocol, bool) {
+	if slices.Contains(model.APIs, "openai_transcriptions") {
+		return transcription.ProtocolOpenAI, true
+	}
+	if slices.Contains(model.APIs, "deepgram_listen") {
+		return transcription.ProtocolDeepgram, true
+	}
+	return "", false
+}
+
+func integrationTranscriptionCapabilities(model IntegrationModel, protocol transcription.Protocol) (bool, bool) {
+	profile := transcription.InferOpenAIProfile(model.apiModelName())
+	prompted := protocol == transcription.ProtocolOpenAI
+	timecoded := protocol == transcription.ProtocolDeepgram || profile == transcription.APIProfileOpenAIWhisper || profile == transcription.APIProfileOpenAIDiarized
+	if protocol == transcription.ProtocolOpenAI && model.SupportsPrompted != nil {
+		prompted = *model.SupportsPrompted
+	}
+	if model.SupportsTimecodes != nil {
+		timecoded = *model.SupportsTimecodes
+	}
+	if protocol == transcription.ProtocolOpenAI &&
+		(profile == transcription.APIProfileOpenAIDiarized ||
+			transcription.InferOpenAIRequestEncoding(model.apiModelName()) == transcription.RequestEncodingBase64JSON) {
+		prompted = false
+	}
+	return prompted, timecoded
 }
 
 func nonIntegrationModelIDs(catalog []models.Model, sources []Source) map[string]bool {
@@ -444,12 +501,14 @@ var exeDevMarkerPath = "/exe.dev"
 
 // IntegrationModel is one entry from an LLM integration's models.json catalog.
 type IntegrationModel struct {
-	ID           string                       `json:"id"`
-	Provider     string                       `json:"provider,omitempty"`
-	NativeID     string                       `json:"native_id,omitempty"`
-	APIs         []string                     `json:"apis,omitempty"`
-	Architecture IntegrationModelArchitecture `json:"architecture,omitempty"`
-	ExeDev       IntegrationModelExeDev       `json:"exe_dev"`
+	ID                string                       `json:"id"`
+	Provider          string                       `json:"provider,omitempty"`
+	NativeID          string                       `json:"native_id,omitempty"`
+	APIs              []string                     `json:"apis,omitempty"`
+	Architecture      IntegrationModelArchitecture `json:"architecture,omitempty"`
+	SupportsPrompted  *bool                        `json:"supports_prompted,omitempty"`
+	SupportsTimecodes *bool                        `json:"supports_timecodes,omitempty"`
+	ExeDev            IntegrationModelExeDev       `json:"exe_dev"`
 }
 
 type IntegrationModelExeDev struct {
@@ -629,7 +688,8 @@ func transcriptionModelsFromCatalog(catalog llmIntegrationModelCatalog) []Integr
 	}
 	var out []IntegrationModel
 	for _, model := range catalog.Models {
-		if model.ID != "" && model.apiModelName() != "" && slices.Contains(model.APIs, "openai_transcriptions") {
+		_, supported := integrationTranscriptionProtocol(model)
+		if model.ID != "" && model.apiModelName() != "" && supported {
 			out = append(out, model)
 		}
 	}

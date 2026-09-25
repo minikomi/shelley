@@ -25,142 +25,280 @@
           :disabled="refreshing || loading"
           @click="handleRefreshModels"
         />
-        <Button size="small" @click="handleAddNew">+ {{ t("addModel") }}</Button>
       </div>
     </template>
 
-    <div class="models-modal" :class="{ 'models-modal-list': showList }">
-      <div v-if="error" class="models-error">
-        {{ error }}
-        <button class="models-error-dismiss" @click="error = null">×</button>
+    <div class="models-modal">
+      <div class="models-tabs-row">
+        <div class="models-tabs" role="tablist" aria-label="Model catalogs">
+          <button
+            id="models-tab"
+            class="models-tab"
+            type="button"
+            role="tab"
+            aria-controls="models-panel"
+            :aria-selected="activeTab === 'models'"
+            :tabindex="activeTab === 'models' ? 0 : -1"
+            @click="activeTab = 'models'"
+            @keydown="handleTabKeydown"
+          >
+            Models
+          </button>
+          <button
+            id="transcription-models-tab"
+            class="models-tab"
+            type="button"
+            role="tab"
+            aria-controls="transcription-models-panel"
+            :aria-selected="activeTab === 'transcription'"
+            :tabindex="activeTab === 'transcription' ? 0 : -1"
+            @click="activeTab = 'transcription'"
+            @keydown="handleTabKeydown"
+          >
+            Transcription Models
+          </button>
+        </div>
+        <Button
+          size="small"
+          :disabled="activeTab === 'models' ? loading : transcriptionLoading"
+          @click="handleAddForActiveTab"
+          >+ {{ t("addModel") }}</Button
+        >
       </div>
 
-      <div v-if="loading" class="models-loading">
-        <div class="spinner"></div>
-        <span>{{ t("loadingModels") }}</span>
-      </div>
-
-      <!-- Empty state -->
-      <div v-else-if="builtInModels.length === 0 && models.length === 0" class="models-empty">
-        <p>{{ t("noModelsConfigured") }}</p>
-        <p class="models-empty-hint">{{ t("noModelsHint") }}</p>
-      </div>
-
-      <!-- Model List -->
-      <DataTable
-        v-else
-        :value="tableRows"
-        data-key="key"
-        size="small"
-        scrollable
-        scroll-height="flex"
-        :dt="modelsTableDt"
-        class="models-datatable"
-        row-group-mode="subheader"
-        group-rows-by="groupKey"
-        :pt="{ rowGroupHeaderCell: { colspan: 5 } }"
+      <section
+        id="models-panel"
+        class="models-tab-panel"
+        role="tabpanel"
+        aria-labelledby="models-tab"
+        :hidden="activeTab !== 'models'"
       >
-        <template #groupheader="{ data }">
-          <span class="models-group-name">{{ data.groupLabel }}</span>
-          <span class="models-group-count">({{ groupCounts[data.groupKey] }})</span>
-          <span v-if="data.groupEndpoint" class="models-group-endpoint">{{
-            data.groupEndpoint
-          }}</span>
-        </template>
-        <Column :header="t('columnName')" field="name">
-          <template #body="{ data }">
-            <span class="models-cell-name">{{ data.name }}</span>
-            <span v-for="tag in data.tags" :key="tag" class="models-cell-tag">{{ tag }}</span>
+        <div v-if="error" class="models-error">
+          {{ error }}
+          <button class="models-error-dismiss" @click="error = null">×</button>
+        </div>
+
+        <div v-if="loading" class="models-loading">
+          <div class="spinner"></div>
+          <span>{{ t("loadingModels") }}</span>
+        </div>
+
+        <!-- Empty state -->
+        <div v-else-if="builtInModels.length === 0 && models.length === 0" class="models-empty">
+          <p>{{ t("noModelsConfigured") }}</p>
+          <p class="models-empty-hint">{{ t("noModelsHint") }}</p>
+        </div>
+
+        <!-- Model List -->
+        <DataTable
+          v-else
+          :value="tableRows"
+          data-key="key"
+          size="small"
+          scrollable
+          scroll-height="flex"
+          :dt="modelsTableDt"
+          class="models-datatable"
+          row-group-mode="subheader"
+          group-rows-by="groupKey"
+          :pt="{ rowGroupHeaderCell: { colspan: 5 } }"
+        >
+          <template #groupheader="{ data }">
+            <span class="models-group-name">{{ data.groupLabel }}</span>
+            <span class="models-group-count">({{ groupCounts[data.groupKey] }})</span>
+            <span v-if="data.groupEndpoint" class="models-group-endpoint">{{
+              data.groupEndpoint
+            }}</span>
           </template>
-        </Column>
-        <Column :header="t('columnModelId')" field="modelId">
-          <template #body="{ data }">
-            <span class="models-cell-mono">{{ data.modelId }}</span>
-            <div v-if="data.endpoint" class="models-cell-endpoint" :title="data.endpoint">
-              {{ data.endpoint }}
-            </div>
-          </template>
-        </Column>
-        <Column :header="t('columnProvider')" field="apiShape">
-          <template #body="{ data }">
-            <span :class="{ 'models-cell-muted': !data.apiShape }">{{ data.apiShape || "—" }}</span>
-          </template>
-        </Column>
-        <Column :header="t('columnImages')" field="supportsImages" class="models-col-images">
-          <template #body="{ data }">
-            <span
-              :class="data.supportsImages ? 'models-table-image-yes' : 'models-table-image-no'"
-              role="img"
-              :title="data.imageTitle"
-              :aria-label="data.imageTitle"
-              >{{ data.supportsImages ? "✓" : "✕"
-              }}<span v-if="data.imageAuto" class="models-table-image-auto-tag">{{
-                t("imageSupportAutoShort")
-              }}</span></span
-            >
-          </template>
-        </Column>
-        <Column class="models-col-actions">
-          <template #header>
-            <span class="sr-only">{{ t("columnActions") }}</span>
-          </template>
-          <template #body="{ data }">
-            <div v-if="data.model" class="models-cell-actions">
-              <Button
-                class="btn-icon"
-                text
-                severity="secondary"
-                v-tooltip.top="t('duplicate')"
-                :aria-label="t('duplicate')"
-                @click="handleDuplicate(data.model)"
+          <Column :header="t('columnName')" field="name">
+            <template #body="{ data }">
+              <span class="models-cell-name">{{ data.name }}</span>
+              <span v-for="tag in data.tags" :key="tag" class="models-cell-tag">{{ tag }}</span>
+            </template>
+          </Column>
+          <Column :header="t('columnModelId')" field="modelId">
+            <template #body="{ data }">
+              <span class="models-cell-mono">{{ data.modelId }}</span>
+              <div v-if="data.endpoint" class="models-cell-endpoint" :title="data.endpoint">
+                {{ data.endpoint }}
+              </div>
+            </template>
+          </Column>
+          <Column :header="t('columnProvider')" field="apiShape">
+            <template #body="{ data }">
+              <span :class="{ 'models-cell-muted': !data.apiShape }">{{
+                data.apiShape || "—"
+              }}</span>
+            </template>
+          </Column>
+          <Column :header="t('columnImages')" field="supportsImages" class="models-col-images">
+            <template #body="{ data }">
+              <span
+                :class="data.supportsImages ? 'models-table-image-yes' : 'models-table-image-no'"
+                role="img"
+                :title="data.imageTitle"
+                :aria-label="data.imageTitle"
+                >{{ data.supportsImages ? "✓" : "✕"
+                }}<span v-if="data.imageAuto" class="models-table-image-auto-tag">{{
+                  t("imageSupportAutoShort")
+                }}</span></span
               >
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    :stroke-width="2"
-                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                  />
-                </svg>
-              </Button>
-              <Button
-                class="btn-icon"
-                text
-                severity="secondary"
-                v-tooltip.top="t('editModel')"
-                :aria-label="t('editModel')"
-                @click="handleEdit(data.model)"
-              >
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    :stroke-width="2"
-                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                  />
-                </svg>
-              </Button>
-              <Button
-                class="btn-icon btn-danger"
-                text
-                severity="danger"
-                v-tooltip.top="t('delete_')"
-                :aria-label="t('delete_')"
-                @click="handleDelete(data.model.model_id)"
-              >
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    :stroke-width="2"
-                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                  />
-                </svg>
-              </Button>
-            </div>
+            </template>
+          </Column>
+          <Column class="models-col-actions">
+            <template #header>
+              <span class="sr-only">{{ t("columnActions") }}</span>
+            </template>
+            <template #body="{ data }">
+              <div v-if="data.model" class="models-cell-actions">
+                <Button
+                  class="btn-icon"
+                  text
+                  severity="secondary"
+                  v-tooltip.top="t('duplicate')"
+                  :aria-label="t('duplicate')"
+                  @click="handleDuplicate(data.model)"
+                >
+                  <ModelActionIcon kind="duplicate" />
+                </Button>
+                <Button
+                  class="btn-icon"
+                  text
+                  severity="secondary"
+                  v-tooltip.top="t('editModel')"
+                  :aria-label="t('editModel')"
+                  @click="handleEdit(data.model)"
+                >
+                  <ModelActionIcon kind="edit" />
+                </Button>
+                <Button
+                  class="btn-icon btn-danger"
+                  text
+                  severity="danger"
+                  v-tooltip.top="t('delete_')"
+                  :aria-label="t('delete_')"
+                  @click="handleDelete(data.model.model_id)"
+                >
+                  <ModelActionIcon kind="delete" />
+                </Button>
+              </div>
+            </template>
+          </Column>
+        </DataTable>
+      </section>
+
+      <section
+        id="transcription-models-panel"
+        class="models-tab-panel"
+        role="tabpanel"
+        aria-labelledby="transcription-models-tab"
+        :hidden="activeTab !== 'transcription'"
+      >
+        <p class="transcription-models-description">
+          Choose one model for transcript generation and one for timecoded transcription. Context
+          prompts are optional model capabilities.
+        </p>
+        <div v-if="transcriptionError" class="models-error" role="alert">
+          {{ transcriptionError }}
+        </div>
+        <div v-if="transcriptionLoading" class="models-loading">
+          <div class="spinner" />
+          <span>Loading transcription models...</span>
+        </div>
+        <DataTable
+          v-else
+          :value="transcriptionRows"
+          data-key="model_id"
+          size="small"
+          scrollable
+          scroll-height="flex"
+          :dt="modelsTableDt"
+          class="models-datatable transcription-models-datatable"
+          row-group-mode="subheader"
+          group-rows-by="groupKey"
+          :pt="{ rowGroupHeaderCell: { colspan: 7 } }"
+        >
+          <template #groupheader="{ data }">
+            <span class="models-group-name">{{ data.groupLabel }}</span>
+            <span class="models-group-count">({{ transcriptionGroupCounts[data.groupKey] }})</span>
           </template>
-        </Column>
-      </DataTable>
+          <Column header="Name" field="display_name"
+            ><template #body="{ data }"
+              ><span class="models-cell-name">{{ data.display_name }}</span></template
+            ></Column
+          >
+          <Column header="Model ID" field="model_name"
+            ><template #body="{ data }"
+              ><span class="models-cell-mono">{{ data.model_name }}</span>
+              <div class="models-cell-endpoint" :title="data.endpoint">
+                {{ data.endpoint }}
+              </div></template
+            ></Column
+          >
+          <Column header="Provider" field="provider"
+            ><template #body="{ data }"
+              ><span>{{ data.provider }}</span
+              ><span class="models-cell-muted">
+                · {{ protocolLabel(data.protocol) }}</span
+              ></template
+            ></Column
+          >
+          <Column header="Transcript" class="transcription-capability-column"
+            ><template #body="{ data }"
+              ><input
+                type="radio"
+                name="transcript-transcription-model"
+                :checked="isSelected(data, 'transcript')"
+                :disabled="selectingRole !== null"
+                :aria-label="`Use ${data.display_name} for transcript generation`"
+                @change="selectDefault(data.model_id, 'transcript')" /></template
+          ></Column>
+          <Column header="Context prompts" class="transcription-capability-column"
+            ><template #body="{ data }"
+              ><span :class="{ 'models-cell-muted': !data.supports_prompted }">{{
+                data.supports_prompted ? "Supported" : "Not supported"
+              }}</span></template
+          ></Column>
+          <Column header="Timecodes" class="transcription-capability-column"
+            ><template #body="{ data }"
+              ><input
+                type="radio"
+                name="timecoded-transcription-model"
+                :checked="isSelected(data, 'timecoded')"
+                :disabled="!canUseForRole(data, 'timecoded') || selectingRole !== null"
+                :aria-label="`Use ${data.display_name} for timecoded transcription`"
+                @change="selectDefault(data.model_id, 'timecoded')" /></template
+          ></Column>
+          <Column header="Actions" class="models-col-actions"
+            ><template #body="{ data }"
+              ><div v-if="!data.managed" class="models-cell-actions">
+                <Button
+                  class="btn-icon"
+                  text
+                  severity="secondary"
+                  v-tooltip.top="t('duplicate')"
+                  :aria-label="t('duplicate')"
+                  @click="duplicateTranscription(data)"
+                  ><ModelActionIcon kind="duplicate" /></Button
+                ><Button
+                  class="btn-icon"
+                  text
+                  severity="secondary"
+                  v-tooltip.top="t('editModel')"
+                  :aria-label="t('editModel')"
+                  @click="editTranscription(data)"
+                  ><ModelActionIcon kind="edit" /></Button
+                ><Button
+                  class="btn-icon btn-danger"
+                  text
+                  severity="danger"
+                  v-tooltip.top="t('delete_')"
+                  :aria-label="t('delete_')"
+                  @click="deleteTranscription(data.model_id)"
+                  ><ModelActionIcon kind="delete" /></Button></div></template
+          ></Column>
+        </DataTable>
+      </section>
     </div>
   </Modal>
 
@@ -171,6 +309,12 @@
     @saved="handleFormSaved"
     @close="formOpen = false"
   />
+  <TranscriptionModelFormModal
+    :is-open="transcriptionFormOpen"
+    :edit-model="editTranscriptionModel"
+    @saved="handleTranscriptionSaved"
+    @close="transcriptionFormOpen = false"
+  />
 </template>
 
 <script setup lang="ts">
@@ -179,17 +323,30 @@ import DataTable from "primevue/datatable";
 import Column from "primevue/column";
 import Button from "primevue/button";
 import Modal from "./Modal.vue";
+import ModelActionIcon from "./ModelActionIcon.vue";
 import ModelFormModal from "./ModelFormModal.vue";
+import TranscriptionModelFormModal from "./TranscriptionModelFormModal.vue";
 import { modelsTableDt } from "./modelsTableDt";
 import { prettyModelLabels } from "../../utils/modelNames";
 import { API_TYPE_LABELS, PROVIDER_LABELS } from "./customModelConstants";
 import { useI18n } from "../composables/i18n";
-import { api, customModelsApi, type AvailableModel, type CustomModel } from "../../services/api";
+import {
+  api,
+  customModelsApi,
+  transcriptionModelsApi,
+  type AvailableModel,
+  type CustomModel,
+  type TranscriptionModel,
+  type TranscriptionRole,
+} from "../../services/api";
 
 const props = defineProps<{ isOpen: boolean }>();
 const emit = defineEmits<{ (e: "close"): void; (e: "modelsChanged"): void }>();
 
 const { t } = useI18n();
+
+type ModelTab = "models" | "transcription";
+const activeTab = ref<ModelTab>("models");
 
 const models = ref<CustomModel[]>([]);
 const loading = ref(true);
@@ -202,16 +359,142 @@ const builtInModels = ref<AvailableModel[]>([]);
 const formOpen = ref(false);
 const editModel = ref<CustomModel | null>(null);
 
+const transcriptionModels = ref<TranscriptionModel[]>([]);
+const transcriptionDefaults = ref<
+  Partial<Record<TranscriptionRole, { model_id: string; available: boolean }>>
+>({});
+const transcriptionLoading = ref(true);
+const transcriptionError = ref<string | null>(null);
+const selectingRole = ref<TranscriptionRole | null>(null);
+const transcriptionFormOpen = ref(false);
+const editTranscriptionModel = ref<TranscriptionModel | null>(null);
+
 const builtInModelsFiltered = computed(() =>
   builtInModels.value.filter((m) => m.id !== "predictable"),
 );
 
-// True when the model-list DataTable (not the empty/loading views) is showing.
-// The list fills the modal edge-to-edge, so we drop the wrapper padding in that
-// state (see .models-modal-list).
-const showList = computed(
-  () => !loading.value && (builtInModels.value.length > 0 || models.value.length > 0),
+const transcriptionRows = computed(() =>
+  transcriptionModels.value.map((model) => ({
+    ...model,
+    groupKey: model.managed ? "managed" : "custom",
+    groupLabel: model.managed ? "Managed models" : "Custom models",
+  })),
 );
+
+const transcriptionGroupCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {};
+  for (const row of transcriptionRows.value) counts[row.groupKey] = (counts[row.groupKey] || 0) + 1;
+  return counts;
+});
+
+function protocolLabel(protocol: string) {
+  return protocol === "openai" ? "OpenAI-compatible" : "Deepgram";
+}
+
+function handleTabKeydown(event: KeyboardEvent) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = Array.from(
+    (event.currentTarget as HTMLButtonElement).parentElement?.querySelectorAll<HTMLButtonElement>(
+      '[role="tab"]',
+    ) ?? [],
+  );
+  const currentIndex = tabs.indexOf(event.currentTarget as HTMLButtonElement);
+  const nextIndex =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[nextIndex]?.click();
+  tabs[nextIndex]?.focus();
+}
+
+function canUseForRole(model: TranscriptionModel, role: TranscriptionRole) {
+  if (role === "transcript") return true;
+  return model.supports_timecodes;
+}
+
+function isSelected(model: TranscriptionModel, role: TranscriptionRole) {
+  return (
+    canUseForRole(model, role) &&
+    transcriptionDefaults.value[role]?.model_id === model.model_id &&
+    transcriptionDefaults.value[role]?.available
+  );
+}
+
+async function loadTranscriptionModels() {
+  try {
+    transcriptionLoading.value = true;
+    transcriptionError.value = null;
+    const catalog = await transcriptionModelsApi.list();
+    transcriptionModels.value = catalog.models;
+    transcriptionDefaults.value = catalog.defaults;
+  } catch (err) {
+    transcriptionError.value =
+      err instanceof Error ? err.message : "Failed to load transcription models";
+  } finally {
+    transcriptionLoading.value = false;
+  }
+}
+
+async function selectDefault(modelId: string, role: TranscriptionRole) {
+  try {
+    selectingRole.value = role;
+    transcriptionError.value = null;
+    const selected = await transcriptionModelsApi.setDefault(role, modelId);
+    transcriptionDefaults.value = { ...transcriptionDefaults.value, [role]: selected };
+  } catch (err) {
+    transcriptionError.value =
+      err instanceof Error ? err.message : "Failed to select transcription model";
+  } finally {
+    selectingRole.value = null;
+  }
+}
+
+function handleAddTranscription() {
+  editTranscriptionModel.value = null;
+  transcriptionFormOpen.value = true;
+}
+
+function handleAddForActiveTab() {
+  if (activeTab.value === "transcription") {
+    handleAddTranscription();
+    return;
+  }
+  handleAddNew();
+}
+
+function editTranscription(model: TranscriptionModel) {
+  editTranscriptionModel.value = model;
+  transcriptionFormOpen.value = true;
+}
+
+async function handleTranscriptionSaved() {
+  await loadTranscriptionModels();
+}
+
+async function duplicateTranscription(model: TranscriptionModel) {
+  try {
+    transcriptionError.value = null;
+    await transcriptionModelsApi.duplicate(model.model_id);
+    await loadTranscriptionModels();
+  } catch (err) {
+    transcriptionError.value =
+      err instanceof Error ? err.message : "Failed to duplicate transcription model";
+  }
+}
+
+async function deleteTranscription(modelId: string) {
+  try {
+    transcriptionError.value = null;
+    await transcriptionModelsApi.delete(modelId);
+    await loadTranscriptionModels();
+  } catch (err) {
+    transcriptionError.value =
+      err instanceof Error ? err.message : "Failed to delete transcription model";
+  }
+}
 
 // Normalized rows so built-in + custom models render through one DataTable.
 // `model` is only present for custom rows, which are the editable/deletable
@@ -394,7 +677,9 @@ watch(
   () => props.isOpen,
   (open) => {
     if (open) {
+      activeTab.value = "models";
       loadModels();
+      loadTranscriptionModels();
       const initData = window.__SHELLEY_INIT__;
       if (initData?.models) {
         setBuiltInFromModelList(initData.models);

@@ -12,6 +12,7 @@ import (
 	"shelley.exe.dev/llm/ant"
 	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/transcription"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -883,7 +884,8 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 					{"id":"openai/gpt-5.6-sol","provider":"openai","native_id":"gpt-5.6-sol","apis":["openai_chat","openai_responses"]},
 					{"id":"openai/gpt-5.5","provider":"openai","native_id":"gpt-5.5","apis":["openai_responses"]},
 					{"id":"fireworks/glm-5p2","provider":"fireworks","native_id":"accounts/fireworks/models/glm-5p2","apis":["openai_chat"]},
-					{"id":"openai/gpt-transcribe","provider":"openai","native_id":"gpt-transcribe","apis":["openai_transcriptions"]}
+					{"id":"openai/gpt-transcribe","provider":"openai","native_id":"gpt-transcribe","apis":["openai_transcriptions"]},
+					{"id":"deepgram/nova-3","provider":"deepgram","native_id":"nova-3","apis":["deepgram_listen"]}
 				]
 			}`
 		default:
@@ -917,10 +919,71 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 		}
 	}
 	transcriptionModels := TranscriptionModels([]Source{LLMIntegration(integ, "")})
-	if len(transcriptionModels) != 1 ||
+	if len(transcriptionModels) != 2 {
+		t.Fatalf("transcription models = %+v, want OpenAI and Deepgram", transcriptionModels)
+	}
+	if transcriptionModels[0].ID == "" ||
+		transcriptionModels[0].Protocol != transcription.ProtocolOpenAI ||
+		!transcriptionModels[0].SupportsPrompted ||
+		transcriptionModels[0].SupportsTimecodes ||
+		!transcriptionModels[0].Managed ||
 		transcriptionModels[0].Model != "gpt-transcribe" ||
 		transcriptionModels[0].Endpoint != "https://llm.int.exe.xyz/v1/audio/transcriptions" {
-		t.Fatalf("transcription models = %+v", transcriptionModels)
+		t.Fatalf("OpenAI transcription model = %+v", transcriptionModels[0])
+	}
+	if transcriptionModels[1].ID == "" ||
+		transcriptionModels[1].Protocol != transcription.ProtocolDeepgram ||
+		transcriptionModels[1].SupportsPrompted ||
+		!transcriptionModels[1].SupportsTimecodes ||
+		!transcriptionModels[1].Managed ||
+		transcriptionModels[1].Model != "nova-3" ||
+		transcriptionModels[1].Endpoint != "https://llm.int.exe.xyz/v1/listen" {
+		t.Fatalf("Deepgram transcription model = %+v", transcriptionModels[1])
+	}
+}
+
+func TestDeepgramManagedTranscriptionNeverAdvertisesPromptSupport(t *testing.T) {
+	advertised := true
+	models := TranscriptionModels([]Source{LLMIntegration(&LLMIntegrationConfig{
+		Host: "deepgram.int.example",
+		URL:  "https://deepgram.int.example",
+		TranscriptionModels: []IntegrationModel{{
+			ID: "deepgram/nova-3", Provider: "deepgram", NativeID: "nova-3",
+			APIs: []string{"deepgram_listen"}, SupportsPrompted: &advertised,
+		}},
+	}, "")})
+	if len(models) != 1 {
+		t.Fatalf("models = %+v", models)
+	}
+	if models[0].SupportsPrompted || !models[0].SupportsTimecodes || !models[0].Managed {
+		t.Fatalf("Deepgram capabilities = %+v", models[0])
+	}
+}
+
+func TestManagedTranscriptionModelsKeepPlainTranscriptRoutes(t *testing.T) {
+	yes, no := true, false
+	routes := TranscriptionModels([]Source{LLMIntegration(&LLMIntegrationConfig{
+		Host: "llm.int.example", URL: "https://llm.int.example",
+		TranscriptionModels: []IntegrationModel{
+			{ID: "fish-audio/transcribe-1", Provider: "fish-audio", APIs: []string{"openai_transcriptions"}, SupportsPrompted: &yes},
+			{ID: "plain-model", Provider: "custom", APIs: []string{"openai_transcriptions"}, SupportsPrompted: &no, SupportsTimecodes: &no},
+			{ID: "gpt-4o-transcribe-diarize", Provider: "openai", APIs: []string{"openai_transcriptions"}},
+			{ID: "gpt-transcribe", Provider: "openai", APIs: []string{"openai_transcriptions"}},
+		},
+	}, "")})
+	if len(routes) != 4 {
+		t.Fatalf("plain transcript models were dropped: %+v", routes)
+	}
+	for _, route := range routes {
+		if !route.Supports(transcription.RoleTranscript) {
+			t.Fatalf("transcript unavailable: %+v", route)
+		}
+		if got, want := route.SupportsPrompted, route.Model == "gpt-transcribe"; got != want {
+			t.Fatalf("%s prompt capability=%v want=%v", route.Model, got, want)
+		}
+		if got, want := route.SupportsTimecodes, route.Model == "gpt-4o-transcribe-diarize"; got != want {
+			t.Fatalf("%s timecode capability=%v want=%v", route.Model, got, want)
+		}
 	}
 }
 

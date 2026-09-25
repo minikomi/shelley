@@ -4083,44 +4083,21 @@ diffs-container {
   white-space: nowrap;
 }
 
-/* When the Manage Models list is showing, the table (a PrimeVue DataTable)
-   renders its own header row and fills the modal, so the modal-body padding is
-   just dead space above the column labels and a gap below the last row. Make
-   the modal a flex column and let the table fill it edge-to-edge (also lets
-   scroll-height="flex" work — it needs a definite-height flex ancestor).
-   Scoped to .modal-xwide, which only this modal uses; the form/empty views
-   keep their normal padding since they don't add .models-modal-list. */
-.modal.modal-xwide {
+/* Manage Models gives the active tab's table its own vertical scrollport. */
+.modal-xwide .modal-body:has(.models-modal) {
   display: flex;
   flex-direction: column;
-}
-
-.modal-xwide .modal-body {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
   min-height: 0;
-  /* max-height is handled by the flex parent (.modal, capped at 80vh). */
-  max-height: none;
-}
-
-/* List state: drop wrapper padding so the table spans the modal fully. */
-.modal-xwide .modal-body:has(.models-modal-list) {
+  overflow: hidden;
   padding: 0;
 }
 
-.modal-xwide .models-modal-list {
-  padding: 0;
+.modal-xwide .models-modal {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  flex: 1;
   min-height: 0;
-}
-
-.modal-xwide .models-modal-list .models-datatable {
-  margin: 0;
-  flex: 1;
-  min-height: 0;
+  padding: 0;
 }
 
 /* On phones the title + both action buttons + close can't share one row, so
@@ -8901,18 +8878,74 @@ button.tour-visibility-control:focus-visible,
   margin: 0.25rem 0;
 }
 
-/* Manage Models list is a PrimeVue DataTable (see ModelsModal.vue); most of
-   its look comes from modelsTableDt design tokens. These rules pull the modal
-   body padding to the edges, keep the header row sticky, and style the cell
-   content wrappers for a compact, data-dense layout. */
+/* Manage Models uses compact PrimeVue DataTables (see ModelsModal.vue). */
 .models-datatable {
-  /* Pull to the modal-body edges so the table spans the full width. */
-  margin: 0 -1rem;
+  font-size: 0.8125rem;
+  min-height: 0;
+}
+
+.models-tabs-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-shrink: 0;
+  justify-content: space-between;
+  padding-right: 1rem;
+}
+
+.models-tabs {
+  display: flex;
+  flex: 1;
+  gap: 0.25rem;
+  padding: 0 0.5rem;
+}
+
+.models-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.625rem 0.5rem 0.5rem;
+}
+
+.models-tab[aria-selected="true"] {
+  border-bottom-color: var(--primary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.models-tab-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.models-tab-panel[hidden] {
+  display: none;
+}
+
+.models-tab-panel .models-datatable {
+  flex: 1;
+  margin: 0;
   font-size: 0.8125rem;
 }
 
-/* Keep the header visible while the body scrolls. size="small" + tokens set
-   padding; this just makes the labels compact and uppercase like before. */
+/* PrimeVue's scrollable table container keeps horizontal and vertical overflow
+   local to the active tab, leaving its header visible while rows scroll. */
+.models-datatable .p-datatable-table-container {
+  min-height: 0;
+}
+
+.models-datatable .p-datatable-thead > tr > th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
 .models-datatable .p-datatable-column-title {
   font-size: 0.7rem;
   text-transform: uppercase;
@@ -9063,7 +9096,152 @@ button.tour-visibility-control:focus-visible,
   color: var(--text-primary);
 }
 
-/* Version Checker Styles */
+.transcription-models-description {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  margin: 0.5rem 1rem 0.625rem;
+}
+
+.transcription-models-datatable {
+  margin: 0;
+}
+
+.models-datatable .p-datatable-thead > tr > th:first-child,
+.models-datatable .p-datatable-tbody > tr > td:first-child {
+  padding-left: 1rem;
+}
+
+.transcription-capability-column {
+  text-align: center;
+  width: 1%;
+}
+
+.transcription-capability-column input[type="radio"] {
+  accent-color: var(--primary);
+  cursor: pointer;
+  height: 1rem;
+  margin: 0;
+  width: 1rem;
+}
+
+.transcription-capability-column input[type="radio"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.transcription-capabilities {
+  border: 0;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+
+.transcription-capabilities legend {
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+  padding: 0;
+}
+
+.transcription-capabilities label {
+  align-items: center;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.875rem;
+  gap: 0.375rem;
+  margin: 0 1rem 0 0;
+}
+
+.transcription-capabilities label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.transcription-capability-hint {
+  margin: 0.375rem 0 0;
+}
+
+.transcription-test {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+}
+
+.transcription-test-heading {
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.transcription-test .form-hint {
+  margin: 0.25rem 0 0.625rem;
+}
+
+.transcription-test-recording {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  font-size: 0.813rem;
+  gap: 0.5rem;
+  margin-bottom: 0.625rem;
+}
+
+.transcription-test-results {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.transcription-test-result {
+  display: grid;
+  font-size: 0.813rem;
+  gap: 0.1875rem;
+}
+
+.transcription-test-result strong {
+  font-size: 0.75rem;
+}
+
+.transcription-test-result span {
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.test-result-failure {
+  color: var(--error-text) !important;
+}
+
+.transcription-test-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+@media (max-width: 520px) {
+  .models-tabs-row {
+    padding-right: 0.75rem;
+  }
+
+  .models-tabs {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+  }
+
+  .transcription-models-description {
+    margin-left: 0.75rem;
+    margin-right: 0.75rem;
+  }
+
+  .models-datatable .p-datatable-thead > tr > th:first-child,
+  .models-datatable .p-datatable-tbody > tr > td:first-child {
+    padding-left: 0.75rem;
+  }
+}
+
 .version-update-dot {
   position: absolute;
   top: 2px;
@@ -9522,7 +9700,10 @@ button.tour-visibility-control:focus-visible,
 }
 
 .provider-btn {
+  align-items: center;
+  display: flex;
   flex: 1;
+  justify-content: center;
   padding: 0.5rem;
   background: var(--bg-base);
   border: 1px solid var(--border);
@@ -9531,6 +9712,18 @@ button.tour-visibility-control:focus-visible,
   font-size: 0.875rem;
   cursor: pointer;
   transition: all 0.15s;
+}
+
+.provider-btn input {
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+
+.provider-btn:focus-within {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .provider-btn:hover {

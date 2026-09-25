@@ -1,4 +1,4 @@
-<!-- Specialized card for synthetic openai_audio_transcription audit entries. -->
+<!-- Specialized card for audio transcription audit entries. -->
 <template>
   <div class="tool audio-transcription-tool" data-testid="tool-call-completed">
     <div class="tool-header" @click="isExpanded = !isExpanded">

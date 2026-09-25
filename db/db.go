@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/transcription"
 
 	_ "modernc.org/sqlite"
 )
@@ -557,10 +558,11 @@ const (
 // QueuedTranscription contains the durable inputs and audit for a
 // transcription queue item.
 type QueuedTranscription struct {
-	MediaPath        string          `json:"media_path"`
-	ContactSheetPath string          `json:"contact_sheet_path,omitempty"`
-	Context          string          `json:"context,omitempty"`
-	Audit            json.RawMessage `json:"audit,omitempty"`
+	MediaPath        string                                        `json:"media_path"`
+	ContactSheetPath string                                        `json:"contact_sheet_path,omitempty"`
+	Context          string                                        `json:"context,omitempty"`
+	Models           map[transcription.Role]transcription.ModelRef `json:"models,omitempty"`
+	Audit            json.RawMessage                               `json:"audit,omitempty"`
 }
 
 // QueuedMessage is one user message held in a conversation's queued_messages

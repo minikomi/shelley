@@ -211,6 +211,14 @@ func runServe(global GlobalConfig, args []string) {
 
 	// Create server
 	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
+	if err := svr.RegisterBuiltinTranscriptionProviders(); err != nil {
+		logger.Error("Failed to register transcription providers", "error", err)
+		os.Exit(1)
+	}
+	if err := svr.InitializeTranscriptionModelDefaults(context.Background()); err != nil {
+		logger.Error("Failed to initialize transcription defaults", "error", err)
+		os.Exit(1)
+	}
 	svr.SetModelRefresher(llmConfig.RefreshBuiltModels)
 	svr.Banner = *banner
 
