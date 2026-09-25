@@ -259,9 +259,9 @@
       <div v-if="testResult" :class="`test-result ${testResult.success ? 'success' : 'error'}`">
         {{ testResult.success ? "✓" : "✗" }} {{ testResult.message }}
       </div>
-
-      <!-- Form Actions -->
-      <div class="form-actions">
+    </div>
+    <template #footer>
+      <div class="model-form-footer">
         <Button type="button" severity="secondary" :label="t('cancel')" @click="emit('close')" />
         <Button
           type="button"
@@ -284,7 +284,7 @@
           @click="handleSave"
         />
       </div>
-    </div>
+    </template>
   </Modal>
 </template>
 

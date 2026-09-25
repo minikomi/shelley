@@ -75,12 +75,7 @@
           fluid
           :dt="selectFieldDt"
         />
-        <p
-          id="transcription-api-behavior-help"
-          class="form-hint"
-          role="status"
-          aria-live="polite"
-        >
+        <p id="transcription-api-behavior-help" class="form-hint" role="status" aria-live="polite">
           {{ behaviorHelpText }}
         </p>
       </div>
@@ -147,11 +142,7 @@
           Context prompts</label
         >
         <label
-          ><input
-            v-model="form.supports_timecodes"
-            type="checkbox"
-            :disabled="timecodesLocked"
-          />
+          ><input v-model="form.supports_timecodes" type="checkbox" :disabled="timecodesLocked" />
           Timecodes</label
         >
         <p v-if="capabilityHint" class="form-hint transcription-capability-hint">
@@ -210,8 +201,9 @@
           />
         </div>
       </section>
-
-      <div class="form-actions">
+    </div>
+    <template #footer>
+      <div class="model-form-footer">
         <Button
           type="button"
           severity="secondary"
@@ -226,7 +218,7 @@
           @click="save"
         />
       </div>
-    </div>
+    </template>
   </Modal>
 </template>
 
@@ -336,9 +328,7 @@ const resolvedOpenAIProfile = computed(() =>
   form.api_profile === "auto" ? inferredAutoProfile(form.model_name) : form.api_profile,
 );
 const inferredRequestEncoding = computed<Exclude<TranscriptionRequestEncoding, "auto">>(() =>
-  form.model_name.trim().toLowerCase().startsWith("fish-audio/")
-    ? "base64-json"
-    : "multipart",
+  form.model_name.trim().toLowerCase().startsWith("fish-audio/") ? "base64-json" : "multipart",
 );
 const resolvedRequestEncoding = computed(() =>
   form.request_encoding === "auto" ? inferredRequestEncoding.value : form.request_encoding,
@@ -397,9 +387,7 @@ const behaviorHelpText = computed(() => {
 const modelIdPlaceholder = computed(() =>
   form.protocol === "deepgram" ? "e.g., nova-3" : "e.g., whisper-1",
 );
-const isBusy = computed(
-  () => testState.value === "processing",
-);
+const isBusy = computed(() => testState.value === "processing");
 const canTest = computed(() => validDraft(false) === null);
 
 function isCurrentTest(generation: number) {
@@ -525,12 +513,7 @@ watch(
 );
 
 watch(
-  [
-    () => form.model_name,
-    () => form.api_profile,
-    () => form.request_encoding,
-    () => form.protocol,
-  ],
+  [() => form.model_name, () => form.api_profile, () => form.request_encoding, () => form.protocol],
   syncCapabilities,
   {
     flush: "sync",
