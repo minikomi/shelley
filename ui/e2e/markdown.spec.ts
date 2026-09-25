@@ -235,4 +235,26 @@ test.describe("Markdown rendering", () => {
     expect(await sources.count()).toBeGreaterThan(0);
     await expect(sources.first().locator("a")).toHaveAttribute("href", /^https?:\/\//);
   });
+
+  test("expands web search queries without structured results", async ({ page, request }) => {
+    const slug = await createConversationViaAPI(request, "web search without results");
+    await page.goto(`/c/${slug}`);
+    await page.waitForLoadState("domcontentloaded");
+
+    await page.locator('[aria-label="web_search tool result"]').scrollIntoViewIfNeeded();
+    const search = page.locator('[data-testid="tool-call-completed"]').filter({
+      hasText: "Web Search",
+    });
+    await expect(search).toBeVisible({ timeout: 30000 });
+    await expect(search.locator(".tool-toggle")).toHaveCount(1);
+    await expect(search.locator(".web-search-query-preview")).toHaveText(
+      "pi coding agent switch models",
+    );
+    await expect(search.locator(".web-search-queries")).not.toBeVisible();
+
+    await search.locator(".tool-header").click();
+    await expect(search.locator(".web-search-queries")).toContainText(
+      "pi coding agent switch models",
+    );
+  });
 });

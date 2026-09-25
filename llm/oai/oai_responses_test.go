@@ -1919,6 +1919,24 @@ func TestResponsesCustomToolCallConversion(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSearchQueryConversion(t *testing.T) {
+	service := &ResponsesService{}
+	for _, action := range []*responsesAction{
+		{Type: "search", Query: "singular query"},
+		{Type: "search", Queries: []string{"singular query"}},
+	} {
+		response := service.toLLMResponseFromResponses(&responsesResponse{Output: []responsesOutputItem{{
+			ID: "ws_1", Type: "web_search_call", Action: action,
+		}}}, nil)
+		if len(response.Content) != 1 {
+			t.Fatalf("content = %+v", response.Content)
+		}
+		if got := string(response.Content[0].ToolInput); got != `{"query":"singular query"}` {
+			t.Fatalf("tool input = %s", got)
+		}
+	}
+}
+
 func TestResponsesCustomToolResultUsesCustomOutput(t *testing.T) {
 	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeToolResult, ToolName: "apply_patch", ToolUseID: "call_1", ToolResult: llm.TextContent("done")}}}, responsesReasoningReplayEncrypted)
 	if len(items) != 1 || items[0].Type != "custom_tool_call_output" {
