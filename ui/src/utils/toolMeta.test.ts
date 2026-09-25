@@ -129,6 +129,11 @@ run("emoji unchanged for shell", () => {
 
 run("audio transcription uses its microphone icon and recording filename", () => {
   const input = { file: "/tmp/shelley-uploads/meeting.webm" };
+  assert(toolEmoji("audio_transcription") === "🎙️", "provider transcription icon");
+  assert(
+    toolHeadline("audio_transcription", input) === "meeting.webm",
+    "provider transcription filename",
+  );
   assert(toolEmoji("openai_audio_transcription") === "🎙️", "transcription icon");
   assert(
     toolHeadline("openai_audio_transcription", input) === "meeting.webm",

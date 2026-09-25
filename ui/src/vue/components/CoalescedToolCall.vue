@@ -186,6 +186,7 @@ usePerfLifecycle("toolCall");
 // Map tool names to their specialized components (mirrors TOOL_COMPONENTS).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const TOOL_COMPONENTS: Record<string, any> = {
+  audio_transcription: AudioTranscriptionTool,
   openai_audio_transcription: AudioTranscriptionTool,
   bash: BashTool,
   shell: BashTool,

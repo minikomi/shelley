@@ -20,6 +20,7 @@ import (
 	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/llm/predictable"
 	"shelley.exe.dev/models/modelsdev"
+	"shelley.exe.dev/transcription"
 )
 
 // Provider identifies an LLM upstream API family.
@@ -122,13 +123,11 @@ type Built struct {
 	BaseURL string
 }
 
-// TranscriptionModel is a known OpenAI-compatible transcription route.
-type TranscriptionModel struct {
-	Model    string
-	Endpoint string
-	APIKey   string
-	Source   string
-}
+// TranscriptionModel is the provider-neutral transcription configuration used
+// by managed integrations, durable custom records, and protocol providers.
+// Keep the alias so the existing OpenAI recording path can consume the shared
+// type without owning the catalog contract.
+type TranscriptionModel = transcription.Model
 
 // Config holds runtime configuration for the Manager. Built-in models
 // are passed in pre-materialized; custom models are loaded from DB.
@@ -775,30 +774,88 @@ func (m *Manager) GetAvailableModels() []string {
 	return result
 }
 
-// GetTranscriptionModels returns known routes for an exact wire model name.
-func (m *Manager) GetTranscriptionModels(modelName string) ([]TranscriptionModel, error) {
+// GetManagedTranscriptionModels returns the runtime integration models in
+// discovery order. The returned slice is detached from the manager.
+func (m *Manager) GetManagedTranscriptionModels() []TranscriptionModel {
 	m.mu.RLock()
-	var result []TranscriptionModel
-	for _, model := range m.transcriptionModels {
-		if model.Model == modelName {
-			result = append(result, model)
-		}
-	}
-	m.mu.RUnlock()
+	defer m.mu.RUnlock()
+	result := make([]TranscriptionModel, len(m.transcriptionModels))
+	copy(result, m.transcriptionModels)
+	return result
+}
 
-	dbModels, err := m.customModelRows()
+func transcriptionModelFromRow(model generated.TranscriptionModel) TranscriptionModel {
+	return TranscriptionModel{
+		ID:                model.ModelID,
+		DisplayName:       model.DisplayName,
+		Protocol:          transcription.Protocol(model.Protocol),
+		APIProfile:        transcription.APIProfile(model.ApiProfile),
+		RequestEncoding:   transcription.RequestEncoding(model.RequestEncoding),
+		Provider:          model.Provider,
+		Endpoint:          model.Endpoint,
+		APIKey:            model.ApiKey,
+		Model:             model.ModelName,
+		SupportsPrompted:  model.SupportsPrompted,
+		SupportsTimecodes: model.SupportsTimecodes,
+		Managed:           model.Managed,
+		Source:            model.Source,
+	}
+}
+
+// GetTranscriptionCatalog returns managed integration and durable custom
+// transcription models in one provider-neutral catalog. Chat-model rows are
+// never consulted.
+func (m *Manager) GetTranscriptionCatalog(ctx context.Context) ([]TranscriptionModel, error) {
+	result := m.GetManagedTranscriptionModels()
+	if m.db == nil {
+		return result, nil
+	}
+	rows, err := m.db.ListTranscriptionModels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, model := range dbModels {
+	for _, row := range rows {
+		result = append(result, transcriptionModelFromRow(row))
+	}
+	return result, nil
+}
+
+// GetTranscriptionModels returns known routes for an exact wire model name.
+// This method remains the legacy OpenAI transcriber's resolver. New selectable
+// models come from the dedicated catalog, while legacy jobs also retain the
+// pre-migration behavior of treating compatible custom chat-model rows as
+// OpenAI transcription routes.
+func (m *Manager) GetTranscriptionModels(modelName string) ([]TranscriptionModel, error) {
+	catalog, err := m.GetTranscriptionCatalog(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]TranscriptionModel, 0, len(catalog))
+	for _, model := range catalog {
+		if (model.Protocol == "" || model.Protocol == transcription.ProtocolOpenAI) && model.Model == modelName {
+			result = append(result, model)
+		}
+	}
+	legacyRows, err := m.customModelRows()
+	if err != nil {
+		return nil, err
+	}
+	for _, model := range legacyRows {
 		if model.ModelName != modelName || (model.ProviderType != "openai" && model.ProviderType != "openai-responses") {
 			continue
 		}
 		result = append(result, TranscriptionModel{
-			Model:    model.ModelName,
-			Endpoint: strings.TrimSuffix(model.Endpoint, "/") + "/audio/transcriptions",
-			APIKey:   model.ApiKey,
-			Source:   SourceCustomLabel,
+			ID:                model.ModelID,
+			DisplayName:       model.DisplayName,
+			Protocol:          transcription.ProtocolOpenAI,
+			RequestEncoding:   transcription.RequestEncodingMultipart,
+			Provider:          model.ProviderType,
+			Endpoint:          strings.TrimSuffix(model.Endpoint, "/") + "/audio/transcriptions",
+			APIKey:            model.ApiKey,
+			Model:             model.ModelName,
+			SupportsPrompted:  true,
+			SupportsTimecodes: true,
+			Source:            SourceCustomLabel,
 		})
 	}
 	return result, nil

@@ -14,7 +14,8 @@ export function toolCardPlaceholderKind(
   if (toolName === "bash" || toolName === "shell") return "bash";
   if (toolName === "patch") return "patch";
   if (toolName === "output_iframe") return "output-iframe";
-  if (toolName === "openai_audio_transcription") return "audio";
+  if (toolName === "audio_transcription" || toolName === "openai_audio_transcription")
+    return "audio";
   if (
     toolName === "screenshot" ||
     toolName === "browser_take_screenshot" ||

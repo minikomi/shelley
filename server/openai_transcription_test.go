@@ -126,6 +126,9 @@ func TestOpenAIRecordingTranscriberWithTimestamps(t *testing.T) {
 			if got := r.FormValue("response_format"); got != "verbose_json" {
 				t.Errorf("Whisper response_format = %q", got)
 			}
+			if _, exists := r.MultipartForm.Value["prompt"]; exists {
+				t.Errorf("Whisper prompt = %#v, want omitted", r.MultipartForm.Value["prompt"])
+			}
 			if got := r.MultipartForm.Value["timestamp_granularities[]"]; len(got) != 2 || got[0] != "word" || got[1] != "segment" {
 				t.Errorf("Whisper timestamp granularities = %#v", got)
 			}

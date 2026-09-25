@@ -3865,7 +3865,10 @@ watch(
 watch(
   readyModelIds,
   (ready) => {
-    if (!selectedModel.value) return;
+    if (!selectedModel.value) {
+      applyModel(pickReadyModel(models.value));
+      return;
+    }
     if (ready.includes(selectedModel.value)) return;
     // Prefer the server's default (or any ready model) over showing nothing,
     // so a mere catalog reshuffle doesn't strand the composer.

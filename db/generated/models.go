@@ -81,3 +81,21 @@ type NotificationChannel struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
+
+type TranscriptionModel struct {
+	ModelID           string    `json:"model_id"`
+	DisplayName       string    `json:"display_name"`
+	Protocol          string    `json:"protocol"`
+	Provider          string    `json:"provider"`
+	Endpoint          string    `json:"endpoint"`
+	ApiKey            string    `json:"api_key"`
+	ModelName         string    `json:"model_name"`
+	SupportsPrompted  bool      `json:"supports_prompted"`
+	SupportsTimecodes bool      `json:"supports_timecodes"`
+	Managed           bool      `json:"managed"`
+	Source            string    `json:"source"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ApiProfile        string    `json:"api_profile"`
+	RequestEncoding   string    `json:"request_encoding"`
+}

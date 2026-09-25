@@ -623,7 +623,7 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 	}
 }
 
-func TestGetTranscriptionModelsIncludesIntegrationAndCustomRoutes(t *testing.T) {
+func TestGetTranscriptionModelsIncludesIntegrationAndSeparateCustomRoutes(t *testing.T) {
 	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
 	if err != nil {
 		t.Fatal(err)
@@ -633,12 +633,38 @@ func TestGetTranscriptionModelsIncludesIntegrationAndCustomRoutes(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := testDB.CreateModel(t.Context(), generated.CreateModelParams{
-		ModelID:      "custom-transcription-model",
-		DisplayName:  "Transcription Model",
+		ModelID:      "chat-model-with-transcription-wire-name",
+		DisplayName:  "Chat Model",
 		ProviderType: "openai",
-		Endpoint:     "https://api.example.com/v1",
-		ApiKey:       "transcription-key",
+		Endpoint:     "https://chat.example.com/v1",
+		ApiKey:       "chat-key",
 		ModelName:    "gpt-transcribe",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.CreateTranscriptionModel(t.Context(), generated.CreateTranscriptionModelParams{
+		ModelID:          "custom-transcription-model",
+		DisplayName:      "Transcription Model",
+		Protocol:         "openai",
+		Provider:         "openai",
+		Endpoint:         "https://api.example.com/v1/audio/transcriptions",
+		ApiKey:           "transcription-key",
+		ModelName:        "gpt-transcribe",
+		SupportsPrompted: true,
+		Source:           "custom",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.CreateTranscriptionModel(t.Context(), generated.CreateTranscriptionModelParams{
+		ModelID:           "deepgram-same-wire-name",
+		DisplayName:       "Deepgram Model",
+		Protocol:          "deepgram",
+		Provider:          "deepgram",
+		Endpoint:          "https://api.deepgram.com/v1/listen",
+		ApiKey:            "deepgram-key",
+		ModelName:         "gpt-transcribe",
+		SupportsTimecodes: true,
+		Source:            "custom",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -658,14 +684,17 @@ func TestGetTranscriptionModelsIncludesIntegrationAndCustomRoutes(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("transcription models = %+v, want integration and custom routes", got)
+	if len(got) != 3 {
+		t.Fatalf("transcription models = %+v, want managed, dedicated custom, and legacy custom-chat routes", got)
 	}
 	if got[0].Endpoint != "https://llm.int.exe.xyz/v1/audio/transcriptions" {
 		t.Fatalf("integration route = %+v", got[0])
 	}
 	if got[1].Endpoint != "https://api.example.com/v1/audio/transcriptions" || got[1].APIKey != "transcription-key" {
 		t.Fatalf("custom route = %+v", got[1])
+	}
+	if got[2].Endpoint != "https://chat.example.com/v1/audio/transcriptions" || got[2].APIKey != "chat-key" {
+		t.Fatalf("legacy custom-chat route = %+v", got[2])
 	}
 }
 
