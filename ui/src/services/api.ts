@@ -1192,6 +1192,144 @@ class CustomModelsApi {
 
 export const customModelsApi = new CustomModelsApi();
 
+// Transcription model management API. Catalog responses never include API keys;
+// updates may omit api_key to retain the server-side secret.
+export type TranscriptionRole = "transcript" | "timecoded";
+export type TranscriptionProtocol = "openai" | "deepgram";
+export type TranscriptionAPIProfile = "auto" | "openai-json" | "openai-whisper" | "openai-diarized";
+export type TranscriptionRequestEncoding = "auto" | "multipart" | "base64-json";
+
+export interface TranscriptionModel {
+  model_id: string;
+  display_name: string;
+  protocol: TranscriptionProtocol;
+  provider: string;
+  endpoint: string;
+  model_name: string;
+  api_profile: TranscriptionAPIProfile;
+  request_encoding: TranscriptionRequestEncoding;
+  supports_prompted: boolean;
+  supports_timecodes: boolean;
+  managed: boolean;
+  source: string;
+  has_api_key: boolean;
+}
+
+export interface TranscriptionDefault {
+  model_id: string;
+  available: boolean;
+}
+
+export interface TranscriptionModelCatalog {
+  models: TranscriptionModel[];
+  defaults: Partial<Record<TranscriptionRole, TranscriptionDefault>>;
+}
+
+export interface TranscriptionModelDraft {
+  model_id?: string;
+  display_name: string;
+  protocol: TranscriptionProtocol;
+  provider: string;
+  endpoint: string;
+  api_key?: string;
+  model_name: string;
+  api_profile: TranscriptionAPIProfile;
+  request_encoding: TranscriptionRequestEncoding;
+  supports_prompted: boolean;
+  supports_timecodes: boolean;
+}
+
+export interface TranscriptionCapabilityTestResult {
+  success: boolean;
+  message: string;
+  transcript?: string;
+  has_timecodes?: boolean;
+  timecodes?: unknown;
+}
+
+export interface TranscriptionModelTestResult {
+  model: TranscriptionModel;
+  results: Partial<Record<TranscriptionRole, TranscriptionCapabilityTestResult>>;
+}
+
+class TranscriptionModelsApi {
+  private baseUrl = "/api/transcription-models";
+
+  async list(): Promise<TranscriptionModelCatalog> {
+    const response = await fetch(this.baseUrl);
+    if (!response.ok) throw await responseError(response, "Failed to load transcription models");
+    return response.json();
+  }
+
+  async create(draft: TranscriptionModelDraft): Promise<TranscriptionModel> {
+    const response = await fetch(this.baseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    if (!response.ok) throw await responseError(response, "Failed to create transcription model");
+    return response.json();
+  }
+
+  async update(modelId: string, draft: TranscriptionModelDraft): Promise<TranscriptionModel> {
+    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(modelId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    if (!response.ok) throw await responseError(response, "Failed to update transcription model");
+    return response.json();
+  }
+
+  async duplicate(modelId: string): Promise<TranscriptionModel> {
+    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(modelId)}/duplicate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok)
+      throw await responseError(response, "Failed to duplicate transcription model");
+    return response.json();
+  }
+
+  async delete(modelId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/${encodeURIComponent(modelId)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) throw await responseError(response, "Failed to delete transcription model");
+  }
+
+  async setDefault(role: TranscriptionRole, modelId: string): Promise<TranscriptionDefault> {
+    const response = await fetch(`/api/transcription-model-defaults/${role}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!response.ok) throw await responseError(response, "Failed to select transcription model");
+    return response.json();
+  }
+
+  async test(
+    draft: TranscriptionModelDraft,
+    recording: Blob,
+    signal?: AbortSignal,
+  ): Promise<TranscriptionModelTestResult> {
+    const form = new FormData();
+    form.append("model", JSON.stringify(draft));
+    const extension = recording.type.includes("wav")
+      ? "wav"
+      : recording.type.includes("mp4")
+        ? "mp4"
+        : "webm";
+    form.append("file", recording, `sample.${extension}`);
+    const response = await fetch(`${this.baseUrl}/test`, { method: "POST", body: form, signal });
+    if (!response.ok) throw await responseError(response, "Failed to test transcription model");
+    return response.json();
+  }
+}
+
+export const transcriptionModelsApi = new TranscriptionModelsApi();
+
 // Notification channels API
 export interface NotificationChannelAPI {
   channel_id: string;

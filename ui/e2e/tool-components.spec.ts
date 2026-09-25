@@ -122,7 +122,7 @@ test.describe('Tool Component Verification', () => {
             {
               ID: 'audio-transcription',
               Type: 5,
-              ToolName: 'openai_audio_transcription',
+              ToolName: 'audio_transcription',
               ToolInput: {
                 file: '/tmp/shelley-uploads/planning-session.webm',
                 model: 'gpt-transcribe',

@@ -30,6 +30,7 @@ import (
 	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
 	"shelley.exe.dev/subpub"
+	"shelley.exe.dev/transcription"
 	"shelley.exe.dev/ui"
 )
 
@@ -381,17 +382,19 @@ type Server struct {
 	// streamPub is the server-wide subpub that fans out per-conversation
 	// events to every /api/stream2 subscriber. Events are tagged with their
 	// ConversationID so clients can route them.
-	streamPub         *subpub.SubPub[StreamResponse]
-	diskSpace         *diskSpaceMonitor
-	shutdownCh        chan struct{} // Signals background routines to stop
-	listenPort        int           // TCP port the server is listening on
-	terminals         *TerminalSessions
-	exitDelay         time.Duration
-	exitProcess       func(int)
-	mediaRun          mediaCommandRunner
-	transcriber       recordingTranscriber
-	transcriptionMu   sync.Mutex
-	transcriptionJobs map[string]transcriptionJob
+	streamPub               *subpub.SubPub[StreamResponse]
+	diskSpace               *diskSpaceMonitor
+	shutdownCh              chan struct{} // Signals background routines to stop
+	listenPort              int           // TCP port the server is listening on
+	terminals               *TerminalSessions
+	exitDelay               time.Duration
+	exitProcess             func(int)
+	mediaRun                mediaCommandRunner
+	transcriber             recordingTranscriber
+	transcriptionProviderMu sync.RWMutex
+	transcriptionProviders  map[transcription.Protocol]transcription.Provider
+	transcriptionMu         sync.Mutex
+	transcriptionJobs       map[string]transcriptionJob
 	// reflectionEmoji fetches the VM emoji for the favicon. Tests replace it to
 	// cover reflection-present and standalone behavior without ambient metadata.
 	reflectionEmoji           func(context.Context) string
@@ -450,6 +453,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		exitProcess:             os.Exit,
 		mediaRun:                runMediaCommand,
 		transcriber:             newOpenAIRecordingTranscriber(llmManager),
+		transcriptionProviders:  make(map[transcription.Protocol]transcription.Provider),
 		transcriptionJobs:       make(map[string]transcriptionJob),
 		reflectionEmoji:         cachedReflectionEmoji,
 		commitTourJobs:          make(map[string]*commitTourJob),
@@ -555,6 +559,18 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/api/custom-models", http.HandlerFunc(s.handleCustomModels))
 	mux.Handle("/api/custom-models/", http.HandlerFunc(s.handleCustomModel))
 	mux.Handle("/api/custom-models-test", http.HandlerFunc(s.handleTestModel))
+
+	// Transcription model catalog and independent role defaults.
+	mux.HandleFunc("GET /api/transcription-models", s.handleListTranscriptionModels)
+	mux.HandleFunc("POST /api/transcription-models", s.handleCreateTranscriptionModel)
+	mux.HandleFunc("POST /api/transcription-models/test", s.handleTestDraftTranscriptionModel)
+	mux.HandleFunc("GET /api/transcription-models/{model_id}", s.handleGetTranscriptionModel)
+	mux.HandleFunc("PUT /api/transcription-models/{model_id}", s.handleUpdateTranscriptionModel)
+	mux.HandleFunc("DELETE /api/transcription-models/{model_id}", s.handleDeleteTranscriptionModel)
+	mux.HandleFunc("POST /api/transcription-models/{model_id}/duplicate", s.handleDuplicateTranscriptionModel)
+	mux.HandleFunc("GET /api/transcription-model-defaults/{role}", s.handleGetTranscriptionDefault)
+	mux.HandleFunc("PUT /api/transcription-model-defaults/{role}", s.handleSetTranscriptionDefault)
+	mux.HandleFunc("DELETE /api/transcription-model-defaults/{role}", s.handleDeleteTranscriptionDefault)
 
 	// Notification channels API
 	mux.Handle("/api/notification-channels", http.HandlerFunc(s.handleNotificationChannels))

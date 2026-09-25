@@ -20,6 +20,7 @@ import (
 	"shelley.exe.dev/claudetool/browse"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/transcription"
 )
 
 const (
@@ -221,6 +222,17 @@ func validateTranscriptionCommand(message string) (mediaPath, context string, is
 // owned by the server, not by this request, so navigation or disconnect does
 // nothing.
 func (s *Server) queueTranscription(ctx context.Context, w http.ResponseWriter, manager *ConversationManager, mediaPath, transcriptionContext, modelID string) {
+	selectedModels, err := s.selectQueuedTranscriptionModels(ctx, false)
+	if err != nil {
+		var configurationError *transcriptionSelectionConfigurationError
+		if errors.As(err, &configurationError) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		s.logger.Error("Failed to resolve transcription defaults", "conversationID", manager.conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 	userData, err := marshalTurnUserData(ctx)
 	if err != nil {
 		s.logger.Error("Failed to marshal transcription user data", "conversationID", manager.conversationID, "error", err)
@@ -238,6 +250,7 @@ func (s *Server) queueTranscription(ctx context.Context, w http.ResponseWriter, 
 		Transcription: &db.QueuedTranscription{
 			MediaPath: mediaPath,
 			Context:   strings.TrimSpace(transcriptionContext),
+			Models:    selectedModels,
 		},
 	}
 	queued, err = manager.QueueTranscription(ctx, s, queued)
@@ -331,6 +344,21 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("inspect recording: %w", err))
 		return
 	}
+	selectedModels, err := s.completeQueuedTranscriptionModels(ctx, queued.Transcription.Models, media.HasVideo)
+	if err != nil {
+		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, err)
+		return
+	}
+	if !sameTranscriptionModelRefs(selectedModels, queued.Transcription.Models) {
+		updated, err := s.updateCurrentQueuedTranscription(context.Background(), parentID, queued.ID, attemptID, func(current *db.QueuedMessage) {
+			current.Transcription.Models = selectedModels
+		})
+		if err != nil {
+			s.logQueuedTranscriptionError("Failed to persist transcription model selection", parentID, queued.ID, err)
+			return
+		}
+		queued = updated
+	}
 	if media.HasVideo && queued.Transcription.ContactSheetPath == "" {
 		contactSheetPath, err := createVideoContactSheet(ctx, mediaPath, media, s.mediaRun)
 		if err != nil {
@@ -353,7 +381,7 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, fmt.Errorf("build transcription prompt: %w", err))
 		return
 	}
-	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt, media.HasVideo)
+	toolUseID, toolUse, err := transcriptionToolUse(mediaPath, prompt, media.HasVideo, queued.Transcription.Models)
 	if err != nil {
 		s.failQueuedTranscription(parentID, queued.ID, attemptID, nil, err)
 		return
@@ -374,9 +402,14 @@ func (s *Server) runQueuedTranscription(ctx context.Context, parentID string, qu
 	queued = updated
 
 	started := time.Now()
-	result, err := s.transcriber.Transcribe(ctx, mediaPath, prompt, media.HasVideo)
+	var result transcriptionResult
+	if len(queued.Transcription.Models) == 0 {
+		result, err = s.transcriber.Transcribe(ctx, mediaPath, prompt, media.HasVideo)
+	} else {
+		result, err = s.transcribeSelected(ctx, mediaPath, prompt, media.HasVideo, queued.Transcription.Models)
+	}
 	finished := time.Now()
-	toolResult, auditErr := transcriptionToolResult(toolUseID, result, started, finished, err)
+	toolResult, auditErr := transcriptionToolResult(toolUseID, result, started, finished, err, queued.Transcription.Models)
 	if auditErr != nil {
 		s.failQueuedTranscription(parentID, queued.ID, attemptID, audit, auditErr)
 		return
@@ -402,18 +435,52 @@ func (s *Server) queuedTranscriptionIsCurrent(ctx context.Context, parentID stri
 	return err == nil && validateCurrentQueuedTranscription(&current) == nil
 }
 
-func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, llm.Message, error) {
-	toolUseID := "transcription_" + uuid.NewString()
-	toolInputFields := map[string]any{
-		"file":            mediaPath,
-		"model":           textTranscription.Model,
-		"response_format": textTranscription.ResponseFormat,
-		"prompt_chars":    utf8.RuneCountInString(prompt),
+func sameTranscriptionModelRefs(a, b map[transcription.Role]transcription.ModelRef) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for role, ref := range a {
+		if b[role] != ref {
+			return false
+		}
+	}
+	return true
+}
+
+func transcriptionAuditModels(selected map[transcription.Role]transcription.ModelRef, timestamps bool) map[transcription.Role]transcription.ModelRef {
+	if len(selected) == 0 {
+		return nil
+	}
+	models := make(map[transcription.Role]transcription.ModelRef, 2)
+	if model, ok := selected[transcription.RoleTranscript]; ok {
+		models[transcription.RoleTranscript] = model
 	}
 	if timestamps {
-		toolInputFields["timestamps_model"] = timestampTranscription.Model
-		toolInputFields["timestamps_response_format"] = timestampTranscription.ResponseFormat
-		toolInputFields["timestamp_granularities"] = timestampTranscription.TimestampGranularities
+		if model, ok := selected[transcription.RoleTimecoded]; ok {
+			models[transcription.RoleTimecoded] = model
+		}
+	}
+	return models
+}
+
+func transcriptionToolUse(mediaPath, prompt string, timestamps bool, selected map[transcription.Role]transcription.ModelRef) (string, llm.Message, error) {
+	toolUseID := "transcription_" + uuid.NewString()
+	toolName := "audio_transcription"
+	toolInputFields := map[string]any{
+		"file":         mediaPath,
+		"prompt_chars": utf8.RuneCountInString(prompt),
+	}
+	if len(selected) == 0 {
+		toolName = "openai_audio_transcription"
+		toolInputFields["model"] = textTranscription.Model
+		toolInputFields["response_format"] = textTranscription.ResponseFormat
+		if timestamps {
+			toolInputFields["timestamps_model"] = timestampTranscription.Model
+			toolInputFields["timestamps_response_format"] = timestampTranscription.ResponseFormat
+			toolInputFields["timestamp_granularities"] = timestampTranscription.TimestampGranularities
+		}
+	} else {
+		toolInputFields["models"] = transcriptionAuditModels(selected, timestamps)
 	}
 	toolInput, err := json.Marshal(toolInputFields)
 	if err != nil {
@@ -425,26 +492,46 @@ func transcriptionToolUse(mediaPath, prompt string, timestamps bool) (string, ll
 		Content: []llm.Content{{
 			ID:        toolUseID,
 			Type:      llm.ContentTypeToolUse,
-			ToolName:  "openai_audio_transcription",
+			ToolName:  toolName,
 			ToolInput: toolInput,
 		}},
 	}, nil
 }
 
-func transcriptionToolResult(toolUseID string, result transcriptionResult, started, finished time.Time, failure error) (llm.Message, error) {
+func transcriptionToolResult(toolUseID string, result transcriptionResult, started, finished time.Time, failure error, selected map[transcription.Role]transcription.ModelRef) (llm.Message, error) {
 	toolOutput := map[string]any{
 		"duration_ms": finished.Sub(started).Milliseconds(),
 	}
+	requestedTimecodes := result.TimestampsModel != ""
 	if failure != nil {
-		var modelError *transcriptionModelError
-		if errors.As(failure, &modelError) {
-			toolOutput["model"] = modelError.Model
+		var modelError *transcription.ModelError
+		if errors.As(failure, &modelError) && modelError.Role == transcription.RoleTimecoded {
+			requestedTimecodes = true
+		}
+	}
+	if len(selected) > 0 {
+		toolOutput["models"] = transcriptionAuditModels(selected, requestedTimecodes)
+	}
+	if failure != nil {
+		if len(selected) == 0 {
+			var modelError *transcriptionModelError
+			if errors.As(failure, &modelError) {
+				toolOutput["model"] = modelError.Model
+			}
+		} else {
+			var modelError *transcription.ModelError
+			if errors.As(failure, &modelError) {
+				toolOutput["failed_role"] = modelError.Role
+				toolOutput["failed_model_id"] = modelError.ModelID
+			}
 		}
 		toolOutput["error"] = queuedTranscriptionError(failure)
 	} else {
-		toolOutput["model"] = result.Model
+		if len(selected) == 0 {
+			toolOutput["model"] = result.Model
+		}
 		toolOutput["text"] = result.Text
-		if result.TimestampsModel != "" {
+		if result.TimestampsModel != "" && len(selected) == 0 {
 			toolOutput["timestamps_model"] = result.TimestampsModel
 		}
 		if result.TimestampsPath != "" {

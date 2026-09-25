@@ -45,6 +45,7 @@ func TestTranscriptionToolResultAttributesModelFailure(t *testing.T) {
 		now,
 		now,
 		&transcriptionModelError{Model: openAITimestampedTranscriptionModel, Err: errors.New("failed")},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
