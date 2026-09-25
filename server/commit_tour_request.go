@@ -830,6 +830,15 @@ func (s *Server) handleCommitTourCommand(ctx context.Context, w http.ResponseWri
 		return true
 	}
 	if started {
+		shown, err := s.lastMessageShowsCommit(ctx, conversation.ConversationID, target.Hash)
+		if err != nil {
+			s.logger.Error("Failed to inspect last message for commit tour", "conversationID", conversation.ConversationID, "hash", target.Hash, "error", err)
+			http.Error(w, "failed to record commit tour request", http.StatusInternalServerError)
+			return true
+		}
+		started = !shown
+	}
+	if started {
 		marker, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
 			ConversationID: conversation.ConversationID,
 			Type:           db.MessageTypeGitInfo,
@@ -855,4 +864,33 @@ func (s *Server) handleCommitTourCommand(ctx context.Context, w http.ResponseWri
 	}
 	json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "tour": status})
 	return true
+}
+
+// lastMessageShowsCommit reports whether the conversation's most recent
+// visible message is a gitinfo line for hash. That line already renders the
+// tour's build state, so a separate tour marker would just repeat it.
+func (s *Server) lastMessageShowsCommit(ctx context.Context, conversationID, hash string) (bool, error) {
+	var tail []generated.Message
+	err := s.db.Queries(ctx, func(q *generated.Queries) error {
+		var err error
+		tail, err = q.ListMessagesTail(ctx, generated.ListMessagesTailParams{ConversationID: conversationID, Limit: 1})
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(tail) == 0 {
+		return false, nil
+	}
+	last := tail[len(tail)-1]
+	if last.Type != string(db.MessageTypeGitInfo) || last.UserData == nil {
+		return false, nil
+	}
+	var data struct {
+		Commit string `json:"commit"`
+	}
+	if err := json.Unmarshal([]byte(*last.UserData), &data); err != nil {
+		return false, err
+	}
+	return data.Commit == hash, nil
 }
