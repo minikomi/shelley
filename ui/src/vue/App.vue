@@ -143,6 +143,12 @@
             commandPaletteOpen = false;
           }
         "
+        @open-integrations-modal="
+          () => {
+            integrationsModalOpen = true;
+            commandPaletteOpen = false;
+          }
+        "
         @open-notifications-modal="
           () => {
             notificationsModalOpen = true;
@@ -170,6 +176,22 @@
           }
         "
         @models-changed="modelsRefreshTrigger++"
+      />
+
+      <IntegrationsModal
+        :is-open="integrationsModalOpen"
+        @open-models-modal="
+          () => {
+            integrationsModalOpen = false;
+            modelsModalOpen = true;
+          }
+        "
+        @close="
+          () => {
+            integrationsModalOpen = false;
+            focusMessageInputIfUnfocused();
+          }
+        "
       />
 
       <NotificationsModal
@@ -227,6 +249,7 @@ import { comboMatches, MENU_COMBOS } from "../utils/menuShortcuts";
 import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import ModelsModal from "./components/ModelsModal.vue";
+import IntegrationsModal from "./components/IntegrationsModal.vue";
 import NotificationsModal from "./components/NotificationsModal.vue";
 import FeatureFlagsModal from "./components/FeatureFlagsModal.vue";
 import FileFinderModal from "./components/FileFinderModal.vue";
@@ -341,6 +364,7 @@ const diffViewerTrigger = ref(0);
 const gitGraphTrigger = ref(0);
 const terminalTrigger = ref(0);
 const modelsModalOpen = ref(false);
+const integrationsModalOpen = ref(false);
 const notificationsModalOpen = ref(false);
 const featureFlagsModalOpen = ref(false);
 // Fuzzy file finder (Cmd/Ctrl+P) + the generic editor it opens.
