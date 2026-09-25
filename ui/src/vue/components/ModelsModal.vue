@@ -19,12 +19,19 @@
     <template #title-right>
       <div class="models-header-actions">
         <Button
-          :label="refreshing ? t('refreshingModels') : t('refreshModels')"
+          class="models-refresh-button"
           severity="secondary"
           size="small"
+          :aria-label="refreshing ? t('refreshingModels') : t('refreshModels')"
+          v-tooltip.bottom="refreshing ? t('refreshingModels') : t('refreshModels')"
           :disabled="refreshing || loading"
           @click="handleRefreshModels"
-        />
+        >
+          <span aria-hidden="true">↻</span>
+          <span class="models-refresh-label">{{
+            refreshing ? t("refreshingModels") : t("refreshModels")
+          }}</span>
+        </Button>
       </div>
     </template>
 
@@ -59,11 +66,16 @@
           </button>
         </div>
         <Button
+          class="models-add-button"
           size="small"
           :disabled="activeTab === 'models' ? loading : transcriptionLoading"
           @click="handleAddForActiveTab"
-          >+ {{ t("addModel") }}</Button
+          :aria-label="`+ ${t('addModel')}`"
         >
+          <span aria-hidden="true">+</span>
+          <span class="models-add-label-desktop">{{ t("addModel") }}</span>
+          <span class="models-add-label-mobile">Add</span>
+        </Button>
       </div>
 
       <section
@@ -114,6 +126,20 @@
             <template #body="{ data }">
               <span class="models-cell-name">{{ data.name }}</span>
               <span v-for="tag in data.tags" :key="tag" class="models-cell-tag">{{ tag }}</span>
+              <span class="models-mobile-meta models-cell-mono">{{ data.modelId }}</span>
+              <span v-if="data.endpoint" class="models-mobile-meta models-cell-endpoint">{{
+                data.endpoint
+              }}</span>
+              <span class="models-mobile-meta models-mobile-properties">
+                <span>{{ data.apiShape || "API shape unknown" }}</span>
+                <span
+                  :class="data.supportsImages ? 'models-table-image-yes' : 'models-table-image-no'"
+                  >Images: {{ data.supportsImages ? "Supported" : "Not supported"
+                  }}<span v-if="data.imageAuto" class="models-table-image-auto-tag">{{
+                    t("imageSupportAutoShort")
+                  }}</span></span
+                >
+              </span>
             </template>
           </Column>
           <Column :header="t('columnModelId')" field="modelId">
@@ -224,7 +250,12 @@
           </template>
           <Column header="Name" field="display_name"
             ><template #body="{ data }"
-              ><span class="models-cell-name">{{ data.display_name }}</span></template
+              ><span class="models-cell-name">{{ data.display_name }}</span>
+              <span class="models-mobile-meta models-cell-mono">{{ data.model_name }}</span>
+              <span class="models-mobile-meta models-cell-endpoint">{{ data.provider }}</span>
+              <span class="models-mobile-meta models-cell-muted">
+                Context prompts: {{ data.supports_prompted ? "Supported" : "Not supported" }}
+              </span></template
             ></Column
           >
           <Column header="Model ID" field="model_name"
@@ -243,7 +274,9 @@
               ></template
             ></Column
           >
-          <Column header="Transcript" class="transcription-capability-column"
+          <Column
+            header="Transcript"
+            class="transcription-capability-column transcription-transcript-column"
             ><template #body="{ data }"
               ><input
                 type="radio"
@@ -253,22 +286,33 @@
                 :aria-label="`Use ${data.display_name} for transcript generation`"
                 @change="selectDefault(data.model_id, 'transcript')" /></template
           ></Column>
-          <Column header="Context prompts" class="transcription-capability-column"
+          <Column
+            header="Context prompts"
+            class="transcription-capability-column transcription-context-column"
             ><template #body="{ data }"
               ><span :class="{ 'models-cell-muted': !data.supports_prompted }">{{
                 data.supports_prompted ? "Supported" : "Not supported"
               }}</span></template
-          ></Column>
-          <Column header="Timecodes" class="transcription-capability-column"
+            ></Column
+          >
+          <Column
+            header="Timecodes"
+            class="transcription-capability-column transcription-timecodes-column"
             ><template #body="{ data }"
               ><input
+                v-if="canUseForRole(data, 'timecoded')"
                 type="radio"
                 name="timecoded-transcription-model"
                 :checked="isSelected(data, 'timecoded')"
-                :disabled="!canUseForRole(data, 'timecoded') || selectingRole !== null"
+                :disabled="selectingRole !== null"
                 :aria-label="`Use ${data.display_name} for timecoded transcription`"
-                @change="selectDefault(data.model_id, 'timecoded')" /></template
-          ></Column>
+                @change="selectDefault(data.model_id, 'timecoded')"
+              />
+              <span v-else class="transcription-role-unsupported" title="Not supported"
+                >—</span
+              ></template
+            ></Column
+          >
           <Column header="Actions" class="models-col-actions"
             ><template #body="{ data }"
               ><div v-if="!data.managed" class="models-cell-actions">
@@ -295,7 +339,8 @@
                   v-tooltip.top="t('delete_')"
                   :aria-label="t('delete_')"
                   @click="deleteTranscription(data.model_id)"
-                  ><ModelActionIcon kind="delete" /></Button></div></template
+                  ><ModelActionIcon kind="delete"
+                /></Button></div></template
           ></Column>
         </DataTable>
       </section>

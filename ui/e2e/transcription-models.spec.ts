@@ -90,7 +90,9 @@ async function fillTestableDeepgramDraft(form: import("@playwright/test").Locato
   await form.getByLabel("API Key").fill("draft-secret");
 }
 
-test("selects every model for Transcript and shows Context prompts capability", async ({ page }) => {
+test("selects every model for Transcript and shows Context prompts capability", async ({
+  page,
+}) => {
   const selectedModelIds: string[] = [];
   await mockCatalogRoutes(page);
   await page.route("**/api/transcription-model-defaults/transcript", async (route) => {
@@ -118,19 +120,20 @@ test("selects every model for Transcript and shows Context prompts capability", 
   await expect(deepgram.getByLabel("Use Deepgram Nova 3 for transcript generation")).toBeEnabled();
   await expect(base64.getByLabel("Use Fish Audio for transcript generation")).toBeEnabled();
   await expect(whisper.getByLabel("Use Custom Whisper for transcript generation")).toBeChecked();
-  await expect(whisper.getByLabel("Use Custom Whisper for timecoded transcription")).toBeDisabled();
+  await expect(whisper.getByLabel("Use Custom Whisper for timecoded transcription")).toHaveCount(0);
+  await expect(whisper.locator(".transcription-role-unsupported")).toHaveText("—");
 
   await deepgram.getByLabel("Use Deepgram Nova 3 for transcript generation").check();
   await base64.getByLabel("Use Fish Audio for transcript generation").check();
   await whisper.getByLabel("Use Custom Whisper for transcript generation").check();
-  await expect.poll(() => selectedModelIds).toEqual([
-    "managed-deepgram",
-    "custom-base64",
-    "custom-openai",
-  ]);
+  await expect
+    .poll(() => selectedModelIds)
+    .toEqual(["managed-deepgram", "custom-base64", "custom-openai"]);
 });
 
-test("resets unsupported Context prompts and submits a both-false base64 draft", async ({ page }) => {
+test("resets unsupported Context prompts and submits a both-false base64 draft", async ({
+  page,
+}) => {
   let submitted: Record<string, unknown> | undefined;
   await mockCatalogRoutes(page);
   await page.route("**/api/transcription-models", async (route) => {
@@ -141,7 +144,9 @@ test("resets unsupported Context prompts and submits a both-false base64 draft",
   const form = await openTranscriptionForm(page);
 
   await form.getByLabel("Model ID").fill("gpt-transcribe");
-  await expect(form).toContainText("Detected: standard transcription with optional Context prompts.");
+  await expect(form).toContainText(
+    "Detected: standard transcription with optional Context prompts.",
+  );
   await expect(form.getByLabel("Context prompts")).toBeChecked();
   await expect(form.getByLabel("Context prompts")).toBeEnabled();
   await expect(form.getByLabel("Timecodes")).not.toBeChecked();
@@ -158,11 +163,13 @@ test("resets unsupported Context prompts and submits a both-false base64 draft",
   await form.getByLabel("Name").fill("Fish Audio draft");
   await form.getByLabel("API Key").fill("draft-secret");
   await form.getByRole("button", { name: "Add Model" }).click();
-  await expect.poll(() => submitted).toMatchObject({
-    supports_prompted: false,
-    supports_timecodes: false,
-    model_name: "fish-audio/transcribe-1",
-  });
+  await expect
+    .poll(() => submitted)
+    .toMatchObject({
+      supports_prompted: false,
+      supports_timecodes: false,
+      model_name: "fish-audio/transcribe-1",
+    });
 });
 
 test("shows Deepgram transcript and context prompt behavior in the form", async ({ page }) => {
@@ -180,7 +187,9 @@ test("shows Deepgram transcript and context prompt behavior in the form", async 
   );
 });
 
-test("resets protocol defaults for new models and preserves saved models on edit", async ({ page }) => {
+test("resets protocol defaults for new models and preserves saved models on edit", async ({
+  page,
+}) => {
   await mockCatalogRoutes(page);
   const form = await openTranscriptionForm(page);
 
