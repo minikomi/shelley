@@ -4,5 +4,11 @@ export type RecordingMode = "microphone" | "screen";
 export interface RecordingDestination {
   conversationId: string;
   complete: (path: string, context: string) => Promise<void>;
-  returnTo: () => Promise<void>;
+  // stillWanted is checked after the lookup, before navigating.
+  returnTo: (stillWanted: () => boolean) => Promise<void>;
+}
+
+export interface RecordingPreparation {
+  resolve: () => Promise<RecordingDestination>;
+  release: () => void;
 }

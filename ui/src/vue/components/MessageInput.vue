@@ -19,6 +19,7 @@
          (e: "draft-change", value: string): void
          (e: "draft-send-started"): void
          (e: "draft-cleared"): void
+         (e: "recording-unsent", path: string, error: unknown): void
        Because send/queue are awaited in React (onSend/onQueue return
        Promises), the parent passes async handlers via the `onSend`/`onQueue`
        *function props* below instead of pure emits — Vue emits can't be
@@ -48,7 +49,8 @@
           type="button"
           class="recording-return"
           data-testid="recording-return-button"
-          @click="recordingSubmission?.destination?.returnTo()"
+          :disabled="!!recordingSubmission?.destinationError"
+          @click="returnToRecording"
         >
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 10-5-5 5-5M4 5h10a6 6 0 0 1 0 12h-3" />
@@ -57,9 +59,13 @@
         </button>
         <RecordingPanel
           :initial-mode="recordingSubmission!.mode"
+          :initial-microphone="recordingSubmission?.microphone"
           :initial-screen="recordingSubmission?.screen"
           :preserved-text="recordingSubmission?.message"
-          :on-complete="handleRecordingComplete"
+          :destination-error="recordingSubmission?.destinationError"
+          :submitting="recordingSubmission?.submitting"
+          :on-complete="completionFor(recordingSubmission!)"
+          :on-upload-failure="reportUnsentRecording"
           @close="closeRecording"
         />
       </div>
@@ -317,28 +323,17 @@
           </svg>
         </button>
         <button
-          v-if="recordingSubmission && !recordingActive"
-          type="button"
-          class="btn btn-secondary"
-          data-testid="recording-pending-cancel-button"
-          @click="closeRecording"
-        >
-          {{ t("cancel") }}
-        </button>
-        <button
           v-if="mediaRecordingAvailable"
           type="button"
           :disabled="!canRecordAudio"
-          :aria-busy="!!recordingSubmission && !recordingActive"
           class="message-voice-btn"
           :aria-label="t('recordingTitle')"
           :title="`${t('recordingTitle')} (${menuShortcutLabel('recordAudio')})`"
           data-testid="voice-button"
           @click="beginRecording('microphone')"
         >
-          <span v-if="recordingSubmission && !recordingActive" class="spinner spinner-small" />
           <svg
-            v-else-if="screenRecordingAvailable"
+            v-if="screenRecordingAvailable"
             fill="none"
             stroke="currentColor"
             stroke-width="1.8"
@@ -510,7 +505,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, useId, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowReactive, shallowRef, useId, watch } from "vue";
 import { useFileCompletion } from "../composables/fileCompletion";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
@@ -525,7 +520,7 @@ import {
 } from "./composerDispatch";
 import { isImeComposing } from "../../utils/imeComposing";
 import RecordingPanel from "./RecordingPanel.vue";
-import type { RecordingDestination, RecordingMode } from "./recordingDestination";
+import type { RecordingDestination, RecordingMode, RecordingPreparation } from "./recordingDestination";
 import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
 import { menuShortcutLabel } from "../../utils/menuShortcuts";
 import {
@@ -554,8 +549,8 @@ const props = withDefaults(
   defineProps<{
     /** Async send handler (awaited). Mirrors React's onSend prop. */
     onSend: (message: string) => Promise<void> | void;
-    /** Reserve the original destination before acquiring media. */
-    onStartRecording: (text: string) => Promise<RecordingDestination>;
+    /** Bind the original destination; the recorder starts while it resolves. */
+    onStartRecording: (text: string) => RecordingPreparation;
     /** Archived conversations hide the composer, but not an active recording. */
     recordingInlineAvailable?: boolean;
     /** Async queue handler (awaited). Mirrors React's onQueue prop. */
@@ -618,6 +613,7 @@ const emit = defineEmits<{
   (e: "draft-change", value: string): void;
   (e: "draft-send-started"): void;
   (e: "draft-cleared"): void;
+  (e: "recording-unsent", path: string, error: unknown): void;
 }>();
 
 const { t } = useI18n();
@@ -631,21 +627,32 @@ const sendSelectedLevel = ref<ContextUsageLevel>("");
 const message = ref(props.draftSeed?.value ?? "");
 type RecordingSubmission = {
   mode: RecordingMode;
+  microphone?: Promise<MediaStream>;
   screen?: Promise<MediaStream>;
-  destination?: RecordingDestination;
+  preparation: RecordingPreparation;
+  destination: Promise<RecordingDestination>;
+  destinationError?: string;
+  submitting?: boolean;
+  // The recorder renders inline in its origin until the destination resolves,
+  // unless the user has navigated away meanwhile.
+  origin: string | null;
+  detached?: boolean;
+  conversationId?: string;
   message: string;
   context: string;
   attachmentIDs: string[];
   attachmentSession: AttachmentSession;
 };
 const recordingSubmission = shallowRef<RecordingSubmission | null>(null);
-const recordingActive = computed(() => !!recordingSubmission.value?.destination);
-const recordingFloating = computed(
-  () =>
-    recordingActive.value &&
-    (props.conversationId !== recordingSubmission.value?.destination?.conversationId ||
-      !props.recordingInlineAvailable),
-);
+let disposed = false;
+const recordingActive = computed(() => !!recordingSubmission.value);
+const recordingFloating = computed(() => {
+  const submission = recordingSubmission.value;
+  if (!submission) return false;
+  if (!props.recordingInlineAvailable) return true;
+  const target = submission.conversationId ?? (submission.detached ? undefined : submission.origin);
+  return (props.conversationId ?? null) !== target;
+});
 // setMessage mirrors the React controlled-value path: surfaces every change via
 // draft-change so the parent can persist it.
 function setMessage(next: string | ((prev: string) => string)) {
@@ -721,75 +728,121 @@ const canRecordScreen = computed(() => canRecordAudio.value && screenRecordingAv
 
 defineExpose({ canRecordAudio, canRecordScreen, beginRecording });
 
-// Before the panel mounts, the composer owns the requested screen stream.
-function releasePendingScreen(submission: RecordingSubmission) {
-  if (submission.destination || !submission.screen) return;
-  void submission.screen.then(
-    (stream) => stream.getTracks().forEach((track) => track.stop()),
-    () => {}, // A rejected picker owns no media.
-  );
-  submission.screen = undefined;
-}
-
-async function beginRecording(mode: RecordingMode) {
+function beginRecording(mode: RecordingMode) {
   if (!(mode === "screen" ? canRecordScreen.value : canRecordAudio.value)) return;
-  const submission: RecordingSubmission = {
+  // Acquire media in the initiating key/click handler, before draft I/O.
+  // The panel owns the stream and presents acquisition failures.
+  const microphone =
+    mode === "microphone"
+      ? navigator.mediaDevices.getUserMedia({ audio: true })
+      : undefined;
+  const screen =
+    mode === "screen"
+      ? navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      : undefined;
+  void microphone?.catch(() => {});
+  void screen?.catch(() => {});
+  // The recorder starts while the destination is still being created.
+  const preparation = props.onStartRecording(message.value);
+  const submission = shallowReactive<RecordingSubmission>({
     mode,
+    microphone,
+    screen,
+    preparation,
+    destination: preparation.resolve(),
+    origin: props.conversationId ?? null,
     message: message.value,
     context: composeMessageWithAttachments(message.value),
     attachmentIDs: readyAttachments.value.map(({ id }) => id),
     attachmentSession: activeAttachmentSession,
-  };
+  });
   recordingSubmission.value = submission;
-  try {
-    if (mode === "screen") {
-      // Keep the picker in the initiating key/click handler, before draft I/O.
-      submission.screen = navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      // The panel presents picker failures after the destination is ready.
-      void submission.screen.catch(() => {});
-    }
-    const destination = await props.onStartRecording(submission.message);
-    if (recordingSubmission.value !== submission) {
-      releasePendingScreen(submission);
-      return;
-    }
-    // A new draft may have finished creating after navigation away from /new.
-    if (attachmentSessions.get(null) === submission.attachmentSession) {
-      attachmentSessions.delete(null);
-    }
-    attachmentSessions.set(destination.conversationId, submission.attachmentSession);
-    recordingSubmission.value = { ...submission, destination };
-  } catch {
-    // The parent surfaces destination-creation errors. Release any selected screen.
-    releasePendingScreen(submission);
-    if (recordingSubmission.value === submission) recordingSubmission.value = null;
-    if (![...attachmentSessions.values()].includes(submission.attachmentSession)) {
-      clearAttachments(submission.attachmentSession);
-    }
+  watchRecordingDestination(submission);
+}
+
+function watchRecordingDestination(submission: RecordingSubmission) {
+  const destination = submission.destination;
+  destination.then(
+    (resolved) => {
+      if (recordingSubmission.value !== submission) return;
+      adoptAttachmentSession(submission, resolved.conversationId);
+      submission.conversationId = resolved.conversationId;
+    },
+    (error) => {
+      if (recordingSubmission.value !== submission) return;
+      submission.destinationError = error instanceof Error ? error.message : String(error);
+    },
+  );
+}
+
+// A new draft may have finished creating after navigation away from /new.
+function adoptAttachmentSession(submission: RecordingSubmission, conversationId: string) {
+  if (attachmentSessions.get(null) === submission.attachmentSession) {
+    attachmentSessions.delete(null);
+  }
+  if (!attachmentSessions.has(conversationId)) {
+    attachmentSessions.set(conversationId, submission.attachmentSession);
   }
 }
 
-function handleRecordingComplete(path: string) {
+function returnToRecording() {
   const submission = recordingSubmission.value;
-  if (!submission?.destination) throw new Error("recording completed without a destination");
-  // On failure retain the source draft and attachments. The parent surfaces
-  // the uploaded media path and original destination for recovery.
-  const destination = submission.destination;
-  void destination.complete(path, submission.context)
-    .then(() => {
-      if (props.conversationId === destination.conversationId && message.value === submission.message) {
-        setMessage("");
-      }
-      for (const id of submission.attachmentIDs) {
-        removeAttachment(id, submission.attachmentSession);
-      }
-    })
-    .catch(() => {});
+  // A recorder cancelled while Return is in flight must not navigate later.
+  const stillWanted = () => recordingSubmission.value === submission;
+  void submission?.destination.then(
+    (resolved) => {
+      if (stillWanted()) return resolved.returnTo(stillWanted);
+    },
+    () => {},
+  );
+}
+
+function completionFor(submission: RecordingSubmission) {
+  return (path: string, retry: boolean) => handleRecordingComplete(submission, path, retry);
+}
+
+async function handleRecordingComplete(submission: RecordingSubmission, path: string, retry: boolean) {
+  if (retry && submission.destinationError) {
+    submission.destinationError = undefined;
+    submission.destination = submission.preparation.resolve();
+    watchRecordingDestination(submission);
+  }
+  let destination: RecordingDestination;
+  try {
+    destination = await submission.destination;
+  } catch (error) {
+    if (recordingSubmission.value === submission) reportUnsentRecording(path, error);
+    throw error;
+  }
+  if (recordingSubmission.value !== submission) {
+    throw new DOMException("Recording cancelled", "AbortError");
+  }
+  submission.submitting = true;
+  try {
+    await destination.complete(path, submission.context);
+  } finally {
+    submission.submitting = false;
+  }
+  if (disposed) return;
+  if (props.conversationId === destination.conversationId && message.value === submission.message) {
+    setMessage("");
+  }
+  for (const id of submission.attachmentIDs) {
+    removeAttachment(id, submission.attachmentSession);
+  }
+}
+
+function reportUnsentRecording(path: string, error: unknown) {
+  emit("recording-unsent", path, error);
 }
 
 async function closeRecording() {
   const wasInline = !recordingFloating.value;
-  if (recordingSubmission.value) releasePendingScreen(recordingSubmission.value);
+  const submission = recordingSubmission.value;
+  submission?.preparation.release();
+  if (submission && ![...attachmentSessions.values()].includes(submission.attachmentSession)) {
+    clearAttachments(submission.attachmentSession);
+  }
   recordingSubmission.value = null;
   await nextTick();
   if (wasInline) textareaRef.value?.focus();
@@ -893,6 +946,11 @@ watch(
       attachmentSessions.delete(oldId ?? null);
       attachmentSessions.set(key, activeAttachmentSession);
       return;
+    }
+
+    const recording = recordingSubmission.value;
+    if (recording && !recording.conversationId && !recording.detached) {
+      recording.detached = true;
     }
 
     if (oldId == null && newId != null) {
@@ -1535,7 +1593,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  if (recordingSubmission.value) releasePendingScreen(recordingSubmission.value);
+  disposed = true;
+  const sessions = new Set(attachmentSessions.values());
+  if (recordingSubmission.value) sessions.add(recordingSubmission.value.attachmentSession);
+  recordingSubmission.value?.preparation.release();
   recordingSubmission.value = null;
   window.removeEventListener("resize", handleResize);
   if (typeof window !== "undefined" && window.visualViewport) {
@@ -1544,6 +1605,6 @@ onUnmounted(() => {
   document.removeEventListener("mousedown", onQueueMenuOutside);
   document.removeEventListener("mousedown", onSlashMenuOutside);
   document.removeEventListener("mousedown", onFileMenuOutside);
-  for (const session of new Set(attachmentSessions.values())) clearAttachments(session);
+  for (const session of sessions) clearAttachments(session);
 });
 </script>

@@ -147,6 +147,8 @@ export const vi: TranslationKeys = {
   recordingStopping: "Đang hoàn tất bản ghi…",
   recordingTooShort: "Bản ghi quá ngắn để mã hóa. Vui lòng thử lại.",
   recordingFailed: "Ghi không thành công",
+  recordingRetained: "Bản ghi được giữ lại",
+  recordingDiscard: "Bỏ bản ghi",
   recordingInvalidResponse: "Máy chủ ghi trả về phản hồi không hợp lệ",
   recordingScreenEnded: "Chia sẻ màn hình đã kết thúc trước khi bắt đầu ghi",
   recordingScreenAction: "Ghi màn hình/cửa sổ",

@@ -389,6 +389,7 @@
       @draft-change="handleDraftChange"
       @draft-send-started="handleDraftSendStarted"
       @draft-cleared="handleDraftCleared"
+      @recording-unsent="handleRecordingUnsent"
     >
       <template v-if="statusSlotInline" #status>
         <ChatStatusContent v-bind="statusContentProps" />
@@ -590,7 +591,7 @@ import {
 import { SELECTED_MODEL_KEY, pickReadyModel, storedSelectedModel } from "./selectedModel";
 
 import MessageInput from "./MessageInput.vue";
-import type { RecordingDestination, RecordingMode } from "./recordingDestination";
+import type { RecordingMode, RecordingPreparation } from "./recordingDestination";
 import ConversationTOC from "./ConversationTOC.vue";
 import ModelBar from "./ModelBar.vue";
 import SystemPromptView from "./SystemPromptView.vue";
@@ -2852,58 +2853,89 @@ const forkHandler = (messageId: string) => {
 };
 
 async function submitTranscriptionCommand(path: string, transcriptionContext: string) {
+  const preparation = prepareRecording(inflightDraft?.text ?? draftText);
   try {
     sending.value = true;
     error.value = null;
-    const destination = await prepareRecording(inflightDraft?.text ?? draftText);
+    const destination = await preparation.resolve();
     await destination.complete(path, transcriptionContext);
   } finally {
+    preparation.release();
     sending.value = false;
   }
 }
 
-async function prepareRecording(text: string): Promise<RecordingDestination> {
-  error.value = null;
-  // Snapshot every submission option before awaiting draft creation. The user
-  // can navigate and edit another composer while this recording is alive.
+function prepareRecording(text: string): RecordingPreparation {
+  const origin = props.conversationId;
+  const sessionVersion = draftSessionVersion;
+  const draft = { text, newSessionVersion: newDraftSessionVersion };
   const isDraft = !props.conversationId || !!props.currentConversation?.is_draft;
   const options = {
     model: selectedModel.value,
     cwd: isDraft ? selectedCwd.value || undefined : undefined,
     conversation_options: isDraft ? buildConversationOptions() : undefined,
   };
-  try {
-    const conversationId = props.conversationId || await ensureDraftConversation(text);
-    return {
-      conversationId,
-      async returnTo() {
-        try {
-          const conversation = await api.getConversationBySlug(conversationId);
-          if (!conversation) throw new Error("The recording's conversation no longer exists.");
-          props.onSelectConversation?.(conversation);
-        } catch (err) {
-          error.value = err instanceof Error ? err.message : String(err);
+  const creation = { model: options.model, cwd: options.cwd };
+  let savedId = origin;
+  let accepted = false;
+  // The recorder owns retries until it closes; autosave must not create a
+  // competing destination after a failed attempt.
+  if (!origin) draftAutosave.cancel();
+
+  return {
+    async resolve() {
+      error.value = null;
+      try {
+        if (!savedId) {
+          savedId = await (sessionVersion === draftSessionVersion
+            ? ensureDraftConversation(text, creation)
+            : createDraftForSession(draft, sessionVersion, creation));
         }
-      },
-      async complete(path, context) {
-        const suffix = context.trim();
-        try {
-          await api.sendMessage(conversationId, {
-            message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
-            ...options,
-          });
-          clearSubmittedDraft(conversationId, text);
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
-          error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
-          throw err;
-        }
-      },
-    };
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
-    throw err;
-  }
+        const conversationId = savedId;
+        return {
+          conversationId,
+          async returnTo(stillWanted) {
+            try {
+              const conversation = await api.getConversationBySlug(conversationId);
+              if (!conversation) throw new Error("The recording's conversation no longer exists.");
+              if (stillWanted()) props.onSelectConversation?.(conversation);
+            } catch (err) {
+              if (stillWanted()) error.value = err instanceof Error ? err.message : String(err);
+            }
+          },
+          async complete(path, context) {
+            error.value = null;
+            const suffix = context.trim();
+            try {
+              await api.sendMessage(conversationId, {
+                message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
+                ...options,
+              });
+              accepted = true;
+              clearSubmittedDraft(conversationId, text);
+            } catch (err) {
+              const detail = err instanceof Error ? err.message : String(err);
+              error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
+              throw err;
+            }
+          },
+        };
+      } catch (err) {
+        error.value = err instanceof Error ? err.message : String(err);
+        throw err;
+      }
+    },
+    release() {
+      if (!origin && !accepted && sessionVersion === draftSessionVersion) {
+        draftAutosave.schedule(draftText);
+      }
+    },
+  };
+}
+
+function handleRecordingUnsent(path: string, cause: unknown) {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  error.value = `${detail}. Retry with /transcription ${path}`;
 }
 
 function clearSubmittedDraft(conversationId: string, text: string) {
@@ -3487,41 +3519,16 @@ let inflightDraft: { text: string; newSessionVersion: number } | null = null;
 // any server row exists (new-conversation view). See draftCache.
 let draftSyncedAt = "";
 
-async function ensureDraftConversation(value = draftText): Promise<string> {
+async function ensureDraftConversation(
+  value = draftText,
+  creation = { model: selectedModel.value, cwd: selectedCwd.value || undefined },
+): Promise<string> {
   if (draftConvId) return draftConvId;
   if (inflightCreate) return inflightCreate;
   const sessionVersion = draftSessionVersion;
   const draft = { text: value, newSessionVersion: newDraftSessionVersion };
   inflightDraft = draft;
-  const p = api
-    .createDraft({
-      draft: value,
-      model: selectedModel.value,
-      cwd: selectedCwd.value || undefined,
-    })
-    .then((conv) => {
-      // The pending create owns its latest text even after leaving /new. Move
-      // that cache to the saved id, without clearing a newer /new composer.
-      saveCachedDraft(conv.conversation_id, draft.text, conv.updated_at);
-      if (draft.newSessionVersion === newDraftSessionVersion) clearCachedDraft(null);
-      // A late draft response still belongs to its caller (e.g. a recording),
-      // but must not navigate away from the conversation selected meanwhile.
-      if (sessionVersion !== draftSessionVersion) return conv.conversation_id;
-      draftConvId = conv.conversation_id;
-      draftSyncedAt = conv.updated_at;
-      // A model picked while this createDraft was in flight had no draft id
-      // to PUT onto and would otherwise be dropped (and the row echo would
-      // revert the picker). Reconcile: the picker is authoritative.
-      if (conv.model && conv.model !== selectedModel.value) {
-        putDraftModel(conv.conversation_id, selectedModel.value);
-      }
-      // App receives the complete draft row before switching conversation ids,
-      // so its currentConversation fallback can identify this as a draft and
-      // skip message loading without pretending the empty cache is history.
-      lazyDraftId.value = conv.conversation_id;
-      props.onDraftCreated?.(conv);
-      return conv.conversation_id;
-    });
+  const p = createDraftForSession(draft, sessionVersion, creation);
   inflightCreate = p;
   try {
     return await p;
@@ -3529,6 +3536,36 @@ async function ensureDraftConversation(value = draftText): Promise<string> {
     if (inflightCreate === p) inflightCreate = null;
     if (inflightDraft === draft) inflightDraft = null;
   }
+}
+
+function createDraftForSession(
+  draft: { text: string; newSessionVersion: number },
+  sessionVersion: number,
+  creation: { model: string; cwd: string | undefined },
+): Promise<string> {
+  return api.createDraft({ draft: draft.text, ...creation }).then((conv) => {
+    // The pending create owns its latest text even after leaving /new. Move
+    // that cache to the saved id, without clearing a newer /new composer.
+    saveCachedDraft(conv.conversation_id, draft.text, conv.updated_at);
+    if (draft.newSessionVersion === newDraftSessionVersion) clearCachedDraft(null);
+    // A late draft response still belongs to its caller (e.g. a recording),
+    // but must not navigate away from the conversation selected meanwhile.
+    if (sessionVersion !== draftSessionVersion) return conv.conversation_id;
+    draftConvId = conv.conversation_id;
+    draftSyncedAt = conv.updated_at;
+    // A model picked while this createDraft was in flight had no draft id
+    // to PUT onto and would otherwise be dropped (and the row echo would
+    // revert the picker). Reconcile: the picker is authoritative.
+    if (conv.model && conv.model !== selectedModel.value) {
+      putDraftModel(conv.conversation_id, selectedModel.value);
+    }
+    // App receives the complete draft row before switching conversation ids,
+    // so its currentConversation fallback can identify this as a draft and
+    // skip message loading without pretending the empty cache is history.
+    lazyDraftId.value = conv.conversation_id;
+    props.onDraftCreated?.(conv);
+    return conv.conversation_id;
+  });
 }
 
 async function saveDraft(value: string) {

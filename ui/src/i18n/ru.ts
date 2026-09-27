@@ -147,6 +147,8 @@ export const ru: TranslationKeys = {
   recordingStopping: "Завершение записи…",
   recordingTooShort: "Запись слишком короткая для кодирования. Попробуйте ещё раз.",
   recordingFailed: "Не удалось записать",
+  recordingRetained: "Запись сохранена",
+  recordingDiscard: "Удалить запись",
   recordingInvalidResponse: "Сервер записи вернул неверный ответ",
   recordingScreenEnded: "Демонстрация экрана завершилась до начала записи",
   recordingScreenAction: "Записать экран/окно",

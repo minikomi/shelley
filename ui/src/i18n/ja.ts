@@ -147,6 +147,8 @@ export const ja: TranslationKeys = {
   recordingStopping: "録画を終了しています…",
   recordingTooShort: "録音が短すぎてエンコードできませんでした。もう一度お試しください。",
   recordingFailed: "録画に失敗しました",
+  recordingRetained: "録画を保持しています",
+  recordingDiscard: "録画を破棄",
   recordingInvalidResponse: "録画サーバーから無効な応答が返されました",
   recordingScreenEnded: "録画開始前に画面共有が終了しました",
   recordingScreenAction: "画面またはウィンドウを録画",
