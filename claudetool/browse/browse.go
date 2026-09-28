@@ -554,8 +554,8 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 		// Take screenshot of specific element
 		actions = append(
 			actions,
-			chromedp.WaitReady(input.Selector),
-			chromedp.Screenshot(input.Selector, &buf, chromedp.NodeVisible),
+			chromedp.WaitReady(input.Selector, chromedp.ByQuery),
+			chromedp.Screenshot(input.Selector, &buf, chromedp.ByQuery, chromedp.NodeVisible),
 		)
 	} else {
 		// Take full page screenshot

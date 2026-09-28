@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -274,6 +275,78 @@ func TestScreenshotTool(t *testing.T) {
 
 	// Clean up the test file
 	os.Remove(filePath)
+}
+
+func TestScreenshotSelectorUsesCSSQuery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping browser screenshot test in short mode")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!doctype html>
+<style>.styled { width:80px; height:40px; background:lime }</style>
+<div class="styled"></div>
+<div class="duplicate" style="width:80px;height:40px;background:red"></div>
+<div class="duplicate" style="display:none"></div>`)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	tools := NewBrowseTools(ctx, 0)
+	t.Cleanup(tools.Close)
+	tool := tools.CombinedTool()
+	out := tool.Run(ctx, []byte(fmt.Sprintf(`{"action":"navigate","url":%q}`, server.URL)))
+	if out.Error != nil {
+		if browserUnavailable(out.Error.Error()) {
+			t.Skip("Browser automation not available in this environment")
+		}
+		t.Fatalf("navigate: %v", out.Error)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		selector string
+	}{
+		{"stylesheet text", ".styled"},
+		{"hidden duplicate", ".duplicate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := tool.Run(ctx, []byte(fmt.Sprintf(
+				`{"action":"screenshot","selector":%q,"timeout":"2s"}`, tc.selector)))
+			if out.Error != nil {
+				t.Fatalf("screenshot(%q): %v", tc.selector, out.Error)
+			}
+			if display, ok := out.Display.(map[string]any); ok {
+				if path, ok := display["path"].(string); ok {
+					t.Cleanup(func() {
+						if err := os.Remove(path); err != nil {
+							t.Errorf("remove screenshot: %v", err)
+						}
+					})
+				}
+			}
+			for _, content := range out.LLMContent {
+				if content.MediaType != "image/png" {
+					continue
+				}
+				data, err := base64.StdEncoding.DecodeString(content.Data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := png.DecodeConfig(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cfg.Width != 80 || cfg.Height != 40 {
+					t.Fatalf("screenshot size = %dx%d, want 80x40", cfg.Width, cfg.Height)
+				}
+				return
+			}
+			t.Fatal("screenshot returned no PNG image")
+		})
+	}
 }
 
 // hasImageContent reports whether any LLM content carries a base64 image
