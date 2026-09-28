@@ -14,6 +14,13 @@ const intents: ComposerSubmissionIntent[] = [
   "auto-queue",
 ];
 for (const intent of intents) {
+  for (const command of ["!", "/shell", " \n!\t", " /shell \n"]) {
+    assert.deepEqual(
+      composerDispatch(command, { intent }),
+      { route: "terminal" },
+      `${JSON.stringify(command)} opens a terminal for the ${intent} route`,
+    );
+  }
   assert.deepEqual(
     composerDispatch(" \t/btw\n what changed?  ", { intent }),
     { route: "btw", question: "what changed?" },
@@ -37,6 +44,7 @@ const routeCases: Array<
   ["ordinary", {}, "send"],
   ["/clear", {}, "send"],
   ["!git status", {}, "send"],
+  ["/shell pwd", {}, "send"],
   ["/btwfoo", {}, "send"],
   ["/btw question", { isChildConversation: true }, "btw-blocked"],
 ];

@@ -7,7 +7,7 @@ export type ComposerSubmissionIntent =
 
 export type ComposerDispatch =
   | { route: "btw"; question: string }
-  | { route: "send" | "queue" | "compact-and-send" | "btw-blocked" };
+  | { route: "send" | "queue" | "compact-and-send" | "btw-blocked" | "terminal" };
 
 interface ComposerDispatchOptions {
   intent?: ComposerSubmissionIntent;
@@ -23,6 +23,8 @@ export function composerDispatch(
   message: string,
   options: ComposerDispatchOptions = {},
 ): ComposerDispatch {
+  if (message.trim() === "!" || message.trim() === "/shell") return { route: "terminal" };
+
   const question = btwQuestion(message);
   if (question !== null) {
     if (options.isChildConversation) return { route: "btw-blocked" };

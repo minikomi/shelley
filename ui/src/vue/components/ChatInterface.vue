@@ -390,6 +390,7 @@
       @draft-send-started="handleDraftSendStarted"
       @draft-cleared="handleDraftCleared"
       @recording-unsent="handleRecordingUnsent"
+      @open-terminal="openInAppTerminal"
     >
       <template v-if="statusSlotInline" #status>
         <ChatStatusContent v-bind="statusContentProps" />
