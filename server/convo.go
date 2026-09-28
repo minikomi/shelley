@@ -1087,8 +1087,8 @@ func (cm *ConversationManager) RetryLastLLMRequest(ctx context.Context) error {
 // not a stop_reason=refusal error, so there is nothing to continue past.
 var errNotRefusal = fmt.Errorf("latest message is not a refusal; nothing to continue")
 
-// ContinueAfterRefusal handles the "switch to Opus and continue" affordance a
-// refusal error offers in the UI. A refusal is deliberately non-retryable
+// ContinueAfterRefusal handles the choose-another-model affordance a refusal
+// error offers in the UI. A refusal is deliberately non-retryable
 // (re-running the identical request on the SAME model just refuses again), but
 // switching to a more capable model and re-issuing the request usually
 // succeeds. This applies the requested model/reasoning change (recording the
@@ -2783,6 +2783,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	}
 	loopInstance := loop.NewLoop(loop.Config{
 		LLM:            service,
+		ModelID:        modelID,
 		History:        history,
 		Tools:          toolSet.Tools(),
 		ThinkingLevel:  llm.ParseThinkingLevel(conversationOpts.ThinkingLevel),

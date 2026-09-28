@@ -33,7 +33,7 @@
     option-value="pickerValue"
     option-group-label="label"
     option-group-children="items"
-    :option-disabled="(m: PickerOption) => !m.ready"
+    :option-disabled="(m: PickerOption) => !m.ready || m.id === disabledModel"
     :disabled="disabled"
     fluid
     size="small"
@@ -43,7 +43,7 @@
     :aria-label="ariaLabel"
     :append-to="inline || appendToBody ? 'body' : 'self'"
     :pt="{
-      overlay: { class: 'model-picker-panel' },
+      overlay: { class: ['model-picker-panel', panelClass] },
       label: disabledReason ? { 'aria-description': disabledReason } : {},
     }"
     filter
@@ -132,7 +132,7 @@
           showMore ? t("showFewerModels") : `${t("showAllModels")} (${models.length})`
         }}</span>
       </button>
-      <template v-if="reasoningSupported">
+      <template v-if="showReasoning && reasoningSupported">
         <div class="model-picker-divider" />
         <div class="model-picker-effort">
           <span :id="effortLabelId" class="model-picker-effort-label">{{ t("effortLabel") }}</span>
@@ -213,6 +213,10 @@ const props = withDefaults(
     selectedModel: string;
     thinkingLevel: ThinkingLevel;
     disabled?: boolean;
+    disabledModel?: string;
+    showRecent?: boolean;
+    showReasoning?: boolean;
+    panelClass?: string;
     refreshing?: boolean;
     /** Show the "Manage models…" / refresh footer. Off where the picker
      *  configures a one-shot action rather than the catalog. */
@@ -243,6 +247,9 @@ const props = withDefaults(
   }>(),
   {
     disabled: false,
+    disabledModel: "",
+    showRecent: true,
+    showReasoning: true,
     refreshing: false,
     catalogActions: true,
     inline: false,
@@ -358,7 +365,7 @@ const modelOptions = computed<PickerOption[]>(() =>
 
 const optionGroups = computed<PickerGroup[]>(() => {
   const groups: PickerGroup[] = [];
-  if (recentOptions.value.length && !filterValue.value) {
+  if (props.showRecent && recentOptions.value.length && !filterValue.value) {
     groups.push({ kind: "recent", label: "Recent", items: recentOptions.value });
   }
   groups.push({ kind: "models", label: "", items: modelOptions.value });

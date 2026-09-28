@@ -1873,16 +1873,15 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 
 // continueRequest is the optional JSON body for POST
 // /api/conversation/<id>/continue. An empty/omitted model falls back to the
-// default catalog model (Opus), matching the "switch to Opus and continue"
-// button a refusal error shows.
+// default catalog model for older clients.
 type continueRequest struct {
 	Model string `json:"model"`
 }
 
 // handleContinueConversation handles POST /api/conversation/<id>/continue.
-// It powers the "switch to Opus and continue" affordance offered on a refusal
-// error: it switches the conversation to a more capable model (Opus by
-// default) and re-fires the request the previous model declined. Requires a
+// It powers the choose-another-model affordance offered on a refusal error: it
+// switches the conversation to the selected model and re-fires the request the
+// previous model declined. Requires a
 // latest message that is a refusal error (error_type=refusal). The refusal row
 // is left untouched (append-only log) and excluded from context, so the new
 // model sees the same request.

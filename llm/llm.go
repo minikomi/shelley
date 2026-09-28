@@ -259,10 +259,9 @@ type Message struct {
 	// succeed. The UI exposes a Retry button when this is true.
 	ErrorRetryable bool `json:"ErrorRetryable,omitempty"`
 
-	// RefusalCategory and RefusalExplanation carry the provider's structured
-	// reason on an ErrorTypeRefusal message (Anthropic's stop_details). They are
-	// surfaced to the user so they know WHY the model declined. Empty when the
-	// provider gave no reason.
+	// RefusalModel identifies the model that declined the request. The category
+	// and explanation carry the provider's structured reason.
+	RefusalModel       string `json:"RefusalModel,omitempty"`
 	RefusalCategory    string `json:"RefusalCategory,omitempty"`
 	RefusalExplanation string `json:"RefusalExplanation,omitempty"`
 }

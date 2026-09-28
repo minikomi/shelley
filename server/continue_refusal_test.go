@@ -135,8 +135,8 @@ func TestContinueAfterRefusalSwitchesModelAndResumes(t *testing.T) {
 	// Agent must have stopped working before continuing.
 	waitFor(t, 5*time.Second, func() bool { return !svr.IsAgentWorking(conversationID) })
 
-	// The refusal error's user_data must carry the provider's structured reason
-	// so the UI can show WHY the request was declined.
+	// The refusal error's user_data must carry the original model and the
+	// provider's structured reason.
 	{
 		var found bool
 		for _, m := range listMessages(t, database, conversationID) {
@@ -145,14 +145,15 @@ func TestContinueAfterRefusalSwitchesModelAndResumes(t *testing.T) {
 				if json.Unmarshal([]byte(*m.UserData), &ud) == nil {
 					if cat, _ := ud["refusal_category"].(string); cat == "cyber" {
 						if exp, _ := ud["refusal_explanation"].(string); exp != "" {
-							found = true
+							model, _ := ud["refusal_model"].(string)
+							found = model == "model-a"
 						}
 					}
 				}
 			}
 		}
 		if !found {
-			t.Error("refusal error user_data should carry refusal_category and refusal_explanation")
+			t.Error("refusal error user_data should carry refusal_model, refusal_category, and refusal_explanation")
 		}
 	}
 

@@ -2172,13 +2172,11 @@ func TestRefusal(t *testing.T) {
 	if !strings.Contains(errMsg.Content[0].Text, "declined") {
 		t.Errorf("error message should explain the refusal, got: %s", errMsg.Content[0].Text)
 	}
-	// The user-visible refusal notice must guide the user toward continuing on a
-	// more capable model: mention switching to Opus and the /model command.
-	if !strings.Contains(errMsg.Content[0].Text, "Opus") {
-		t.Errorf("error message should suggest switching to Opus, got: %s", errMsg.Content[0].Text)
+	if !strings.Contains(errMsg.Content[0].Text, "Choose another model") {
+		t.Errorf("error message should suggest another model, got: %s", errMsg.Content[0].Text)
 	}
-	if !strings.Contains(errMsg.Content[0].Text, "/model") {
-		t.Errorf("error message should mention the /model command, got: %s", errMsg.Content[0].Text)
+	if errMsg.RefusalModel != "predictable-v1" {
+		t.Errorf("error message should carry RefusalModel=predictable-v1, got %q", errMsg.RefusalModel)
 	}
 	// The provider's structured refusal reason must be captured on the message
 	// and surfaced in the notice text (the predictable service returns a "cyber"

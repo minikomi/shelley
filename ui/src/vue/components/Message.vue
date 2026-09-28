@@ -57,10 +57,11 @@
         :on-fork="hasForkAction ? handleFork : undefined"
       />
       <div class="message-content" data-testid="message-content">
-        <div class="whitespace-pre-wrap break-words">{{ errorText }}</div>
+        <div class="whitespace-pre-wrap break-words">{{ displayedErrorText }}</div>
         <RefusalContinueButton
           v-if="isRefusal && isLastMessage"
           :conversation-id="message.conversation_id"
+          :refusal-model="errorMeta.refusalModel"
         />
         <ErrorRetryButton
           v-if="errorRetryable && isLastMessage"
@@ -262,6 +263,8 @@ import DistillStatusMessage from "./DistillStatusMessage.vue";
 import CwdChangeMessage from "./CwdChangeMessage.vue";
 import ErrorRetryButton from "./ErrorRetryButton.vue";
 import RefusalContinueButton from "./RefusalContinueButton.vue";
+import { RefusalContinueKey } from "./refusalContinue";
+import { prettyModelLabels, prettyModelName } from "../../utils/modelNames";
 import MessageContentBlock from "./MessageContentBlock.vue";
 import CitedText from "./CitedText.vue";
 import { coalesceContent, splitContentEntities } from "../../utils/coalesceContent";
@@ -476,9 +479,13 @@ const errorText = computed(() => {
   }
   return text;
 });
+const refusalContinue = inject(RefusalContinueKey);
 const errorMeta = computed(() => {
   let retryable = false;
   let errorType = "";
+  let refusalModel = "";
+  let refusalCategory = "";
+  let refusalExplanation = "";
   if (props.message.user_data) {
     try {
       const ud =
@@ -487,16 +494,37 @@ const errorMeta = computed(() => {
           : props.message.user_data;
       retryable = !!ud?.retryable;
       errorType = typeof ud?.error_type === "string" ? ud.error_type : "";
+      refusalModel = typeof ud?.refusal_model === "string" ? ud.refusal_model.trim() : "";
+      refusalCategory =
+        typeof ud?.refusal_category === "string" ? ud.refusal_category.trim() : "";
+      refusalExplanation =
+        typeof ud?.refusal_explanation === "string" ? ud.refusal_explanation.trim() : "";
     } catch {
       // ignore
     }
   }
-  return { retryable, errorType };
+  return { retryable, errorType, refusalModel, refusalCategory, refusalExplanation };
+});
+const displayedErrorText = computed(() => {
+  if (errorMeta.value.errorType !== "refusal") return errorText.value;
+  const model = errorMeta.value.refusalModel
+    ? (refusalContinue &&
+        prettyModelLabels(refusalContinue.models.value).get(errorMeta.value.refusalModel)) ||
+      prettyModelName(errorMeta.value.refusalModel)
+    : "The model";
+  let text = `${model} declined to continue this request.`;
+  if (errorMeta.value.refusalCategory) {
+    text += `\n\nCategory: ${errorMeta.value.refusalCategory}`;
+  }
+  if (errorMeta.value.refusalExplanation) {
+    text += `\n\nReason: ${errorMeta.value.refusalExplanation}`;
+  }
+  return text;
 });
 const errorRetryable = computed(() => errorMeta.value.retryable);
 // A refusal (stop_reason=refusal) is non-retryable on the same model, but the
-// user can switch to a more capable model (Opus) and continue. Only the
-// bottom-most refusal error offers the affordance.
+// user can choose another model and continue. Only the bottom-most refusal
+// error offers the affordance.
 const isRefusal = computed(() => errorMeta.value.errorType === "refusal");
 
 // lastMessageId is provided by ChatInterface; an error message only offers its

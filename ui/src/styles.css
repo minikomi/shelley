@@ -1566,6 +1566,34 @@ body {
   margin-top: 0.5rem;
 }
 
+.refusal-model-picker.p-select {
+  width: auto;
+  min-width: 0;
+  border: 0;
+  border-radius: 0.375rem;
+  background: var(--error-text, #b91c1c);
+  box-shadow: none;
+  color: white;
+}
+
+.refusal-model-picker .p-select-label {
+  padding: 0.38rem 0.15rem 0.38rem 0.75rem;
+  color: white;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.refusal-model-picker .p-select-dropdown {
+  width: 1.8rem;
+  color: white;
+}
+
+.p-select-overlay.refusal-model-picker-panel {
+  width: 23rem;
+  min-width: 0;
+  max-width: calc(100vw - 2rem);
+}
+
 .error-retry-button {
   background: var(--error-text, #b91c1c);
   color: white;

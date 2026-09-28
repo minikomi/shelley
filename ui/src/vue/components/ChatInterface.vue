@@ -589,6 +589,7 @@ import {
   type ThinkingLevel,
 } from "./thinkingLevel";
 import { SELECTED_MODEL_KEY, pickReadyModel, storedSelectedModel } from "./selectedModel";
+import { RefusalContinueKey } from "./refusalContinue";
 
 import MessageInput from "./MessageInput.vue";
 import type { RecordingMode, RecordingPreparation } from "./recordingDestination";
@@ -816,6 +817,7 @@ function thinkingLevelForModel(modelId: string, level: ThinkingLevel): ThinkingL
 const selectedModel = ref<string>(
   pickReadyModel(window.__SHELLEY_INIT__?.models || [], storedSelectedModel()),
 );
+provide(RefusalContinueKey, { models, selectedModel, thinkingLevel });
 // applyModel updates the picker's local state only (ref + localStorage).
 // Used both by user picks and by server echoes; never talks to the server.
 function applyModel(model: string) {

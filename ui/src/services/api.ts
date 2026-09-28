@@ -514,10 +514,7 @@ class ApiService {
     }
   }
 
-  // continueConversation powers the "switch to Opus and continue" affordance a
-  // refusal error offers: it switches the conversation to the given model
-  // (Opus by default when model is omitted) and re-fires the request the
-  // previous model declined.
+  // Switch models and re-fire the request the previous model declined.
   async continueConversation(conversationId: string, model?: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/continue`, {
       method: "POST",

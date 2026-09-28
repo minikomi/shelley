@@ -1162,7 +1162,7 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 	}
 	// Stamp the error type + retryable flag into user_data for error messages
 	// so the UI can decide which affordance to show (Retry button for retryable
-	// llm_request errors; the "switch to Opus and continue" action for refusals)
+	// llm_request errors; the model-picker continue action for refusals)
 	// without parsing llm_data.
 	if message.ErrorType != llm.ErrorTypeNone && ud == nil {
 		udMap := map[string]any{
@@ -1176,6 +1176,9 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 		}
 		if message.RefusalExplanation != "" {
 			udMap["refusal_explanation"] = message.RefusalExplanation
+		}
+		if message.RefusalModel != "" {
+			udMap["refusal_model"] = message.RefusalModel
 		}
 		ud = udMap
 	}
