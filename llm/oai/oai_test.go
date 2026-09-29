@@ -318,6 +318,29 @@ func TestToToolCallLLMContent(t *testing.T) {
 	}
 }
 
+func TestToolArgumentsInput(t *testing.T) {
+	for _, tt := range []struct {
+		name, arguments, want string
+	}{
+		{"empty", "", `{}`},
+		{"truncated", `{"command": "ls`, `"{\"command\": \"ls"`},
+		{"trailing garbage", `{"a":1} trailing`, `"{\"a\":1} trailing"`},
+		{"valid", `{"a":1}`, `{"a":1}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			input := toolArgumentsInput(tt.arguments)
+			if string(input) != tt.want {
+				t.Fatalf("toolArgumentsInput = %q, want %q", input, tt.want)
+			}
+			content := llm.Content{ID: "call_1", Type: llm.ContentTypeToolUse, ToolName: "bash", ToolInput: input}
+			message := llm.Message{Role: llm.MessageRoleAssistant, Content: []llm.Content{content}}
+			if _, err := json.Marshal(message); err != nil {
+				t.Fatalf("marshal assistant tool-use message: %v", err)
+			}
+		})
+	}
+}
+
 func TestToToolResultLLMContent(t *testing.T) {
 	msg := openai.ChatCompletionMessage{
 		Role:       "tool",
@@ -1468,6 +1491,29 @@ func TestServiceDoStreamsFireworks(t *testing.T) {
 	}
 	if resp.Content[3].ToolName != "ping" || string(resp.Content[3].ToolInput) != `{}` {
 		t.Fatalf("second tool = %#v", resp.Content[3])
+	}
+}
+
+func TestServiceDoStreamsMalformedToolArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"command\\\": \\\"ls\"}}]}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	svc := &Service{APIKey: "test-key", Model: modelForTest("test"), ModelURL: server.URL, ProviderName: "fireworks"}
+	resp, err := svc.Do(t.Context(), &llm.Request{Messages: []llm.Message{{Role: llm.MessageRoleUser}}, OnStream: func(llm.StreamDelta) {}})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if len(resp.Content) != 1 || string(resp.Content[0].ToolInput) != `"{\"command\": \"ls"` {
+		t.Fatalf("content = %#v", resp.Content)
+	}
+	if _, err := json.Marshal(resp); err != nil {
+		t.Fatalf("marshal streamed response: %v", err)
 	}
 }
 

@@ -1919,6 +1919,20 @@ func TestResponsesCustomToolCallConversion(t *testing.T) {
 	}
 }
 
+func TestResponsesFunctionCallMalformedArguments(t *testing.T) {
+	service := &ResponsesService{}
+	response := service.toLLMResponseFromResponses(&responsesResponse{Output: []responsesOutputItem{
+		{Type: "function_call", CallID: "call_1", Name: "bash", Arguments: ""},
+		{Type: "function_call", CallID: "call_2", Name: "bash", Arguments: `{"command": "ls`},
+	}}, nil)
+	if len(response.Content) != 2 || string(response.Content[0].ToolInput) != `{}` || string(response.Content[1].ToolInput) != `"{\"command\": \"ls"` {
+		t.Fatalf("content = %+v", response.Content)
+	}
+	if _, err := json.Marshal(response); err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+}
+
 func TestResponsesWebSearchQueryConversion(t *testing.T) {
 	service := &ResponsesService{}
 	for _, action := range []*responsesAction{
