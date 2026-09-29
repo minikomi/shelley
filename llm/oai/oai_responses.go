@@ -578,7 +578,7 @@ func (s *ResponsesService) toLLMResponseFromResponses(resp *responsesResponse, h
 				ToolInput: inputJSON,
 			})
 		case "function_call":
-			contents = append(contents, llm.Content{ID: item.CallID, Type: llm.ContentTypeToolUse, ToolName: item.Name, ToolInput: json.RawMessage(item.Arguments)})
+			contents = append(contents, llm.Content{ID: item.CallID, Type: llm.ContentTypeToolUse, ToolName: item.Name, ToolInput: toolArgumentsInput(item.Arguments)})
 			stopReason = llm.StopReasonToolUse
 		case "custom_tool_call":
 			input, _ := json.Marshal(map[string]string{"input": item.Input})

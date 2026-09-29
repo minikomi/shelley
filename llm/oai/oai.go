@@ -1045,8 +1045,22 @@ func toToolCallLLMContent(toolCall openai.ToolCall) llm.Content {
 		ID:        id,
 		Type:      llm.ContentTypeToolUse,
 		ToolName:  toolCall.Function.Name,
-		ToolInput: json.RawMessage(toolCall.Function.Arguments),
+		ToolInput: toolArgumentsInput(toolCall.Function.Arguments),
 	}
+}
+
+// toolArgumentsInput converts a provider's tool arguments string into
+// ToolInput. Providers may return empty or malformed strings; both must stay
+// serializable so the assistant message can be persisted.
+func toolArgumentsInput(arguments string) json.RawMessage {
+	if arguments == "" {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid([]byte(arguments)) {
+		return json.RawMessage(arguments)
+	}
+	encoded, _ := json.Marshal(arguments)
+	return encoded
 }
 
 // toToolResultLLMContent converts a tool result message from OpenAI to llm.Content.
