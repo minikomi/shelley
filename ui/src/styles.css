@@ -4316,6 +4316,19 @@ select:disabled {
   min-width: 0;
 }
 
+.disk-space-notice-link {
+  margin-left: auto;
+  flex: none;
+  color: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.disk-space-notice-link + .disk-space-notice-dismiss {
+  margin-left: 0;
+}
+
 .disk-space-notice-detail {
   font-family: var(--font-mono);
   font-size: 0.72rem;

@@ -6,6 +6,7 @@ export const zhCN: TranslationKeys = {
   diskSpaceLow: "磁盘空间不足",
   diskSpaceCritical: "磁盘空间严重不足",
   diskSpaceRemaining: "剩余",
+  diskSpaceResize: "调整此虚拟机大小",
   dismiss: "关闭",
   retry: "重试",
   failedToLoadConversations: "加载对话失败，请刷新页面。",

@@ -22,12 +22,12 @@ import (
 func initTestDiskSpace(t *testing.T, s *Server, available *uint64) *atomic.Int32 {
 	t.Helper()
 	calls := new(atomic.Int32)
-	if err := s.initDiskSpace(t.Context(), func(path string) (uint64, error) {
+	if err := s.initDiskSpace(t.Context(), func(path string) (uint64, uint64, error) {
 		calls.Add(1)
 		if path != s.db.Path() {
 			t.Errorf("probe path = %q, want %q", path, s.db.Path())
 		}
-		return *available, nil
+		return *available, 100_000_000_000, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,20 +147,20 @@ func TestDiskSpaceProbeErrors(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newTestServer(t)
 	probeErr := errors.New("probe failed")
-	if err := s.initDiskSpace(t.Context(), func(string) (uint64, error) { return 0, probeErr }); !errors.Is(err, probeErr) || s.diskSpace != nil {
+	if err := s.initDiskSpace(t.Context(), func(string) (uint64, uint64, error) { return 0, 0, probeErr }); !errors.Is(err, probeErr) || s.diskSpace != nil {
 		t.Fatalf("startup must fail, not report healthy: monitor=%v, err=%v", s.diskSpace, err)
 	}
 	available := diskspace.Threshold - 1
 	initTestDiskSpace(t, s, &available)
 	before := s.diskSpace.snapshot()
-	s.diskSpace.probe = func(string) (uint64, error) { return 0, probeErr }
+	s.diskSpace.probe = func(string) (uint64, uint64, error) { return 0, 0, probeErr }
 	if err := s.diskSpace.check(t.Context()); !errors.Is(err, probeErr) || s.diskSpace.snapshot() != before {
 		t.Fatalf("probe error changed status: %+v, err=%v", s.diskSpace.snapshot(), err)
 	}
-	if _, err := diskAvailableBytes(filepath.Join(t.TempDir(), "missing.db")); err == nil {
+	if _, _, err := diskBytes(filepath.Join(t.TempDir(), "missing.db")); err == nil {
 		t.Fatal("statfs on missing path succeeded")
 	}
-	if _, err := diskAvailableBytes(s.db.Path()); err != nil {
+	if _, _, err := diskBytes(s.db.Path()); err != nil {
 		t.Fatalf("statfs on actual SQLite path: %v", err)
 	}
 }
@@ -394,7 +394,7 @@ func TestDiskSpaceRefreshAtTurnEnd(t *testing.T) {
 		t.Fatalf("turn-end refresh did not sample: %+v, probes=%d", got, calls.Load())
 	}
 	before := s.diskSpace.snapshot()
-	s.diskSpace.probe = func(string) (uint64, error) { return 0, errors.New("turn-end probe failed") }
+	s.diskSpace.probe = func(string) (uint64, uint64, error) { return 0, 0, errors.New("turn-end probe failed") }
 	lines := make(chan string, 1)
 	s.logger = slog.New(slog.NewTextHandler(diskSpaceLogWriter{lines}, nil))
 	s.refreshDiskSpace(t.Context())
@@ -407,7 +407,7 @@ func TestDiskSpaceRefreshAtTurnEnd(t *testing.T) {
 
 	// Dismissed: sustained-low samples are silent; the next event is recovery.
 	next, _ := s.streamPub.SubscribeWithStatus(t.Context(), -1)
-	s.diskSpace.probe = func(string) (uint64, error) { return available, nil }
+	s.diskSpace.probe = func(string) (uint64, uint64, error) { return available, 100_000_000_000, nil }
 	if _, err := s.diskSpace.dismiss(t.Context(), before.EpisodeID); err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ export const ja: TranslationKeys = {
   diskSpaceLow: "ディスク容量が少なくなっています",
   diskSpaceCritical: "ディスク容量が極めて少なくなっています",
   diskSpaceRemaining: "残り",
+  diskSpaceResize: "この VM をリサイズ",
   dismiss: "閉じる",
   retry: "再試行",
   failedToLoadConversations: "会話の読み込みに失敗しました。ページを更新してください。",

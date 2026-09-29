@@ -7,6 +7,7 @@ const lowStatus = {
   critical: false,
   dismissed: false,
   available_bytes: 1_600_000_000,
+  total_bytes: 79_000_000_000,
 };
 
 test.describe("Disk space notice", () => {
@@ -41,6 +42,35 @@ test.describe("Disk space notice", () => {
 
     await expect.poll(() => dismissedEpisode).toBe(lowStatus.episode_id);
     await expect(notice).toHaveCount(0);
+  });
+
+  test("links to an exe.dev resize suggestion on exe.dev hosts", async ({ page }) => {
+    await page.addInitScript(() => {
+      let init: Record<string, unknown> | undefined;
+      Object.defineProperty(window, "__SHELLEY_INIT__", {
+        configurable: true,
+        get: () => init,
+        set: (value) => {
+          init = { ...value, is_exe_dev: true, hostname: "myvm.exe.xyz" };
+        },
+      });
+    });
+    await page.route("**/api/stream2", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: `data: ${JSON.stringify({ disk_space_status: lowStatus })}\n\n`,
+      });
+    });
+
+    await page.goto("/");
+
+    const link = page.getByTestId("disk-space-notice-link");
+    await expect(link).toHaveText("Resize this VM", { timeout: 30000 });
+    await expect(link).toHaveAttribute(
+      "href",
+      "https://exe.dev/suggest?command=resize%20myvm%20--disk%3D90GB",
+    );
   });
 
   test("announces critical status as an alert", async ({ page }) => {

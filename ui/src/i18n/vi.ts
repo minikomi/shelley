@@ -6,6 +6,7 @@ export const vi: TranslationKeys = {
   diskSpaceLow: "Dung lượng đĩa còn ít",
   diskSpaceCritical: "Dung lượng đĩa cực kỳ thấp",
   diskSpaceRemaining: "còn lại",
+  diskSpaceResize: "Thay đổi kích cỡ VM này",
   dismiss: "Bỏ qua",
   retry: "Thử lại",
   failedToLoadConversations: "Tải trò chuyện thất bại. Vui lòng tải lại trang.",

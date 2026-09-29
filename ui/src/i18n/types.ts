@@ -6,6 +6,7 @@ export interface TranslationKeys {
   diskSpaceLow: string;
   diskSpaceCritical: string;
   diskSpaceRemaining: string;
+  diskSpaceResize: string;
   dismiss: string;
   retry: string;
   failedToLoadConversations: string;

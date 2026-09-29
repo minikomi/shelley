@@ -328,6 +328,15 @@
           {{ t("diskSpaceRemaining") }}</span
         >
       </span>
+      <a
+        v-if="diskResizeSuggestUrl"
+        :href="diskResizeSuggestUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="disk-space-notice-link"
+        data-testid="disk-space-notice-link"
+        >{{ t("diskSpaceResize") }}</a
+      >
       <button
         type="button"
         class="btn-icon disk-space-notice-dismiss"
@@ -761,6 +770,16 @@ function formatDiskBytes(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   return `${Math.round(bytes / 1e6)} MB`;
 }
+
+// exe.dev VMs can grow their disk via the control plane; suggest the current
+// size rounded up to the next 10 GB plus 10 GB so the form opens pre-filled.
+const diskResizeSuggestUrl = computed(() => {
+  const total = props.diskSpaceStatus?.total_bytes;
+  if (!isExeDev || !total) return null;
+  const gb = Math.ceil(total / 1e9 / 10) * 10 + 10;
+  const vm = (window.__SHELLEY_INIT__?.hostname ?? "").split(".")[0];
+  return `https://exe.dev/suggest?command=${encodeURIComponent(`resize ${vm} --disk=${gb}GB`)}`;
+});
 
 async function dismissDiskSpaceNotice() {
   const status = props.diskSpaceStatus;

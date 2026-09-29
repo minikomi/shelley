@@ -28,21 +28,21 @@ type diskSpaceEpisode struct {
 type diskSpaceMonitor struct {
 	mu     sync.Mutex // serializes observations, persistence, publishing and subscription
 	server *Server
-	probe  func(string) (uint64, error)
+	probe  func(string) (available, total uint64, err error)
 	status diskspace.DiskSpaceStatus
 }
 
-func diskAvailableBytes(path string) (uint64, error) {
+func diskBytes(path string) (available, total uint64, err error) {
 	var stat unix.Statfs_t
 	if err := unix.Statfs(path, &stat); err != nil {
-		return 0, fmt.Errorf("statfs %q: %w", path, err)
+		return 0, 0, fmt.Errorf("statfs %q: %w", path, err)
 	}
-	return stat.Bavail * uint64(stat.Bsize), nil
+	return stat.Bavail * uint64(stat.Bsize), stat.Blocks * uint64(stat.Bsize), nil
 }
 
 // initDiskSpace runs synchronously before serving. Route-only tests can inject
 // a probe here and call check directly, without a worker or any sleeps.
-func (s *Server) initDiskSpace(ctx context.Context, probe func(string) (uint64, error)) error {
+func (s *Server) initDiskSpace(ctx context.Context, probe func(string) (available, total uint64, err error)) error {
 	value, err := s.db.GetSetting(ctx, diskSpaceSettingKey)
 	if err != nil {
 		return fmt.Errorf("load disk space episode: %w", err)
@@ -80,13 +80,14 @@ func (m *diskSpaceMonitor) snapshot() diskspace.DiskSpaceStatus {
 func (m *diskSpaceMonitor) check(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	available, err := m.probe(m.server.db.Path())
+	available, total, err := m.probe(m.server.db.Path())
 	if err != nil {
 		// Unknown is not recovery: retain the last successful observation.
 		return err
 	}
 	next := m.status
 	next.AvailableBytes = available
+	next.TotalBytes = total
 	next.Active = available < diskspace.Threshold
 	// Critical latches within an episode: hovering around the line must not
 	// re-show the notice, so only recovery clears it.

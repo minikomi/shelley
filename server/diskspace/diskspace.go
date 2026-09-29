@@ -13,7 +13,7 @@ const (
 
 // DiskSpaceStatus is the last successful observation of the database filesystem.
 // Revision orders transitions, including HTTP dismissal responses versus SSE.
-// AvailableBytes is cached, not persisted, and may change within one revision.
+// AvailableBytes and TotalBytes are cached, not persisted, and may change within one revision.
 type DiskSpaceStatus struct {
 	EpisodeID      uint64 `json:"episode_id"`
 	Revision       uint64 `json:"revision"`
@@ -21,4 +21,5 @@ type DiskSpaceStatus struct {
 	Critical       bool   `json:"critical"`
 	Dismissed      bool   `json:"dismissed"`
 	AvailableBytes uint64 `json:"available_bytes"`
+	TotalBytes     uint64 `json:"total_bytes"`
 }

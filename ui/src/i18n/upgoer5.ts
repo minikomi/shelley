@@ -6,6 +6,7 @@ export const upgoer5: TranslationKeys = {
   diskSpaceLow: "Not much room left on the computer",
   diskSpaceCritical: "Almost no room left on the computer",
   diskSpaceRemaining: "left",
+  diskSpaceResize: "Make this computer bigger",
   dismiss: "Go away",
   retry: "Try again",
   failedToLoadConversations: "Could not get your talks. Please open this again.",

@@ -1959,7 +1959,7 @@ func (s *Server) StartWithListener(listener net.Listener) error {
 // The Unix socket listener gets only the logger middleware (no CSRF, no requireHeader)
 // since it is local and trusted.
 func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string) error {
-	if err := s.initDiskSpace(context.Background(), diskAvailableBytes); err != nil {
+	if err := s.initDiskSpace(context.Background(), diskBytes); err != nil {
 		return fmt.Errorf("initialize disk space monitor: %w", err)
 	}
 

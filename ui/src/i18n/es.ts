@@ -6,6 +6,7 @@ export const es: TranslationKeys = {
   diskSpaceLow: "Poco espacio en disco",
   diskSpaceCritical: "Espacio en disco críticamente bajo",
   diskSpaceRemaining: "restantes",
+  diskSpaceResize: "Redimensionar esta VM",
   dismiss: "Descartar",
   retry: "Reintentar",
   failedToLoadConversations: "No se pudieron cargar las conversaciones. Actualice la página.",

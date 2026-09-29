@@ -6,6 +6,7 @@ export const ru: TranslationKeys = {
   diskSpaceLow: "Мало места на диске",
   diskSpaceCritical: "Критически мало места на диске",
   diskSpaceRemaining: "осталось",
+  diskSpaceResize: "Изменить размер этой ВМ",
   dismiss: "Скрыть",
   retry: "Повторить",
   failedToLoadConversations: "Не удалось загрузить диалоги. Пожалуйста, обновите страницу.",

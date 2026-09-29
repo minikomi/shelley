@@ -74,6 +74,7 @@ export interface DiskSpaceStatus {
   critical: boolean;
   dismissed: boolean;
   available_bytes: number;
+  total_bytes: number;
 }
 
 export interface StreamResponseForTS {
