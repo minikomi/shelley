@@ -72,6 +72,10 @@ func ClaudeModelName(userName string) string {
 
 func (s *Service) Provider() string { return "anthropic" }
 
+func (s *Service) PatchProfile() string {
+	return llm.ModelPatchProfile(s.Model)
+}
+
 func (s *Service) SupportsReasoning() bool {
 	caps, found := modelsdev.LookupReasoningCapabilities(s.URL, cmp.Or(s.Model, DefaultModel))
 	return !found || caps.Supported

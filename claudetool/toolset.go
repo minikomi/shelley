@@ -54,9 +54,7 @@ type ToolSetConfig struct {
 	EnableBrowser bool
 	// ModelID is the model being used for this conversation.
 	ModelID string
-	// PatchSimpleEnabled selects the simplified path-and-edits schema. When
-	// false, patch uses the full nested patches schema.
-	PatchSimpleEnabled func() bool
+
 	// ReasoningLevel is the parent conversation's user-facing reasoning/thinking
 	// level (one of "off", "minimal", "low", "medium", "high", "xhigh", or ""
 	// for the service default). Subagents inherit this when their "reasoning"
@@ -213,15 +211,10 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	}
 
 	patchProvider, patchProfile := "", "nested"
-	if cfg.PatchSimpleEnabled != nil && cfg.PatchSimpleEnabled() {
-		patchProfile = "simple"
-	}
 	if cfg.LLMProvider != nil && cfg.ModelID != "" {
 		if svc, err := cfg.LLMProvider.GetService(cfg.ModelID); err == nil {
 			patchProvider = svc.Provider()
-			if llm.PatchProfile(svc) == "codex_apply_patch" {
-				patchProfile = "codex_apply_patch"
-			}
+			patchProfile = llm.PatchProfile(svc)
 		}
 	}
 	patchTool := &PatchTool{WorkingDir: wd, Provider: patchProvider, Profile: patchProfile}

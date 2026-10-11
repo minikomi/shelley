@@ -1298,7 +1298,7 @@ func (s *ResponsesService) PatchProfile() string {
 	if s.isOpenAIResponses() && s.Model.SupportsApplyPatch {
 		return "codex_apply_patch"
 	}
-	return "flat"
+	return llm.ModelPatchProfile(s.Model.ModelName)
 }
 
 // ConfigDetails returns configuration information for logging
