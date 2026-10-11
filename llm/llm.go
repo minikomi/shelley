@@ -107,7 +107,16 @@ func PatchProfile(svc Service) string {
 	if profiler, ok := svc.(PatchProfiler); ok {
 		return profiler.PatchProfile()
 	}
-	return "flat"
+	return "nested"
+}
+
+func ModelPatchProfile(model string) string {
+	model = strings.ToLower(model)
+	model = model[strings.LastIndex(model, "/")+1:]
+	if model == "glm" || strings.HasPrefix(model, "glm-") {
+		return "simple"
+	}
+	return "nested"
 }
 
 // DefaultReasoner is implemented by services that can report the reasoning

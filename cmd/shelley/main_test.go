@@ -301,7 +301,7 @@ func TestToolModelsHideUnknownIntegrationModelsButKeepCustomModels(t *testing.T)
 		},
 	}
 
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels("")
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels("")
 	want := []claudetool.AvailableModel{
 		{Name: "gpt-5.6-sol", ID: "gpt-5.6-sol"},
 		{Name: "my-custom-model", ID: "my-custom-model"},
@@ -316,7 +316,7 @@ func TestToolModelsKeepBothLunaGenerationsAvailable(t *testing.T) {
 		ids: []string{"gpt-6-luna", "gpt-5.6-luna", "gpt-6-sol", "gpt-5.6-sol"},
 	}
 
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels("")
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels("")
 	want := []claudetool.AvailableModel{
 		{Name: "gpt-6-luna", ID: "gpt-6-luna"},
 		{Name: "gpt-5.6-luna", ID: "gpt-5.6-luna"},
@@ -354,7 +354,7 @@ func TestToolModelsPreferParentChatGPTSubscriptionForDuplicates(t *testing.T) {
 	}
 
 	// Agents see catalog names; the subscription route is chosen when used.
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels(parentModel)
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels(parentModel)
 	want := []claudetool.AvailableModel{
 		{Name: "gpt-6-astra", ID: parentModel},
 		{Name: "gpt-6-luna", ID: "gpt-6-luna@llm-sub-oai"},
@@ -382,7 +382,7 @@ func TestToolModelsKeepDistinctNativeModelsWithSameCatalogID(t *testing.T) {
 	}
 
 	// Both routes stay selectable, so their names must stay distinct.
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels(parentModel)
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels(parentModel)
 	want := []claudetool.AvailableModel{
 		{Name: "gpt-6-astra", ID: parentModel},
 		{Name: "gpt-6-luna@subscription", ID: "gpt-6-luna@subscription"},
@@ -407,7 +407,7 @@ func TestToolModelsDoNotPreferHiddenSubscriptionDuplicate(t *testing.T) {
 		},
 	}
 
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels(parentModel)
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels(parentModel)
 	want := []claudetool.AvailableModel{
 		{Name: "gpt-6-astra", ID: parentModel},
 		{Name: "gpt-6-luna", ID: "gpt-6-luna"},
@@ -437,7 +437,7 @@ func TestToolModelsPreferUnqualifiedParentSubscription(t *testing.T) {
 		},
 	}
 
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels(parentModel)
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels(parentModel)
 	want := []claudetool.AvailableModel{
 		{Name: parentModel, ID: parentModel},
 		{Name: "gpt-6-luna", ID: "gpt-6-luna"},
@@ -459,7 +459,7 @@ func TestToolModelsDoNotPreferSubscriptionForOtherParents(t *testing.T) {
 		},
 	}
 
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels(parentModel)
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels(parentModel)
 	want := []claudetool.AvailableModel{
 		{Name: parentModel, ID: parentModel},
 		{Name: "gpt-6-luna", ID: "gpt-6-luna"},
@@ -480,7 +480,7 @@ func TestToolModelsKeepGlobalChoicesWhenSubscriptionEndpointUnknown(t *testing.T
 		},
 	}
 
-	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels(parentModel)
+	got := setupToolSetConfig(nil, provider).BuildAvailableModels(parentModel)
 	want := []claudetool.AvailableModel{
 		{Name: "gpt-6-luna", ID: "gpt-6-luna"},
 		{Name: "claude-opus-5.5", ID: "claude-opus-5.5"},

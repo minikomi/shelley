@@ -1354,6 +1354,10 @@ func toStopReason(reason string) llm.StopReason {
 
 func (s *Service) Provider() string { return s.ProviderName }
 
+func (s *Service) PatchProfile() string {
+	return llm.ModelPatchProfile(s.Model.ModelName)
+}
+
 // DefaultReasoningLevel reports the reasoning effort applied to un-overridden
 // requests, mirroring the precedence used when building a chat-completions
 // request: verbatim per-model ReasoningEffort wins, else a configured
