@@ -251,19 +251,9 @@
           >
             <span class="drawer-calendar-day-number">{{ date.day }}</span>
             <span class="drawer-calendar-activity">
-              <template v-if="calendarDayCount(date) > 0">
-                <span class="drawer-calendar-circle-slot">
-                  <span
-                    class="drawer-calendar-circle"
-                    :class="`drawer-calendar-circle-${calendarDayActivity(calendarDayCount(date))}`"
-                    :style="{
-                      '--calendar-circle-size': `${calendarDayDiameter(calendarDayCount(date))}rem`,
-                    }"
-                    aria-hidden="true"
-                  />
-                </span>
-                <span class="drawer-calendar-count">{{ calendarDayCount(date) }}</span>
-              </template>
+              <span v-if="calendarDayCount(date) > 0" class="drawer-calendar-count">
+                {{ calendarDayCount(date) }}
+              </span>
             </span>
           </span>
         </template>
@@ -1427,19 +1417,9 @@ const calendarDayCounts = computed(() => {
   }
   return counts;
 });
-const calendarMaxDayCount = computed(() => Math.max(0, ...calendarDayCounts.value.values()));
 
 function calendarDayCount(date: { year: number; month: number; day: number }): number {
   return calendarDayCounts.value.get(new Date(date.year, date.month, date.day).toDateString()) ?? 0;
-}
-
-function calendarDayActivity(count: number): "light" | "medium" | "heavy" {
-  const max = calendarMaxDayCount.value;
-  return count > (max * 2) / 3 ? "heavy" : count > max / 3 ? "medium" : "light";
-}
-
-function calendarDayDiameter(count: number): number {
-  return 1.25 * Math.sqrt(count / calendarMaxDayCount.value);
 }
 
 // Keep the rows behind an open tag picker stable. Removing a selected tag can

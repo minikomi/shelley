@@ -127,22 +127,13 @@ test("Daily grouping pages and counts last-touched chats and selects calendar da
       `[data-pc-section="daycell"][aria-label="${n}"]:not([data-p-other-month="true"]) [data-pc-section="day"]`,
     );
   await expect(day(8).locator(".drawer-calendar-count")).toHaveText("2");
-  await expect(day(8).locator(".drawer-calendar-circle")).toHaveClass(/circle-heavy/);
   await expect(day(7).locator(".drawer-calendar-count")).toHaveText("1");
-  await expect(day(7).locator(".drawer-calendar-circle")).toHaveClass(/circle-medium/);
   await expect(day(6).locator(".drawer-calendar-count")).toHaveText("1");
   await expect(day(5).locator(".drawer-calendar-count")).toHaveCount(0);
-  const busyCircle = await day(8).locator(".drawer-calendar-circle").boundingBox();
-  const quietCircle = await day(7).locator(".drawer-calendar-circle").boundingBox();
-  expect(busyCircle!.width).toBeGreaterThan(quietCircle!.width);
-  expect((busyCircle!.width / quietCircle!.width) ** 2).toBeCloseTo(2, 1);
-  expect(await day(7).evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
+  await expect(calendar.locator(".drawer-calendar-circle")).toHaveCount(0);
+  expect(await day(7).evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe(
     "rgba(0, 0, 0, 0)",
   );
-  const selectedRing = await day(7)
-    .locator(".drawer-calendar-day-number")
-    .evaluate((el) => getComputedStyle(el).borderTopColor);
-  expect(selectedRing).not.toBe("rgba(0, 0, 0, 0)");
   await expect(day(9)).toHaveAttribute("aria-disabled", "true");
   await day(6).click();
   await expect(calendar).toBeHidden();

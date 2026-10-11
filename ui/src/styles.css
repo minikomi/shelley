@@ -977,12 +977,19 @@ body {
 
 .drawer-day-calendar .p-datepicker-day {
   width: 2.375rem;
-  height: 3rem;
+  height: 2.5rem;
   border-radius: 0.375rem;
 }
 
-.drawer-day-calendar .p-datepicker-day.p-datepicker-day-selected,
-.drawer-day-calendar .p-datepicker-day-cell[data-p-today="true"] .p-datepicker-day {
+.drawer-day-calendar .p-datepicker-day.p-datepicker-day-selected {
+  background: color-mix(in srgb, var(--primary) 12%, var(--bg-base));
+  color: var(--text-primary);
+  border-color: transparent;
+}
+
+.drawer-day-calendar
+  .p-datepicker-day-cell[data-p-today="true"]
+  .p-datepicker-day:not(.p-datepicker-day-selected) {
   background: transparent;
   color: var(--text-primary);
   border-color: transparent;
@@ -993,7 +1000,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 0.0625rem;
-  min-height: 2.8125rem;
+  min-height: 2.125rem;
   font-size: var(--font-size-12);
   line-height: 1.1;
 }
@@ -1014,23 +1021,7 @@ body {
   align-items: center;
   justify-content: center;
   width: 2.25rem;
-  height: 1.5rem;
-}
-
-.drawer-calendar-circle-slot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 1.25rem;
-  height: 1.25rem;
-}
-
-.drawer-calendar-circle {
-  display: block;
-  width: var(--calendar-circle-size);
-  height: var(--calendar-circle-size);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--primary) 15%, var(--bg-base));
+  height: 1rem;
 }
 
 .drawer-calendar-count {
@@ -1039,10 +1030,6 @@ body {
   font-size: var(--font-size-11);
   font-variant-numeric: tabular-nums;
   text-align: center;
-}
-
-.drawer-calendar-circle-medium {
-  background: color-mix(in srgb, var(--primary) 40%, var(--bg-base));
 }
 
 .drawer-calendar-today {
@@ -5311,8 +5298,7 @@ svg {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-.md-toggle-btn-selected:hover,
-.drawer-calendar-circle-heavy {
+.md-toggle-btn-selected:hover {
   background: var(--primary-dark);
   color: white;
 }
