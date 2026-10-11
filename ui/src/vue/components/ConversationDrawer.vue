@@ -249,13 +249,21 @@
             class="drawer-calendar-date"
             :title="`${calendarDayCount(date)} chats last touched`"
           >
-            <span>{{ date.day }}</span>
-            <span
-              v-if="calendarDayCount(date) > 0"
-              class="drawer-calendar-count"
-              :class="`drawer-calendar-count-${calendarDayActivity(calendarDayCount(date))}`"
-            >
-              {{ calendarDayCount(date) }}
+            <span class="drawer-calendar-day-number">{{ date.day }}</span>
+            <span class="drawer-calendar-activity">
+              <template v-if="calendarDayCount(date) > 0">
+                <span class="drawer-calendar-circle-slot">
+                  <span
+                    class="drawer-calendar-circle"
+                    :class="`drawer-calendar-circle-${calendarDayActivity(calendarDayCount(date))}`"
+                    :style="{
+                      '--calendar-circle-size': `${calendarDayDiameter(calendarDayCount(date))}rem`,
+                    }"
+                    aria-hidden="true"
+                  />
+                </span>
+                <span class="drawer-calendar-count">{{ calendarDayCount(date) }}</span>
+              </template>
             </span>
           </span>
         </template>
@@ -1428,6 +1436,10 @@ function calendarDayCount(date: { year: number; month: number; day: number }): n
 function calendarDayActivity(count: number): "light" | "medium" | "heavy" {
   const max = calendarMaxDayCount.value;
   return count > (max * 2) / 3 ? "heavy" : count > max / 3 ? "medium" : "light";
+}
+
+function calendarDayDiameter(count: number): number {
+  return 1.25 * Math.sqrt(count / calendarMaxDayCount.value);
 }
 
 // Keep the rows behind an open tag picker stable. Removing a selected tag can

@@ -879,7 +879,8 @@ body {
   cursor: not-allowed;
 }
 
-.drawer-filter-action:not(:disabled):hover {
+.drawer-filter-action:not(:disabled):hover,
+.drawer-day-calendar .p-datepicker-day-selected .drawer-calendar-day-number {
   border-color: var(--primary);
   color: var(--primary);
 }
@@ -975,9 +976,16 @@ body {
 }
 
 .drawer-day-calendar .p-datepicker-day {
-  width: 2.25rem;
-  height: 2.5rem;
+  width: 2.375rem;
+  height: 3rem;
   border-radius: 0.375rem;
+}
+
+.drawer-day-calendar .p-datepicker-day.p-datepicker-day-selected,
+.drawer-day-calendar .p-datepicker-day-cell[data-p-today="true"] .p-datepicker-day {
+  background: transparent;
+  color: var(--text-primary);
+  border-color: transparent;
 }
 
 .drawer-calendar-date {
@@ -985,26 +993,55 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 0.0625rem;
-  min-height: 2.125rem;
+  min-height: 2.8125rem;
   font-size: var(--font-size-12);
   line-height: 1.1;
 }
 
-.drawer-calendar-count {
+.drawer-calendar-day-number {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.125rem;
-  height: 1.125rem;
-  border: 1px solid var(--bg-base);
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid transparent;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--primary) 15%, var(--bg-base));
-  color: var(--text-primary);
-  font-size: var(--font-size-11);
-  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-14);
 }
 
-.drawer-calendar-count-medium {
+.drawer-calendar-activity {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 1.5rem;
+}
+
+.drawer-calendar-circle-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1.25rem;
+  height: 1.25rem;
+}
+
+.drawer-calendar-circle {
+  display: block;
+  width: var(--calendar-circle-size);
+  height: var(--calendar-circle-size);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 15%, var(--bg-base));
+}
+
+.drawer-calendar-count {
+  flex: 0 0 1rem;
+  color: var(--text-secondary);
+  font-size: var(--font-size-11);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.drawer-calendar-circle-medium {
   background: color-mix(in srgb, var(--primary) 40%, var(--bg-base));
 }
 
@@ -5275,7 +5312,7 @@ svg {
 }
 
 .md-toggle-btn-selected:hover,
-.drawer-calendar-count-heavy {
+.drawer-calendar-circle-heavy {
   background: var(--primary-dark);
   color: white;
 }
