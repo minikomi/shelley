@@ -2,7 +2,7 @@ import { shallowRef, watch } from "vue";
 import type { QueuedMessage } from "../../types";
 import { messageSource } from "../../utils/messageSource";
 
-const NOTICE_DELAY_MS = 1000;
+const NOTICE_DELAY_MS = 2000;
 
 export function useVisibleQueuedMessages(queuedMessages: () => QueuedMessage[]) {
   const visible = shallowRef<QueuedMessage[]>([]);

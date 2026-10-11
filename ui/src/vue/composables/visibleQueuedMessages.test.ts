@@ -31,31 +31,31 @@ function harness(t: TestContext, messages: QueuedMessage[]) {
 test("a quickly drained subagent notice never appears as queued", async (t) => {
   const h = harness(t, [notice("brief")]);
   assert.deepEqual(h.visible.value, []);
-  t.mock.timers.tick(999);
+  t.mock.timers.tick(1999);
   assert.deepEqual(h.visible.value, []);
   h.queued.value = [];
   await nextTick();
-  t.mock.timers.tick(1000);
+  t.mock.timers.tick(2000);
   assert.deepEqual(h.visible.value, []);
 });
 
-test("a notice still queued after one second becomes visible", (t) => {
+test("a notice still queued after two seconds becomes visible", (t) => {
   const message = notice("waiting");
   const h = harness(t, [message]);
-  t.mock.timers.tick(999);
+  t.mock.timers.tick(1999);
   assert.deepEqual(h.visible.value, []);
   t.mock.timers.tick(1);
   assert.deepEqual(h.visible.value, [message]);
 });
 
 test("already waiting notices appear immediately", (t) => {
-  const message = notice("old", 1000);
+  const message = notice("old", 2000);
   const h = harness(t, [message]);
   assert.deepEqual(h.visible.value, [message]);
 });
 
 test("queue updates preserve each notice's age and server order", async (t) => {
-  const first = notice("first", 500);
+  const first = notice("first", 1500);
   const second = notice("second");
   const h = harness(t, [first, second]);
   t.mock.timers.tick(250);
@@ -66,7 +66,7 @@ test("queue updates preserve each notice's age and server order", async (t) => {
     h.visible.value.map(({ id }) => id),
     ["first"],
   );
-  t.mock.timers.tick(500);
+  t.mock.timers.tick(1500);
   assert.deepEqual(
     h.visible.value.map(({ id }) => id),
     ["first", "second"],
@@ -88,7 +88,7 @@ test("background job notices use the same grace period", (t) => {
   const job = { ...notice("job"), user_data: { background_job_id: "job" } };
   const h = harness(t, [job]);
   assert.deepEqual(h.visible.value, []);
-  t.mock.timers.tick(1000);
+  t.mock.timers.tick(2000);
   assert.deepEqual(h.visible.value, [job]);
 });
 
@@ -98,7 +98,7 @@ test("replacing the queue cancels a previous conversation's reveal", async (t) =
   const current = { ...notice("current"), created_at: new Date(Date.now()).toISOString() };
   h.queued.value = [current];
   await nextTick();
-  t.mock.timers.tick(500);
+  t.mock.timers.tick(1500);
   assert.deepEqual(h.visible.value, []);
   t.mock.timers.tick(500);
   assert.deepEqual(h.visible.value, [current]);
@@ -107,6 +107,6 @@ test("replacing the queue cancels a previous conversation's reveal", async (t) =
 test("unmount cancels pending reveals", (t) => {
   const h = harness(t, [notice("unmounted")]);
   h.scope.stop();
-  t.mock.timers.tick(1000);
+  t.mock.timers.tick(2000);
   assert.deepEqual(h.visible.value, []);
 });

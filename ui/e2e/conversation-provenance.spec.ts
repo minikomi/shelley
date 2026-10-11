@@ -187,7 +187,7 @@ test("queued and transcribing conversation messages share the source header", as
   const tasks = page.getByTestId("transcription-task");
   await expect(tasks).toHaveCount(2);
   await expect(ghost).toHaveCount(0);
-  await page.clock.runFor(999);
+  await page.clock.runFor(1999);
   await expect(ghost).toHaveCount(0);
   await page.clock.runFor(1);
   await expect(ghost.getByTestId("message-author-conversation")).toHaveText("Message from backend");
