@@ -223,7 +223,7 @@
           <!-- Durable queued items render in their exact server order. Working
                and failed transcriptions get a specialized card; ready
                transcriptions are ordinary queued user-message ghosts. -->
-          <template v-for="(qm, queuedIndex) in queuedGhosts" :key="`queued-${qm.id}`">
+          <template v-for="qm in visibleQueuedGhosts" :key="`queued-${qm.id}`">
             <TranscriptionTask
               v-if="queuedTranscriptionTaskState(qm)"
               :path="queuedTranscriptionPath(qm)"
@@ -239,7 +239,7 @@
               v-else
               :queued="qm"
               :on-send-now="
-                conversationId && queuedIndex === 0 && !isDistilling
+                conversationId && qm.id === queuedGhosts[0]?.id && !isDistilling
                   ? sendQueuedMessageNow
                   : undefined
               "
@@ -247,7 +247,7 @@
               :on-cancel="conversationId ? cancelQueuedMessage : undefined"
             />
           </template>
-          <div v-if="queuedGhosts.length > 1 && conversationId" class="queued-cancel-all-row">
+          <div v-if="visibleQueuedGhosts.length > 1 && conversationId" class="queued-cancel-all-row">
             <button
               class="queued-message-badge-cancel"
               data-testid="cancel-all-queued"
@@ -686,6 +686,7 @@ import ChunkHost from "./ChunkHost.vue";
 import { chunkMountKey } from "./chunkMount";
 import { collectReactions, messageUserContextKey, targetResolver } from "./messageUserContext";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
+import { useVisibleQueuedMessages } from "../composables/visibleQueuedMessages";
 import TranscriptionTask from "./TranscriptionTask.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
 import MarkdownContent from "./MarkdownContent.vue";
@@ -3069,6 +3070,7 @@ const queuedGhosts = computed(() => {
   perfCount("chat.queuedGhosts");
   return parseQueuedMessages(props.currentConversation?.queued_messages);
 });
+const visibleQueuedGhosts = useVisibleQueuedMessages(() => queuedGhosts.value);
 
 // Build the conversation_options bundle from the composer's settings: its
 // profile (for the system prompt), and what the composer shows for the rest,
