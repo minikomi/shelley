@@ -709,6 +709,7 @@ const props = withDefaults(
     onArchiveConversation?: (conversationId: string) => Promise<void>;
     currentConversation?: Conversation;
     onConversationUpdate?: (conversation: Conversation) => void;
+    onMessageSent?: (conversationId: string) => void;
     onFirstMessage?: (
       message: string,
       model: string,
@@ -3008,6 +3009,7 @@ async function queueMessageTo(conversationId: string, model: string, message: st
       },
       pending.controller.signal,
     );
+    props.onMessageSent?.(conversationId);
   } catch (err) {
     if (pending.controller.signal.aborted) return;
     console.error("Failed to queue message:", err);
@@ -3284,6 +3286,7 @@ async function postSubmittedDraft<T>(
     ownSends.delete(conversationId);
   }
   clearSubmittedDraft(conversationId, text);
+  props.onMessageSent?.(conversationId);
   return result;
 }
 

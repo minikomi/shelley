@@ -35,6 +35,7 @@
         :current-conversation-id="currentConversationId"
         :viewed-conversation="viewedConversation"
         :show-active-trigger="showActiveTrigger"
+        :message-sent-trigger="messageSentTrigger"
         @close="drawerOpen = false"
         @toggle-collapse="toggleDrawerCollapsed"
         @select-conversation="selectConversation"
@@ -58,6 +59,7 @@
           :on-archive-conversation="archiveFromChat"
           :current-conversation="currentConversation"
           :on-conversation-update="updateConversation"
+          :on-message-sent="handleMessageSent"
           :on-first-message="handleFirstMessage"
           :on-draft-created="onDraftCreated"
           :on-distill-new-generation="handleDistillNewGeneration"
@@ -449,6 +451,7 @@ function applyDiskSpaceStatus(status: DiskSpaceStatus, snapshot = false) {
 }
 const reconnectNonce = ref(0);
 const showActiveTrigger = ref(0);
+const messageSentTrigger = ref(0);
 
 // ---- non-reactive refs ----
 let initialSlugResolved = false;
@@ -723,6 +726,10 @@ function updateConversation(updatedConversation: Conversation) {
   }
 }
 
+function handleMessageSent(conversationId: string) {
+  if (conversationId === currentConversationId.value) messageSentTrigger.value++;
+}
+
 function handleConversationArchived(
   conversationId: string,
   nextConversation?: Conversation | null,
@@ -828,6 +835,7 @@ async function handleFirstMessage(
     const newConversationId = response.conversation_id;
     messageStore.setAgentWorking(newConversationId, true);
     currentConversationId.value = newConversationId;
+    handleMessageSent(newConversationId);
   } catch (err) {
     console.error("Failed to send first message:", err);
     error.value = err instanceof Error ? err.message : "Failed to send message";
