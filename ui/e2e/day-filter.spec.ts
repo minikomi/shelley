@@ -4,12 +4,13 @@ import { createConversationViaAPIWithDetails } from "./helpers";
 
 test.use({ timezoneId: "America/New_York" });
 
-test("browse last-touched days with search, tags, grouping, archives, and reset", async ({
+test("Daily grouping pages and counts last-touched chats and selects calendar dates", async ({
   page,
   request,
 }) => {
   await page.clock.setFixedTime(new Date("2026-10-08T16:00:00Z"));
   const today = await createConversationViaAPIWithDetails(request, "day paging today");
+  const alsoToday = await createConversationViaAPIWithDetails(request, "day paging today too");
   const yesterday = await createConversationViaAPIWithDetails(request, "day paging yesterday");
   const earlier = await createConversationViaAPIWithDetails(request, "day paging earlier");
   const response = await request.get("/api/conversations");
@@ -17,6 +18,7 @@ test("browse last-touched days with search, tags, grouping, archives, and reset"
   const corpus = (await response.json()) as ConversationWithState[];
   const fixtures = [
     [today.conversationId, "2026-10-08T04:00:00Z", "day-today"],
+    [alsoToday.conversationId, "2026-10-08T17:00:00Z", "day-today"],
     [yesterday.conversationId, "2026-10-08T03:59:59Z", "day-yesterday"],
     [earlier.conversationId, "2026-10-06T16:00:00Z", "day-earlier"],
   ].map(([id, updated_at, tag]) => {
@@ -40,27 +42,33 @@ test("browse last-touched days with search, tags, grouping, archives, and reset"
   await page.route("**/api/stream2*", (route) => route.abort());
   await page.goto("/");
   await page.getByRole("button", { name: "Open conversations", exact: true }).click();
-  await page.getByRole("button", { name: "Search conversations..." }).click();
-
   const picker = page.getByTestId("conversation-day-filter");
   const row = (id: string) => page.locator(`.conversation-item[data-conversation-id="${id}"]`);
   const previous = picker.getByRole("button", { name: "Previous day" });
   const next = picker.getByRole("button", { name: "Next day" });
-  await expect(picker.locator(".drawer-day-label")).toHaveText("All days");
-  await expect(row(today.conversationId)).toBeVisible();
-  await expect(row(yesterday.conversationId)).toBeVisible();
-  await expect(next).toBeDisabled();
-
-  await picker.getByRole("button", { name: "Today", exact: true }).click();
-  await expect(picker.locator(".drawer-day-label")).toHaveText("Today");
+  const date = picker.locator(".drawer-day-date");
+  const count = picker.locator(".drawer-day-count");
+  const groupBy = async (label: string) => {
+    await page.getByRole("button", { name: "Group conversations" }).click();
+    await page
+      .locator(".group-by-menu-item")
+      .filter({ hasText: new RegExp(`^${label}$`) })
+      .click();
+  };
+  await expect(picker).toBeHidden();
+  await page.getByRole("button", { name: "Search conversations..." }).click();
+  await expect(picker).toBeHidden();
+  await groupBy("Daily");
+  await expect(date).toHaveText("Today");
+  await expect(count).toHaveText("2");
   await expect(row(today.conversationId)).toBeVisible();
   await expect(row(yesterday.conversationId)).toBeHidden();
   await expect(next).toBeDisabled();
   await previous.click();
-  await expect(picker.locator(".drawer-day-label")).toHaveText("Yesterday");
-  await expect(row(today.conversationId)).toBeHidden();
+  await expect(date).toHaveText("Yesterday");
+  await expect(count).toHaveText("1");
   await expect(row(yesterday.conversationId)).toBeVisible();
-  await expect(next).toBeEnabled();
+  await expect(row(today.conversationId)).toBeHidden();
 
   await page.getByRole("button", { name: "Add tag filter" }).click();
   await expect(
@@ -71,56 +79,60 @@ test("browse last-touched days with search, tags, grouping, archives, and reset"
   );
   await page.locator('[data-testid="tag-filter-option"][data-tag="day-yesterday"]').click();
   await next.click();
-  await expect(row(yesterday.conversationId)).toBeHidden();
+  await expect(count).toHaveText("0");
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
-  await expect(row(today.conversationId)).toBeVisible();
+  await expect(count).toHaveText("2");
 
-  await page.getByRole("button", { name: "Group conversations" }).click();
-  await page
-    .locator(".group-by-menu-item")
-    .filter({ hasText: /^Directory$/ })
-    .click();
+  await groupBy("Directory");
+  await expect(picker).toBeHidden();
   await expect(row(today.conversationId)).toBeVisible();
-  await expect(row(yesterday.conversationId)).toBeHidden();
-  await page.getByRole("button", { name: "Group conversations" }).click();
-  await page
-    .locator(".group-by-menu-item")
-    .filter({ hasText: /^No grouping$/ })
-    .click();
-
-  const search = page.locator(".drawer-search-input");
-  await search.fill("day paging");
-  await expect(row(today.conversationId)).toBeVisible();
-  await expect(row(yesterday.conversationId)).toBeHidden();
-  await previous.click();
   await expect(row(yesterday.conversationId)).toBeVisible();
-  await expect(row(today.conversationId)).toBeHidden();
+  await groupBy("Daily");
+  const searchResponse = page.waitForResponse("**/api/conversations/search?*");
+  await page.locator(".drawer-search-input").fill("day paging");
+  await searchResponse;
+  await expect(count).toHaveText("2");
+  await previous.click();
+  await expect(count).toHaveText("1");
+  await expect(row(yesterday.conversationId)).toBeVisible();
   await page.getByRole("button", { name: "Clear search", exact: true }).click();
-
   await page.getByRole("button", { name: "View Archived" }).click();
+  await expect(count).toHaveText("1");
   await expect(row(yesterday.conversationId)).toBeVisible();
   await expect(row(today.conversationId)).toBeHidden();
   await page.getByRole("button", { name: "Back to conversations" }).click();
-  await previous.click();
+
+  await picker.locator(".drawer-day-label").click();
+  const calendar = page.getByRole("dialog", { name: "Choose last-touched day" });
+  await expect(calendar).toBeVisible();
+  const day = (n: number) =>
+    calendar.locator(
+      `[data-pc-section="daycell"][aria-label="${n}"]:not([data-p-other-month="true"]) [data-pc-section="day"]`,
+    );
+  await expect(day(9)).toHaveAttribute("aria-disabled", "true");
+  await day(6).click();
+  await expect(calendar).toBeHidden();
+  await expect(date).toHaveText("Tue, Oct 6");
+  await expect(count).toHaveText("1");
   await expect(row(earlier.conversationId)).toBeVisible();
   expect(await picker.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBeTruthy();
   await previous.click();
+  await expect(count).toHaveText("0");
   await expect(page.getByTestId("day-filter-empty")).toBeVisible();
   await expect(next).toBeEnabled();
-  await picker.getByRole("button", { name: "Today", exact: true }).click();
-  await expect(row(today.conversationId)).toBeVisible();
-
   await page.getByRole("button", { name: "Search conversations..." }).click();
+  await expect(picker).toBeVisible();
+  await picker.getByRole("button", { name: "Turn off Daily" }).click();
   await expect(picker).toBeHidden();
-  await expect(row(yesterday.conversationId)).toBeHidden();
-  await page.getByRole("button", { name: "Search conversations..." }).click();
-  await expect(picker.locator(".drawer-day-label")).toHaveText("Today");
-  await picker.getByRole("button", { name: "All days", exact: true }).click();
   await expect(row(today.conversationId)).toBeVisible();
   await expect(row(yesterday.conversationId)).toBeVisible();
-  await expect(row(earlier.conversationId)).toBeVisible();
-
+  await groupBy("Daily");
+  await expect(date).toHaveText("Today");
+  await expect(count).toHaveText("2");
+  await page.reload();
+  await page.getByRole("button", { name: "Open conversations", exact: true }).click();
+  await expect(date).toHaveText("Today");
+  await expect(count).toHaveText("2");
   await page.setViewportSize({ width: 1280, height: 800 });
-  const fits = await picker.evaluate((el) => el.scrollWidth <= el.clientWidth);
-  expect(fits).toBeTruthy();
+  expect(await picker.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBeTruthy();
 });
