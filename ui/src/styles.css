@@ -892,6 +892,63 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.drawer-day-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.drawer-day-pager {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg);
+}
+
+.drawer-day-arrow {
+  flex: 0 0 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-14);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.drawer-day-arrow:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.drawer-day-label {
+  flex: 1;
+  min-width: 0;
+  padding: 0 0.25rem;
+  color: var(--text-primary);
+  font-size: var(--font-size-12);
+  font-weight: 500;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.drawer-day-link {
+  padding: 0.25rem 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-11);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .conversation-row-cache {
   display: contents;
 }
@@ -1150,7 +1207,9 @@ body {
 }
 
 .btn-icon.group-by-active,
-.btn-icon.search-toggle-active {
+.btn-icon.search-toggle-active,
+.drawer-day-arrow:not(:disabled):hover,
+.drawer-day-link:hover {
   color: var(--primary);
 }
 

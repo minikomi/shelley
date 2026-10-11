@@ -237,6 +237,49 @@
           {{ displayedConversations.length }}
         </span>
       </div>
+      <div class="drawer-day-filter" data-testid="conversation-day-filter">
+        <div class="drawer-day-pager" role="group" aria-label="Last touched day">
+          <button
+            type="button"
+            class="drawer-day-arrow"
+            aria-label="Previous day"
+            v-tooltip.top="'Previous day'"
+            @click="pageDay(-1)"
+          >
+            ‹
+          </button>
+          <span
+            class="drawer-day-label"
+            aria-live="polite"
+            :title="
+              selectedDay ? `Last touched ${selectedDay.toDateString()}` : 'All last-touched dates'
+            "
+          >
+            {{ selectedDayLabel }}
+          </span>
+          <button
+            type="button"
+            class="drawer-day-arrow"
+            aria-label="Next day"
+            v-tooltip.top="'Next day'"
+            :disabled="!canPageForward"
+            @click="pageDay(1)"
+          >
+            ›
+          </button>
+        </div>
+        <button
+          v-if="!selectedDayIsToday"
+          type="button"
+          class="drawer-day-link"
+          @click="selectDay(shiftLocalDay(new Date(), 0))"
+        >
+          Today
+        </button>
+        <button v-if="selectedDay" type="button" class="drawer-day-link" @click="selectDay(null)">
+          All days
+        </button>
+      </div>
       <!-- Tag dropdown. Opens on a `tag:` term, listing only tags carried by
            conversations still on screen, each with the count it would leave —
            so a suggestion can never lead to an empty list. -->
@@ -344,6 +387,21 @@
           @click="clearParticipantFilter"
         >
           Show all conversations
+        </Button>
+      </div>
+      <div
+        v-else-if="selectedDay && displayedConversations.length === 0"
+        class="text-secondary drawer-empty-state"
+        data-testid="day-filter-empty"
+      >
+        <p>No matching chats for {{ selectedDayLabel }}.</p>
+        <Button
+          class="drawer-empty-state-action"
+          severity="secondary"
+          size="small"
+          @click="selectDay(null)"
+        >
+          All days
         </Button>
       </div>
       <div
@@ -460,6 +518,7 @@ import {
 } from "../../utils/conversationSort";
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
+import { filterConversationsByDay, shiftLocalDay } from "../../utils/conversationDayFilter";
 import {
   compareParticipantGroupKeys,
   filterConversationsByParticipantQuery,
@@ -557,6 +616,36 @@ const archivedConversations = ref<ConversationWithParticipants[]>([]);
 const loadingArchived = ref(false);
 const searchQuery = ref("");
 const searchOpen = ref(false);
+const selectedDay = ref<Date | null>(null);
+const selectedDayIsToday = computed(
+  () => selectedDay.value?.getTime() === shiftLocalDay(new Date(), 0).getTime(),
+);
+const canPageForward = computed(
+  () => selectedDay.value !== null && selectedDay.value < shiftLocalDay(new Date(), 0),
+);
+const selectedDayLabel = computed(() => {
+  const day = selectedDay.value;
+  if (!day) return "All days";
+  if (selectedDayIsToday.value) return "Today";
+  if (day.getTime() === shiftLocalDay(new Date(), -1).getTime()) return t("yesterday");
+  return day.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(day.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
+  });
+});
+
+function selectDay(day: Date | null) {
+  selectedDay.value = day;
+  filterMenuDismissed.value = true;
+  tagMenuConversationSnapshot.value = null;
+}
+
+function pageDay(offset: -1 | 1) {
+  selectDay(shiftLocalDay(selectedDay.value ?? new Date(), offset));
+}
+
 const searchTooltip = computed(() => ({
   value: t("searchConversations"),
   disabled: window.matchMedia("(hover: none), (pointer: coarse)").matches,
@@ -657,6 +746,7 @@ const structuredFiltersActive = computed(
   () =>
     selectedUsers.value.length > 0 ||
     parsedQuery.value.includeUnattributed ||
+    selectedDay.value !== null ||
     queryHasTagFilter(parsedQuery.value),
 );
 const searchToolbarActive = computed(
@@ -788,7 +878,7 @@ const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() =
   resetOrderRefsForResort();
   void resortKey.value;
   const out: Record<string, ConversationWithState[]> = {};
-  for (const conv of props.conversations) {
+  for (const conv of filterConversationsByDay(props.conversations, selectedDay.value)) {
     if (conv.parent_conversation_id) {
       (out[conv.parent_conversation_id] ||= []).push(conv);
     }
@@ -1188,7 +1278,7 @@ const stableTopLevelConversations = computed(() => {
 const topLevelConversations = computed(() =>
   filterConversationsByQuery(
     filterConversationsByParticipantQuery(
-      stableTopLevelConversations.value,
+      filterConversationsByDay(stableTopLevelConversations.value, selectedDay.value),
       selectedUsers.value,
       parsedQuery.value.includeUnattributed,
     ),
@@ -1233,7 +1323,7 @@ const stableArchivedConversations = computed(() => {
   archivedOrder = order;
   return filterConversationsByQuery(
     filterConversationsByParticipantQuery(
-      items,
+      filterConversationsByDay(items, selectedDay.value),
       selectedUsers.value,
       parsedQuery.value.includeUnattributed,
     ),
@@ -1263,7 +1353,7 @@ const displayedConversations = computed<(Conversation | ConversationWithState)[]
   if (isSearching.value)
     return filterConversationsByQuery(
       filterConversationsByParticipantQuery(
-        searchResults.value ?? [],
+        filterConversationsByDay(searchResults.value ?? [], selectedDay.value),
         selectedUsers.value,
         parsedQuery.value.includeUnattributed,
       ),
@@ -1284,7 +1374,7 @@ const cacheActiveTopLevelRows = computed(
 const tagFilterPool = computed<ConversationWithParticipants[]>(() => {
   if (isSearching.value)
     return filterConversationsByParticipantQuery(
-      searchResults.value ?? [],
+      filterConversationsByDay(searchResults.value ?? [], selectedDay.value),
       selectedUsers.value,
       parsedQuery.value.includeUnattributed,
     );
@@ -1292,7 +1382,7 @@ const tagFilterPool = computed<ConversationWithParticipants[]>(() => {
     ? archivedConversations.value
     : props.conversations.filter((c) => !c.parent_conversation_id);
   return filterConversationsByParticipantQuery(
-    pool,
+    filterConversationsByDay(pool, selectedDay.value),
     selectedUsers.value,
     parsedQuery.value.includeUnattributed,
   );
@@ -1303,9 +1393,12 @@ const tagFilterPool = computed<ConversationWithParticipants[]>(() => {
 // it unconditionally). Identifies when that filter, rather than a text/tag
 // miss, caused an empty state, and sizes the user picker's offers.
 const participantFilterPool = computed<ConversationWithParticipants[]>(() => {
-  if (isSearching.value) return searchResults.value ?? [];
-  if (showArchived.value) return archivedConversations.value;
-  return props.conversations.filter((c) => !c.parent_conversation_id && !c.is_draft);
+  const pool = isSearching.value
+    ? (searchResults.value ?? [])
+    : showArchived.value
+      ? archivedConversations.value
+      : props.conversations.filter((c) => !c.parent_conversation_id && !c.is_draft);
+  return filterConversationsByDay(pool, selectedDay.value);
 });
 
 // A dropdown entry. Each carries the whole token it inserts, so the untagged
