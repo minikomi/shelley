@@ -130,6 +130,10 @@ test("queued and transcribing conversation messages share the source header", as
   request,
 }) => {
   const parent = await createConversationViaAPIWithDetails(request, "echo: queue provenance");
+  const clockStart = new Date();
+  const queuedAt = new Date(clockStart.getTime() + 1000);
+  await page.clock.install({ time: clockStart });
+  await page.clock.pauseAt(queuedAt);
   const source = {
     sender_conversation_id: "child",
     sender_slug: "backend",
@@ -139,14 +143,14 @@ test("queued and transcribing conversation messages share the source header", as
   const queued = JSON.stringify([
     {
       id: "queued-source",
-      created_at: new Date().toISOString(),
+      created_at: queuedAt.toISOString(),
       model: "predictable",
       llm: { Role: 0, Content: [{ Type: 2, Text: source.Text }] },
       user_data: source,
     },
     ...["working", "failed"].map((state) => ({
       id: `transcription-${state}`,
-      created_at: new Date().toISOString(),
+      created_at: queuedAt.toISOString(),
       model: "predictable",
       kind: "transcription",
       state,
@@ -180,13 +184,18 @@ test("queued and transcribing conversation messages share the source header", as
   });
   await page.goto(`/c/${parent.slug}`);
   const ghost = page.getByTestId("queued-ghost");
+  const tasks = page.getByTestId("transcription-task");
+  await expect(tasks).toHaveCount(2);
+  await expect(ghost).toHaveCount(0);
+  await page.clock.runFor(1999);
+  await expect(ghost).toHaveCount(0);
+  await page.clock.runFor(1);
   await expect(ghost.getByTestId("message-author-conversation")).toHaveText("Message from backend");
   await expect(ghost).toHaveClass(/message-tool/);
   await expect(ghost).toHaveCSS("background-color", "rgb(243, 244, 246)");
   await expect(ghost.getByTestId("message-content")).toHaveCSS("border-top-style", "dashed");
   await expect(ghost).toContainText("Queued progress");
-  const tasks = page.getByTestId("transcription-task");
-  await expect(tasks).toHaveCount(2);
+
   for (const task of await tasks.all()) {
     await expect(task).toHaveCSS("background-color", "rgb(243, 244, 246)");
     await expect(task.getByTestId("message-author-conversation")).toHaveText(
