@@ -59,12 +59,27 @@ test("Daily grouping pages and counts last-touched chats and selects calendar da
   };
   await expect(picker).toBeHidden();
   await page.getByRole("button", { name: "Search conversations..." }).click();
+  const searchShell = page.locator(".drawer-search-shell");
+  await expect(searchShell).toBeVisible();
+  const searchInset = await searchShell.evaluate((el) => {
+    const header = el.closest(".drawer")!.querySelector(".drawer-header")!;
+    return el.getBoundingClientRect().top - header.getBoundingClientRect().bottom;
+  });
+  expect(searchInset).toBe(8);
   await expect(picker).toBeHidden();
   await groupBy("Daily");
   await expect(date).toHaveText("Today");
   await expect(count).toHaveText("2");
   await expect(row(today.conversationId)).toBeVisible();
   await expect(row(yesterday.conversationId)).toBeHidden();
+  const listGap = await page
+    .locator(".conversation-list .conversation-item:visible")
+    .first()
+    .evaluate((el) => {
+      const search = el.closest(".drawer")!.querySelector(".drawer-search")!;
+      return el.getBoundingClientRect().top - search.getBoundingClientRect().bottom;
+    });
+  expect(listGap).toBe(4);
   await expect(next).toBeDisabled();
   await previous.click();
   await expect(date).toHaveText("Yesterday");
@@ -112,9 +127,11 @@ test("Daily grouping pages and counts last-touched chats and selects calendar da
       `[data-pc-section="daycell"][aria-label="${n}"]:not([data-p-other-month="true"]) [data-pc-section="day"]`,
     );
   await expect(day(8).locator(".drawer-calendar-count")).toHaveText("2");
+  await expect(day(8).locator(".drawer-calendar-count")).toHaveClass(/count-heavy/);
   await expect(day(7).locator(".drawer-calendar-count")).toHaveText("1");
+  await expect(day(7).locator(".drawer-calendar-count")).toHaveClass(/count-medium/);
   await expect(day(6).locator(".drawer-calendar-count")).toHaveText("1");
-  await expect(day(5).locator(".drawer-calendar-count")).toHaveText("0");
+  await expect(day(5).locator(".drawer-calendar-count")).toHaveCount(0);
   await expect(day(9)).toHaveAttribute("aria-disabled", "true");
   await day(6).click();
   await expect(calendar).toBeHidden();
@@ -130,8 +147,15 @@ test("Daily grouping pages and counts last-touched chats and selects calendar da
   await expect(calendar).toBeVisible();
   await expect(day(8).locator(".drawer-calendar-count")).toHaveText("2");
   await expect(day(7).locator(".drawer-calendar-count")).toHaveText("1");
-  await page.keyboard.press("Escape");
+  await calendar.getByRole("button", { name: "Today", exact: true }).click();
   await expect(calendar).toBeHidden();
+  await expect(date).toHaveText("Today");
+  await expect(count).toHaveText("2");
+  await previous.click();
+  await picker.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(date).toHaveText("Today");
+  await expect(count).toHaveText("2");
+  await expect(picker.getByRole("button", { name: "Today", exact: true })).toBeHidden();
   await page.getByRole("button", { name: "Search conversations..." }).click();
   await expect(picker).toBeVisible();
   await picker.getByRole("button", { name: "Turn off Daily" }).click();

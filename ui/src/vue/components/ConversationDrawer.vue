@@ -208,6 +208,14 @@
         </svg>
       </button>
       <button
+        v-if="!selectedDayIsToday"
+        type="button"
+        class="drawer-day-today"
+        @click="selectDay(shiftLocalDay(new Date(), 0))"
+      >
+        Today
+      </button>
+      <button
         type="button"
         class="drawer-day-close"
         aria-label="Turn off Daily"
@@ -242,8 +250,23 @@
             :title="`${calendarDayCount(date)} chats last touched`"
           >
             <span>{{ date.day }}</span>
-            <span class="drawer-calendar-count">{{ calendarDayCount(date) }}</span>
+            <span
+              v-if="calendarDayCount(date) > 0"
+              class="drawer-calendar-count"
+              :class="`drawer-calendar-count-${calendarDayActivity(calendarDayCount(date))}`"
+            >
+              {{ calendarDayCount(date) }}
+            </span>
           </span>
+        </template>
+        <template #footer>
+          <Button
+            class="drawer-calendar-today"
+            label="Today"
+            text
+            size="small"
+            @click="selectDay(shiftLocalDay(new Date(), 0))"
+          />
         </template>
       </DatePicker>
     </Popover>
@@ -1396,9 +1419,15 @@ const calendarDayCounts = computed(() => {
   }
   return counts;
 });
+const calendarMaxDayCount = computed(() => Math.max(0, ...calendarDayCounts.value.values()));
 
 function calendarDayCount(date: { year: number; month: number; day: number }): number {
   return calendarDayCounts.value.get(new Date(date.year, date.month, date.day).toDateString()) ?? 0;
+}
+
+function calendarDayActivity(count: number): "light" | "medium" | "heavy" {
+  const max = calendarMaxDayCount.value;
+  return count > (max * 2) / 3 ? "heavy" : count > max / 3 ? "medium" : "light";
 }
 
 // Keep the rows behind an open tag picker stable. Removing a selected tag can
