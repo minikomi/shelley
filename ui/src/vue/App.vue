@@ -277,7 +277,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, provide, ref, watch, shallowRef } from "vue";
 import ChatInterface from "./components/ChatInterface.vue";
 import type { RecordingMode } from "./components/recordingDestination";
 import { isImeComposing } from "../utils/imeComposing";
@@ -383,7 +383,8 @@ function updatePageTitle(conversation: Conversation | undefined) {
 const banner = window.__SHELLEY_INIT__?.banner;
 
 // ---- state ----
-const conversations = ref<ConversationWithState[]>([]);
+// Patches replace the list (and only the rows they touch), so deep reactivity is unnecessary.
+const conversations = shallowRef<ConversationWithState[]>([]);
 const currentConversationId = ref<string | null>(null);
 // Subagent tool widgets (SubagentTool.vue) join their slug against the live
 // conversation list to show what the subagent is doing right now.
