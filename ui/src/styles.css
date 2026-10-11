@@ -955,12 +955,27 @@ body {
 
 .drawer-day-calendar {
   max-width: calc(100vw - 2rem);
+  --p-datepicker-day-size: 2.25rem;
 }
 
 .drawer-day-calendar .p-datepicker-panel {
   padding: 0;
   border: none;
   background: transparent;
+}
+
+.drawer-calendar-date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.0625rem;
+  line-height: 1.1;
+}
+
+.drawer-calendar-count {
+  font-size: var(--font-size-11);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
 }
 
 .conversation-row-cache {

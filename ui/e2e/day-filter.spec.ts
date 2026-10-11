@@ -50,6 +50,8 @@ test("Daily grouping pages and counts last-touched chats and selects calendar da
   const count = picker.locator(".drawer-day-count");
   const groupBy = async (label: string) => {
     await page.getByRole("button", { name: "Group conversations" }).click();
+    await expect(page.locator(".group-by-menu-item").nth(3)).toHaveText("Tags");
+    await expect(page.locator(".group-by-menu-item").nth(4)).toHaveText("Daily");
     await page
       .locator(".group-by-menu-item")
       .filter({ hasText: new RegExp(`^${label}$`) })
@@ -109,6 +111,10 @@ test("Daily grouping pages and counts last-touched chats and selects calendar da
     calendar.locator(
       `[data-pc-section="daycell"][aria-label="${n}"]:not([data-p-other-month="true"]) [data-pc-section="day"]`,
     );
+  await expect(day(8).locator(".drawer-calendar-count")).toHaveText("2");
+  await expect(day(7).locator(".drawer-calendar-count")).toHaveText("1");
+  await expect(day(6).locator(".drawer-calendar-count")).toHaveText("1");
+  await expect(day(5).locator(".drawer-calendar-count")).toHaveText("0");
   await expect(day(9)).toHaveAttribute("aria-disabled", "true");
   await day(6).click();
   await expect(calendar).toBeHidden();
@@ -120,6 +126,12 @@ test("Daily grouping pages and counts last-touched chats and selects calendar da
   await expect(count).toHaveText("0");
   await expect(page.getByTestId("day-filter-empty")).toBeVisible();
   await expect(next).toBeEnabled();
+  await picker.locator(".drawer-day-label").click();
+  await expect(calendar).toBeVisible();
+  await expect(day(8).locator(".drawer-calendar-count")).toHaveText("2");
+  await expect(day(7).locator(".drawer-calendar-count")).toHaveText("1");
+  await page.keyboard.press("Escape");
+  await expect(calendar).toBeHidden();
   await page.getByRole("button", { name: "Search conversations..." }).click();
   await expect(picker).toBeVisible();
   await picker.getByRole("button", { name: "Turn off Daily" }).click();

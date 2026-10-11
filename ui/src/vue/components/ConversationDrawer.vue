@@ -235,7 +235,17 @@
         :max-date="shiftLocalDay(new Date(), 0)"
         inline
         @date-select="selectDay($event)"
-      />
+      >
+        <template #date="{ date }">
+          <span
+            class="drawer-calendar-date"
+            :title="`${calendarDayCount(date)} chats last touched`"
+          >
+            <span>{{ date.day }}</span>
+            <span class="drawer-calendar-count">{{ calendarDayCount(date) }}</span>
+          </span>
+        </template>
+      </DatePicker>
     </Popover>
 
     <!-- Search/filter shell. Text and committed filter pills share one
@@ -756,8 +766,8 @@ const multipleParticipantsAvailable = computed(
 // nothing to group by.
 const groupByOptions = computed<GroupBy[]>(() =>
   hasMultiParticipantConversation(activeParticipantConversations.value)
-    ? ["none", "daily", "cwd", "git_repo", "tag", "participants"]
-    : ["none", "daily", "cwd", "git_repo", "tag"],
+    ? ["none", "cwd", "git_repo", "tag", "daily", "participants"]
+    : ["none", "cwd", "git_repo", "tag", "daily"],
 );
 let participantDefaultsSeeded = false;
 watch(
@@ -1364,6 +1374,32 @@ const stableArchivedConversations = computed(() => {
 // is a filter over the normal list, not a search — so the list keeps its
 // grouping and ordering instead of collapsing into flat search results.
 const isSearching = computed(() => searchText.value.trim().length > 0);
+
+const calendarDayCounts = computed(() => {
+  const pool = isSearching.value
+    ? (searchResults.value ?? [])
+    : showArchived.value
+      ? archivedConversations.value
+      : props.conversations.filter((c) => !c.parent_conversation_id);
+  const matches = filterConversationsByQuery(
+    filterConversationsByParticipantQuery(
+      pool,
+      selectedUsers.value,
+      parsedQuery.value.includeUnattributed,
+    ),
+    parsedQuery.value,
+  );
+  const counts = new Map<string, number>();
+  for (const conversation of matches) {
+    const key = new Date(conversation.updated_at).toDateString();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+});
+
+function calendarDayCount(date: { year: number; month: number; day: number }): number {
+  return calendarDayCounts.value.get(new Date(date.year, date.month, date.day).toDateString()) ?? 0;
+}
 
 // Keep the rows behind an open tag picker stable. Removing a selected tag can
 // broaden a tiny result set into hundreds of conversations; mounting those
