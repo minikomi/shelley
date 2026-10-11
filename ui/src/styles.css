@@ -879,8 +879,7 @@ body {
   cursor: not-allowed;
 }
 
-.drawer-filter-action:not(:disabled):hover,
-.drawer-day-calendar .p-datepicker-day-selected .drawer-calendar-day-number {
+.drawer-filter-action:not(:disabled):hover {
   border-color: var(--primary);
   color: var(--primary);
 }
@@ -1011,8 +1010,7 @@ body {
   justify-content: center;
   width: 1.25rem;
   height: 1.25rem;
-  border: 1px solid transparent;
-  border-radius: 50%;
+  border: none;
   font-size: var(--font-size-14);
 }
 
