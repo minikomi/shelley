@@ -341,14 +341,15 @@ func TestCompactInPlaceNudge(t *testing.T) {
 	if n := len(nudges()); n != 0 {
 		t.Fatalf("nudged before any usage: %d", n)
 	}
+	sizeLine := fmt.Sprintf("Context is %dk.", (lastContextWindowSize(listMessages(t, c.database, c.id))+5000)/10000*10)
 	c.turn("echo: two")
 	got := nudges()
 	// The nudge comes with the index, so the agent can compact right away.
-	if len(got) != 1 || len(got[0].Content) != 2 || got[0].Content[0].Text != "Context is 0k." ||
+	if len(got) != 1 || len(got[0].Content) != 2 || got[0].Content[0].Text != sizeLine ||
 		!strings.HasPrefix(got[0].Content[1].Text, "## Index") || !strings.Contains(got[0].Content[1].Text, `text "hello"`) {
 		t.Fatalf("nudges = %+v", got)
 	}
-	if req := requestDump(c.ps.GetLastRequest()); !strings.Contains(req, "Context is 0k.") || !strings.Contains(req, "## Index") {
+	if req := requestDump(c.ps.GetLastRequest()); !strings.Contains(req, sizeLine) || !strings.Contains(req, "## Index") {
 		t.Fatalf("nudge not sent to the model:\n%s", req)
 	}
 	c.turn("echo: three")
@@ -399,8 +400,96 @@ func TestCompactInPlaceNudge(t *testing.T) {
 	}
 }
 
+func TestCompactInPlaceNudgeThresholdChange(t *testing.T) {
+	t.Parallel()
+	c := newCompactTestConversation(t, db.ConversationOptions{
+		ToolOverrides: map[string]string{claudetool.CompactInPlaceName: "on"},
+	})
+	c.turn("hello")
+	manager, err := c.srv.getOrCreateConversationManager(t.Context(), c.id, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nudges := func() int {
+		n := 0
+		for _, m := range listMessages(t, c.database, c.id) {
+			if m.UserData != nil && strings.Contains(*m.UserData, `"context_nudge":true`) {
+				n++
+			}
+		}
+		return n
+	}
+	setThreshold := func(tokens int) {
+		t.Helper()
+		if _, err := c.srv.changeSettings(t.Context(), manager, SettingsChange{CompactNudgeTokens: &tokens}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setThreshold(1)
+	// The pending nudge must survive rebuilding the loop, too.
+	manager.ResetLoop()
+	c.turn("echo: lowered")
+	if n := nudges(); n != 1 {
+		t.Fatalf("nudges after lowering threshold = %d, want 1", n)
+	}
+	if req := requestDump(c.ps.GetLastRequest()); !strings.Contains(req, "Context is") || !strings.Contains(req, "## Index") {
+		t.Fatalf("nudge not sent on the next request:\n%s", req)
+	}
+	manager.ResetLoop()
+	c.turn("echo: rebuilt")
+	if n := nudges(); n != 1 {
+		t.Fatalf("nudges after rebuilding = %d, want 1", n)
+	}
+	setThreshold(500_000)
+	c.turn("echo: raised")
+	if n := nudges(); n != 1 {
+		t.Fatalf("nudges below raised threshold = %d, want 1", n)
+	}
+	setThreshold(2)
+	c.turn("echo: lowered again")
+	if n := nudges(); n != 2 {
+		t.Fatalf("nudges after lowering again = %d, want 2", n)
+	}
+}
+
 func TestContextNudger(t *testing.T) {
-	n := newContextNudger(0, 260_000)
+	usage := `{"input_tokens":260000}`
+	row := func(kind db.MessageType, data string) generated.Message {
+		return generated.Message{Type: string(kind), UserData: &data}
+	}
+	changed := row(db.MessageTypeModelChange, `{"compact_nudge_tokens":250000}`)
+	nudged := row(db.MessageTypeUser, `{"context_nudge":true}`)
+	unrelated := row(db.MessageTypeModelChange, `{"to":"model-b"}`)
+	for _, tc := range []struct {
+		name string
+		rows []generated.Message
+		due  bool
+	}{
+		{"unchanged", nil, false},
+		{"changed", []generated.Message{changed}, true},
+		{"unrelated settings", []generated.Message{changed, unrelated}, true},
+		{"already nudged", []generated.Message{changed, nudged, unrelated}, false},
+		{"changed after nudge", []generated.Message{nudged, changed}, true},
+		{"compacted", []generated.Message{changed, {Type: string(db.MessageTypeInPlaceCompaction)}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := append([]generated.Message{{UsageData: &usage}}, tc.rows...)
+			n, err := newContextNudger(0, rows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, due := n.take(); due != tc.due {
+				t.Fatalf("nudge due = %v, want %v", due, tc.due)
+			}
+			if _, due := n.take(); due {
+				t.Fatal("repeated nudge")
+			}
+		})
+	}
+	n, err := newContextNudger(0, []generated.Message{{UsageData: &usage}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := n.take(); ok {
 		t.Fatal("a fresh nudger repeats the level the conversation already had")
 	}

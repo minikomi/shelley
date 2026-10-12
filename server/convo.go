@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -2244,7 +2245,27 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	var nudger *contextNudger
 	if claudetool.IsToolEnabled(claudetool.CompactInPlaceName, toolSetConfig.ToolOverrides, toolSetConfig.DisableAllTools) &&
 		!conversationOpts.DisableCompactNudges {
-		nudger = newContextNudger(conversationOpts.CompactNudgeTokens, lastContextWindowSize(dbMessages))
+		// Settings markers are excluded from model context, but a threshold
+		// change can leave a nudge pending.
+		var markers []generated.Message
+		markers, err = database.ListMessagesByType(processCtx, conversationID, db.MessageTypeModelChange)
+		if err == nil {
+			rows := slices.Clone(dbMessages)
+			for _, marker := range markers {
+				if len(dbMessages) > 0 && marker.Generation == dbMessages[len(dbMessages)-1].Generation {
+					rows = append(rows, marker)
+				}
+			}
+			slices.SortFunc(rows, func(a, b generated.Message) int {
+				return cmp.Compare(a.SequenceID, b.SequenceID)
+			})
+			nudger, err = newContextNudger(conversationOpts.CompactNudgeTokens, rows)
+		}
+		if err != nil {
+			cancel()
+			toolSet.Cleanup()
+			return err
+		}
 		record := recordMessage
 		recordMessage = func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			nudger.observe(usage)

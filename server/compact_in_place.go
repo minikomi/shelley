@@ -734,8 +734,8 @@ func quoteStart(s string) string {
 
 // contextNudger tells the agent the context size once it reaches at tokens,
 // and again every compactNudgeStep beyond. A loop owns one; its level starts
-// at the size the conversation already had, so a rebuilt loop does not
-// repeat a nudge.
+// at the size the conversation already had, unless a threshold change is
+// waiting for its first nudge.
 type contextNudger struct {
 	mu     sync.Mutex
 	at     uint64
@@ -743,13 +743,38 @@ type contextNudger struct {
 	level  int
 }
 
-func newContextNudger(at int, tokens uint64) *contextNudger {
+func newContextNudger(at int, rows []generated.Message) (*contextNudger, error) {
 	if at <= 0 {
 		at = defaultCompactNudgeTokens
 	}
-	n := &contextNudger{at: uint64(at), tokens: tokens}
-	n.level = n.levelOf(tokens)
-	return n
+	n := &contextNudger{at: uint64(at), tokens: lastContextWindowSize(rows)}
+	n.level = n.levelOf(n.tokens)
+	for i := len(rows) - 1; i >= 0; i-- {
+		row := rows[i]
+		if row.Type == string(db.MessageTypeInPlaceCompaction) {
+			break
+		}
+		if row.UserData == nil || (row.Type != string(db.MessageTypeUser) && row.Type != string(db.MessageTypeModelChange)) {
+			continue
+		}
+		var ud struct {
+			ContextNudge       bool `json:"context_nudge"`
+			CompactNudgeTokens int  `json:"compact_nudge_tokens"`
+		}
+		if err := json.Unmarshal([]byte(*row.UserData), &ud); err != nil {
+			return nil, fmt.Errorf("decode context nudge state at %d: %w", row.SequenceID, err)
+		}
+		if ud.ContextNudge {
+			break
+		}
+		if row.Type == string(db.MessageTypeModelChange) && ud.CompactNudgeTokens > 0 {
+			if ud.CompactNudgeTokens == at {
+				n.level = -1
+			}
+			break
+		}
+	}
+	return n, nil
 }
 
 func (n *contextNudger) levelOf(tokens uint64) int {
