@@ -221,6 +221,53 @@ test.describe("conversation drawer startup and app bar", () => {
     expect(overflow).toEqual({ clipped: true, textOverflow: "ellipsis" });
   });
 
+  test("keeps commit hashes behind a compact copy icon", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    const withCommit = conversation("with-commit");
+    withCommit.git_commit = "424904d";
+    withCommit.git_subject = "Make git graph file paths readable";
+    const hashOnly = conversation("hash-only");
+    hashOnly.git_commit = "abcdef1";
+    await stubConversationList(page, [withCommit, hashOnly, conversation("no-commit")]);
+    await page.goto("/new");
+
+    const row = page.locator('[data-conversation-id="with-commit"]');
+    const copy = row.getByRole("button", { name: "Copy commit hash 424904d", exact: true });
+    await expect(copy).toBeVisible();
+    await expect(row.locator(".drawer-git-info")).toHaveText(withCommit.git_subject);
+    await expect(copy.locator("circle")).toHaveCount(3);
+    await expect(copy.locator("path")).toHaveAttribute(
+      "d",
+      "M6 16.6V7.4M6 16.6C8 11 12 6 14.6 5",
+    );
+    const before = await copy.boundingBox();
+    expect(before!.width).toBeLessThanOrEqual(24);
+    const restingColor = await copy.evaluate((el) => getComputedStyle(el).color);
+    await copy.hover();
+    await expect(page.getByRole("tooltip")).toContainText("Click to copy 424904d");
+    expect(await copy.evaluate((el) => getComputedStyle(el).color)).not.toBe(restingColor);
+    await copy.click();
+
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("424904d");
+    await expect(copy).toHaveClass(/drawer-git-copy-copied/);
+    await expect(copy.locator("circle")).toHaveCount(0);
+    await expect(copy).toBeFocused();
+    expect(await copy.boundingBox()).toEqual(before);
+    await expect(page).toHaveURL(/\/new$/);
+
+    const hashOnlyCopy = page
+      .locator('[data-conversation-id="hash-only"]')
+      .getByRole("button", { name: "Copy commit hash abcdef1", exact: true });
+    await expect(hashOnlyCopy).toBeVisible();
+    await hashOnlyCopy.focus();
+    await hashOnlyCopy.press("Enter");
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("abcdef1");
+    await expect(page).toHaveURL(/\/new$/);
+    await expect(
+      page.locator('[data-conversation-id="no-commit"] .drawer-git-info'),
+    ).toHaveCount(0);
+  });
+
   test("highlights matching slug text in drawer and command-palette searches", async ({ page }) => {
     const slugHit = conversation("Pelican-project-pelican");
     const messageHit = conversation("message-only");

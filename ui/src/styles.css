@@ -1166,7 +1166,8 @@ body {
   overflow-wrap: anywhere;
 }
 
-.conversation-participant-badge-icon {
+.conversation-participant-badge-icon,
+.drawer-git-copy svg {
   width: 0.625rem;
   height: 0.625rem;
 }
@@ -13855,20 +13856,23 @@ kbd {
 }
 
 .drawer-actions-trigger.btn-icon-sm:hover,
-.drawer-actions-trigger.btn-icon-sm[aria-expanded="true"] {
+.drawer-actions-trigger.btn-icon-sm[aria-expanded="true"],
+.drawer-git-copy:not(.drawer-git-copy-copied):hover {
   background: transparent;
   color: var(--text-primary);
   box-shadow: none;
   opacity: 1;
 }
 
-.drawer-actions-trigger.btn-icon-sm:focus-visible {
+.drawer-actions-trigger.btn-icon-sm:focus-visible,
+.drawer-git-copy:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 
 .dark .drawer-actions-trigger.btn-icon-sm:focus-visible,
-.conversation-item.active .drawer-actions-trigger.btn-icon-sm:focus-visible {
+.conversation-item.active .drawer-actions-trigger.btn-icon-sm:focus-visible,
+.conversation-item.active .drawer-git-copy:focus-visible {
   outline-color: white;
 }
 
@@ -13880,7 +13884,8 @@ kbd {
 }
 
 .conversation-item.active .drawer-actions-trigger.btn-icon-sm:hover,
-.conversation-item.active .drawer-actions-trigger.btn-icon-sm[aria-expanded="true"] {
+.conversation-item.active .drawer-actions-trigger.btn-icon-sm[aria-expanded="true"],
+.conversation-item.active .drawer-git-copy:not(.drawer-git-copy-copied):hover {
   background: transparent;
   color: white;
   box-shadow: none;
@@ -13974,8 +13979,9 @@ kbd {
 .drawer-git-info {
   display: flex;
   align-items: center;
-  gap: 0.3em;
+  gap: 0.25em;
   font-size: var(--font-size-12);
+  line-height: 1.2;
   color: var(--text-secondary);
 }
 
@@ -13983,12 +13989,21 @@ kbd {
   color: rgba(255, 255, 255, 0.7);
 }
 
-.drawer-git-hash {
-  font-family: var(--font-mono);
+.drawer-git-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--font-size-12);
+  height: var(--font-size-12);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
 }
 
-.drawer-git-hash-copied {
+.drawer-git-copy-copied {
   color: var(--success-text);
 }
 

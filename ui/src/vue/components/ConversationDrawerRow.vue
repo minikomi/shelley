@@ -311,19 +311,36 @@
         v-if="convState.git_commit"
         :class="`conversation-git drawer-git-info ${isActive ? 'drawer-git-info-active' : ''}`"
       >
-        <span
-          v-tooltip.top="`Click to copy ${convState.git_commit}`"
-          :class="`drawer-git-hash ${ctx.copiedConvId.value === conversation.conversation_id ? 'drawer-git-hash-copied' : ''}`"
+        <button
+          type="button"
+          v-tooltip.top="
+            ctx.copiedConvId.value === conversation.conversation_id
+              ? 'Copied!'
+              : `Click to copy ${convState.git_commit}`
+          "
+          :aria-label="`Copy commit hash ${convState.git_commit}`"
+          :class="`drawer-git-copy ${ctx.copiedConvId.value === conversation.conversation_id ? 'drawer-git-copy-copied' : ''}`"
           @click="
             ctx.handleCopyGitHash($event, convState.git_commit!, conversation.conversation_id)
           "
+          @auxclick.stop
         >
-          {{
-            ctx.copiedConvId.value === conversation.conversation_id
-              ? "copied!".padEnd(convState.git_commit!.length, "\u00a0")
-              : convState.git_commit
-          }}
-        </span>
+          <svg
+            v-if="ctx.copiedConvId.value === conversation.conversation_id"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M5 12l4 4L19 6"
+            />
+          </svg>
+          <WorkspaceActionIcon v-else action="gitGraph" />
+        </button>
         <span
           v-if="convState.git_subject"
           :title="convState.git_subject"
@@ -440,6 +457,7 @@ import Button from "primevue/button";
 import Menu from "primevue/menu";
 import type { MenuItem } from "primevue/menuitem";
 import OverflowDotsIcon from "./OverflowDotsIcon.vue";
+import WorkspaceActionIcon from "./WorkspaceActionIcon.vue";
 import BackgroundJobsBadge from "./BackgroundJobsBadge.vue";
 import BackgroundJobsList from "./BackgroundJobsList.vue";
 import type { Conversation, ConversationWithState } from "../../types";
