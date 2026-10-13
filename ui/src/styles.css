@@ -1050,8 +1050,7 @@ body {
   display: contents;
 }
 
-.conversation-participant-badge,
-.conversation-background-jobs-badge {
+.conversation-participant-badge {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -1069,87 +1068,8 @@ body {
   cursor: pointer;
 }
 
-.conversation-background-jobs-icon {
-  width: 0.75rem;
-  height: 0.75rem;
-}
-
-.drawer-background-jobs-list,
 .drawer-subagent-list {
   margin-left: 1.5rem;
-}
-
-.drawer-background-jobs-nested {
-  margin-left: 0.5rem;
-  max-width: calc(100% - 0.5rem);
-}
-
-.drawer-background-job {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.125rem 0.25rem;
-  padding: 0.5rem;
-  border-left: 2px solid var(--border-color);
-  min-width: 0;
-}
-
-.background-jobs-command {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-12);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.background-jobs-meta {
-  grid-column: 1;
-  font-size: var(--font-size-12);
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
-.background-jobs-tail {
-  grid-column: 1 / -1;
-  max-height: 7rem;
-  min-width: 0;
-  margin: 0.25rem 0 0;
-  padding: 0.25rem 0.375rem;
-  overflow: auto;
-  border-radius: 0.25rem;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-12);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.background-jobs-stop {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: start;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  padding: 0;
-  border: none;
-  border-radius: 0.25rem;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.background-jobs-stop:hover {
-  background: color-mix(in srgb, var(--error-text) 10%, transparent);
-  color: var(--error-text);
-}
-
-.background-jobs-stop:disabled {
-  opacity: 0.5;
-  cursor: wait;
 }
 
 .background-jobs-empty,
@@ -1224,26 +1144,20 @@ body {
 }
 
 .conversation-terminal-count + .conversation-participant-badge,
-.conversation-participant-badge + .subagent-count-badge,
-.conversation-terminal-count + .conversation-background-jobs-badge,
-.conversation-background-jobs-badge + .conversation-participant-badge,
-.conversation-background-jobs-badge + .subagent-count-badge {
+.conversation-participant-badge + .subagent-count-badge {
   margin-left: 0;
 }
 
-.conversation-participant-badge:hover,
-.conversation-background-jobs-badge:hover {
+.conversation-participant-badge:hover {
   background: var(--gray-200);
   color: var(--text-primary);
 }
 
-.dark .conversation-participant-badge:hover,
-.dark .conversation-background-jobs-badge:hover {
+.dark .conversation-participant-badge:hover {
   background: var(--gray-600);
 }
 
-.conversation-item.active .conversation-participant-badge,
-.conversation-item.active .conversation-background-jobs-badge {
+.conversation-item.active .conversation-participant-badge {
   background: rgba(255, 255, 255, 0.15);
   color: rgba(255, 255, 255, 0.8);
 }
@@ -4898,8 +4812,6 @@ select:disabled {
    thing. The other .status-message variants (error, disconnected, no-models)
    are sentences and stay in the default sans. */
 .status-message.status-ready {
-  /* Sized to its text, not flex: 1, so the running-work counts
-     (.status-activity-button) sit right beside it, not across the bar. */
   flex: 0 1 auto;
   font-family: var(--font-mono);
   font-size: var(--font-size-12);
@@ -6503,8 +6415,6 @@ svg {
   min-width: 0;
 }
 
-/* Sized to content like .status-ready, so the running-work counts after it
-   sit beside Continue; .status-readout's auto margin takes the slack. */
 .status-interrupted-group {
   display: flex;
   align-items: center;
@@ -6582,13 +6492,11 @@ svg {
   text-align: left;
 }
 
-.status-readout-cwd:hover:not(:disabled),
-.status-activity-button:hover {
+.status-readout-cwd:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
-.status-readout-cwd:focus-visible,
-.status-activity-button:focus-visible {
+.status-readout-cwd:focus-visible {
   outline: 2px solid var(--blue-text);
   outline-offset: 1px;
   border-radius: 3px;
@@ -6639,52 +6547,6 @@ svg {
   min-width: 0;
 }
 
-/* Running-work counts ("⚙ 2  ○ 1": icon + number, the words are in the
-   tooltip) beside the status message. Same readout type and dotted-underline
-   affordance as .status-readout; never shrinks, since a clipped count reads as
-   a different number. Hover and focus are shared with .status-readout-cwd, the
-   icon size with the stop button's. */
-.status-activity-button {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 5px 0;
-  margin: -5px 0;
-  border: none;
-  background: none;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-12);
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.status-activity-segment {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-/* The popover's surface is .chat-context-popup's; this only stacks the
-   jobs and subagents sections. */
-.status-activity-popup-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.625rem;
-}
-
-/* Focus lands here on open (it carries [autofocus]) only so Tab moves into
-   the popup; it is not a control, so no ring. */
-.status-activity-heading {
-  margin-bottom: 0.25rem;
-  outline: none;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
 .status-stop-button {
   flex-shrink: 0;
   display: flex;
@@ -6711,8 +6573,7 @@ svg {
   cursor: not-allowed;
 }
 
-.status-stop-button svg,
-.status-activity-icon {
+.status-stop-button svg {
   width: 0.75rem;
   height: 0.75rem;
   flex-shrink: 0;
@@ -6875,12 +6736,6 @@ svg {
   /* Compact the status bar active layout when inline */
   .message-controls-status-slot .status-bar-active {
     gap: 0.375rem;
-  }
-
-  /* "⚙ 1" then "6k" at the compact gap reads as "16k";
-     keep the desktop gap (0.75rem) between the counts and the readout. */
-  .message-controls-status-slot .status-activity-button {
-    margin-right: 0.375rem;
   }
 
   /* Let new-conversation fields share a row when they fit and wrap naturally

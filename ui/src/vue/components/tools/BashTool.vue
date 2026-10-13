@@ -6,6 +6,14 @@
   <div class="bash-tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
     <div class="bash-tool-header" @click="isExpanded = !isExpanded">
       <div class="bash-tool-summary">
+        <span
+          v-if="commandRunning"
+          class="bash-tool-running-dot"
+          role="img"
+          aria-label="Command running"
+          title="Command running"
+          data-testid="bash-tool-running-indicator"
+        />
         <span class="bash-tool-emoji" :class="{ running: isRunning }">🛠️</span>
         <HighlightedCode
           v-if="command"
@@ -21,9 +29,6 @@
           :title="displayData.workingDir"
         >
           in {{ displayData.workingDir }}
-        </span>
-        <span v-if="background" class="bash-tool-background" data-testid="bash-tool-background">
-          Backgrounded
         </span>
         <span v-if="returnState" class="bash-tool-background" data-testid="bash-tool-finished-job">
           {{ returnLabels[returnState] }}
@@ -92,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, inject, nextTick, ref, watch } from "vue";
 import type { LLMContent } from "../../../types";
 import HighlightedCode from "../HighlightedCode.vue";
 import AnsiText from "./AnsiText.vue";
@@ -100,6 +105,7 @@ import ToolChevron from "./ToolChevron.vue";
 import RunningToolTime from "./RunningToolTime.vue";
 import { isCancelledToolResult } from "../../utils/toolStatus";
 import { backgroundOutput, type BackgroundJobDisplay } from "../../../utils/backgroundOutput";
+import { BackgroundJobsKey } from "../../composables/backgroundJobs";
 
 interface BashDisplayData {
   workingDir: string;
@@ -193,6 +199,13 @@ const rawOutput = computed(() =>
 );
 
 const background = computed(() => displayData.value?.background ?? null);
+const backgroundJobs = inject(BackgroundJobsKey, null);
+const commandRunning = computed(
+  () =>
+    !!props.isRunning ||
+    (!!background.value &&
+      !!backgroundJobs?.jobs.value?.some((job) => job.job_id === background.value?.jobId)),
+);
 const output = computed(() =>
   background.value ? backgroundOutput(rawOutput.value, background.value) : rawOutput.value,
 );
@@ -228,3 +241,31 @@ const lineCount = computed(() =>
   props.streamingOutput ? props.streamingOutput.split("\n").length : 0,
 );
 </script>
+
+<style scoped>
+.bash-tool-running-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--primary);
+  opacity: 0.75;
+  animation: bash-running-pulse 3s ease-in-out infinite;
+}
+
+@keyframes bash-running-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bash-tool-running-dot {
+    animation: none;
+  }
+}
+</style>
