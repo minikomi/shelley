@@ -277,6 +277,12 @@
               Cancel all queued
             </button>
           </div>
+          <RunningWorkStrip
+            v-if="conversationId && !currentConversation?.archived"
+            :key="conversationId"
+            :conversation-id="conversationId"
+            @toggle="handleRunningWorkToggle"
+          />
           <div ref="bottomSentinelRef" class="messages-bottom-sentinel" aria-hidden="true" />
         </div>
       </div>
@@ -558,6 +564,7 @@
 <script setup lang="ts">
 import {
   computed,
+  inject,
   nextTick,
   onMounted,
   onUnmounted,
@@ -698,6 +705,9 @@ import {
 import { RefusalContinueKey } from "./refusalContinue";
 
 import MessageInput from "./MessageInput.vue";
+import RunningWorkStrip from "./RunningWorkStrip.vue";
+import { BackgroundJobsKey, useBackgroundJobs } from "../composables/backgroundJobs";
+import { ConversationsListKey } from "../composables/subagentLive";
 import type { RecordingMode, RecordingPreparation } from "./recordingDestination";
 import ConversationTOC from "./ConversationTOC.vue";
 import ModelBar from "./ModelBar.vue";
@@ -794,6 +804,20 @@ const props = withDefaults(
 );
 
 const { t } = useI18n();
+const conversations = inject(ConversationsListKey);
+if (!conversations) throw new Error("ChatInterface requires ConversationsListKey");
+const backgroundJobCount = computed(
+  () =>
+    conversations.value.find((c) => c.conversation_id === props.conversationId)
+      ?.running_background_jobs ?? 0,
+);
+provide(
+  BackgroundJobsKey,
+  useBackgroundJobs(
+    computed(() => props.conversationId),
+    backgroundJobCount,
+  ),
+);
 const { markdownMode } = useMarkdownMode();
 // The open conversation's options: its settings (as of the last change) and
 // the profile they came from.
@@ -2636,6 +2660,11 @@ function scrollToBottom() {
 function handleScrollToBottomClick() {
   replaceLocationFragment("");
   scrollToBottom();
+}
+
+function handleRunningWorkToggle() {
+  if (!atBottom || userScrolled) return;
+  nextTick(scrollToBottom);
 }
 
 function requestCurrentConversationBottom() {

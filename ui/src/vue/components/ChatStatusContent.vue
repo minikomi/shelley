@@ -92,7 +92,6 @@
     <span v-else class="status-message status-ready">
       <span class="hide-on-mobile">Ready on </span>{{ hostname }}
     </span>
-    <StatusActivity :conversation-id="conversationId" />
     <StatusReadout
       v-bind="readoutProps"
       :cwd="cwd"
@@ -144,7 +143,6 @@ import type { ThinkingLevel } from "./thinkingLevel";
 import type { SettingsKnob } from "../composables/profiles";
 import AnimatedWorkingStatus from "./AnimatedWorkingStatus.vue";
 import ModelPicker from "./ModelPicker.vue";
-import StatusActivity from "./StatusActivity.vue";
 import StatusReadout from "./StatusReadout.vue";
 
 const props = defineProps<{
@@ -235,5 +233,4 @@ const readoutProps = computed(() => ({
   onRefreshModels: props.onRefreshModels,
   knob: props.knob,
 }));
-
 </script>

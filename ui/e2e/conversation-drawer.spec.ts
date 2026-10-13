@@ -124,106 +124,60 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(runningRow.locator(".drawer-interrupted-indicator")).toHaveCount(0);
   });
 
-  test("expands background jobs above subagents, including jobs inside subagents", async ({
-    page,
-  }) => {
-    const parent = conversation("parent");
-    parent.subagent_count = 1;
-    parent.running_background_jobs = 1;
-    const subagent = conversation("subagent");
-    subagent.parent_conversation_id = parent.conversation_id;
-    subagent.running_background_jobs = 1;
-    await stubConversationList(page, [parent, subagent]);
-    let tail = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n");
-    await page.route("**/api/conversation/*/background-jobs", (route) =>
-      route.fulfill({
-        json: [
-          {
-            job_id: "internal",
-            command: "echo hello",
-            tail,
-            started_at: "2026-07-23T12:00:00Z",
-          },
-        ],
-      }),
-    );
-
-    await page.goto("/new");
-    const parentBadge = page
-      .locator('[data-conversation-id="parent"]')
-      .getByTestId("background-jobs-badge");
-    await parentBadge.click();
-    await expect(page.locator("#background-jobs-parent [data-testid=background-job]")).toHaveCount(
-      1,
-    );
-    await expect(
-      page.locator("#background-jobs-parent [data-testid=background-job]"),
-    ).not.toContainText("internal");
-    const output = page.locator("#background-jobs-parent [data-testid=background-job-tail]");
-    await expect(output).toContainText("line 19");
-    expect(
-      await output.evaluate(
-        (el) =>
-          el.scrollHeight > el.clientHeight &&
-          el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
-      ),
-    ).toBe(true);
-    tail = "updated";
-    await expect(output).toHaveText("updated", { timeout: 10000 });
-    await page.getByRole("button", { name: "Expand subagents" }).click();
-    await expect(page.locator(".drawer-subagent-list .subagent-item")).toHaveCount(1);
-    expect(
-      await page
-        .locator("#background-jobs-parent")
-        .evaluate(
-          (el) =>
-            el.compareDocumentPosition(document.querySelector(".drawer-subagent-list")!) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
-        ),
-    ).toBeTruthy();
-    const subBadge = page.locator(".subagent-item").getByTestId("background-jobs-badge");
-    await subBadge.click();
-    await expect(
-      page.locator("#background-jobs-subagent [data-testid=background-job]"),
-    ).toHaveCount(1);
-    await expect(
-      page.locator(".drawer-subagent-list > .drawer-background-jobs-nested"),
-    ).toHaveCount(1);
-    await expect(page).toHaveURL(/\/new$/);
-  });
-
-  test("a slow background job response still replaces the loading state", async ({ page }) => {
+  test("shows a running-task gear count that opens the conversation", async ({ page }) => {
     const parent = conversation("parent");
     parent.running_background_jobs = 1;
     await stubConversationList(page, [parent]);
-    const pending: Array<() => void> = [];
-    await page.route("**/api/conversation/*/background-jobs", async (route) => {
-      await new Promise<void>((resolve) => pending.push(resolve));
-      await route.fulfill({
-        json: [
-          {
-            job_id: "job",
-            command: "echo done",
-            tail: "done",
-            started_at: "2026-07-23T12:00:00Z",
-          },
-        ],
-      });
-    });
-    await page.clock.install();
-    await page.goto("/new");
-    await page.getByTestId("background-jobs-badge").click();
-    await expect.poll(() => pending.length).toBe(1);
 
-    // The first response takes longer than the poll interval. A new poll
-    // must not supersede it before it can populate the list.
-    await page.clock.runFor(3500);
-    try {
-      pending[0]();
-      await expect(page.getByTestId("background-job")).toContainText("echo done");
-    } finally {
-      for (const release of pending) release();
-    }
+    await page.goto("/new");
+    const row = page.locator('[data-conversation-id="parent"]');
+    const runningWork = row.getByTestId("conversation-running-work");
+    await expect(runningWork).toHaveText("1");
+    await expect(runningWork).toHaveAttribute("title", "1 task running");
+    await expect(runningWork).toHaveAttribute("aria-label", "1 task running");
+    await expect(runningWork.locator("svg")).toBeVisible();
+
+    // The compact indicator is part of the ordinary row target; it no longer
+    // expands job logs in the drawer.
+    await runningWork.click();
+    await expect(page).toHaveURL(/\/c\/parent$/);
+    await expect(page.getByTestId("background-job")).toHaveCount(0);
+  });
+
+  test("shows running and total subagent counts independently", async ({ page }) => {
+    const activeParent = conversation("active-parent");
+    activeParent.subagent_count = 2;
+    const activeChild = conversation("active-child");
+    activeChild.parent_conversation_id = activeParent.conversation_id;
+    activeChild.working = true;
+    const activeIdleChild = conversation("active-idle-child");
+    activeIdleChild.parent_conversation_id = activeParent.conversation_id;
+
+    const idleParent = conversation("idle-parent");
+    idleParent.subagent_count = 2;
+    const idleChild = conversation("idle-child");
+    idleChild.parent_conversation_id = idleParent.conversation_id;
+    const secondIdleChild = conversation("second-idle-child");
+    secondIdleChild.parent_conversation_id = idleParent.conversation_id;
+    await stubConversationList(page, [
+      activeParent,
+      activeChild,
+      activeIdleChild,
+      idleParent,
+      idleChild,
+      secondIdleChild,
+    ]);
+
+    await page.goto("/new");
+    const activeBadge = page.locator(
+      '[data-conversation-id="active-parent"] .subagent-count-badge',
+    );
+    await expect(activeBadge).toContainText("1/2");
+    await expect(activeBadge.getByTestId("subagent-badge-running")).toBeVisible();
+
+    const idleBadge = page.locator('[data-conversation-id="idle-parent"] .subagent-count-badge');
+    await expect(idleBadge).toHaveText("2");
+    await expect(idleBadge.getByTestId("subagent-badge-running")).toHaveCount(0);
   });
 
   test("truncates long slugs to one line with an ellipsis", async ({ page }) => {
@@ -270,10 +224,7 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(copy).toBeVisible();
     await expect(row.locator(".drawer-git-info")).toHaveText(withCommit.git_subject);
     await expect(copy.locator("circle")).toHaveCount(3);
-    await expect(copy.locator("path")).toHaveAttribute(
-      "d",
-      "M6 16.6V7.4M6 16.6C8 11 12 6 14.6 5",
-    );
+    await expect(copy.locator("path")).toHaveAttribute("d", "M6 16.6V7.4M6 16.6C8 11 12 6 14.6 5");
     const before = await copy.boundingBox();
     expect(before!.width).toBeLessThanOrEqual(24);
     const restingColor = await copy.evaluate((el) => getComputedStyle(el).color);
@@ -297,9 +248,9 @@ test.describe("conversation drawer startup and app bar", () => {
     await hashOnlyCopy.press("Enter");
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("abcdef1");
     await expect(page).toHaveURL(/\/new$/);
-    await expect(
-      page.locator('[data-conversation-id="no-commit"] .drawer-git-info'),
-    ).toHaveCount(0);
+    await expect(page.locator('[data-conversation-id="no-commit"] .drawer-git-info')).toHaveCount(
+      0,
+    );
   });
 
   test("highlights matching slug text in drawer and command-palette searches", async ({ page }) => {

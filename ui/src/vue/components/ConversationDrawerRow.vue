@@ -235,13 +235,16 @@
           </svg>
           {{ terminalCount }}
         </span>
-        <BackgroundJobsBadge
+        <span
           v-if="!isDraft && !itemArchived && convState.running_background_jobs > 0"
-          :conversation-id="conversation.conversation_id"
-          :count="convState.running_background_jobs"
-          :expanded="expandedJobs.has(conversation.conversation_id)"
-          @toggle="toggleJobs(conversation.conversation_id)"
-        />
+          class="conversation-running-work"
+          data-testid="conversation-running-work"
+          :aria-label="taskTooltip(convState.running_background_jobs)"
+          :title="taskTooltip(convState.running_background_jobs)"
+        >
+          <GearIcon class="conversation-running-work-gear" />
+          {{ convState.running_background_jobs }}
+        </span>
         <button
           v-if="showParticipantBadge"
           type="button"
@@ -292,7 +295,10 @@
             data-testid="subagent-badge-running"
             aria-hidden="true"
           />
-          <span class="drawer-subagent-count-badge-text">{{ subagentBadgeText }}</span>
+          <span class="drawer-subagent-count-badge-text">
+            <template v-if="runningSubagentCount > 0">{{ runningSubagentCount }}/</template
+            >{{ subagentCount }}
+          </span>
           <svg
             fill="none"
             stroke="currentColor"
@@ -379,19 +385,6 @@
     </div>
   </div>
 
-  <!-- Running jobs sit above subagents, as children of the conversation. -->
-  <BackgroundJobsList
-    v-if="
-      !itemArchived &&
-      convState.running_background_jobs > 0 &&
-      expandedJobs.has(conversation.conversation_id)
-    "
-    :conversation-id="conversation.conversation_id"
-    :count="convState.running_background_jobs"
-    @click.stop
-    @auxclick.stop
-  />
-
   <!-- Subagents -->
   <div
     v-if="!itemArchived && isExpanded && conversationSubagents.length > 0"
@@ -424,24 +417,19 @@
             <span class="conversation-date drawer-subagent-date">{{
               ctx.formatDate(sub.updated_at)
             }}</span>
-            <BackgroundJobsBadge
+            <span
               v-if="sub.running_background_jobs > 0"
-              :conversation-id="sub.conversation_id"
-              :count="sub.running_background_jobs"
-              :expanded="expandedJobs.has(sub.conversation_id)"
-              @toggle="toggleJobs(sub.conversation_id)"
-            />
+              class="conversation-running-work"
+              data-testid="conversation-running-work"
+              :aria-label="taskTooltip(sub.running_background_jobs)"
+              :title="taskTooltip(sub.running_background_jobs)"
+            >
+              <GearIcon class="conversation-running-work-gear" />
+              {{ sub.running_background_jobs }}
+            </span>
           </div>
         </div>
       </div>
-      <BackgroundJobsList
-        v-if="sub.running_background_jobs > 0 && expandedJobs.has(sub.conversation_id)"
-        :conversation-id="sub.conversation_id"
-        :count="sub.running_background_jobs"
-        nested
-        @click.stop
-        @auxclick.stop
-      />
     </template>
   </div>
 </template>
@@ -463,8 +451,6 @@ import Menu from "primevue/menu";
 import type { MenuItem } from "primevue/menuitem";
 import OverflowDotsIcon from "./OverflowDotsIcon.vue";
 import WorkspaceActionIcon from "./WorkspaceActionIcon.vue";
-import BackgroundJobsBadge from "./BackgroundJobsBadge.vue";
-import BackgroundJobsList from "./BackgroundJobsList.vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import { isImeComposing } from "../../utils/imeComposing";
 import { highlightSearchMatches } from "../../utils/searchHighlight";
@@ -476,6 +462,7 @@ import {
 } from "./conversationDrawerShared";
 import { isTagSelected } from "../../utils/tagFilter";
 import { perfCount } from "../../utils/perf";
+import GearIcon from "./GearIcon.vue";
 
 const props = defineProps<{
   conversation: Conversation | ConversationWithState;
@@ -574,13 +561,7 @@ const participantTooltipHtml = computed(() => {
   return `<span class="conversation-participant-tooltip-list">${rows}</span>`;
 });
 const isDraft = computed(() => !!props.conversation.is_draft);
-const expandedJobs = ref(new Set<string>());
-function toggleJobs(conversationId: string) {
-  const next = new Set(expandedJobs.value);
-  if (next.has(conversationId)) next.delete(conversationId);
-  else next.add(conversationId);
-  expandedJobs.value = next;
-}
+
 const isActive = computed(
   () => props.conversation.conversation_id === ctx.currentConversationId.value,
 );
@@ -595,21 +576,17 @@ const hasSubagents = computed(() => subagentCount.value > 0);
 const terminalCount = computed(
   () => ctx.terminalCounts.value[props.conversation.conversation_id] ?? 0,
 );
-// How many of this conversation's subagents are currently working. Drives
-// the working ring + "running/total" split on the count badge.
 const runningSubagentCount = computed(
-  () => conversationSubagents.value.filter((s) => s.working).length,
+  () => conversationSubagents.value.filter((agent) => agent.working).length,
 );
-const subagentBadgeText = computed(() =>
-  runningSubagentCount.value > 0
-    ? `${runningSubagentCount.value}/${subagentCount.value}`
-    : `${subagentCount.value}`,
-);
+function taskTooltip(count: number): string {
+  return `${count} task${count === 1 ? "" : "s"} running`;
+}
 const subagentBadgeTooltip = computed(() => {
-  const base = isExpanded.value ? ctx.t("hideSubagents") : ctx.t("showSubagents");
+  const action = isExpanded.value ? ctx.t("hideSubagents") : ctx.t("showSubagents");
   return runningSubagentCount.value > 0
-    ? `${base} (${runningSubagentCount.value} ${ctx.t("running")})`
-    : base;
+    ? `${action} (${runningSubagentCount.value}/${subagentCount.value} ${ctx.t("running")})`
+    : action;
 });
 const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
@@ -889,3 +866,37 @@ const DeleteButton = defineComponent({
   },
 });
 </script>
+
+<style scoped>
+.conversation-running-work {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 0.25rem;
+  border-radius: 0.25rem;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: var(--font-size-12);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.conversation-running-work-gear {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+}
+
+.conversation-terminal-count + .conversation-running-work,
+.conversation-running-work + .conversation-participant-badge,
+.conversation-running-work + .subagent-count-badge {
+  margin-left: 0;
+}
+
+.conversation-item.active .conversation-running-work {
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+}
+</style>

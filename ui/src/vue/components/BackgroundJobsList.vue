@@ -1,122 +1,151 @@
-<!-- Expanded drawer children for running jobs, above the conversation's subagents. -->
 <template>
-  <div
-    :id="`background-jobs-${conversationId}`"
-    :class="['drawer-background-jobs-list', { 'drawer-background-jobs-nested': nested }]"
-    role="group"
-    aria-label="Running background jobs"
-  >
+  <div class="running-commands" role="group" aria-label="Commands">
     <div v-if="error" class="background-jobs-error" role="alert">{{ error }}</div>
-    <div v-if="jobs === null" class="background-jobs-empty">{{ error ? "" : "Loading…" }}</div>
+    <div v-if="liveJobs === null" class="background-jobs-empty">{{ error ? "" : "Loading…" }}</div>
     <div v-else-if="jobs.length === 0" class="background-jobs-empty">No running jobs.</div>
-    <div
-      v-for="job in jobs ?? []"
+    <details
+      v-for="job in jobs"
       :key="job.job_id"
-      class="drawer-background-job"
+      class="running-command"
       data-testid="background-job"
     >
-      <div class="background-jobs-command" :title="job.command">{{ job.command }}</div>
-      <button
-        type="button"
-        class="background-jobs-stop"
-        data-testid="background-job-kill"
-        :disabled="killing.has(job.job_id)"
-        :title="killing.has(job.job_id) ? 'Stopping…' : 'Stop background job'"
-        :aria-label="`Stop background job: ${job.command}`"
-        @click="stop(job.job_id)"
-      >
-        <svg class="drawer-icon-size" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="6" y="6" width="12" height="12" rx="2" />
-        </svg>
-      </button>
-      <span class="background-jobs-meta">{{ elapsedSince(job.started_at, now) }}</span>
-      <pre
-        v-if="job.tail"
-        v-stick-to-bottom
-        class="background-jobs-tail"
-        data-testid="background-job-tail"
-        >{{ job.tail }}</pre
-      >
-    </div>
+      <summary>
+        <span class="running-command-name" :title="job.command">{{ job.command }}</span>
+        <span class="running-command-kind">Command</span>
+        <RunningToolTime
+          v-if="runningIds.has(job.job_id)"
+          v-slot="{ elapsed }"
+          class="running-command-time"
+          :start-time="job.started_at"
+        >
+          Running · {{ elapsed }}
+        </RunningToolTime>
+        <span v-else class="running-command-time">Finished</span>
+        <span class="running-command-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div class="running-command-body">
+        <div class="running-command-output-heading">
+          <span>Output</span>
+          <button
+            v-if="runningIds.has(job.job_id)"
+            type="button"
+            class="running-command-stop"
+            data-testid="background-job-kill"
+            :disabled="killing.has(job.job_id)"
+            :aria-label="`Stop command: ${job.command}`"
+            @click="stop(job.job_id)"
+          >
+            {{ killing.has(job.job_id) ? "Stopping…" : "Stop command" }}
+          </button>
+        </div>
+        <pre class="running-command-output" data-testid="background-job-tail">{{
+          job.tail || "No output yet."
+        }}</pre>
+      </div>
+    </details>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api, type BackgroundJob } from "../../services/api";
-import { elapsedSince } from "./tools/toolElapsed";
+import { computed, inject } from "vue";
+import type { BackgroundJob } from "../../services/api";
+import { BackgroundJobsKey } from "../composables/backgroundJobs";
+import RunningToolTime from "./tools/RunningToolTime.vue";
 
-const props = defineProps<{ conversationId: string; count: number; nested?: boolean }>();
-const jobs = ref<BackgroundJob[] | null>(null);
-const error = ref("");
-const killing = ref(new Set<string>());
-const now = ref(Date.now());
-const wasAtBottom = new WeakMap<HTMLElement, boolean>();
-const vStickToBottom = {
-  mounted(el: HTMLElement) {
-    el.scrollTop = el.scrollHeight;
-  },
-  beforeUpdate(el: HTMLElement) {
-    wasAtBottom.set(el, el.scrollHeight - el.scrollTop - el.clientHeight < 8);
-  },
-  updated(el: HTMLElement) {
-    if (wasAtBottom.get(el)) el.scrollTop = el.scrollHeight;
-  },
-};
-let poll: number | undefined;
-let fetching = false;
-let fetchAgain = false;
-let disposed = false;
+defineProps<{ jobs: BackgroundJob[] }>();
 
-async function refresh() {
-  if (fetching) {
-    fetchAgain = true;
-    return;
-  }
-  window.clearTimeout(poll);
-  fetching = true;
-  try {
-    const list = await api.getBackgroundJobs(props.conversationId);
-    if (disposed) return;
-    jobs.value = list;
-    error.value = "";
-    now.value = Date.now();
-    killing.value = new Set([...killing.value].filter((id) => list.some((j) => j.job_id === id)));
-  } catch (e) {
-    if (!disposed) error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    fetching = false;
-    if (disposed) return;
-    if (fetchAgain) {
-      fetchAgain = false;
-      void refresh();
-    } else {
-      poll = window.setTimeout(() => void refresh(), 3000);
-    }
-  }
-}
-
-async function stop(jobId: string) {
-  killing.value = new Set(killing.value).add(jobId);
-  try {
-    await api.killBackgroundJob(props.conversationId, jobId);
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-    const next = new Set(killing.value);
-    next.delete(jobId);
-    killing.value = next;
-  }
-}
-
-watch(
-  () => props.count,
-  () => void refresh(),
-);
-onMounted(() => {
-  void refresh();
-});
-onBeforeUnmount(() => {
-  disposed = true;
-  window.clearTimeout(poll);
-});
+const backgroundJobs = inject(BackgroundJobsKey);
+if (!backgroundJobs) throw new Error("BackgroundJobsList requires BackgroundJobsKey");
+const { jobs: liveJobs, error, killing, stop } = backgroundJobs;
+const runningIds = computed(() => new Set((liveJobs.value ?? []).map((job) => job.job_id)));
 </script>
+
+<style scoped>
+.running-command + .running-command {
+  border-top: 1px solid var(--border);
+}
+
+.running-command > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.running-command > summary::-webkit-details-marker {
+  display: none;
+}
+
+.running-command-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.running-command-kind,
+.running-command-time,
+.running-command-chevron {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-12);
+}
+
+.running-command[open] .running-command-chevron {
+  transform: rotate(180deg);
+}
+
+.running-command-body {
+  padding: 0 14px 14px;
+}
+
+.running-command-output-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-12);
+}
+
+.running-command-stop {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.running-command-stop:hover {
+  background: var(--bg-secondary);
+}
+
+.running-command-stop:disabled {
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.running-command-output {
+  margin: 0;
+  padding: 12px;
+
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .running-command-kind {
+    display: none;
+  }
+}
+</style>

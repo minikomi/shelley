@@ -1,7 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { createConversationViaAPIWithDetails } from "./helpers";
 
-test("drawer expands running jobs with live output and stops one", async ({ page, request }) => {
+test("running work exposes live output in native details and stops the command", async ({
+  page,
+  request,
+}) => {
   const { slug, conversationId } = await createConversationViaAPIWithDetails(
     request,
     "bash-bg: echo ready; sleep 600",
@@ -9,41 +12,39 @@ test("drawer expands running jobs with live output and stops one", async ({ page
   await page.goto(`/c/${slug}`);
   await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
 
-  const started = page.getByTestId("bash-tool-background");
-  await expect(started).toHaveText("Backgrounded");
-  const running = page.locator(".bash-tool", { has: started });
-  await running.getByRole("button", { name: "Expand" }).click();
+  const running = page.getByTestId("bash-tool-running-indicator");
+  await expect(running).toBeVisible({ timeout: 15000 });
   const jobsResponse = await request.get(`/api/conversation/${conversationId}/background-jobs`);
   expect(jobsResponse.ok()).toBeTruthy();
   const [{ job_id: jobId }] = await jobsResponse.json();
-  await expect(running).not.toContainText(jobId);
 
-  await page.locator('button[aria-label="Open conversations"]').click();
-  await expect(page.locator(".drawer.open")).toBeVisible();
-  const badge = page.locator(".conversation-item.active").getByTestId("background-jobs-badge");
-  await expect(badge).toHaveText("1", { timeout: 15000 });
-
-  // Expanding the jobs must not navigate away or open a popover.
-  const url = page.url();
-  await badge.click();
-  const job = page.getByTestId("background-job");
+  const strip = page.getByLabel("Running work", { exact: true });
+  await expect(strip.getByTestId("running-work-toggle")).toContainText("1 task", {
+    timeout: 15000,
+  });
+  await strip.getByTestId("running-work-toggle").click();
+  const job = strip.getByTestId("background-job");
   await expect(job).toHaveCount(1);
   await expect(job).toContainText("echo ready; sleep 600");
+  await expect(job).not.toHaveAttribute("open", "");
+  await job.locator("summary").click();
+  await expect(job).toHaveAttribute("open", "");
   await expect(job.getByTestId("background-job-tail")).toContainText("ready");
   await expect(job).not.toContainText("PGID");
   await expect(job).not.toContainText(".log");
-  await expect(job.locator("xpath=..")).toHaveClass(/drawer-background-jobs-list/);
-  await expect(page.locator(".background-jobs-popover")).toHaveCount(0);
-  expect(page.url()).toBe(url);
 
-  await badge.click();
-  await expect(job).toHaveCount(0);
-  await badge.click();
-  await expect(job).toHaveCount(1);
   await job.getByTestId("background-job-kill").click();
-  await expect(badge).toHaveCount(0, { timeout: 15000 });
-  await expect(job).toHaveCount(0);
-  await page.locator('button[aria-label="Close conversations"]').click();
+  await expect(running).toBeHidden({ timeout: 15000 });
+  await expect(strip.getByTestId("running-work-toggle")).toContainText("No running work", {
+    timeout: 15000,
+  });
+  await expect(strip.getByTestId("running-work-toggle")).toHaveAttribute("aria-expanded", "true");
+  await expect(job).toHaveCount(1);
+  await expect(job.locator(".running-command-time")).toHaveText("Finished");
+  await expect(job.getByTestId("background-job-kill")).toHaveCount(0);
+  await expect(job.getByTestId("background-job-tail")).toContainText("ready");
+  await strip.getByTestId("running-work-toggle").click();
+  await expect(strip).toHaveCount(0, { timeout: 15000 });
   const notice = page.getByTestId("bash-tool-finished-job");
   await expect(notice).toBeVisible({ timeout: 15000 });
   await expect(notice).toHaveText("Failed");
@@ -140,7 +141,7 @@ test("historical background job notices render collapsed bash cards", async ({ p
     return {
       emoji: top(".bash-tool-emoji"),
       command: top(".bash-tool-command"),
-      status: top(".bash-tool-background"),
+      status: top('[data-testid="bash-tool-finished-job"]'),
     };
   });
   expect(Math.abs(positions.emoji - positions.command)).toBeLessThan(2);
