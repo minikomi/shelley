@@ -12299,16 +12299,55 @@ kbd {
 }
 
 /* Message component styles */
-.msg-icon-middle {
-  vertical-align: middle;
-}
-
-.msg-gitinfo-container {
+/* Git state strips use a compact, two-row tool-call layout. Tour-request
+ * notices intentionally retain their separate, inline status treatment. */
+.msg-tour-request-container {
   padding: 0.4rem 1rem;
-  font-size: var(--font-size-14);
   color: var(--text-secondary);
   text-align: center;
+  font-size: var(--font-size-14);
   font-style: italic;
+}
+
+.msg-tour-request-container .msg-commit-hash {
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+  cursor: pointer;
+}
+
+.msg-tour-request-container :is(.msg-diff-link, .msg-tour-action, .msg-tour-building) {
+  color: var(--blue-text);
+  text-decoration: underline;
+}
+
+.msg-tour-request-container .msg-tour-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-style: inherit;
+  cursor: pointer;
+}
+
+.msg-tour-request-container .msg-tour-action:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.msg-tour-request-container .msg-tour-building {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.msg-tour-request-container .msg-tour-building .working-indicator {
+  width: 10px;
+  height: 10px;
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
 }
 
 .msg-modelchange-container {
@@ -12426,83 +12465,273 @@ kbd {
   letter-spacing: 0.03em;
 }
 
-.msg-worktree {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-12);
-  margin-right: 0.5em;
-}
-
-.msg-branch {
-  font-weight: 500;
-  font-style: normal;
-}
-
-.msg-commit-hash {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-12);
-  background: var(--bg-tertiary);
-  padding: 0.1em 0.3em;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.msg-copy-button {
-  background: none;
-  border: none;
-  padding: 0.1em 0.3em;
-  cursor: pointer;
-  vertical-align: middle;
-  margin-left: 0.2em;
-}
-
-.msg-copy-button:not(.copied) {
-  color: var(--text-tertiary);
-}
-
-.msg-copy-button.copied {
-  color: var(--success-text);
-}
-
-.msg-subject {
-  margin-left: 0.3em;
-}
-
-.msg-diff-link,
-.msg-tour-action,
-.msg-tour-building {
-  color: var(--blue-text);
-  text-decoration: underline;
-}
-
-.msg-tour-action {
+.msg-gitinfo-container {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0.5rem 0;
+  padding: 0.75rem 1rem 0.75rem 2.5rem;
   border: 0;
+  border-radius: 0.5rem;
+  background: var(--gray-100);
+  color: var(--text-primary);
+  font-size: var(--font-size-14);
+  font-style: normal;
+  text-align: left;
+}
+
+.dark .msg-gitinfo-container {
+  background: var(--gray-800);
+}
+
+.msg-gitinfo-container::before {
+  position: absolute;
+  top: calc(0.75rem + 2px);
+  left: 1rem;
+  width: 1rem;
+  height: 1rem;
+  background: var(--text-secondary);
+  content: "";
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6'%3E%3Cpath d='M2 12h6m8 0h6'/%3E%3Ccircle cx='12' cy='12' r='4'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+.msg-gitinfo-container .msg-gitinfo-content {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, max-content) max-content minmax(0, 1fr) max-content max-content;
+  grid-template-rows: 20px 28px;
+  column-gap: 8px;
+  row-gap: 4px;
+  padding-bottom: 4px;
+}
+
+.msg-gitinfo-container
+  :is(
+    .msg-subject,
+    .msg-branch,
+    .msg-commit-hash,
+    .msg-worktree,
+    .msg-diff-link,
+    .msg-tour-action,
+    .msg-tour-building
+  ) {
+  margin: 0;
+  font-size: var(--font-size-14);
+  font-weight: 400;
+  font-style: normal;
+  line-height: 20px;
+}
+
+.msg-gitinfo-container .msg-subject {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-gitinfo-container .msg-branch {
+  grid-column: 1;
+  grid-row: 2;
+  align-self: center;
+  max-width: 14rem;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--blue-text);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-gitinfo-container .msg-commit-hash {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
   padding: 0;
+  border: 0;
   background: transparent;
-  font: inherit;
-  font-style: inherit;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  letter-spacing: inherit;
   cursor: pointer;
 }
 
-.msg-tour-action:disabled {
+.msg-gitinfo-content:not(:has(.msg-branch)) .msg-commit-hash {
+  grid-column: 1 / 3;
+  justify-self: start;
+}
+
+.msg-gitinfo-container .msg-worktree {
+  grid-column: 3;
+  grid-row: 2;
+  align-self: center;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-gitinfo-container .msg-copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.msg-gitinfo-container :is(.msg-diff-link, .msg-tour-action, .msg-tour-building) {
+  display: inline-flex;
+  grid-row: 2;
+  align-items: center;
+  align-self: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 22px;
+  min-height: 22px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 22%, transparent);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-12);
+  line-height: 16px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.msg-gitinfo-container .msg-diff-link {
+  grid-column: 4;
+}
+
+.msg-gitinfo-container .msg-tour-failure {
+  display: inline-flex;
+  grid-column: 5;
+  grid-row: 2;
+  align-items: center;
+  align-self: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.msg-gitinfo-container .msg-tour-failed {
+  color: var(--error-text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-14);
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.msg-gitinfo-container :is(.msg-tour-link, .msg-tour-action, .msg-tour-building) {
+  grid-column: 5;
+}
+
+.msg-gitinfo-container :is(.msg-diff-link, .msg-tour-action):hover {
+  border-color: color-mix(in srgb, var(--text-secondary) 40%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.msg-gitinfo-container :is(.msg-diff-link, .msg-tour-action):focus-visible {
+  outline: 1px solid var(--border);
+  outline-offset: 1px;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--blue-text);
+}
+
+.msg-gitinfo-container .msg-tour-action:disabled {
   cursor: default;
   opacity: 0.65;
 }
 
-.msg-tour-building {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3em;
+.msg-gitinfo-container .msg-tour-building {
+  gap: 5px;
+  cursor: default;
 }
 
-.msg-tour-building .working-indicator {
-  width: 10px;
-  height: 10px;
+.msg-gitinfo-container a.msg-tour-building {
+  cursor: pointer;
+}
+
+.msg-gitinfo-container .msg-tour-building .working-indicator {
+  width: 5px;
+  height: 5px;
   border-top-color: transparent;
   animation: spin 0.8s linear infinite;
 }
 
-.msg-tour-failed {
-  color: var(--error-text);
+@media (max-width: 640px) {
+  .msg-gitinfo-container {
+    padding: 0.5rem 0.75rem 0.5rem 2.25rem;
+  }
+
+  .msg-gitinfo-container::before {
+    top: calc(0.5rem + 2px);
+    left: 0.75rem;
+  }
+
+  .msg-gitinfo-container .msg-gitinfo-content {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 3px 0;
+    padding-bottom: 0;
+  }
+
+  .msg-gitinfo-container .msg-subject {
+    flex: 0 0 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .msg-gitinfo-container .msg-branch {
+    flex: 0 1 auto;
+    max-width: 100%;
+    margin-right: 8px;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .msg-gitinfo-container .msg-commit-hash {
+    flex: 0 0 auto;
+    margin-right: 8px;
+  }
+
+  .msg-gitinfo-container .msg-worktree {
+    flex: 1 1 14ch;
+    max-width: 100%;
+  }
+
+  .msg-gitinfo-container .msg-gitinfo-content::after {
+    flex: 0 0 100%;
+    order: 4;
+    height: 0;
+    content: "";
+  }
+
+  .msg-gitinfo-container
+    :is(.msg-diff-link, .msg-tour-action, .msg-tour-building, .msg-tour-failure) {
+    order: 6;
+  }
+
+  .msg-gitinfo-container .msg-diff-link:not(.msg-tour-link) {
+    order: 5;
+    margin-left: auto;
+    margin-right: 6px;
+  }
 }
 
 /* CommitTourAction: git graph details and the diff viewer. */
