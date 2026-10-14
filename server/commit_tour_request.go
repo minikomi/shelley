@@ -42,12 +42,13 @@ type commitTourTarget struct {
 }
 
 type CommitTourStatus struct {
-	Status               string `json:"status"`
-	Hash                 string `json:"hash"`
-	Repository           string `json:"repository,omitempty"`
-	WorkerConversationID string `json:"worker_conversation_id,omitempty"`
-	WorkerSlug           string `json:"worker_slug,omitempty"`
-	Error                string `json:"error,omitempty"`
+	Status               string                 `json:"status"`
+	Hash                 string                 `json:"hash"`
+	Repository           string                 `json:"repository,omitempty"`
+	WorkerConversationID string                 `json:"worker_conversation_id,omitempty"`
+	WorkerSlug           string                 `json:"worker_slug,omitempty"`
+	Error                string                 `json:"error,omitempty"`
+	Progress             []committour.Milestone `json:"progress,omitempty"`
 }
 
 type commitTourJob struct {
@@ -399,6 +400,10 @@ func (s *Server) requestCommitTour(ctx context.Context, parentID string, target 
 			State:       commitTourStatusBuilding,
 			RequestedAt: time.Now().UTC(),
 		},
+	}
+	if err := committour.StartProgress(target.Repository, target.Hash); err != nil {
+		s.commitTourMu.Unlock()
+		return CommitTourStatus{}, false, err
 	}
 	child, err := s.db.CreateCommitTourWorker(ctx, parentID, target.Worktree, modelID, opts)
 	if err != nil {
@@ -797,6 +802,11 @@ func (s *Server) handleCommitTourStatus(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "failed to read commit tour status", http.StatusInternalServerError)
 		return
 	}
+	if status.WorkerConversationID != "" {
+		if status.Progress, err = committour.ReadProgress(target.Repository, target.Hash); err != nil {
+			s.logger.Warn("Failed to read commit tour progress", "hash", target.Hash, "error", err)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
@@ -815,6 +825,17 @@ func (s *Server) handleCommitTourCommand(ctx context.Context, w http.ResponseWri
 		cwd = derefString(conversation.Cwd)
 	}
 	target, err := resolveCommitTourTarget(cwd, hash)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return true
+	}
+	// The chat marker keeps git's spelling of the worktree so it matches gitinfo strips.
+	worktree, err := getGitRoot(cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return true
+	}
+	subject, err := committour.Subject(target.Worktree, target.Hash)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return true
@@ -845,7 +866,8 @@ func (s *Server) handleCommitTourCommand(ctx context.Context, w http.ResponseWri
 			UserData: map[string]any{
 				"tour_request": true,
 				"commit":       target.Hash,
-				"worktree":     target.Worktree,
+				"subject":      subject,
+				"worktree":     worktree,
 			},
 			BumpTimestamp: true,
 		})

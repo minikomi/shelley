@@ -2079,6 +2079,7 @@ const allCoalescedItems = computed(() =>
     coalesceMessages(
       messages.value,
       conversationInterrupted.value ? props.currentConversation?.current_generation : undefined,
+      buildingTours.value,
     ),
   )(),
 );
@@ -3499,8 +3500,6 @@ async function sendMessage(message: string) {
     try {
       sending.value = true;
       error.value = null;
-      const path = window.location.pathname;
-      const startedAt = performance.now();
       const accepted = await api.sendMessage(props.conversationId, {
         message: trimmedMessage,
         model: selectedModel.value,
@@ -3514,7 +3513,7 @@ async function sendMessage(message: string) {
         if (accepted.tour.status === "present") {
           handleOpenDiffViewer(accepted.tour.hash, cwd);
         } else if (accepted.tour.status === "building") {
-          announceCommitTourRequest(props.conversationId, cwd, accepted.tour.hash, path, startedAt);
+          announceCommitTourRequest(cwd, accepted.tour.hash);
         }
       }
     } catch (err) {
@@ -3816,41 +3815,37 @@ function handleOpenDiffViewer(commit: string, cwd?: string) {
   showDiffViewer.value = true;
 }
 
+// Tours requested from this tab are watched until they settle so chat keeps their rows visible.
 const activeTourRequests = new Map<string, () => void>();
+const buildingTours = ref<ReadonlySet<string>>(new Set());
 let unsubscribeTourRequests: (() => void) | null = null;
-let lastUserActivityAt = 0;
-const tourActivityEvents = ["pointerdown", "keydown", "wheel", "touchstart"] as const;
-
-function markTourUserActivity() {
-  lastUserActivityAt = performance.now();
+function setTourBuilding(hash: string, building: boolean) {
+  if (buildingTours.value.has(hash) === building) return;
+  const next = new Set(buildingTours.value);
+  if (building) next.add(hash);
+  else next.delete(hash);
+  buildingTours.value = next;
 }
-
-function watchRequestedTour({ conversationId, cwd, hash, path, startedAt }: CommitTourRequest) {
+function watchRequestedTour({ cwd, hash }: CommitTourRequest) {
   const key = commitTourStatusKey(cwd, hash);
   if (activeTourRequests.has(key)) return;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let unsubscribe = () => {};
+  let stopped = false;
   const stop = () => {
+    stopped = true;
     if (timer) clearTimeout(timer);
     unsubscribe();
     activeTourRequests.delete(key);
   };
   activeTourRequests.set(key, stop);
   unsubscribe = subscribeCommitTourStatus(cwd, hash, (status) => {
+    setTourBuilding(hash, status.status === "building");
     if (status.status === "building") return;
     stop();
-    if (
-      status.status === "present" &&
-      props.conversationId === conversationId &&
-      window.location.pathname === path &&
-      lastUserActivityAt <= startedAt &&
-      document.visibilityState === "visible" &&
-      !showDiffViewer.value &&
-      !draftText.trim()
-    ) {
-      handleOpenDiffViewer(hash, cwd);
-    }
   });
+  // A cached settled status is replayed during subscribe, before unsubscribe is assigned.
+  if (stopped) unsubscribe();
   const poll = async () => {
     try {
       await loadCommitTourStatus(cwd, hash, true);
@@ -5381,15 +5376,11 @@ onMounted(() => {
   document.addEventListener("keydown", handleScrollKeyDown);
   document.addEventListener("keydown", handleMenuShortcut);
   unsubscribeTourRequests = subscribeCommitTourRequests(watchRequestedTour);
-  for (const event of tourActivityEvents)
-    document.addEventListener(event, markTourUserActivity, true);
 });
 
 onUnmounted(() => {
   unsubscribeTourRequests?.();
   for (const stop of activeTourRequests.values()) stop();
-  for (const event of tourActivityEvents)
-    document.removeEventListener(event, markTourUserActivity, true);
   teardownSubscriptions();
   stopBottomPin();
   tailSweepToken++; // cancel any in-flight background mount sweep

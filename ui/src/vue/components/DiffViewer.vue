@@ -309,18 +309,31 @@
       />
 
       <div
-        v-if="tourAvailable"
+        v-if="
+          isOpen &&
+          tourCommit &&
+          (tourAvailable || tourBuildVisible || tourBuilding || canBuildTour)
+        "
         class="diff-viewer-view-switcher"
         role="group"
         aria-label="Diff view"
       >
         <button
+          v-if="tourAvailable || tourBuildVisible || tourBuilding"
           type="button"
           :class="['diff-viewer-view-btn', { active: diffView === 'tour' }]"
           :aria-pressed="diffView === 'tour'"
           @click="diffView = 'tour'"
         >
-          Tour
+          <span
+            v-if="tourBuilding || tourLoading"
+            class="spinner spinner-small"
+            aria-hidden="true"
+          />
+          {{ tourBuilding ? "Building tour" : "Tour" }}
+        </button>
+        <button v-else type="button" class="diff-viewer-view-btn" @click="buildTour">
+          Build tour
         </button>
         <button
           type="button"
@@ -331,17 +344,17 @@
           Files
         </button>
       </div>
-      <!-- Once built, the tour appears in place of this (see CommitTourAction). -->
-      <div v-else-if="isOpen && tourCommit" class="diff-viewer-view-switcher">
-        <CommitTourAction
-          :cwd="cwd"
-          :hash="tourCommit.id"
-          :conversation-id="tourConversationId ?? null"
-          :navigate="openTourWorker"
-          @present="markTour"
-        />
-      </div>
 
+      <CommitTourAction
+        v-show="false"
+        v-if="isOpen && tourCommit && !tourAvailable"
+        ref="tourActionRef"
+        :cwd="cwd"
+        :hash="tourCommit.id"
+        :conversation-id="tourConversationId ?? null"
+        @status="updateTourBuildStatus"
+        @present="markTour"
+      />
       <!-- Error banner -->
       <div v-if="error && diffView === 'files'" class="diff-viewer-error">{{ error }}</div>
 
@@ -429,7 +442,9 @@
                   @select="scrollToTourAnchor"
                   @expand-change="setTourExpanded"
                 />
-                <div v-else class="diff-viewer-file-list-empty">No tour sections</div>
+                <div v-else class="diff-viewer-file-list-empty">
+                  {{ tourBuilding ? "Tour is being built" : "No tour sections" }}
+                </div>
               </div>
             </template>
             <template v-else>
@@ -456,22 +471,32 @@
         </aside>
         <div ref="mainRef" class="diff-viewer-main">
           <div v-if="diffView === 'tour'" class="diff-viewer-tour-pane">
-            <div v-if="tourLoading" class="diff-viewer-loading">
-              <div class="spinner"></div>
-              <span>Loading tour...</span>
-            </div>
-            <div v-else-if="tourError" class="diff-viewer-tour-error">{{ tourError }}</div>
             <CommitTourView
-              v-else-if="tourResponse"
+              v-if="tourCommit"
               ref="tourViewRef"
-              :tour="tourResponse"
+              :tour="tourResponse ?? pendingTour"
               :commit-message="selectedTourCommitMessage"
               :expanded-anchors="expandedTourAnchors"
               :cwd="cwd"
               @expand-change="setTourExpanded"
               @active-anchor-change="handleTourActiveAnchor"
               @open-comment="openTourComment"
-            />
+            >
+              <template #building>
+                <p v-if="tourError" class="diff-viewer-tour-error">{{ tourError }}</p>
+                <CommitTourBuildProgress
+                  v-else-if="tourBuildVisible && tourBuildStatus"
+                  :status="tourBuildStatus"
+                  :can-retry="!!tourConversationId"
+                  @retry="retryTour"
+                />
+
+                <div v-else-if="tourLoading || tourRequesting" class="diff-viewer-loading">
+                  <span class="spinner spinner-small" aria-hidden="true" />
+                  <span>{{ tourRequesting ? "Starting tour build…" : "Loading tour…" }}</span>
+                </div>
+              </template>
+            </CommitTourView>
           </div>
           <div v-show="diffView === 'files'" class="diff-viewer-files-pane" data-review="Files">
             <div v-if="loading && !fileDiff" class="diff-viewer-loading">
@@ -600,7 +625,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import type * as Monaco from "monaco-editor";
-import { api, type GitTourResponse } from "../../services/api";
+import { api, type GitTourResponse, type GitTourBuildStatus } from "../../services/api";
 import { loadMonaco } from "../../services/monaco";
 import { isDarkModeActive } from "../../services/theme";
 import { buildTourCommentBlock, type TourCommentTarget } from "../composables/tourComments";
@@ -620,7 +645,7 @@ import DirectoryPickerModal from "./DirectoryPickerModal.vue";
 import DiffFileTree from "./DiffFileTree.vue";
 import ReviewRecordButton from "./ReviewRecordButton.vue";
 import CommitTourAction from "./CommitTourAction.vue";
-import { navigateToConversationSlug } from "../composables/subagentLive";
+import CommitTourBuildProgress from "./CommitTourBuildProgress.vue";
 import ReviewRecordingBar from "./ReviewRecordingBar.vue";
 import ReviewRecordingStatus from "./ReviewRecordingStatus.vue";
 import {
@@ -709,6 +734,8 @@ const selectedDiff = ref<string | null>(null);
 const selectedTo = ref<"working" | "self">("working");
 const diffView = ref<"tour" | "files">("files");
 const tourResponse = ref<GitTourResponse | null>(null);
+const tourBuildStatus = ref<GitTourBuildStatus | null>(null);
+const tourActionRef = ref<InstanceType<typeof CommitTourAction> | null>(null);
 const tourViewRef = ref<{ scrollToAnchor: (anchor: string) => void } | null>(null);
 const tourContentsScrollRef = ref<HTMLElement | null>(null);
 const activeTourAnchor = ref<string | null>(null);
@@ -731,7 +758,7 @@ const saveStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
 const mode = ref<ViewMode>("comment");
 const commitMessages = ref<GitCommitMessage[]>([]);
 const selectedTourCommitMessage = computed(() => {
-  const hash = tourResponse.value?.hash;
+  const hash = tourResponse.value?.hash ?? selectedDiff.value;
   return hash ? (commitMessages.value.find((message) => message.hash === hash) ?? null) : null;
 });
 const amendStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
@@ -778,6 +805,62 @@ const tourCommit = computed(() =>
     : undefined,
 );
 const tourAvailable = computed(() => !!tourCommit.value?.hasTour);
+const tourBuildVisible = computed(
+  () =>
+    !tourResponse.value &&
+    tourBuildStatus.value?.hash === tourCommit.value?.id &&
+    (tourBuildStatus.value?.status === "building" ||
+      tourBuildStatus.value?.status === "failed" ||
+      (tourBuildStatus.value?.status === "present" &&
+        !!tourBuildStatus.value?.worker_conversation_id)),
+);
+const tourRequesting = ref(false);
+const tourBuilding = computed(
+  () =>
+    tourRequesting.value ||
+    (tourBuildVisible.value && tourBuildStatus.value?.status === "building"),
+);
+const canBuildTour = computed(
+  () =>
+    !!props.tourConversationId &&
+    tourBuildStatus.value?.hash === tourCommit.value?.id &&
+    tourBuildStatus.value?.status === "absent",
+);
+const pendingTour = computed<GitTourResponse>(() => ({
+  hash: tourCommit.value!.id,
+  tour: { version: 1, chunks: [] },
+}));
+
+function updateTourBuildStatus(status: GitTourBuildStatus | null) {
+  const initial = tourBuildStatus.value === null;
+  tourBuildStatus.value =
+    status?.status === "present" && status.hash === tourBuildStatus.value?.hash
+      ? { ...tourBuildStatus.value, ...status }
+      : status;
+  if (
+    initial &&
+    status?.status === "building" &&
+    tourBuildVisible.value &&
+    !recordingLocked.value
+  ) {
+    diffView.value = "tour";
+  }
+}
+
+function buildTour() {
+  diffView.value = "tour";
+  retryTour();
+}
+
+async function retryTour() {
+  if (!props.tourConversationId || !tourActionRef.value) return;
+  tourRequesting.value = true;
+  try {
+    await tourActionRef.value.request(props.tourConversationId);
+  } finally {
+    tourRequesting.value = false;
+  }
+}
 
 function markTour(hash: string) {
   const diff = diffs.value.find((d) => d.id === hash);
@@ -788,6 +871,18 @@ const tourSelectionKey = computed(() =>
   props.isOpen && tourAvailable.value && selectedDiff.value
     ? `${props.cwd}\n${selectedDiff.value}`
     : "",
+);
+
+// Leaving a commit whose tour is building has no tour key change to reset the view.
+watch(
+  () =>
+    diffView.value === "tour" &&
+    !tourAvailable.value &&
+    !tourBuildVisible.value &&
+    !tourRequesting.value,
+  (stranded) => {
+    if (stranded) diffView.value = "files";
+  },
 );
 
 // The vim adapter attaches to the modified (right-hand) code editor.
@@ -992,8 +1087,12 @@ watch(
     }
 
     // A tour landing mid-recording (selection is locked then) waits for a
-    // click rather than yanking the view out from under the narration.
-    if (!recordingLocked.value) diffView.value = "tour";
+    // click rather than yanking the view out from under the narration. A tour
+    // built while the viewer is open leaves the user on whichever tab they chose.
+    const builtHere =
+      tourBuildStatus.value?.hash === selectedDiff.value &&
+      !!tourBuildStatus.value?.worker_conversation_id;
+    if (!recordingLocked.value && !builtHere) diffView.value = "tour";
     tourLoading.value = true;
     try {
       const response = await api.getGitTour(props.cwd, selectedDiff.value);
@@ -1030,17 +1129,6 @@ function requestClose() {
     loadFileDiffRequestId++;
     emit("close");
   }
-}
-
-// The worker's conversation replaces this one underneath, so leave first;
-// while a recording locks the viewer, open it alongside instead.
-function openTourWorker(slug: string) {
-  if (recordingLocked.value) {
-    window.open(`/c/${slug}`, "_blank", "noopener");
-    return;
-  }
-  emit("close");
-  navigateToConversationSlug(slug);
 }
 
 function openDirPicker() {
@@ -1154,6 +1242,7 @@ watch(
       selectedFile.value = null;
       files.value = [];
       selectedDiff.value = null;
+      tourBuildStatus.value = null;
       selectedTo.value = "working";
       diffs.value = [];
       error.value = null;
@@ -1889,7 +1978,12 @@ watch(layout, () => nextTick(revealActiveTourContents), { flush: "post" });
 // Title for the sidebar layout's header.
 const currentTitleText = computed<string | null>(() => {
   if (diffView.value === "tour") {
-    return tourResponse.value?.tour.title || selectedDiff.value?.slice(0, 8) || null;
+    return (
+      tourResponse.value?.tour.title ||
+      selectedTourCommitMessage.value?.subject ||
+      selectedDiff.value?.slice(0, 8) ||
+      null
+    );
   }
   const sf = selectedFile.value;
   if (!sf) return null;

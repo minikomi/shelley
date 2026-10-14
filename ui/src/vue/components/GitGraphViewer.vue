@@ -226,6 +226,7 @@
                 :cwd="cwd"
                 :hash="selectedCommit.hash"
                 :conversation-id="canRequestTour ? conversationId : null"
+                @open="canOpenDiff && emit('open-diff', $event, cwd)"
                 @present="markTour"
               />
 

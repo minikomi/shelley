@@ -1,21 +1,13 @@
-<!-- A commit's tour build: a link to the subagent building it or, given a
-     conversation to ask from, a button that requests one. Renders nothing
-     while the status loads or once the tour exists, which emits `present`.
-     `navigate` opens the worker's conversation (default: in place). -->
 <template>
-  <a
-    v-if="status?.status === 'building' && status.worker_slug"
+  <button
+    v-if="status?.status === 'building'"
+    type="button"
     class="commit-tour-action"
-    :href="`/c/${status.worker_slug}`"
-    @click="openWorker($event, status.worker_slug)"
+    @click="emit('open', hash)"
   >
     <span class="spinner spinner-small" aria-hidden="true" />
-    Building tour ↗
-  </a>
-  <span v-else-if="status?.status === 'building'" class="commit-tour-action">
-    <span class="spinner spinner-small" aria-hidden="true" />
-    Building tour
-  </span>
+    Building tour →
+  </button>
   <button
     v-else-if="conversationId && (status?.status === 'absent' || status?.status === 'failed')"
     v-tooltip.top="status.error || 'Build a guided tour in a subagent'"
@@ -37,15 +29,17 @@ import {
   requestCommitTour,
   subscribeCommitTourStatus,
 } from "../../services/commitTourStatus";
-import { navigateToConversationSlug } from "../composables/subagentLive";
 
 const props = defineProps<{
   cwd: string;
   hash: string;
   conversationId?: string | null;
-  navigate?: (slug: string) => void;
 }>();
-const emit = defineEmits<{ (e: "present", hash: string): void }>();
+const emit = defineEmits<{
+  (e: "present", hash: string): void;
+  (e: "status", status: GitTourBuildStatus | null): void;
+  (e: "open", hash: string): void;
+}>();
 
 const status = ref<GitTourBuildStatus | null>(null);
 const requesting = ref(false);
@@ -58,6 +52,7 @@ watch(
   [() => props.cwd, () => props.hash],
   ([dir, hash], _, onCleanup) => {
     status.value = null;
+    emit("status", null);
     requesting.value = false;
     requestSeq++;
     let active = true;
@@ -69,6 +64,7 @@ watch(
     const update = (next: GitTourBuildStatus) => {
       if (!active) return;
       status.value = next;
+      emit("status", next);
       if (next.status === "building") probeLater();
       else if (timer) clearTimeout(timer);
       if (next.status === "present") emit("present", hash);
@@ -107,15 +103,12 @@ async function request(conversationId: string) {
         hash,
         error: error instanceof Error ? error.message : String(error),
       };
+      emit("status", status.value);
     }
   } finally {
     if (seq === requestSeq) requesting.value = false;
   }
 }
 
-function openWorker(e: MouseEvent, slug: string) {
-  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-  e.preventDefault();
-  (props.navigate ?? navigateToConversationSlug)(slug);
-}
+defineExpose({ request });
 </script>

@@ -9,6 +9,7 @@
     <article ref="documentRef" class="commit-tour-document">
       <div v-if="!isMobile" class="commit-tour-toolbar">
         <button
+          v-if="tour.tour.chunks.length"
           v-tooltip.top="sideBySide ? 'Switch to unified diffs' : 'Switch to side-by-side diffs'"
           type="button"
           class="commit-tour-diff-toggle"
@@ -60,6 +61,8 @@
           </details>
         </section>
 
+        <slot name="building" />
+
         <header
           v-if="tour.tour.title || tour.tour.intro"
           class="commit-tour-introduction"
@@ -70,6 +73,8 @@
           <MarkdownContent v-if="tour.tour.intro" :text="tour.tour.intro" />
         </header>
       </div>
+
+      <slot v-if="!commitMessage && !tour.tour.title && !tour.tour.intro" name="building" />
 
       <CommitTourItems
         v-if="tour.tour.decisions?.length"
@@ -509,6 +514,7 @@ onUnmounted(() => {
 .commit-tour-toolbar {
   display: flex;
   justify-content: flex-end;
+  min-height: 1.75rem;
 }
 
 .commit-tour-diff-toggle {

@@ -138,7 +138,7 @@ test("missing tour requests a visible background subagent", async ({ page, reque
 
     const building = gitInfo.getByTestId("gitinfo-tour-building");
     await expect(building).toContainText("Building tour");
-    await expect(building).toHaveAttribute("href", "/c/tour-worker-slug");
+    await expect(building).toHaveAttribute("href", /[?&]diff=/);
     expect(requestedMessage).toBe(`/tour ${shortHash}\n${repo}`);
 
     state = "present";
@@ -266,7 +266,7 @@ test("git info aligns detached HEAD metadata with the subject", async ({ page, r
   });
 });
 
-test("untouched /tour shows a compact event and opens when ready", async ({ page, request }) => {
+test("/tour shows a compact event that offers the tour when ready", async ({ page, request }) => {
   await withTempDir("shelley-tour-auto-open-", async (tempDir) => {
     const repo = join(tempDir, "repo");
     mkdirSync(repo);
@@ -299,13 +299,8 @@ test("untouched /tour shows a compact event and opens when ready", async ({ page
     const event = page.getByTestId("message-tour-request");
     await expect(event).toHaveClass(/message-gitinfo/);
     await expect(event).not.toHaveClass(/message-agent/);
-    await expect(event.getByRole("link", { name: /^Building ↗$/ })).toHaveAttribute(
-      "href",
-      "/c/tour-worker",
-    );
-    const spinner = event.locator(".working-indicator");
-    await expect(spinner).toHaveCSS("animation-name", "spin");
-    await expect(spinner).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+    await expect(event.getByTestId("gitinfo-tour-building")).toHaveAttribute("href", /[?&]diff=/);
+    await expect(event.locator(".spinner")).toBeVisible();
 
     const scaffold = JSON.parse(
       execFileSync(shelleyBin, ["tour", "scaffold", "-C", repo, hash], { encoding: "utf8" }),
@@ -324,15 +319,13 @@ test("untouched /tour shows a compact event and opens when ready", async ({ page
     );
     execFileSync(shelleyBin, ["tour", "attach", "-C", repo, hash, tourPath]);
     state = "present";
-    await expect(event.getByRole("link", { name: "Open tour" })).toBeVisible({
-      timeout: 15_000,
-    });
+    const open = event.getByTestId("gitinfo-tour-link");
+    await expect(open).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".commit-tour-introduction")).toHaveCount(0);
+    await open.click();
     await expect(page.locator(".commit-tour-introduction h1")).toHaveText("Auto-open tour", {
       timeout: 15_000,
     });
-    await page.locator(".diff-viewer-container .diff-viewer-close:visible").first().click();
-    await page.reload();
-    await expect(event.getByRole("link", { name: "Open tour" })).toBeVisible();
   });
 });
 

@@ -6,54 +6,17 @@
   <div
     v-if="commitHash"
     ref="containerRef"
-    class="message message-gitinfo"
-    :class="isTourRequest ? 'msg-tour-request-container' : 'msg-gitinfo-container'"
+    class="message message-gitinfo msg-gitinfo-container"
     :data-testid="isTourRequest ? 'message-tour-request' : 'message-gitinfo'"
     @mouseenter="refreshTour"
   >
-    <span v-if="isTourRequest">
-      Tour for <code class="msg-commit-hash">{{ shortCommitHash }}</code>
-      <template v-if="tourState === 'building'">
-        {{ " · " }}
-        <a
-          v-if="tourStatus?.worker_slug"
-          :href="`/c/${tourStatus.worker_slug}`"
-          class="msg-tour-building"
-          @click="onWorkerLinkClick"
-        >
-          <span class="working-indicator" aria-hidden="true" /> Building ↗
-        </a>
-        <span v-else class="msg-tour-building">
-          <span class="working-indicator" aria-hidden="true" /> Building
-        </span>
-      </template>
-      <template v-else-if="tourState === 'present'">
-        {{ " is ready · " }}
-        <a v-if="canShowDiff" :href="diffHref" class="msg-diff-link" @click="onDiffLinkClick"
-          >Open tour →</a
-        >
-      </template>
-      <template v-else-if="tourState === 'failed' || tourState === 'absent'">
-        {{ " could not be built · " }}
-        <button
-          v-if="canRequestTour"
-          type="button"
-          class="msg-tour-action"
-          :disabled="requestingTour"
-          v-tooltip.top="tourStatus?.error || 'The subagent did not attach a valid tour'"
-          @click="requestTour"
-          >{{ requestingTour ? "Building tour" : "Retry" }}</button
-        >
-      </template>
-      <template v-else>{{ " · Checking tour" }}</template>
-    </span>
-    <div v-else class="msg-gitinfo-content">
+    <div class="msg-gitinfo-content">
       <span v-if="subject" class="msg-subject" :title="subject">{{ subject }}</span>
       <span v-if="branch" class="msg-branch">{{ branch }}</span>
       <button type="button" class="msg-commit-hash" title="Click to copy commit hash" @click="handleCopyHash">{{ shortCommitHash }}</button>
       <span class="msg-copy-status" aria-live="polite">{{ copied ? "Commit hash copied" : "" }}</span>
       <span v-if="worktree" ref="worktreeRef" class="msg-worktree" :title="worktree">{{ worktreeLabel }}</span>
-      <a v-if="canShowDiff" :href="diffHref" class="msg-diff-link" @click="onDiffLinkClick">Open Diff</a>
+      <a v-if="canShowDiff && (!isTourRequest || tourState === 'absent' || tourState === 'failed')" :href="diffHref" class="msg-diff-link" @click="onDiffLinkClick">Open Diff</a>
       <template v-if="tourState === 'present' && canShowDiff">
         <a :href="diffHref" class="msg-diff-link msg-tour-link" data-testid="gitinfo-tour-link" v-tooltip.top="'Open guided commit tour'" @click="onDiffLinkClick">Open Tour</a>
       </template>
@@ -61,8 +24,8 @@
         <button type="button" class="msg-tour-action" data-testid="gitinfo-tour-request" :disabled="requestingTour" v-tooltip.top="'Build a guided tour in a subagent'" @click="requestTour">{{ requestingTour ? "Requesting…" : "Build tour" }}</button>
       </template>
       <template v-else-if="tourState === 'building'">
-        <a v-if="tourStatus?.worker_slug" :href="`/c/${tourStatus.worker_slug}`" class="msg-tour-building" data-testid="gitinfo-tour-building" v-tooltip.top="'Open the subagent building this tour'" @click="onWorkerLinkClick"><span class="working-indicator" aria-hidden="true" /> Building tour</a>
-        <span v-else class="msg-tour-building" data-testid="gitinfo-tour-building"><span class="working-indicator" aria-hidden="true" /> Building tour</span>
+        <a v-if="canShowDiff" :href="diffHref" class="msg-tour-building" data-testid="gitinfo-tour-building" v-tooltip.top="'Open the tour being built'" @click="onDiffLinkClick"><span class="spinner spinner-small" aria-hidden="true" /> Building tour</a>
+        <span v-else class="msg-tour-building" data-testid="gitinfo-tour-building"><span class="spinner spinner-small" aria-hidden="true" /> Building tour</span>
       </template>
       <template v-else-if="tourState === 'failed' && canRequestTour">
         <span class="msg-tour-failure">
@@ -91,7 +54,6 @@ import {
   subscribeCommitTourStatus,
 } from "../../services/commitTourStatus";
 import type { Message as MessageType } from "../../types";
-import { navigateToConversationSlug } from "../composables/subagentLive";
 import { pathShortener } from "./gitGraph/shortenPaths";
 import { tildifyPath } from "../../utils/tildify";
 
@@ -186,14 +148,6 @@ function onDiffLinkClick(e: MouseEvent) {
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
   e.preventDefault();
   handleDiffClick();
-}
-
-function onWorkerLinkClick(e: MouseEvent) {
-  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-  const slug = tourStatus.value?.worker_slug;
-  if (!slug) return;
-  e.preventDefault();
-  navigateToConversationSlug(slug);
 }
 
 function scheduleTourPoll() {

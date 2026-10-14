@@ -137,6 +137,7 @@ export interface GitTourBuildStatus {
   worker_conversation_id?: string;
   worker_slug?: string;
   error?: string;
+  progress?: { step: string; at: string }[];
 }
 
 export interface GitTourResponse {

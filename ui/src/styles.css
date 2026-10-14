@@ -8306,6 +8306,12 @@ svg {
   cursor: pointer;
 }
 
+.diff-viewer-view-btn .spinner {
+  display: inline-block;
+  vertical-align: -0.125rem;
+  margin-right: 0.375rem;
+}
+
 .diff-viewer-view-btn:first-child {
   border-radius: 0.375rem 0 0 0.375rem;
 }
@@ -12299,57 +12305,7 @@ kbd {
 }
 
 /* Message component styles */
-/* Git state strips use a compact, two-row tool-call layout. Tour-request
- * notices intentionally retain their separate, inline status treatment. */
-.msg-tour-request-container {
-  padding: 0.4rem 1rem;
-  color: var(--text-secondary);
-  text-align: center;
-  font-size: var(--font-size-14);
-  font-style: italic;
-}
-
-.msg-tour-request-container .msg-commit-hash {
-  padding: 0.1em 0.3em;
-  border-radius: 3px;
-  background: var(--bg-tertiary);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-12);
-  cursor: pointer;
-}
-
-.msg-tour-request-container :is(.msg-diff-link, .msg-tour-action, .msg-tour-building) {
-  color: var(--blue-text);
-  text-decoration: underline;
-}
-
-.msg-tour-request-container .msg-tour-action {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  font-style: inherit;
-  cursor: pointer;
-}
-
-.msg-tour-request-container .msg-tour-action:disabled {
-  cursor: default;
-  opacity: 0.65;
-}
-
-.msg-tour-request-container .msg-tour-building {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3em;
-}
-
-.msg-tour-request-container .msg-tour-building .working-indicator {
-  width: 10px;
-  height: 10px;
-  border-top-color: transparent;
-  animation: spin 0.8s linear infinite;
-}
-
+/* Git state strips and tour requests share a compact, two-row tool-call layout. */
 .msg-modelchange-container {
   gap: 0.4em;
   font-style: normal;
@@ -12660,13 +12616,6 @@ kbd {
 
 .msg-gitinfo-container a.msg-tour-building {
   cursor: pointer;
-}
-
-.msg-gitinfo-container .msg-tour-building .working-indicator {
-  width: 5px;
-  height: 5px;
-  border-top-color: transparent;
-  animation: spin 0.8s linear infinite;
 }
 
 @media (max-width: 640px) {
@@ -17143,7 +17092,6 @@ kbd {
   .conversation-loading-bar-fill,
   .export-spinner,
   .message-voice-btn.listening,
-  .msg-tour-building .working-indicator,
   .patch-tool-running,
   .recording-status-dot.recording,
   .recording-status-dot.starting,

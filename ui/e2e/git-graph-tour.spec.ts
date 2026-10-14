@@ -93,7 +93,7 @@ test("git graph shows and opens an attached commit tour", async ({ page, request
   });
 });
 
-test("git graph links to the builder and exposes the tour on return", async ({ page, request }) => {
+test("git graph's building button opens the tour pane", async ({ page, request }) => {
   await withTempDir("shelley-git-graph-build-tour-", async (tempDir) => {
     const repo = join(tempDir, "repo");
     mkdirSync(repo);
@@ -151,12 +151,14 @@ test("git graph links to the builder and exposes the tour on return", async ({ p
     await expect(actions.getByRole("link", { name: "Open diff" })).toBeVisible();
     await actions.getByRole("button", { name: "Build tour" }).click();
     await expect(actions.getByRole("link", { name: "Open diff" })).toBeVisible();
-    const building = actions.getByRole("link", { name: "Building tour" });
-    await expect(building).toHaveAttribute("href", `/c/${builderSlug}`);
+    const building = actions.getByRole("button", { name: /Building tour/ });
     await expect(building.locator(".spinner")).toBeVisible();
     await expect(actions.getByRole("button", { name: "Build tour" })).toHaveCount(0);
     await building.click();
-    await expect(page).toHaveURL(new RegExp(`/c/${builderSlug}$`));
+    const overlay = page.locator(".diff-viewer-overlay");
+    await expect(overlay.locator(".diff-viewer-view-switcher button.active")).toHaveText(
+      "Building tour",
+    );
 
     const failedProbe = page.waitForResponse(
       (response) => response.url().includes("/api/git/tour/status?") && response.status() === 503,
@@ -180,17 +182,9 @@ test("git graph links to the builder and exposes the tour on return", async ({ p
     );
     execFileSync(shelleyBin, ["tour", "attach", "-C", repo, hash, tourPath]);
     state = "present";
-    await expect(page.locator(".diff-viewer-container:not(.git-graph-container)")).toHaveCount(0);
-    await page.goto(`/c/${slug}`);
-    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30_000 });
-    await openWorkspaceTool(page, "Git Graph");
-    const returnedGraph = page.locator(".git-graph-container");
-    await expect(returnedGraph.getByRole("link", { name: "Open tour" })).toBeVisible();
-    await expect(
-      returnedGraph.locator(".git-graph-row-selected").getByTestId("git-graph-tour-link"),
-    ).toBeVisible();
-    await returnedGraph.getByRole("link", { name: "Open tour" }).click();
-    await expect(page.locator(".commit-tour-introduction h1")).toHaveText("Graph tour");
+    await expect(overlay.locator(".commit-tour-introduction h1")).toHaveText("Graph tour", {
+      timeout: 15_000,
+    });
   });
 });
 
@@ -244,8 +238,8 @@ test("diff viewer builds a tour for the commit on screen", async ({ page, reques
     const overlay = page.locator(".diff-viewer-overlay");
     const row = overlay.locator(".diff-viewer-view-switcher");
     await row.getByRole("button", { name: "Build tour" }).click({ timeout: 30_000 });
-    const building = row.getByRole("link", { name: "Building tour" });
-    await expect(building).toHaveAttribute("href", `/c/${builderSlug}`);
+    const building = row.getByRole("button", { name: "Building tour" });
+    await expect(building).toHaveClass(/active/);
     await expect(building.locator(".spinner")).toBeVisible();
     expect(requests).toEqual([`/tour ${hash}\n${repo}`]);
 
@@ -283,7 +277,7 @@ test("diff viewer builds a tour for the commit on screen", async ({ page, reques
   });
 });
 
-test("diff viewer's building link leaves for the worker", async ({ page, request }) => {
+test("diff viewer opens a building tour on its progress", async ({ page, request }) => {
   await withTempDir("shelley-diff-tour-worker-", async (tempDir) => {
     const repo = join(tempDir, "repo");
     mkdirSync(repo);
@@ -307,11 +301,9 @@ test("diff viewer's building link leaves for the worker", async ({ page, request
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`/c/${slug}?diff=${hash}&cwd=${encodeURIComponent(repo)}`);
     const overlay = page.locator(".diff-viewer-overlay");
-    await overlay
-      .locator(".diff-viewer-view-switcher")
-      .getByRole("link", { name: "Building tour" })
-      .click({ timeout: 30_000 });
-    await expect(page).toHaveURL(new RegExp(`/c/${builderSlug}$`));
-    await expect(overlay).toHaveCount(0);
+    await expect(
+      overlay.locator(".diff-viewer-view-switcher").getByRole("button", { name: "Building tour" }),
+    ).toHaveClass(/active/, { timeout: 30_000 });
+    await expect(overlay.getByTestId("tour-build-progress")).toBeVisible();
   });
 });
