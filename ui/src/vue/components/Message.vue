@@ -318,7 +318,7 @@ interface ToolDisplay {
 
 const props = defineProps<{
   message: MessageType;
-  onOpenDiffViewer?: (commit: string, cwd?: string) => void;
+  onOpenDiffViewer?: (commit: string, cwd?: string, openOnFiles?: boolean) => void;
   canRequestTour?: boolean;
   onCommentTextChange?: (text: string) => void;
   // onFork forks the conversation, copying messages up to and including this

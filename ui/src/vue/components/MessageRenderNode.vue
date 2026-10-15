@@ -76,7 +76,7 @@ import BtwInline from "./BtwInline.vue";
 defineProps<{
   node: RenderNode;
   conversationId: string | null;
-  onOpenDiffViewer: (commit: string, cwd?: string) => void;
+  onOpenDiffViewer: (commit: string, cwd?: string, openOnFiles?: boolean) => void;
   canRequestTour: boolean;
   onCommentTextChange: (text: string) => void;
   onFork: (messageId: string) => void;

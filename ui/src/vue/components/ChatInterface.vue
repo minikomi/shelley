@@ -535,6 +535,7 @@
       :is-open="showDiffViewer"
       :initial-commit="diffViewerInitialCommit"
       :initial-file="diffViewerInitialFile"
+      :open-on-files="diffViewerOpenOnFiles"
       :recording-conversation-id="
         currentConversation && !currentConversation.archived && !currentConversation.is_draft
           ? (conversationId ?? undefined)
@@ -1196,6 +1197,7 @@ const showAgentsMdEditor = ref(false);
 const diffViewerInitialCommit = ref<string | undefined>(undefined);
 const diffViewerCwd = ref<string | undefined>(undefined);
 const diffViewerInitialFile = ref<string | undefined>(undefined);
+const diffViewerOpenOnFiles = ref(false);
 const diffCommentText = ref("");
 // The image being annotated, if any (module state so any image in the message
 // tree can open the view without prop drilling).
@@ -3809,8 +3811,9 @@ async function handleUnarchive() {
   }
 }
 
-function handleOpenDiffViewer(commit: string, cwd?: string) {
+function handleOpenDiffViewer(commit: string, cwd?: string, openOnFiles = false) {
   diffViewerInitialCommit.value = commit;
+  diffViewerOpenOnFiles.value = openOnFiles;
   diffViewerCwd.value = cwd;
   showDiffViewer.value = true;
 }
@@ -4185,6 +4188,7 @@ function onDiffViewerClose() {
   showDiffViewer.value = false;
   diffViewerInitialCommit.value = undefined;
   diffViewerInitialFile.value = undefined;
+  diffViewerOpenOnFiles.value = false;
   diffViewerCwd.value = undefined;
   if (!showGitGraph.value) focusMessageInputIfUnfocused();
 }
@@ -5356,11 +5360,13 @@ onMounted(() => {
     const cwdParam = params.get("cwd") || undefined;
     diffViewerInitialCommit.value = commit;
     diffViewerInitialFile.value = params.get("file") || undefined;
+    diffViewerOpenOnFiles.value = params.get("view") === "files";
     diffViewerCwd.value = cwdParam;
     showDiffViewer.value = true;
     params.delete("diff");
     params.delete("cwd");
     params.delete("file");
+    params.delete("view");
     const qs = params.toString();
     window.history.replaceState(
       {},

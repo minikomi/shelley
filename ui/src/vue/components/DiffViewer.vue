@@ -672,6 +672,9 @@ const props = defineProps<{
   // File to select once initialCommit's file list loads (e.g. from the git
   // graph diffstat). Consumed on the first load only.
   initialFile?: string;
+  // Stay on Files for initialCommit even when it has a tour or one is building
+  // (implied by initialFile).
+  openOnFiles?: boolean;
   // Conversation that receives narrated review recordings. Without one, each
   // recording starts a conversation (startReviewConversation), shown once the
   // recording is sent (followReviewConversation); with neither, no Record.
@@ -746,6 +749,7 @@ const tourError = ref<string | null>(null);
 const files = ref<GitFileInfo[]>([]);
 const selectedFile = ref<string | null>(null);
 let pendingInitialFile: string | undefined;
+let filesCommit: string | undefined;
 let loadDiffsRequestId = 0;
 let loadFilesRequestId = 0;
 let loadFileDiffRequestId = 0;
@@ -841,6 +845,7 @@ function updateTourBuildStatus(status: GitTourBuildStatus | null) {
     initial &&
     status?.status === "building" &&
     tourBuildVisible.value &&
+    !(filesCommit && status.hash.startsWith(filesCommit)) &&
     !recordingLocked.value
   ) {
     diffView.value = "tour";
@@ -1092,7 +1097,8 @@ watch(
     const builtHere =
       tourBuildStatus.value?.hash === selectedDiff.value &&
       !!tourBuildStatus.value?.worker_conversation_id;
-    if (!recordingLocked.value && !builtHere) diffView.value = "tour";
+    const wantsFiles = !!filesCommit && selectedDiff.value.startsWith(filesCommit);
+    if (!recordingLocked.value && !builtHere && !wantsFiles) diffView.value = "tour";
     tourLoading.value = true;
     try {
       const response = await api.getGitTour(props.cwd, selectedDiff.value);
@@ -1233,6 +1239,7 @@ watch(
   () => {
     if (props.isOpen && props.cwd) {
       pendingInitialFile = props.initialFile;
+      filesCommit = props.openOnFiles || props.initialFile ? props.initialCommit : undefined;
       loadDiffs();
     } else if (!props.isOpen) {
       loadDiffsRequestId++;

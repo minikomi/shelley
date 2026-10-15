@@ -71,6 +71,16 @@ test("git info shows and opens an attached commit tour", async ({ page, request 
     await expect(overlay).toBeVisible({ timeout: 30_000 });
     await expect(overlay.locator(".diff-viewer-view-switcher button.active")).toHaveText("Tour");
     await expect(overlay.locator(".commit-tour-introduction h1")).toHaveText("Tour this commit");
+
+    // Open Diff on the same commit stays on Files.
+    await overlay.locator(".diff-viewer-close:visible").first().click();
+    await expect(overlay).toHaveCount(0);
+    const diffLink = gitInfo.getByRole("link", { name: "Open Diff", exact: true });
+    await expect(diffLink).toHaveAttribute("href", /[?&]view=files/);
+    await diffLink.click();
+    await expect(overlay.locator(".diff-viewer-view-switcher button.active")).toHaveText("Files", {
+      timeout: 30_000,
+    });
   });
 });
 

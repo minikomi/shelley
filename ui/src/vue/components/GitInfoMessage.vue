@@ -16,7 +16,7 @@
       <button type="button" class="msg-commit-hash" title="Click to copy commit hash" @click="handleCopyHash">{{ shortCommitHash }}</button>
       <span class="msg-copy-status" aria-live="polite">{{ copied ? "Commit hash copied" : "" }}</span>
       <span v-if="worktree" ref="worktreeRef" class="msg-worktree" :title="worktree">{{ worktreeLabel }}</span>
-      <a v-if="canShowDiff && (!isTourRequest || tourState === 'absent' || tourState === 'failed')" :href="diffHref" class="msg-diff-link" @click="onDiffLinkClick">Open Diff</a>
+      <a v-if="canShowDiff" :href="filesHref" class="msg-diff-link" @click="onDiffLinkClick($event, true)">Open Diff</a>
       <template v-if="tourState === 'present' && canShowDiff">
         <a :href="diffHref" class="msg-diff-link msg-tour-link" data-testid="gitinfo-tour-link" v-tooltip.top="'Open guided commit tour'" @click="onDiffLinkClick">Open Tour</a>
       </template>
@@ -59,7 +59,7 @@ import { tildifyPath } from "../../utils/tildify";
 
 const props = defineProps<{
   message: MessageType;
-  onOpenDiffViewer?: (commit: string, cwd?: string) => void;
+  onOpenDiffViewer?: (commit: string, cwd?: string, openOnFiles?: boolean) => void;
   canRequestTour?: boolean;
 }>();
 
@@ -137,17 +137,14 @@ const diffHref = computed(() => {
   if (worktree.value) params.set("cwd", worktree.value);
   return `${window.location.pathname}?${params.toString()}`;
 });
+const filesHref = computed(() => `${diffHref.value}&view=files`);
 
-function handleDiffClick() {
-  if (commitHash.value && props.onOpenDiffViewer) {
-    props.onOpenDiffViewer(commitHash.value, worktree.value || undefined);
-  }
-}
-
-function onDiffLinkClick(e: MouseEvent) {
+function onDiffLinkClick(e: MouseEvent, openOnFiles = false) {
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
   e.preventDefault();
-  handleDiffClick();
+  if (commitHash.value && props.onOpenDiffViewer) {
+    props.onOpenDiffViewer(commitHash.value, worktree.value || undefined, openOnFiles);
+  }
 }
 
 function scheduleTourPoll() {
