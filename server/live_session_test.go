@@ -36,6 +36,10 @@ func TestLiveSession(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Error(err)
 		}
+		if req.Session.Input == nil {
+			http.Error(w, "session.input must be an array", http.StatusBadRequest)
+			return
+		}
 		sessions <- req
 		w.WriteHeader(http.StatusCreated)
 		io.WriteString(w, `{"session":{"id":"live_x","secret":"hidden"},"transport":{"type":"webrtc","sdp":"answer"}}`)
@@ -120,8 +124,12 @@ func TestLiveSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(e.want(201, "POST", "/api/conversations/draft", `{"draft":""}`)), &draft); err != nil {
 		t.Fatal(err)
 	}
-	if req := call(draft.ConversationID, ""); voicePrompt(req) != "" {
+	req = call(draft.ConversationID, "")
+	if voicePrompt(req) != "" {
 		t.Errorf("the default profile has no voice prompt: %s", req.Session.Instructions)
+	}
+	if len(req.Session.Input) != 0 {
+		t.Errorf("empty draft history = %+v", req.Session.Input)
 	}
 	req = call(draft.ConversationID, `,"cwd":"`+cwd+`","conversation_options":{"profile":"Personal","thinking_level":"high"}`)
 	if voicePrompt(req) != juniper || !strings.Contains(req.Session.Instructions, "Backend model: model-b.") || !strings.Contains(req.Session.Instructions, "Working directory: "+cwd+".") {

@@ -38,6 +38,7 @@ func (s *Server) liveContext(ctx context.Context, conversationID string) (items 
 	if err != nil {
 		return nil, 0, fmt.Errorf("load live context: %w", err)
 	}
+	items = make([]liveHistoryItem, 0, liveContextMessages)
 	for _, row := range rows {
 		lastSeq = row.SequenceID
 		if row.ExcludedFromContext {
