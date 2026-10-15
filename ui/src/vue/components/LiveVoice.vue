@@ -122,6 +122,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api, type LiveConversationSettings } from "../../services/api";
 import { LiveSession, type LiveEvent } from "../../services/liveSession";
+import { LiveTranscript } from "../../services/liveTranscript";
 import type { Conversation } from "../../types";
 import { useLiveCallConversation, type LiveCallDestination } from "../composables/liveCallConversation";
 import { startRecordingMeter } from "./recordingMeter";
@@ -131,16 +132,29 @@ const props = defineProps<{
   disabled: boolean;
   captureConversation: () => LiveCallDestination;
   getConversation: (id: string) => Conversation | undefined;
+  savedMessages: string[];
   onReturn?: (conversation: Conversation) => void;
 }>();
 const emit = defineEmits<{ (e: "phase-change", phase: "idle" | "connecting" | "live"): void }>();
-defineExpose({ start, stop });
+defineExpose({
+  start,
+  stop,
+  transcript: computed(() => transcript.value.turns),
+  transcriptConversationId: computed(() => origin.conversationId.value),
+});
 
 const phase = ref<"idle" | "connecting" | "live">("idle");
 watch(phase, (value) => emit("phase-change", value), { flush: "sync" });
 const error = ref<string | null>(null);
 const muted = ref(false);
 const origin = useLiveCallConversation(props.getConversation);
+const transcript = ref(new LiveTranscript());
+function reconcileTranscript() {
+  if (props.conversationId === origin.conversationId.value) {
+    transcript.value.reconcile(props.savedMessages);
+  }
+}
+watch([() => props.conversationId, () => props.savedMessages], reconcileTranscript);
 const viewingElsewhere = computed(() =>
   phase.value !== "idle" && props.conversationId !== origin.conversationId.value,
 );
@@ -176,6 +190,10 @@ let outbox: LiveEvent[] = [];
 let relaying = false;
 
 function onEvent(event: LiveEvent) {
+  if (event.type === "session.input_transcript.delta" || event.type === "session.output_transcript.delta") {
+    const text = typeof event.delta === "string" ? event.delta : event.delta == null ? "" : JSON.stringify(event.delta);
+    transcript.value.append(event.type === "session.input_transcript.delta", text);
+  }
   if (event.type === "error") {
     error.value = String((event.error as { message?: string } | undefined)?.message ?? "Live session error");
   } else if (RELAYED.has(event.type)) {
@@ -211,6 +229,7 @@ interface Instruction {
   type: string;
   event?: LiveEvent;
   message?: string | null;
+  through?: number;
 }
 
 function follow(live: LiveSession, conversationId: string) {
@@ -220,6 +239,10 @@ function follow(live: LiveSession, conversationId: string) {
     if (session !== live) return;
     const instruction = JSON.parse(e.data) as Instruction;
     switch (instruction.type) {
+      case "handoff":
+        transcript.value.handoff(instruction.through!, instruction.message!);
+        reconcileTranscript();
+        break;
       case "send":
         try {
           live.send(instruction.event!);
@@ -315,6 +338,7 @@ function settingsForDraft() {
 }
 
 function reset() {
+  transcript.value = new LiveTranscript();
   stopMeter?.();
   stopMeter = null;
   if (timerID !== null) clearInterval(timerID);

@@ -164,7 +164,7 @@ func TestLiveCallOverHTTP(t *testing.T) {
 	call.expect("activity: true")
 	const message = "Spoken request:\nRun the tests." + liveVoiceExchange + "LIVE: Hi!\nUSER: Run the tests."
 	turn := e.held.waitCall(t, message)
-	call.expect("error: null", "thinking [d1]: The backend accepted this task: Run the tests.", "activity: false")
+	call.expect("error: null", "handoff 3: "+message, "thinking [d1]: The backend accepted this task: Run the tests.", "activity: false")
 	e.finish(id, turn)
 	call.expect("commentary [d1]: Backend reply: ")
 
@@ -177,7 +177,7 @@ func TestLiveCallOverHTTP(t *testing.T) {
 
 	// A stream that reconnects picks up after what it handled.
 	first := call.ended
-	call.attach("?after=5")
+	call.attach("?after=6")
 	<-first // the newer stream replaces it
 	call.expect("thinking [-]: New typed message", "commentary [-]: Backend reply: ")
 
@@ -216,7 +216,7 @@ func TestLiveCallStartsADraft(t *testing.T) {
 		t.Error("main backend lost the profile's system prompt")
 	}
 	e.finish(draft.ConversationID, turn)
-	call.expect("activity: true", "error: null", "thinking [d1]: The backend accepted this task", "activity: false", "commentary [d1]: Backend reply: ")
+	call.expect("activity: true", "error: null", "handoff 1: Spoken request:\ninspect the project"+liveVoiceExchange+"USER: inspect the project", "thinking [d1]: The backend accepted this task", "activity: false", "commentary [d1]: Backend reply: ")
 	row, err := e.database.GetConversationByID(t.Context(), draft.ConversationID)
 	if err != nil {
 		t.Fatal(err)

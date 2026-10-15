@@ -140,6 +140,43 @@ test("a delegated question reaches the chat, and its reply reaches Live", async 
   await expect(message).toHaveCount(1);
 });
 
+test("Live speech appears before delegation and gives way to the saved exchange", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: transcript ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  const before = await conversationJSON(request, conversationId);
+  const exchange = page.getByTestId("live-exchange");
+
+  await emit(page, { type: "session.input_transcript.delta", delta: "Hello.", start_ms: 0, end_ms: 400 });
+  await emit(page, { type: "session.output_transcript.delta", delta: "Hi, I'm ", start_ms: 500, end_ms: 900 });
+  await expect(exchange).toContainText("Hi, I'm ");
+  await emit(page, { type: "session.output_transcript.delta", delta: "here.", start_ms: 900, end_ms: 1100 });
+  await expect(exchange).toContainText("Hi, I'm here.");
+  await expect(exchange).toContainText("Not sent to Shelley");
+  await expect(exchange).not.toHaveClass(/message-user/);
+  expect(await conversationJSON(request, conversationId)).toBe(before);
+
+  await emit(page, { type: "session.input_transcript.delta", delta: "echo: check the transcript", start_ms: 1500, end_ms: 2200 });
+  await emit(page, { type: "session.delegation.created", offset_ms: 2200, delegation: { id: "transcript", target: "client" } });
+  await emit(page, { type: "session.output_transcript.delta", delta: "Okay, let", start_ms: 2300, end_ms: 2600 });
+  await expect(exchange).toContainText("Okay, let");
+  await emit(page, { type: "session.output_transcript.delta", delta: " me check.", start_ms: 2600, end_ms: 3000 });
+  const message = page.getByTestId("message").filter({ hasText: "Spoken request:\nHello.echo: check the transcript" });
+  await expect(message).toHaveCount(1);
+  await expect(message).toContainText("LIVE: Okay, let me check.");
+  await expect(exchange).toHaveCount(0);
+
+  // Speech after the saved snapshot belongs to the next temporary exchange.
+  await emit(page, { type: "session.output_transcript.delta", delta: "I'm still here while that runs.", start_ms: 3500, end_ms: 4500 });
+  await expect(exchange).toContainText("I'm still here while that runs.");
+  await expect(exchange).not.toContainText("Hello.");
+  await page.getByTestId("live-stop").click();
+  await expect(exchange).toHaveCount(0);
+  await expect(message).toHaveCount(1);
+});
+
 test("Shelley's errors about a call show on its strip", async ({ page, request }) => {
   const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: ready");
   await mockVoiceBrowser(page);
@@ -163,10 +200,13 @@ test("a call stays pinned to its original chat while browsing other chats", asyn
   await page.getByTestId("live-call-header").click();
   const bar = page.getByTestId("live-bar");
   await expect(bar).toContainText("On call");
+  await emit(page, { type: "session.output_transcript.delta", delta: "Still in the original call.", start_ms: 0, end_ms: 500 });
+  await expect(page.getByTestId("live-exchange")).toContainText("Still in the original call.");
 
   await navigateWithinApp(page, `/c/${other.slug}`);
   await expect(page.locator(".header-title")).toHaveText(other.slug);
   await expect(bar).toBeVisible();
+  await expect(page.getByTestId("live-exchange")).toHaveCount(0);
   await expect(page.getByTestId("live-call-header")).toHaveAttribute("aria-label", "End voice call");
   expect((await request.post(`/api/conversation/${other.conversationId}/chat`, {
     data: { message: "echo: unrelated private reply", model: "predictable" },

@@ -111,24 +111,25 @@ type liveCall struct {
 	deliver            liveDeliverFunc
 	logger             *slog.Logger
 
-	mu        sync.Mutex
-	active    bool
-	done      chan struct{} // closed when the call ends
-	fragments []liveFragment
-	claimed   int // fragments already part of a delegation
-	seen      map[string]bool
-	pending   map[string]*livePending
-	order     []string // pending, oldest first
-	sendTimes []time.Time
-	jobs      []func()
-	kick      chan struct{}
-	inflight  int
-	handing   bool
-	submitted []*liveSubmitted
-	lastSeen  int64 // the newest row Live heard about
-	latest    int64
-	unseen    map[int64]liveRow
-	eventSeq  int
+	mu          sync.Mutex
+	active      bool
+	done        chan struct{} // closed when the call ends
+	fragments   []liveFragment
+	transcriptN int // accepted transcript deltas, independent of fragment trimming
+	claimed     int // fragments already part of a delegation
+	seen        map[string]bool
+	pending     map[string]*livePending
+	order       []string // pending, oldest first
+	sendTimes   []time.Time
+	jobs        []func()
+	kick        chan struct{}
+	inflight    int
+	handing     bool
+	submitted   []*liveSubmitted
+	lastSeen    int64 // the newest row Live heard about
+	latest      int64
+	unseen      map[int64]liveRow
+	eventSeq    int
 
 	out    []liveInstruction
 	nextID int64
@@ -173,16 +174,15 @@ func (c *liveCall) handle(events []liveEvent) {
 		switch e.typ {
 		case "session.input_transcript.delta", "session.output_transcript.delta":
 			user := e.typ == "session.input_transcript.delta"
+			c.transcriptN++
 			c.fragments = append(c.fragments, liveFragment{user: user, text: e.delta, startMs: e.startMs, endMs: e.endMs})
 			if len(c.fragments) > liveFragmentsMax && len(c.pending) == 0 {
 				drop := len(c.fragments) - liveFragmentsKept
 				c.fragments = slices.Clone(c.fragments[drop:])
 				c.claimed = max(0, c.claimed-drop)
 			}
-			if user {
-				for _, id := range c.order {
-					c.settle(id)
-				}
+			for _, id := range c.order {
+				c.settle(id)
 			}
 		case "session.delegation.created":
 			c.delegation(e)
@@ -287,8 +287,9 @@ func (c *liveCall) commit(id string) {
 	c.sendTimes = append(c.sendTimes, now)
 	voiceContext := liveVoiceContext(c.fragments, since)
 	c.logger.Info("Live delegation committed", "delegation", id, "chars", len(speech))
+	through := c.transcriptN
 	// Delegations reach the backend in order.
-	c.jobs = append(c.jobs, func() { c.deliverTask(id, speech, voiceContext) })
+	c.jobs = append(c.jobs, func() { c.deliverTask(id, speech, voiceContext, through) })
 	select {
 	case c.kick <- struct{}{}:
 	default:
@@ -316,7 +317,7 @@ func (c *liveCall) deliveries() {
 	}
 }
 
-func (c *liveCall) deliverTask(id, speech, voiceContext string) {
+func (c *liveCall) deliverTask(id, speech, voiceContext string, through int) {
 	c.mu.Lock()
 	if !c.active {
 		c.mu.Unlock()
@@ -343,6 +344,7 @@ func (c *liveCall) deliverTask(id, speech, voiceContext string) {
 	} else {
 		c.logger.Info("Live delegation delivered", "delegation", id, "status", receipt.Status)
 		c.emit(map[string]any{"type": "error", "message": nil})
+		c.emit(map[string]any{"type": "handoff", "through": through, "message": receipt.Message})
 		c.submitted = append(c.submitted, &liveSubmitted{id: id, message: receipt.Message, afterSeq: afterSeq})
 		if receipt.Status == "queued" {
 			c.thinking("This task is queued behind earlier work: "+speech, &id)

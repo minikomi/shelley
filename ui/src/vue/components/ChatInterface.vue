@@ -115,7 +115,7 @@
       <div ref="messagesContainerRef" class="messages-container scrollable">
         <div v-if="!loading || renderingConversation" ref="messagesListRef" class="messages-list">
           <!-- empty state -->
-          <div v-if="messages.length === 0" class="empty-state">
+          <div v-if="messages.length === 0 && liveExchangeTurns.length === 0" class="empty-state">
             <div class="empty-state-content">
               <p class="text-base chat-welcome-text">
                 <template v-for="(part, i) in welcomeParts" :key="i">
@@ -277,6 +277,7 @@
               Cancel all queued
             </button>
           </div>
+          <LiveExchange v-if="liveExchangeTurns.length" :turns="liveExchangeTurns" />
           <RunningWorkStrip
             v-if="conversationId && !currentConversation?.archived"
             :key="conversationId"
@@ -437,6 +438,7 @@
           :disabled="!!currentConversation?.archived"
           :capture-conversation="captureLiveConversation"
           :get-conversation="getLiveConversation"
+          :saved-messages="savedLiveMessages"
           :on-return="onSelectConversation"
           @phase-change="voicePhase = $event"
         />
@@ -586,6 +588,7 @@ import {
   type ToolProgress,
   type Usage,
   type LLMContent,
+  type LLMMessage,
   type DiskSpaceStatus,
   type Profile,
   type Settings,
@@ -726,6 +729,7 @@ import TerminalPanel from "./TerminalPanel.vue";
 import VersionChecker from "./VersionChecker.vue";
 import ChatOverflowMenu from "./ChatOverflowMenu.vue";
 import LiveVoice from "./LiveVoice.vue";
+import LiveExchange from "./LiveExchange.vue";
 import type { LiveCallDestination } from "../composables/liveCallConversation";
 import { matchChatInterfaceAction } from "../../utils/menuShortcuts";
 import ChunkHost from "./ChunkHost.vue";
@@ -866,6 +870,12 @@ const {
 const messageInputRef = ref<InstanceType<typeof MessageInput> | null>(null);
 const liveVoiceRef = ref<InstanceType<typeof LiveVoice> | null>(null);
 const voicePhase = ref<"idle" | "connecting" | "live">("idle");
+const liveExchangeTurns = computed(() => {
+  const live = liveVoiceRef.value;
+  return voicePhase.value !== "idle" && live?.transcriptConversationId === props.conversationId
+    ? live.transcript
+    : [];
+});
 const headerCallLabel = computed(() =>
   voicePhase.value === "idle"
     ? t("startVoiceConversation")
@@ -3187,6 +3197,16 @@ const queuedGhosts = computed(() => {
   return parseQueuedMessages(props.currentConversation?.queued_messages);
 });
 const visibleQueuedGhosts = useVisibleQueuedMessages(() => queuedGhosts.value);
+const savedLiveMessages = computed(() => {
+  if (voicePhase.value === "idle") return [];
+  return [
+    ...messages.value.filter((message) => message.type === "user" && message.llm_data).map((message) => {
+      const llm = JSON.parse(message.llm_data!) as LLMMessage;
+      return llm.Content.filter((content) => content.Type === 2).map((content) => content.Text ?? "").join("\n");
+    }),
+    ...visibleQueuedGhosts.value.map(queuedMessageText),
+  ];
+});
 
 // Build the conversation_options bundle from the composer's settings: its
 // profile (for the system prompt), and what the composer shows for the rest,
@@ -4848,7 +4868,7 @@ async function jumpToMessage(messageId: string) {
 
 // Auto-scroll after DOM updates (mirrors the useLayoutEffect).
 watch(
-  [messages, loading, streamingText, streamingThinking],
+  [messages, loading, streamingText, streamingThinking, liveExchangeTurns],
   () => {
     if (loading.value) return;
     nextTick(() => {
