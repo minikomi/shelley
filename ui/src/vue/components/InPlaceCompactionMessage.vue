@@ -1,39 +1,72 @@
-<!-- Sub-component of Message.vue. Renders an "inplacecompaction" record: earlier
-     messages the LLM now sees squished into a summary or with trimmed tool
-     results. The original messages still render above it unchanged. -->
+<!-- In-place compaction audit. Original conversation messages remain unchanged. -->
 <template>
-  <div
-    class="message message-gitinfo msg-compaction-container"
+  <details
+    class="msg-compaction-event"
     data-testid="message-inplacecompaction"
-    role="status"
+    :data-message-id="message.message_id"
   >
-    <div v-for="s in data.squishes ?? []" :key="`s${s.from_sequence_id}`" class="msg-compaction-op">
-      <span class="msg-compaction-icon">🗜️</span>
-      Compacted messages
-      <span class="msg-compaction-range">#{{ s.from_sequence_id }}–#{{ s.to_sequence_id }}</span>
-      <details class="msg-compaction-summary">
-        <summary>summary</summary>
-        <div class="msg-compaction-summary-text">{{ s.summary }}</div>
+    <summary class="message message-gitinfo msg-distill-container msg-compaction-event-header">
+      <span class="msg-compaction-event-label">
+        Compacted context<span v-if="counts"> · {{ counts }}</span>
+      </span>
+      <ToolChevron :expanded="false" />
+    </summary>
+    <div class="msg-compaction-event-body">
+      <table
+        v-if="data.squishes?.length"
+        class="msg-compaction-table"
+        aria-label="Compacted messages"
+      >
+        <thead>
+          <tr>
+            <th scope="col">Messages</th>
+            <th scope="col">Summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="s in data.squishes" :key="s.from_sequence_id">
+            <td>
+              <code>#{{ s.from_sequence_id }}–#{{ s.to_sequence_id }}</code>
+            </td>
+            <td>
+              <details class="msg-compaction-summary">
+                <summary
+                  :aria-label="`Summary of messages #${s.from_sequence_id}–#${s.to_sequence_id}`"
+                >
+                  <span class="msg-compaction-preview">{{ s.summary }}</span>
+                  <ToolChevron :expanded="false" />
+                </summary>
+                <div class="msg-compaction-summary-text">{{ s.summary }}</div>
+              </details>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <details v-if="data.trims?.length" class="msg-compaction-footer">
+        <summary>
+          {{ plural(data.trims.length, "tool output") }} trimmed
+          <ToolChevron :expanded="false" />
+        </summary>
+        <div class="msg-compaction-ids">
+          {{ data.trims.map((t) => `#${t.sequence_id}`).join(", ") }}
+        </div>
+      </details>
+      <details v-if="hiddenCount" class="msg-compaction-footer">
+        <summary>
+          {{ plural(hiddenCount, "housekeeping record") }} hidden
+          <ToolChevron :expanded="false" />
+        </summary>
+        <p>Hid {{ hidden }} from the agent. Original conversation messages remain unchanged.</p>
       </details>
     </div>
-    <div v-if="data.trims?.length" class="msg-compaction-op">
-      <span class="msg-compaction-icon">✂️</span>
-      Trimmed {{ data.trims.length === 1 ? "tool output" : `${data.trims.length} tool outputs` }}
-      <span class="msg-compaction-range">{{
-        data.trims.map((t) => `#${t.sequence_id}`).join(", ")
-      }}</span>
-    </div>
-    <div v-if="hidden" class="msg-compaction-op">
-      <span class="msg-compaction-icon">🙈</span>
-      Hid {{ hidden }} from the agent
-    </div>
-  </div>
+  </details>
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
 import type { InPlaceCompaction } from "../../generated-types";
 import type { Message as MessageType } from "../../types";
+import ToolChevron from "./tools/ToolChevron.vue";
 
 const props = defineProps<{ message: MessageType }>();
 
@@ -43,9 +76,21 @@ const data = computed<InPlaceCompaction>(() => {
   return typeof raw === "string" ? JSON.parse(raw) : (raw as InPlaceCompaction);
 });
 
-// The record hides its own traces: context nudges and earlier compaction calls.
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+const counts = computed(() => {
+  const parts: string[] = [];
+  if (data.value.squishes?.length) parts.push(plural(data.value.squishes.length, "group"));
+  if (data.value.trims?.length) parts.push(plural(data.value.trims.length, "tool output"));
+  return parts.join(", ");
+});
+
+const hiddenCount = computed(
+  () =>
+    (data.value.hidden_sequence_ids?.length ?? 0) + (data.value.hidden_tool_use_ids?.length ?? 0),
+);
+
 const hidden = computed(() => {
-  const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
   const parts: string[] = [];
   const nudges = data.value.hidden_sequence_ids?.length ?? 0;
   const calls = data.value.hidden_tool_use_ids?.length ?? 0;
