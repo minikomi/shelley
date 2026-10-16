@@ -1706,6 +1706,9 @@ const (
 	// It is an appended message rather than a mutable column because of the
 	// append-only invariant described on MessageType above.
 	MessageTypeSlug MessageType = "slug"
+	// MessageTypeLiveTranscript appends late voice-exchange fragments without
+	// changing the delivered task or adding model context.
+	MessageTypeLiveTranscript MessageType = "livetranscript"
 	// MessageTypeInPlaceCompaction rewrites how EARLIER messages of the same
 	// generation are presented to the LLM: it squishes sequence-id ranges into
 	// summaries and/or trims tool results. user_data holds the operations

@@ -277,7 +277,12 @@
               Cancel all queued
             </button>
           </div>
-          <LiveExchange v-if="liveExchangeTurns.length" :turns="liveExchangeTurns" />
+          <LiveExchange
+            v-if="liveExchangeTurns.length"
+            :turns="liveExchangeTurns"
+            :origin-title="liveExchangeOriginTitle"
+            @return-to-call="liveVoiceRef?.returnToCall()"
+          />
           <RunningWorkStrip
             v-if="conversationId && !currentConversation?.archived"
             :key="conversationId"
@@ -438,7 +443,6 @@
           :disabled="!!currentConversation?.archived"
           :capture-conversation="captureLiveConversation"
           :get-conversation="getLiveConversation"
-          :saved-messages="savedLiveMessages"
           :on-return="onSelectConversation"
           @phase-change="voicePhase = $event"
         />
@@ -588,7 +592,6 @@ import {
   type ToolProgress,
   type Usage,
   type LLMContent,
-  type LLMMessage,
   type DiskSpaceStatus,
   type Profile,
   type Settings,
@@ -730,6 +733,7 @@ import VersionChecker from "./VersionChecker.vue";
 import ChatOverflowMenu from "./ChatOverflowMenu.vue";
 import LiveVoice from "./LiveVoice.vue";
 import LiveExchange from "./LiveExchange.vue";
+import { projectLiveQueuedMessages } from "../../services/liveTranscript";
 import type { LiveCallDestination } from "../composables/liveCallConversation";
 import { matchChatInterfaceAction } from "../../utils/menuShortcuts";
 import ChunkHost from "./ChunkHost.vue";
@@ -872,9 +876,15 @@ const liveVoiceRef = ref<InstanceType<typeof LiveVoice> | null>(null);
 const voicePhase = ref<"idle" | "connecting" | "live">("idle");
 const liveExchangeTurns = computed(() => {
   const live = liveVoiceRef.value;
-  return voicePhase.value !== "idle" && live?.transcriptConversationId === props.conversationId
+  return voicePhase.value !== "idle" && live
     ? live.transcript
     : [];
+});
+const liveExchangeOriginTitle = computed(() => {
+  const live = liveVoiceRef.value;
+  return live && live.transcriptConversationId !== props.conversationId
+    ? live.transcriptTitle
+    : undefined;
 });
 const headerCallLabel = computed(() =>
   voicePhase.value === "idle"
@@ -911,7 +921,9 @@ const btwExchanges = ref<BtwExchange[]>([]);
 // them for the same reason.
 const lastMessageId = computed(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
-    if (messages.value[i].type !== "slug") return messages.value[i].message_id;
+    if (messages.value[i].type !== "slug" && messages.value[i].type !== "livetranscript") {
+      return messages.value[i].message_id;
+    }
   }
   return null;
 });
@@ -3196,17 +3208,8 @@ const queuedGhosts = computed(() => {
   perfCount("chat.queuedGhosts");
   return parseQueuedMessages(props.currentConversation?.queued_messages);
 });
-const visibleQueuedGhosts = useVisibleQueuedMessages(() => queuedGhosts.value);
-const savedLiveMessages = computed(() => {
-  if (voicePhase.value === "idle") return [];
-  return [
-    ...messages.value.filter((message) => message.type === "user" && message.llm_data).map((message) => {
-      const llm = JSON.parse(message.llm_data!) as LLMMessage;
-      return llm.Content.filter((content) => content.Type === 2).map((content) => content.Text ?? "").join("\n");
-    }),
-    ...visibleQueuedGhosts.value.map(queuedMessageText),
-  ];
-});
+const liveQueuedGhosts = computed(() => projectLiveQueuedMessages(queuedGhosts.value, messages.value));
+const visibleQueuedGhosts = useVisibleQueuedMessages(() => liveQueuedGhosts.value);
 
 // Build the conversation_options bundle from the composer's settings: its
 // profile (for the system prompt), and what the composer shows for the rest,

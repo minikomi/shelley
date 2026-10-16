@@ -21,6 +21,7 @@ import (
 // liveFragment is one transcript delta, timed in ms from the start of the
 // Live session.
 type liveFragment struct {
+	n              int  // cumulative delta ordinal, unaffected by compaction
 	user           bool // the caller; else Live
 	text           string
 	startMs, endMs float64

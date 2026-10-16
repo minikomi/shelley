@@ -230,3 +230,69 @@ func TestLiveCallStartsADraft(t *testing.T) {
 	call.events(`{"type":"session.closed"}`)
 	<-call.ended
 }
+
+func TestLiveTranscriptMetadataIsSavedAndPublishedWithoutAnotherTask(t *testing.T) {
+	e := newLiveMessageEnv(t)
+	e.liveProvider()
+	slug := "voice-late-archive"
+	conv, err := e.database.CreateConversation(t.Context(), &slug, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := e.startCall(conv.ConversationID, "")
+	call.events(
+		`{"type":"session.input_transcript.delta","delta":"Cap the panel","start_ms":0,"end_ms":500}`,
+		`{"type":"session.output_transcript.delta","delta":"I'll make sure the live chat","start_ms":600,"end_ms":2000}`,
+		`{"type":"session.delegation.created","delegation":{"id":"d1","target":"client"},"offset_ms":2000}`,
+	)
+	const message = "Spoken request:\nCap the panel" + liveVoiceExchange + "USER: Cap the panel\nLIVE: I'll make sure the live chat"
+	turn := e.held.waitCall(t, message)
+	call.expect("activity: true", "error: null", "handoff 2: "+message, "thinking [d1]: The backend accepted this task", "activity: false")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	next := e.s.streamPub.Subscribe(ctx, 0)
+	call.events(`{"type":"session.output_transcript.delta","delta":" panel doesn't get too tall.","start_ms":2000,"end_ms":3000}`)
+	if code, body := e.do("DELETE", call.path, ""); code != http.StatusNoContent {
+		t.Fatal(code, body)
+	}
+	<-call.ended
+	var saved APIMessage
+	for saved.MessageID == "" {
+		event, ok := next()
+		if !ok {
+			t.Fatal("late transcript was not published")
+		}
+		for _, row := range event.Messages {
+			if row.ConversationID == conv.ConversationID && row.Type == string(db.MessageTypeLiveTranscript) {
+				saved = row
+			}
+		}
+	}
+	var metadata liveTranscriptData
+	if saved.LlmData != nil || saved.UserData == nil {
+		t.Fatalf("bad metadata wire row: %+v", saved)
+	}
+	if err := json.Unmarshal([]byte(*saved.UserData), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := call.path[strings.LastIndex(call.path, "/")+1:]
+	expectEqual(t, "saved wire data", metadata, liveTranscriptData{
+		SessionID: sessionID, Message: message,
+		Fragments: []liveTranscriptFragment{{N: 3, Text: " panel doesn't get too tall.", StartMs: 2000, EndMs: 3000}},
+	})
+	metadataRows, err := e.database.ListMessagesByType(t.Context(), conv.ConversationID, db.MessageTypeLiveTranscript)
+	if err != nil || len(metadataRows) != 1 || metadataRows[0].MessageID != saved.MessageID || metadataRows[0].LlmData != nil || !metadataRows[0].ExcludedFromContext {
+		t.Fatalf("metadata entered model context: %+v, %v", metadataRows, err)
+	}
+	users, err := e.database.ListMessagesByType(t.Context(), conv.ConversationID, db.MessageTypeUser)
+	if err != nil || len(users) != 1 {
+		t.Fatalf("Live acknowledgement dispatched another task: %+v, %v", users, err)
+	}
+	var original llm.Message
+	if err := json.Unmarshal([]byte(*users[0].LlmData), &original); err != nil {
+		t.Fatal(err)
+	}
+	expectEqual(t, "original request is immutable", liveMessageText(original), message)
+	e.finish(conv.ConversationID, turn)
+}

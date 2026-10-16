@@ -60,6 +60,7 @@ func TS() *go2ts.Go2TS {
 			db.MessageTypeModelChange,
 			db.MessageTypeSlug,
 			db.MessageTypeInPlaceCompaction,
+			db.MessageTypeLiveTranscript,
 		},
 	)
 

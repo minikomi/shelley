@@ -25,6 +25,8 @@ type liveHarness struct {
 	mu         sync.Mutex
 	deliveries []liveDelivery
 	reply      func(transcript string) (liveReceipt, error)
+	archives   []liveTranscriptData
+	headings   []string
 	hold       chan struct{} // deliveries wait for it to close, if set
 }
 
@@ -33,9 +35,10 @@ func newLiveHarness(t *testing.T) *liveHarness {
 		return liveReceipt{Status: "accepted", Message: transcript}, nil
 	}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h.call = newLiveCall("call", "conv", 10, func(ctx context.Context, transcript, voiceContext string) (liveReceipt, error) {
+	h.call = newLiveCall("call", "conv", 10, func(ctx context.Context, heading, transcript, voiceContext string) (liveReceipt, error) {
 		h.mu.Lock()
 		h.deliveries = append(h.deliveries, liveDelivery{transcript, voiceContext})
+		h.headings = append(h.headings, heading)
 		hold, reply := h.hold, h.reply
 		h.mu.Unlock()
 		if hold != nil {
@@ -43,6 +46,12 @@ func newLiveHarness(t *testing.T) *liveHarness {
 		}
 		return reply(transcript)
 	}, logger)
+	h.call.archive = func(_ context.Context, data liveTranscriptData) error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.archives = append(h.archives, data)
+		return nil
+	}
 	t.Cleanup(func() { h.call.end("test over") })
 	return h
 }

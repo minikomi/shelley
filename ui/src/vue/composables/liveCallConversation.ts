@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type { LiveConversationSettings } from "../../services/api";
 import { messageStore } from "../../services/messageStore";
-import type { Conversation } from "../../types";
+import type { Conversation, Message } from "../../types";
 
 /** Captured on the call tap, before microphone permission or network awaits. */
 export interface LiveCallDestination {
@@ -19,6 +19,7 @@ export interface LiveCallDestination {
 export function useLiveCallConversation(getConversation: (id: string) => Conversation | undefined) {
   const conversationId = ref<string | null>(null);
   const conversation = shallowRef<Conversation>();
+  const messages = shallowRef<Message[]>([]);
   let unsubscribe: (() => void) | undefined;
   let initialGeneration: number | undefined;
 
@@ -36,6 +37,7 @@ export function useLiveCallConversation(getConversation: (id: string) => Convers
     const id = conversationId.value;
     if (!id) return;
     const cached = messageStore.peek(id);
+    messages.value = cached?.messages ?? [];
     // List patches and the message stream can race; keep the newest row.
     for (const row of [getConversation(id), cached?.conversation]) {
       if (row && (!conversation.value || row.updated_at >= conversation.value.updated_at)) {
@@ -59,6 +61,7 @@ export function useLiveCallConversation(getConversation: (id: string) => Convers
     unsubscribe = undefined;
     conversationId.value = null;
     conversation.value = undefined;
+    messages.value = [];
     initialGeneration = undefined;
   }
 
@@ -67,5 +70,5 @@ export function useLiveCallConversation(getConversation: (id: string) => Convers
     flush: "sync",
   });
   onBeforeUnmount(release);
-  return { conversationId, conversation, invalidated, bind, release };
+  return { conversationId, conversation, messages, invalidated, bind, release };
 }

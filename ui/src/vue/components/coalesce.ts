@@ -7,6 +7,7 @@ import {
   isCompactionCarried,
 } from "../../types";
 import { isCancelledToolResult } from "../utils/toolStatus";
+import { projectLiveTranscripts } from "../../services/liveTranscript";
 
 export interface CoalescedItem {
   type: "message" | "tool";
@@ -40,6 +41,7 @@ export function coalesceMessages(
   /** Full hashes of tours still building. */
   buildingTours: ReadonlySet<string> = new Set(),
 ): CoalescedItem[] {
+  messages = projectLiveTranscripts(messages);
   if (messages.length === 0) return [];
 
   const items: CoalescedItem[] = [];

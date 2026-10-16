@@ -122,8 +122,8 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api, type LiveConversationSettings } from "../../services/api";
 import { LiveSession, type LiveEvent } from "../../services/liveSession";
-import { LiveTranscript } from "../../services/liveTranscript";
-import type { Conversation } from "../../types";
+import { LiveTranscript, readLiveTranscript } from "../../services/liveTranscript";
+import { parseQueuedMessages, queuedMessageText, type Conversation, type LLMMessage } from "../../types";
 import { useLiveCallConversation, type LiveCallDestination } from "../composables/liveCallConversation";
 import { startRecordingMeter } from "./recordingMeter";
 
@@ -132,15 +132,17 @@ const props = defineProps<{
   disabled: boolean;
   captureConversation: () => LiveCallDestination;
   getConversation: (id: string) => Conversation | undefined;
-  savedMessages: string[];
+
   onReturn?: (conversation: Conversation) => void;
 }>();
 const emit = defineEmits<{ (e: "phase-change", phase: "idle" | "connecting" | "live"): void }>();
 defineExpose({
   start,
   stop,
+  returnToCall,
   transcript: computed(() => transcript.value.turns),
   transcriptConversationId: computed(() => origin.conversationId.value),
+  transcriptTitle: computed(() => originTitle.value),
 });
 
 const phase = ref<"idle" | "connecting" | "live">("idle");
@@ -149,12 +151,23 @@ const error = ref<string | null>(null);
 const muted = ref(false);
 const origin = useLiveCallConversation(props.getConversation);
 const transcript = ref(new LiveTranscript());
+const savedMessages = computed(() => [
+  ...origin.messages.value.filter((message) => message.type === "user" && message.llm_data).map((message) => {
+    const llm = JSON.parse(message.llm_data!) as LLMMessage;
+    return llm.Content.filter((content) => content.Type === 2).map((content) => content.Text ?? "").join("\n");
+  }),
+  ...parseQueuedMessages(origin.conversation.value?.queued_messages).map(queuedMessageText),
+]);
 function reconcileTranscript() {
-  if (props.conversationId === origin.conversationId.value) {
-    transcript.value.reconcile(props.savedMessages);
+  transcript.value.reconcile(savedMessages.value);
+  for (const message of origin.messages.value) {
+    const record = readLiveTranscript(message);
+    if (record && record.session_id === session?.id) {
+      transcript.value.consume(record.fragments.map((fragment) => fragment.n));
+    }
   }
 }
-watch([() => props.conversationId, () => props.savedMessages], reconcileTranscript);
+watch([savedMessages, () => origin.messages.value], reconcileTranscript);
 const viewingElsewhere = computed(() =>
   phase.value !== "idle" && props.conversationId !== origin.conversationId.value,
 );
@@ -188,11 +201,17 @@ const RELAYED = new Set([
 ]);
 let outbox: LiveEvent[] = [];
 let relaying = false;
+let inFlightRelay: Promise<void> | null = null;
 
 function onEvent(event: LiveEvent) {
   if (event.type === "session.input_transcript.delta" || event.type === "session.output_transcript.delta") {
     const text = typeof event.delta === "string" ? event.delta : event.delta == null ? "" : JSON.stringify(event.delta);
-    transcript.value.append(event.type === "session.input_transcript.delta", text);
+    transcript.value.append(
+      event.type === "session.input_transcript.delta",
+      text,
+      event.start_ms as number,
+      event.end_ms as number,
+    );
   }
   if (event.type === "error") {
     error.value = String((event.error as { message?: string } | undefined)?.message ?? "Live session error");
@@ -213,7 +232,8 @@ async function relay() {
     while (session === live && outbox.length) {
       const events = outbox;
       outbox = [];
-      await api.sendLiveEvents(conversationId, live.id, events);
+      inFlightRelay = api.sendLiveEvents(conversationId, live.id, events);
+      await inFlightRelay;
     }
   } catch (err) {
     if (session !== live) return;
@@ -221,7 +241,10 @@ async function relay() {
     stop();
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
-    if (session === live) relaying = false;
+    if (session === live) {
+      relaying = false;
+      inFlightRelay = null;
+    }
   }
 }
 
@@ -230,6 +253,7 @@ interface Instruction {
   event?: LiveEvent;
   message?: string | null;
   through?: number;
+  fragments?: number[];
 }
 
 function follow(live: LiveSession, conversationId: string) {
@@ -240,7 +264,7 @@ function follow(live: LiveSession, conversationId: string) {
     const instruction = JSON.parse(e.data) as Instruction;
     switch (instruction.type) {
       case "handoff":
-        transcript.value.handoff(instruction.through!, instruction.message!);
+        transcript.value.handoff(instruction.through!, instruction.message!, instruction.fragments);
         reconcileTranscript();
         break;
       case "send":
@@ -347,15 +371,27 @@ function reset() {
   waveformLevels.value = Array.from({ length: METER_BARS }, () => 0.15);
   instructions?.close();
   instructions = null;
-  // Shelley drops what is still pending; a task already handed over stays.
   const conversationId = origin.conversationId.value;
-  if (session && conversationId) void api.endLiveCall(conversationId, session.id);
+  if (session && conversationId) {
+    void finishCall(conversationId, session.id, outbox, inFlightRelay);
+  }
   session = null;
   origin.release();
   outbox = [];
   relaying = false;
+  inFlightRelay = null;
   muted.value = false;
   phase.value = "idle";
+}
+
+async function finishCall(conversationId: string, sessionId: string, events: LiveEvent[], pending: Promise<void> | null) {
+  try {
+    await pending;
+    if (events.length) await api.sendLiveEvents(conversationId, sessionId, events);
+    await api.endLiveCall(conversationId, sessionId);
+  } catch (err) {
+    error.value = `Could not save the call's final transcript: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 function stop() {
