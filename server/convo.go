@@ -719,7 +719,7 @@ func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service ll
 		}
 		return false, "", fmt.Errorf("turn-start recorder returned no message")
 	}
-	if turnUserDataFromContext(ctx) == nil && cm.showsSequenceIDs() && typedUserForLLM(message, nil) {
+	if (turnUserDataFromContext(ctx) == nil || liveDeliveryIDFromContext(ctx) != "") && cm.showsSequenceIDs() && typedUserForLLM(message, nil) {
 		modelMessage, err = messageWithSequenceID(modelMessage, derefString(created.ExternalMessageID), created.SequenceID)
 		if err != nil {
 			return false, created.MessageID, fmt.Errorf("render user message: %w", err)
@@ -1302,7 +1302,7 @@ func (cm *ConversationManager) queueMessage(ctx context.Context, s *Server, mode
 	if _, err := s.db.AppendQueuedMessage(ctx, cm.conversationID, qm); err != nil {
 		return fmt.Errorf("failed to append queued message: %w", err)
 	}
-	if turnUserDataFromContext(ctx) == nil {
+	if turnUserDataFromContext(ctx) == nil || liveDeliveryIDFromContext(ctx) != "" {
 		s.resumeParentCompletions(cm.conversationID)
 	}
 	cm.Touch()

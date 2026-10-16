@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 const maxLiveRequestBytes = 128 << 10
@@ -28,10 +30,10 @@ type liveSettings struct {
 // conversation and a draft's first send is as from the composer. The
 // recorder holds chat's response: its receipt, the status and the message
 // as submitted.
-func (s *Server) liveChat(r *http.Request, conversationID, transcript, voiceContext string, settings liveSettings) *httptest.ResponseRecorder {
+func (s *Server) liveChat(r *http.Request, conversationID, heading, transcript, voiceContext string, settings liveSettings, deliveryID string) *httptest.ResponseRecorder {
 	// The speech and its verbatim exchange stay visible to both the user and
 	// the backend. The prefix makes even a spoken slash command ordinary text.
-	message := "Spoken request:\n" + transcript
+	message := heading + "\n" + transcript
 	if strings.TrimSpace(voiceContext) != "" {
 		message += liveVoiceExchange + voiceContext
 	}
@@ -42,7 +44,7 @@ func (s *Server) liveChat(r *http.Request, conversationID, transcript, voiceCont
 	if err != nil {
 		panic(err) // strings and a valid RawMessage
 	}
-	chatReq := r.Clone(r.Context())
+	chatReq := r.Clone(contextWithTurnUserData(r.Context(), liveDeliveryUserData{DeliveryID: deliveryID}))
 	chatReq.Body, chatReq.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
 	chatReq.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -68,7 +70,7 @@ func (s *Server) handleLiveMessage(w http.ResponseWriter, r *http.Request, conve
 		http.Error(w, "transcript is required", http.StatusBadRequest)
 		return
 	}
-	recorder := s.liveChat(r, conversationID, req.Transcript, req.VoiceContext, req.liveSettings)
+	recorder := s.liveChat(r, conversationID, "Spoken request:", req.Transcript, req.VoiceContext, req.liveSettings, uuid.NewString())
 	for k, v := range recorder.Header() {
 		w.Header()[k] = v
 	}

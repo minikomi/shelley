@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
 )
@@ -164,7 +166,7 @@ func TestLiveCallOverHTTP(t *testing.T) {
 	call.expect("activity: true")
 	const message = "Spoken request:\nRun the tests." + liveVoiceExchange + "LIVE: Hi!\nUSER: Run the tests."
 	turn := e.held.waitCall(t, message)
-	call.expect("error: null", "thinking [d1]: The backend accepted this task: Run the tests.", "activity: false")
+	call.expect("error: null", "handoff 3:", "thinking [d1]: The backend accepted this task: Run the tests.", "activity: false")
 	e.finish(id, turn)
 	call.expect("commentary [d1]: Backend reply: ")
 
@@ -177,7 +179,7 @@ func TestLiveCallOverHTTP(t *testing.T) {
 
 	// A stream that reconnects picks up after what it handled.
 	first := call.ended
-	call.attach("?after=5")
+	call.attach("?after=6")
 	<-first // the newer stream replaces it
 	call.expect("thinking [-]: New typed message", "commentary [-]: Backend reply: ")
 
@@ -216,7 +218,7 @@ func TestLiveCallStartsADraft(t *testing.T) {
 		t.Error("main backend lost the profile's system prompt")
 	}
 	e.finish(draft.ConversationID, turn)
-	call.expect("activity: true", "error: null", "thinking [d1]: The backend accepted this task", "activity: false", "commentary [d1]: Backend reply: ")
+	call.expect("activity: true", "error: null", "handoff 1:", "thinking [d1]: The backend accepted this task", "activity: false", "commentary [d1]: Backend reply: ")
 	row, err := e.database.GetConversationByID(t.Context(), draft.ConversationID)
 	if err != nil {
 		t.Fatal(err)
@@ -229,4 +231,152 @@ func TestLiveCallStartsADraft(t *testing.T) {
 	// Live closing the session ends the call.
 	call.events(`{"type":"session.closed"}`)
 	<-call.ended
+}
+
+func TestLiveCallSendsCompleteFreshExchange(t *testing.T) {
+	e := newLiveMessageEnv(t)
+	e.liveProvider()
+	slug := "voice-complete-exchange"
+	conv, err := e.database.CreateConversation(t.Context(), &slug, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := e.startCall(conv.ConversationID, "")
+	response := strings.Repeat("Complete Live response. ", 300) + "Finished."
+	call.events(
+		`{"type":"session.input_transcript.delta","delta":"Run tests","start_ms":0,"end_ms":500}`,
+		fmt.Sprintf(`{"type":"session.output_transcript.delta","delta":%q,"start_ms":600,"end_ms":7000}`, response),
+		`{"type":"session.delegation.created","delegation":{"id":"d1","target":"client"},"offset_ms":7000}`,
+	)
+	message := "Spoken request:\nRun tests" + liveVoiceExchange + "USER: Run tests\nLIVE: " + response
+	turn := e.held.waitCall(t, message)
+	e.finish(conv.ConversationID, turn)
+	call.expect("activity: true", "error: null", "handoff 2:", "thinking [d1]: The backend accepted this task", "activity: false", "commentary [d1]: Backend reply: ")
+	if code, body := e.do("DELETE", call.path, ""); code != http.StatusNoContent {
+		t.Fatal(code, body)
+	}
+	<-call.ended
+}
+
+func TestLiveTranscriptLateCaptionStaysForNextHandoff(t *testing.T) {
+	e := newLiveMessageEnv(t)
+	e.liveProvider()
+	slug := "voice-late-caption"
+	conv, err := e.database.CreateConversation(t.Context(), &slug, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := e.startCall(conv.ConversationID, "")
+	call.events(
+		`{"type":"session.input_transcript.delta","delta":"Cap the panel","start_ms":0,"end_ms":500}`,
+		`{"type":"session.output_transcript.delta","delta":"I'll make sure the live chat","start_ms":600,"end_ms":2000}`,
+		`{"type":"session.delegation.created","delegation":{"id":"d1","target":"client"},"offset_ms":2000}`,
+	)
+	const message = "Spoken request:\nCap the panel" + liveVoiceExchange + "USER: Cap the panel\nLIVE: I'll make sure the live chat"
+	turn := e.held.waitCall(t, message)
+	call.expect("activity: true", "error: null", "handoff 2:", "thinking [d1]: The backend accepted this task", "activity: false")
+
+	call.events(
+		`{"type":"session.output_transcript.delta","delta":" panel doesn't get too tall.","start_ms":2000,"end_ms":3000}`,
+		`{"type":"session.input_transcript.delta","delta":"Run tests","start_ms":4000,"end_ms":4500}`,
+	)
+	metadata, err := e.database.ListMessagesByType(t.Context(), conv.ConversationID, db.MessageTypeLiveTranscript)
+	if err != nil || len(metadata) != 0 {
+		t.Fatalf("late caption created metadata: %+v, %v", metadata, err)
+	}
+	users, err := e.database.ListMessagesByType(t.Context(), conv.ConversationID, db.MessageTypeUser)
+	if err != nil || len(users) != 1 {
+		t.Fatalf("late caption dispatched another task: %+v, %v", users, err)
+	}
+	var original llm.Message
+	if err := json.Unmarshal([]byte(*users[0].LlmData), &original); err != nil {
+		t.Fatal(err)
+	}
+	expectEqual(t, "original request is immutable", liveMessageText(original), message)
+
+	e.finish(conv.ConversationID, turn)
+	call.events(`{"type":"session.delegation.created","delegation":{"id":"d2","target":"client"},"offset_ms":4500}`)
+	nextMessage := "Spoken request:\nRun tests" + liveVoiceExchange + "USER: Cap the panel\nLIVE: I'll make sure the live chat\nLIVE: panel doesn't get too tall.\nUSER: Run tests"
+	next := e.held.waitCall(t, nextMessage)
+	e.finish(conv.ConversationID, next)
+	if code, body := e.do("DELETE", call.path, ""); code != http.StatusNoContent {
+		t.Fatal(code, body)
+	}
+	<-call.ended
+}
+
+func TestLiveDeliveryIdentitySurvivesQueueDrainAsTypedUserWork(t *testing.T) {
+	e := newLiveMessageEnv(t)
+	conv, err := e.database.CreateConversation(t.Context(), nil, true, nil, strPtr("predictable"), db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := e.s.getOrCreateConversationManager(t.Context(), conv.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetAgentWorking(true)
+	deliveryID := uuid.NewString()
+	e.s.mu.Lock()
+	e.s.stoppedParents[conv.ConversationID] = true
+	e.s.mu.Unlock()
+	ctx := contextWithTurnUserData(t.Context(), liveDeliveryUserData{DeliveryID: deliveryID})
+	message := llm.UserStringMessage("Spoken request:\nRun tests")
+	if err := manager.QueueMessage(ctx, e.s, "predictable", message); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := e.database.GetQueuedMessages(t.Context(), conv.ConversationID)
+	if err != nil || len(queued) != 1 || liveDeliveryIDFromUserData(queued[0].UserData) != deliveryID {
+		t.Fatalf("queued delivery identity = %+v, %v", queued, err)
+	}
+	if !typedUserForLLM(message, queued[0].UserData) {
+		t.Fatal("queued Live delivery stopped being an ordinary typed user turn")
+	}
+	e.s.mu.Lock()
+	reopened := !e.s.stoppedParents[conv.ConversationID]
+	e.s.mu.Unlock()
+	if !reopened {
+		t.Fatal("queued Live delivery did not reopen parent completions")
+	}
+	manager.SetAgentWorking(false)
+	<-manager.drainPendingMessages(e.s)
+	rows, err := e.database.ListTypedUserMessages(t.Context(), conv.ConversationID)
+	if err != nil || len(rows) != 1 || liveDeliveryIDFromUserData([]byte(derefString(rows[0].UserData))) != deliveryID {
+		t.Fatalf("saved typed delivery identity = %+v, %v", rows, err)
+	}
+	if _, ok, err := (userMessageFinder{db: e.database, conversationID: conv.ConversationID}).FindUserMessageBySequence(t.Context(), rows[0].SequenceID); err != nil || !ok {
+		t.Fatalf("Live delivery lost reply-target semantics: %v, %v", ok, err)
+	}
+}
+
+func TestLiveDeliveryImmediateModelInputHasSequenceID(t *testing.T) {
+	e := newLiveMessageEnv(t)
+	conv, err := e.database.CreateConversation(t.Context(), nil, true, nil, strPtr("predictable"), db.ConversationOptions{
+		ToolOverrides: map[string]string{"message_user": "on"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, receipt := e.post("/api/conversation/"+conv.ConversationID+"/live-message", `{"transcript":"Run tests"}`)
+	var chat struct{ Message string }
+	if err := json.Unmarshal([]byte(receipt), &chat); err != nil || code != http.StatusAccepted {
+		t.Fatalf("delegation: %d %s", code, receipt)
+	}
+	rows, err := e.database.ListMessagesByType(t.Context(), conv.ConversationID, db.MessageTypeUser)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("stored user messages: %d, %v", len(rows), err)
+	}
+	var stored llm.Message
+	if err := json.Unmarshal([]byte(*rows[0].LlmData), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if messageText(stored) != chat.Message {
+		t.Fatal("sequence wrapper changed the stored request")
+	}
+	wrapped, err := messageWithSequenceID(stored, "", rows[0].SequenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := e.held.waitCall(t, messageText(wrapped))
+	e.finish(conv.ConversationID, call)
 }

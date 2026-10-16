@@ -498,7 +498,8 @@ class ApiService {
   }
 
   async endLiveCall(conversationId: string, sessionId: string): Promise<void> {
-    await fetch(this.liveCallURL(conversationId, sessionId), { method: "DELETE" });
+    const response = await fetch(this.liveCallURL(conversationId, sessionId), { method: "DELETE" });
+    if (!response.ok) throw await responseError(response, "Failed to end the call");
   }
 
   private liveCallURL(conversationId: string, sessionId: string): string {

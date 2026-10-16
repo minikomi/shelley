@@ -157,6 +157,7 @@ export type MessageType =
   | "warning"
   | "modelchange"
   | "slug"
-  | "inplacecompaction";
+  | "inplacecompaction"
+  | "livetranscript";
 
 export type EventType = string;

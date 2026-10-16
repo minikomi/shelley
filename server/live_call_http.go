@@ -57,7 +57,7 @@ func (l *liveCalls) get(conversationID, sessionID string) *liveCall {
 // with a draft's settings until the draft is promoted.
 func (s *Server) startLiveCall(r *http.Request, conversationID, sessionID string, initialSeq int64, settings liveSettings) {
 	header := r.Header.Clone()
-	deliver := func(ctx context.Context, transcript, voiceContext string) (liveReceipt, error) {
+	deliver := func(ctx context.Context, heading, transcript, voiceContext, deliveryID string) (liveReceipt, error) {
 		conversation, err := s.db.GetConversationByID(ctx, conversationID)
 		if err != nil {
 			return liveReceipt{}, fmt.Errorf("Failed to deliver speech to Shelley: %w", err)
@@ -70,7 +70,7 @@ func (s *Server) startLiveCall(r *http.Request, conversationID, sessionID string
 			return liveReceipt{}, err
 		}
 		req.Header = header.Clone()
-		recorder := s.liveChat(req, conversationID, transcript, voiceContext, settings)
+		recorder := s.liveChat(req, conversationID, heading, transcript, voiceContext, settings, deliveryID)
 		var receipt liveReceipt
 		if recorder.Code != http.StatusAccepted || json.Unmarshal(recorder.Body.Bytes(), &receipt) != nil {
 			detail := strings.TrimSpace(recorder.Body.String())
@@ -115,7 +115,10 @@ func (s *Server) watchLiveCall(c *liveCall, seq int64) {
 			if err != nil {
 				c.logger.Warn("Live call skipped a message", "error", err)
 			}
-			heard = append(heard, liveRow{seq: row.SequenceID, user: user, text: text, full: full})
+			heard = append(heard, liveRow{
+				seq: row.SequenceID, user: user, text: text, full: full,
+				liveDeliveryID: liveDeliveryIDFromUserData([]byte(derefString(row.UserData))),
+			})
 		}
 		c.observe(heard)
 		return true

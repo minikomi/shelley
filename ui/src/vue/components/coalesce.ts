@@ -40,6 +40,7 @@ export function coalesceMessages(
   /** Full hashes of tours still building. */
   buildingTours: ReadonlySet<string> = new Set(),
 ): CoalescedItem[] {
+  messages = messages.filter((message) => message.type !== "livetranscript");
   if (messages.length === 0) return [];
 
   const items: CoalescedItem[] = [];

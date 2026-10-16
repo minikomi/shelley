@@ -1304,6 +1304,11 @@ func turnUserDataFromContext(ctx context.Context) any {
 	return ctx.Value(turnUserDataContextKey{})
 }
 
+func liveDeliveryIDFromContext(ctx context.Context) string {
+	data, _ := turnUserDataFromContext(ctx).(liveDeliveryUserData)
+	return data.DeliveryID
+}
+
 func marshalTurnUserData(ctx context.Context) (json.RawMessage, error) {
 	turnData := turnUserDataFromContext(ctx)
 	if turnData == nil {

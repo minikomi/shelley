@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // A Live call's delegation logic. GPT-Live decides when to delegate; the
@@ -17,8 +19,7 @@ import (
 // instructions out (the outbox, read by the call's stream).
 
 const (
-	// Live has no transcript turn boundary: a delegation settles after late
-	// deltas, with a hard deadline for an interrupted utterance.
+	// User capture has a deadline; Live's response settles on output quiet.
 	liveQuiet            = 1200 * time.Millisecond
 	liveDeadline         = 5 * time.Second
 	liveMaxPerMinute     = 12
@@ -35,12 +36,11 @@ const (
 
 // liveReceipt is chat's answer to a delivered delegation.
 type liveReceipt struct {
-	Status  string `json:"status"` // "accepted" or "queued"
-	Message string `json:"message"`
+	Status string `json:"status"` // "accepted" or "queued"
 }
 
 // liveDeliverFunc hands speech and its voice exchange to the backend.
-type liveDeliverFunc func(ctx context.Context, transcript, voiceContext string) (liveReceipt, error)
+type liveDeliverFunc func(ctx context.Context, heading, transcript, voiceContext, deliveryID string) (liveReceipt, error)
 
 // liveEvent is the part of a Live data-channel event a call reads.
 type liveEvent struct {
@@ -86,19 +86,19 @@ func liveNumber(raw json.RawMessage) (n float64, ok bool) {
 
 type livePending struct {
 	offsetMs float64
+	output   bool
 	settle   *time.Timer
 	settleN  int // the settle timer that may commit
 	deadline *time.Timer
 }
 
-// liveSubmitted is a delegation the backend took: the message it became,
-// to recognise its row, and whether its reply has arrived.
+// liveSubmitted is a delegation the backend took: its stable delivery ID,
+// the row sequence that identifies it, and whether its reply has arrived.
 type liveSubmitted struct {
-	id       string
-	message  string
-	afterSeq int64
-	userSeq  int64 // 0 until its row arrives
-	finished bool
+	id, deliveryID string
+	afterSeq       int64
+	userSeq        int64 // 0 until its row arrives
+	finished       bool
 }
 
 type liveInstruction struct {
@@ -109,26 +109,30 @@ type liveInstruction struct {
 type liveCall struct {
 	id, conversationID string
 	deliver            liveDeliverFunc
+	newDeliveryID      func() string
 	logger             *slog.Logger
 
-	mu        sync.Mutex
-	active    bool
-	done      chan struct{} // closed when the call ends
-	fragments []liveFragment
-	claimed   int // fragments already part of a delegation
-	seen      map[string]bool
-	pending   map[string]*livePending
-	order     []string // pending, oldest first
-	sendTimes []time.Time
-	jobs      []func()
-	kick      chan struct{}
-	inflight  int
-	handing   bool
-	submitted []*liveSubmitted
-	lastSeen  int64 // the newest row Live heard about
-	latest    int64
-	unseen    map[int64]liveRow
-	eventSeq  int
+	mu          sync.Mutex
+	active      bool
+	done        chan struct{} // closed when the call ends
+	fragments   []liveFragment
+	transcriptN int          // accepted transcript deltas, independent of fragment trimming
+	claimed     int          // start of the fresh exchange in the next task context
+	taken       map[int]bool // user ordinals reserved by tasks; released on failure
+	tails       []*liveTail
+	seen        map[string]bool
+	pending     map[string]*livePending
+	order       []string // pending, oldest first
+	sendTimes   []time.Time
+	jobs        []liveJob
+	kick        chan struct{}
+	inflight    int
+	handing     bool
+	submitted   []*liveSubmitted
+	lastSeen    int64 // the newest row Live heard about
+	latest      int64
+	unseen      map[int64]liveRow
+	eventSeq    int
 
 	out    []liveInstruction
 	nextID int64
@@ -142,9 +146,10 @@ type liveCall struct {
 // liveRow is a conversation row the call may tell Live about: its
 // dialogue text ("" if none, see liveDialogue) and whole visible text.
 type liveRow struct {
-	seq        int64
-	user       bool
-	text, full string
+	seq            int64
+	user           bool
+	text, full     string
+	liveDeliveryID string
 }
 
 // newLiveCall starts a call whose Live session already holds the
@@ -155,7 +160,8 @@ func newLiveCall(id, conversationID string, initialSeq int64, deliver liveDelive
 		logger: logger.With("liveCall", id, "conversationID", conversationID),
 		active: true, done: make(chan struct{}), seen: map[string]bool{}, pending: map[string]*livePending{},
 		kick: make(chan struct{}, 1), lastSeen: initialSeq, latest: initialSeq, unseen: map[int64]liveRow{},
-		wake: make(chan struct{}), attached: make(chan struct{}),
+		taken: map[int]bool{}, wake: make(chan struct{}), attached: make(chan struct{}),
+		newDeliveryID: uuid.NewString,
 	}
 	c.idle = time.AfterFunc(liveIdle, func() { c.end("no instruction stream") })
 	go c.deliveries()
@@ -173,14 +179,21 @@ func (c *liveCall) handle(events []liveEvent) {
 		switch e.typ {
 		case "session.input_transcript.delta", "session.output_transcript.delta":
 			user := e.typ == "session.input_transcript.delta"
-			c.fragments = append(c.fragments, liveFragment{user: user, text: e.delta, startMs: e.startMs, endMs: e.endMs})
+			c.transcriptN++
+			f := liveFragment{n: c.transcriptN, user: user, text: e.delta, startMs: e.startMs, endMs: e.endMs}
+			c.fragments = append(c.fragments, f)
+			c.acceptTail(f)
 			if len(c.fragments) > liveFragmentsMax && len(c.pending) == 0 {
 				drop := len(c.fragments) - liveFragmentsKept
 				c.fragments = slices.Clone(c.fragments[drop:])
 				c.claimed = max(0, c.claimed-drop)
 			}
-			if user {
-				for _, id := range c.order {
+			for _, id := range c.order {
+				p := c.pending[id]
+				if !user {
+					p.output = true
+				}
+				if !user || !p.output {
 					c.settle(id)
 				}
 			}
@@ -208,16 +221,34 @@ func (c *liveCall) delegation(e liveEvent) {
 			return
 		}
 	}
+	// A new delegation can claim late words itself. Never race a continuation
+	// against its transcript snapshot.
+	for _, t := range c.tails {
+		if t.settle != nil {
+			t.settle.Stop()
+		}
+	}
 	p := &livePending{offsetMs: offset}
-	p.deadline = time.AfterFunc(liveDeadline, func() { c.locked(func() { c.commit(id) }) })
+	p.deadline = time.AfterFunc(liveDeadline, func() {
+		c.locked(func() {
+			if !p.output {
+				c.commit(id)
+			}
+		})
+	})
 	c.pending[id] = p
 	c.order = append(c.order, id)
 	c.activity()
 	// Settle now only if the user's speech already leads up to the
 	// delegation; otherwise wait for its transcript.
 	user := c.unclaimedUser()
-	if len(user) > 0 && liveTurnEnd(user[len(user)-1].endMs, c.fragments)+liveUserLeadMs >= offset {
-		c.settle(id)
+	if len(user) > 0 {
+		end := user[len(user)-1].endMs
+		replyEnd := liveTurnEnd(end, c.fragments)
+		if replyEnd+liveUserLeadMs >= offset {
+			p.output = replyEnd > end
+			c.settle(id)
+		}
 	}
 }
 
@@ -246,8 +277,8 @@ func (c *liveCall) settle(id string) {
 
 func (c *liveCall) unclaimedUser() []liveFragment {
 	var user []liveFragment
-	for _, f := range c.fragments[c.claimed:] {
-		if f.user {
+	for _, f := range c.fragments {
+		if f.user && !c.taken[f.n] {
 			user = append(user, f)
 		}
 	}
@@ -266,12 +297,25 @@ func (c *liveCall) commit(id string) {
 		p.settle.Stop()
 	}
 	p.deadline.Stop()
-	defer c.activity()
+	defer func() {
+		for _, t := range c.tails {
+			c.flushContinuation(t)
+		}
+		c.activity()
+	}()
 
 	since := c.claimed
 	speech, start, ok := liveUtterance(c.unclaimedUser(), p.offsetMs, c.fragments)
 	c.claimed = len(c.fragments)
-	if !ok || liveEcho(speech, start, liveLatestReply(c.fragments)) {
+	echo := ok && liveEcho(speech, start, liveLatestReply(c.fragments))
+	if !ok || echo {
+		if !ok {
+			c.consumeUnusableUser()
+		} else {
+			for _, f := range c.unclaimedUser() {
+				c.taken[f.n] = true
+			}
+		}
 		c.logger.Info("Live delegation dropped: no user request", "delegation", id, "speech", ok)
 		c.thinking(liveNoRequest, &id)
 		return
@@ -287,11 +331,37 @@ func (c *liveCall) commit(id string) {
 	c.sendTimes = append(c.sendTimes, now)
 	voiceContext := liveVoiceContext(c.fragments, since)
 	c.logger.Info("Live delegation committed", "delegation", id, "chars", len(speech))
-	// Delegations reach the backend in order.
-	c.jobs = append(c.jobs, func() { c.deliverTask(id, speech, voiceContext) })
-	select {
-	case c.kick <- struct{}{}:
-	default:
+	t := &liveTail{id: id, deliveryID: c.newDeliveryID(), startMs: start, offsetMs: p.offsetMs, through: c.transcriptN}
+	c.tails = append(c.tails, t)
+	var ordinals []int
+	for _, f := range c.unclaimedUser() {
+		c.taken[f.n] = true
+		ordinals = append(ordinals, f.n)
+	}
+	// Delegations reach the backend in order. Only the original delegation
+	// uses a prefix handoff; continuations carry explicit sparse ordinals.
+	c.enqueue(liveJob{
+		tail: t, release: ordinals,
+		run: func() {
+			c.deliverTask(t, "Spoken request:", speech, voiceContext, t.through, ordinals, t.deliveryID, false)
+		},
+	})
+}
+
+// consumeUnusableUser consumes stale speech when an unusable delegation has
+// conclusively rejected it. A successful delivery's pending tail remains
+// available to its continuation.
+func (c *liveCall) consumeUnusableUser() {
+	protected := map[int]bool{}
+	for _, t := range c.tails {
+		for _, f := range t.user {
+			protected[f.n] = true
+		}
+	}
+	for _, f := range c.unclaimedUser() {
+		if !protected[f.n] {
+			c.taken[f.n] = true
+		}
 	}
 }
 
@@ -300,25 +370,35 @@ func (c *liveCall) deliveries() {
 		select {
 		case <-c.kick:
 		case <-c.done:
-			return
 		}
 		for {
 			c.mu.Lock()
-			if !c.active || len(c.jobs) == 0 {
+			if len(c.jobs) == 0 {
+				active := c.active
 				c.mu.Unlock()
+				if !active {
+					return
+				}
 				break
 			}
 			job := c.jobs[0]
 			c.jobs = c.jobs[1:]
 			c.mu.Unlock()
-			job()
+			job.run()
 		}
 	}
 }
 
-func (c *liveCall) deliverTask(id, speech, voiceContext string) {
+func (c *liveCall) deliverTask(t *liveTail, heading, speech, voiceContext string, through int, ordinals []int, deliveryID string, continued bool) {
 	c.mu.Lock()
-	if !c.active {
+	if !c.active && !continued {
+		for _, n := range ordinals {
+			delete(c.taken, n)
+		}
+		t.failed = true
+		for _, tail := range c.tails {
+			c.flushContinuation(tail)
+		}
 		c.mu.Unlock()
 		return
 	}
@@ -328,26 +408,44 @@ func (c *liveCall) deliverTask(id, speech, voiceContext string) {
 	c.mu.Unlock()
 
 	// A delivery outlives a hang-up, as a sent chat message would.
-	receipt, err := c.deliver(context.Background(), speech, voiceContext)
+	receipt, err := c.deliver(context.Background(), heading, speech, voiceContext, deliveryID)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.active {
-		return
-	}
 	c.inflight--
 	if err != nil {
-		c.logger.Info("Live delegation failed", "delegation", id, "error", err)
+		for _, n := range ordinals {
+			delete(c.taken, n)
+		}
+		if !continued {
+			t.failed = true
+		}
+		c.logger.Error("Live delegation failed", "delegation", t.id, "error", err)
 		c.error(err.Error())
-		c.thinking(liveDeliveryFailed, &id)
+		if c.active {
+			c.thinking(liveDeliveryFailed, &t.id)
+		}
 	} else {
-		c.logger.Info("Live delegation delivered", "delegation", id, "status", receipt.Status)
-		c.emit(map[string]any{"type": "error", "message": nil})
-		c.submitted = append(c.submitted, &liveSubmitted{id: id, message: receipt.Message, afterSeq: afterSeq})
-		if receipt.Status == "queued" {
-			c.thinking("This task is queued behind earlier work: "+speech, &id)
-		} else {
-			c.thinking("The backend accepted this task: "+speech, &id)
+		c.logger.Info("Live delegation delivered", "delegation", t.id, "status", receipt.Status)
+		if c.active {
+			c.emit(map[string]any{"type": "error", "message": nil})
+			handoff := map[string]any{"type": "handoff", "through": through, "delivery_id": deliveryID}
+			if continued {
+				handoff["fragments"] = ordinals
+			}
+			c.emit(handoff)
+			c.submitted = append(c.submitted, &liveSubmitted{id: t.id, deliveryID: deliveryID, afterSeq: afterSeq})
+			if continued {
+				c.thinking("The rest of the spoken request was passed to the backend. Do not delegate those words again: "+speech, &t.id)
+			} else if receipt.Status == "queued" {
+				c.thinking("This task is queued behind earlier work: "+speech, &t.id)
+			} else {
+				c.thinking("The backend accepted this task: "+speech, &t.id)
+			}
+		}
+		if !continued {
+			t.delivered = true
+			c.flushContinuation(t)
 		}
 	}
 	c.sync()
@@ -394,7 +492,7 @@ func (c *liveCall) sync() {
 		}
 		if row.user {
 			i := slices.IndexFunc(c.submitted, func(s *liveSubmitted) bool {
-				return s.userSeq == 0 && row.seq > s.afterSeq && s.message == row.full
+				return s.userSeq == 0 && row.seq > s.afterSeq && s.deliveryID == row.liveDeliveryID
 			})
 			if i >= 0 {
 				c.submitted[i].userSeq = row.seq
@@ -502,8 +600,8 @@ func (c *liveCall) attach() (superseded <-chan struct{}, detach func()) {
 	}
 }
 
-// end stops the call for good: timers are cancelled, queued deliveries
-// dropped, and an in-flight delivery finishes without reporting back.
+// end stops the call for good. Unsent delegations are dropped, but received
+// extensions of successful deliveries drain even after the stream closes.
 func (c *liveCall) end(reason string) {
 	c.locked(func() { c.endLocked(reason) })
 }
@@ -513,7 +611,6 @@ func (c *liveCall) endLocked(reason string) {
 		return
 	}
 	c.logger.Info("Live call ended", "reason", reason)
-	c.active = false
 	c.idle.Stop()
 	for _, p := range c.pending {
 		if p.settle != nil {
@@ -522,6 +619,27 @@ func (c *liveCall) endLocked(reason string) {
 		p.deadline.Stop()
 	}
 	clear(c.pending)
-	c.order, c.jobs = nil, nil
+	var kept []liveJob
+	for _, job := range c.jobs {
+		if job.keepAfterEnd {
+			kept = append(kept, job)
+			continue
+		}
+		for _, n := range job.release {
+			delete(c.taken, n)
+		}
+		if job.tail != nil {
+			job.tail.failed = true
+		}
+	}
+	c.jobs = kept
+	for _, t := range c.tails {
+		if t.settle != nil {
+			t.settle.Stop()
+		}
+		c.flushContinuation(t)
+	}
+	c.active = false
+	c.order = nil
 	close(c.done)
 }

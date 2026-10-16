@@ -115,7 +115,7 @@
       <div ref="messagesContainerRef" class="messages-container scrollable">
         <div v-if="!loading || renderingConversation" ref="messagesListRef" class="messages-list">
           <!-- empty state -->
-          <div v-if="messages.length === 0" class="empty-state">
+          <div v-if="messages.length === 0 && liveExchangeTurns.length === 0" class="empty-state">
             <div class="empty-state-content">
               <p class="text-base chat-welcome-text">
                 <template v-for="(part, i) in welcomeParts" :key="i">
@@ -277,6 +277,13 @@
               Cancel all queued
             </button>
           </div>
+          <LiveExchange
+            v-if="voicePhase !== 'idle'"
+            v-show="liveExchangeTurns.length > 0"
+            :turns="liveExchangeTurns"
+            :origin-title="liveExchangeOriginTitle"
+            @return-to-call="liveVoiceRef?.returnToCall()"
+          />
           <RunningWorkStrip
             v-if="conversationId && !currentConversation?.archived"
             :key="conversationId"
@@ -726,6 +733,7 @@ import TerminalPanel from "./TerminalPanel.vue";
 import VersionChecker from "./VersionChecker.vue";
 import ChatOverflowMenu from "./ChatOverflowMenu.vue";
 import LiveVoice from "./LiveVoice.vue";
+import LiveExchange from "./LiveExchange.vue";
 import type { LiveCallDestination } from "../composables/liveCallConversation";
 import { matchChatInterfaceAction } from "../../utils/menuShortcuts";
 import ChunkHost from "./ChunkHost.vue";
@@ -866,6 +874,18 @@ const {
 const messageInputRef = ref<InstanceType<typeof MessageInput> | null>(null);
 const liveVoiceRef = ref<InstanceType<typeof LiveVoice> | null>(null);
 const voicePhase = ref<"idle" | "connecting" | "live">("idle");
+const liveExchangeTurns = computed(() => {
+  const live = liveVoiceRef.value;
+  return voicePhase.value !== "idle" && live
+    ? live.transcript
+    : [];
+});
+const liveExchangeOriginTitle = computed(() => {
+  const live = liveVoiceRef.value;
+  return live && live.transcriptConversationId !== props.conversationId
+    ? live.transcriptTitle
+    : undefined;
+});
 const headerCallLabel = computed(() =>
   voicePhase.value === "idle"
     ? t("startVoiceConversation")
@@ -901,7 +921,9 @@ const btwExchanges = ref<BtwExchange[]>([]);
 // them for the same reason.
 const lastMessageId = computed(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
-    if (messages.value[i].type !== "slug") return messages.value[i].message_id;
+    if (messages.value[i].type !== "slug" && messages.value[i].type !== "livetranscript") {
+      return messages.value[i].message_id;
+    }
   }
   return null;
 });
@@ -4848,7 +4870,7 @@ async function jumpToMessage(messageId: string) {
 
 // Auto-scroll after DOM updates (mirrors the useLayoutEffect).
 watch(
-  [messages, loading, streamingText, streamingThinking],
+  [messages, loading, streamingText, streamingThinking, liveExchangeTurns],
   () => {
     if (loading.value) return;
     nextTick(() => {

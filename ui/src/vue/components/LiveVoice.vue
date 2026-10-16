@@ -122,7 +122,8 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api, type LiveConversationSettings } from "../../services/api";
 import { LiveSession, type LiveEvent } from "../../services/liveSession";
-import type { Conversation } from "../../types";
+import { LiveTranscript, readLiveDeliveryID } from "../../services/liveTranscript";
+import { parseQueuedMessages, type Conversation } from "../../types";
 import { useLiveCallConversation, type LiveCallDestination } from "../composables/liveCallConversation";
 import { startRecordingMeter } from "./recordingMeter";
 
@@ -131,16 +132,35 @@ const props = defineProps<{
   disabled: boolean;
   captureConversation: () => LiveCallDestination;
   getConversation: (id: string) => Conversation | undefined;
+
   onReturn?: (conversation: Conversation) => void;
 }>();
 const emit = defineEmits<{ (e: "phase-change", phase: "idle" | "connecting" | "live"): void }>();
-defineExpose({ start, stop });
+defineExpose({
+  start,
+  stop,
+  returnToCall,
+  transcript: computed(() => transcript.value.turns),
+  transcriptConversationId: computed(() => origin.conversationId.value),
+  transcriptTitle: computed(() => originTitle.value),
+});
 
 const phase = ref<"idle" | "connecting" | "live">("idle");
 watch(phase, (value) => emit("phase-change", value), { flush: "sync" });
 const error = ref<string | null>(null);
 const muted = ref(false);
 const origin = useLiveCallConversation(props.getConversation);
+const transcript = ref(new LiveTranscript());
+const savedDeliveryIDs = computed(() =>
+  [
+    ...origin.messages.value.filter((message) => message.type === "user"),
+    ...parseQueuedMessages(origin.conversation.value?.queued_messages),
+  ].map(readLiveDeliveryID).filter((id): id is string => id !== undefined),
+);
+function reconcileTranscript() {
+  transcript.value.reconcile(savedDeliveryIDs.value);
+}
+watch(savedDeliveryIDs, reconcileTranscript);
 const viewingElsewhere = computed(() =>
   phase.value !== "idle" && props.conversationId !== origin.conversationId.value,
 );
@@ -174,8 +194,18 @@ const RELAYED = new Set([
 ]);
 let outbox: LiveEvent[] = [];
 let relaying = false;
+let inFlightRelay: Promise<void> | null = null;
 
 function onEvent(event: LiveEvent) {
+  if (event.type === "session.input_transcript.delta" || event.type === "session.output_transcript.delta") {
+    const text = typeof event.delta === "string" ? event.delta : event.delta == null ? "" : JSON.stringify(event.delta);
+    transcript.value.append(
+      event.type === "session.input_transcript.delta",
+      text,
+      event.start_ms as number,
+      event.end_ms as number,
+    );
+  }
   if (event.type === "error") {
     error.value = String((event.error as { message?: string } | undefined)?.message ?? "Live session error");
   } else if (RELAYED.has(event.type)) {
@@ -195,7 +225,8 @@ async function relay() {
     while (session === live && outbox.length) {
       const events = outbox;
       outbox = [];
-      await api.sendLiveEvents(conversationId, live.id, events);
+      inFlightRelay = api.sendLiveEvents(conversationId, live.id, events);
+      await inFlightRelay;
     }
   } catch (err) {
     if (session !== live) return;
@@ -203,7 +234,10 @@ async function relay() {
     stop();
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
-    if (session === live) relaying = false;
+    if (session === live) {
+      relaying = false;
+      inFlightRelay = null;
+    }
   }
 }
 
@@ -211,6 +245,9 @@ interface Instruction {
   type: string;
   event?: LiveEvent;
   message?: string | null;
+  delivery_id?: string;
+  through?: number;
+  fragments?: number[];
 }
 
 function follow(live: LiveSession, conversationId: string) {
@@ -220,6 +257,10 @@ function follow(live: LiveSession, conversationId: string) {
     if (session !== live) return;
     const instruction = JSON.parse(e.data) as Instruction;
     switch (instruction.type) {
+      case "handoff":
+        transcript.value.handoff(instruction.through!, instruction.delivery_id!, instruction.fragments);
+        reconcileTranscript();
+        break;
       case "send":
         try {
           live.send(instruction.event!);
@@ -315,6 +356,7 @@ function settingsForDraft() {
 }
 
 function reset() {
+  transcript.value = new LiveTranscript();
   stopMeter?.();
   stopMeter = null;
   if (timerID !== null) clearInterval(timerID);
@@ -323,15 +365,33 @@ function reset() {
   waveformLevels.value = Array.from({ length: METER_BARS }, () => 0.15);
   instructions?.close();
   instructions = null;
-  // Shelley drops what is still pending; a task already handed over stays.
   const conversationId = origin.conversationId.value;
-  if (session && conversationId) void api.endLiveCall(conversationId, session.id);
+  if (session && conversationId) {
+    void finishCall(conversationId, session.id, outbox, inFlightRelay);
+  }
   session = null;
   origin.release();
   outbox = [];
   relaying = false;
+  inFlightRelay = null;
   muted.value = false;
   phase.value = "idle";
+}
+
+async function finishCall(conversationId: string, sessionId: string, events: LiveEvent[], pending: Promise<void> | null) {
+  const failures: string[] = [];
+  try {
+    await pending;
+    if (events.length) await api.sendLiveEvents(conversationId, sessionId, events);
+  } catch (err) {
+    failures.push(`Could not send the call's final voice events: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    await api.endLiveCall(conversationId, sessionId);
+  } catch (err) {
+    failures.push(`Could not end the call: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (failures.length) error.value = failures.join(" ");
 }
 
 function stop() {

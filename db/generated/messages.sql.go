@@ -57,7 +57,7 @@ WHERE m.conversation_id = ?1
      WHERE prev.conversation_id = ?1
        AND prev.generation = ?2
        AND prev.type != ?3
-       AND prev.type != 'slug'),
+       AND prev.type NOT IN ('slug', 'livetranscript')),
     0)
 `
 
@@ -70,11 +70,8 @@ type CountConsecutiveMessagesByTypeParams struct {
 // Counts the trailing run of messages of the given type, i.e. those after the
 // last message of any OTHER type. Used to cap consecutive retry warnings.
 //
-// Slug markers don't break a run: they are bookkeeping rows carrying only the
-// cost of the LLM call that named the conversation, they render as nothing, and
-// slug generation races the first turn, so a marker landing in the middle of a
-// retry-warning storm would reset the counter and let a fresh batch of warnings
-// through.
+// Invisible slug/call-transcript bookkeeping doesn't break a run. Otherwise
+// an asynchronous metadata append could reset the retry-warning storm cap.
 func (q *Queries) CountConsecutiveMessagesByType(ctx context.Context, arg CountConsecutiveMessagesByTypeParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countConsecutiveMessagesByType, arg.ConversationID, arg.Generation, arg.Type)
 	var count int64
@@ -268,16 +265,13 @@ func (q *Queries) GetGenerationAtOrBeforeSequence(ctx context.Context, arg GetGe
 
 const getLatestActionableMessage = `-- name: GetLatestActionableMessage :one
 SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data, external_message_id FROM messages
-WHERE conversation_id = ? AND type != 'slug'
+WHERE conversation_id = ? AND type NOT IN ('slug', 'livetranscript')
 ORDER BY sequence_id DESC
 LIMIT 1
 `
 
-// The latest message a user could act on. Slug markers are excluded: they hold
-// only the slug LLM call's usage, render as nothing, and land at an arbitrary
-// point (the call races the first turn). Callers gate the Retry/Continue
-// affordances on this row's type being 'error', so a trailing slug marker would
-// otherwise silently disable them.
+// The latest actionable row. Invisible slug/call-transcript bookkeeping can
+// arrive after a turn's error; it must not disable Retry/Continue affordances.
 func (q *Queries) GetLatestActionableMessage(ctx context.Context, conversationID string) (Message, error) {
 	row := q.db.QueryRowContext(ctx, getLatestActionableMessage, conversationID)
 	var i Message
@@ -733,7 +727,7 @@ WHERE m.conversation_id = ?1
     SELECT MIN(v.sequence_id) FROM (
       SELECT vis.sequence_id FROM messages vis
       WHERE vis.conversation_id = ?1
-        AND vis.type != 'slug'
+        AND vis.type NOT IN ('slug', 'livetranscript')
       ORDER BY vis.sequence_id DESC
       LIMIT ?2
     ) v
@@ -749,8 +743,8 @@ type ListMessagesTailParams struct {
 // Returns the last N messages in ascending order. If fewer than N
 // exist, returns all of them.
 //
-// N counts VISIBLE messages, but slug markers inside the resulting window are
-// still returned. Two reasons to do it this way rather than just excluding them:
+// N counts VISIBLE messages, but invisible slug/call-transcript bookkeeping
+// inside the resulting window is still returned. Two reasons to do it this way rather than just excluding them:
 // an invisible bookkeeping row must not eat the window (?tail=1 would hand back
 // nothing displayable), yet dropping markers from the middle would punch holes
 // in the sequence space, and clients that detect lost messages by sequence
@@ -803,7 +797,7 @@ WHERE conversation_id = ? AND type = 'user'
   AND (user_data IS NULL OR user_data IN ('', 'null') OR (
     json_valid(user_data) AND NOT EXISTS (
       SELECT 1 FROM json_each(messages.user_data) u
-      WHERE u.key NOT IN ('compaction_carried', 'carried_from_sequence_id')
+      WHERE u.key NOT IN ('compaction_carried', 'carried_from_sequence_id', 'live_delivery_id')
     )
   ))
   AND NOT EXISTS (

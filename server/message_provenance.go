@@ -32,6 +32,12 @@ type senderMessageUserData struct {
 	Text string `json:"Text"`
 }
 
+// liveDeliveryUserData is presentation metadata for a Live-delivered typed
+// user turn. It deliberately carries no sender/channel classification.
+type liveDeliveryUserData struct {
+	DeliveryID string `json:"live_delivery_id"`
+}
+
 // backgroundJobUserData marks a notice that a backgrounded bash command
 // finished; it is not from a human or another conversation.
 type backgroundJobUserData struct {
@@ -213,11 +219,19 @@ func typedUserForLLM(message llm.Message, rawUserData []byte) bool {
 		return false
 	}
 	for key := range data {
-		if key != "compaction_carried" && key != carriedFromKey {
+		if key != "compaction_carried" && key != carriedFromKey && key != "live_delivery_id" {
 			return false
 		}
 	}
 	return true
+}
+
+func liveDeliveryIDFromUserData(rawUserData []byte) string {
+	var data liveDeliveryUserData
+	if json.Unmarshal(rawUserData, &data) != nil {
+		return ""
+	}
+	return data.DeliveryID
 }
 
 func wrapMessageForLLM(message llm.Message, tag string, attrs ...xml.Attr) (llm.Message, error) {

@@ -90,6 +90,29 @@ const carried = message({
 });
 assert.equal(isTypedUserMessage(human), true);
 assert.equal(isTypedUserMessage(carried), true);
+const live = message({
+  ...human,
+  message_id: "live",
+  user_data: JSON.stringify({ live_delivery_id: "delivery-1" }),
+});
+assert.equal(isTypedUserMessage(live), true);
+assert.equal(isVisibleConversationMessage(live, "brief"), true);
+assert.equal(
+  isTypedUserMessage({
+    ...live,
+    message_id: "carried-live",
+    user_data: JSON.stringify({ live_delivery_id: "delivery-1", compaction_carried: "true" }),
+  }),
+  true,
+);
+assert.equal(
+  isTypedUserMessage({
+    ...live,
+    message_id: "machine-live",
+    user_data: JSON.stringify({ live_delivery_id: "delivery-1", sender_conversation_id: "child" }),
+  }),
+  false,
+);
 assert.equal(
   isTypedUserMessage({
     ...carried,

@@ -1706,6 +1706,9 @@ const (
 	// It is an appended message rather than a mutable column because of the
 	// append-only invariant described on MessageType above.
 	MessageTypeSlug MessageType = "slug"
+	// MessageTypeLiveTranscript identifies historical display-only caption
+	// records. New calls do not write them.
+	MessageTypeLiveTranscript MessageType = "livetranscript"
 	// MessageTypeInPlaceCompaction rewrites how EARLIER messages of the same
 	// generation are presented to the LLM: it squishes sequence-id ranges into
 	// summaries and/or trims tool results. user_data holds the operations

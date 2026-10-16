@@ -140,6 +140,227 @@ test("a delegated question reaches the chat, and its reply reaches Live", async 
   await expect(message).toHaveCount(1);
 });
 
+test("sent exchanges stay frozen while new Live speech waits for the next handoff", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: transcript ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  const before = await conversationJSON(request, conversationId);
+  const exchange = page.getByTestId("live-exchange");
+
+  await emit(page, { type: "session.input_transcript.delta", delta: "Hello.", start_ms: 0, end_ms: 400 });
+  await emit(page, { type: "session.output_transcript.delta", delta: "Hi, I'm ", start_ms: 500, end_ms: 900 });
+  await expect(exchange).toContainText("Hi, I'm ");
+  await emit(page, { type: "session.output_transcript.delta", delta: "here.", start_ms: 900, end_ms: 1100 });
+  await expect(exchange).toContainText("Hi, I'm here.");
+  await expect(exchange).toContainText("Not sent to Shelley");
+  await expect(exchange).not.toHaveClass(/message-user/);
+  expect(await conversationJSON(request, conversationId)).toBe(before);
+
+  await emit(page, { type: "session.input_transcript.delta", delta: "echo: check the transcript", start_ms: 1500, end_ms: 2200 });
+  await emit(page, { type: "session.delegation.created", offset_ms: 2200, delegation: { id: "transcript", target: "client" } });
+  await emit(page, { type: "session.output_transcript.delta", delta: "Okay, let", start_ms: 2300, end_ms: 2600 });
+  await expect(exchange).toContainText("Okay, let");
+  await emit(page, { type: "session.output_transcript.delta", delta: " me check.", start_ms: 2600, end_ms: 3000 });
+  const message = page.getByTestId("message").filter({ hasText: "Spoken request:\nHello.echo: check the transcript" });
+  await expect(message).toHaveCount(1);
+  await expect(message).toContainText("LIVE: Okay, let me check.");
+  await expect(exchange).toBeHidden();
+
+  // Later speech stays unsent; it belongs to the next handoff, not this bubble.
+  await emit(page, { type: "session.output_transcript.delta", delta: " I'm still here while that runs.", start_ms: 3500, end_ms: 4500 });
+  await expect(exchange).toContainText("I'm still here while that runs.");
+  await expect(exchange).toContainText("Not sent to Shelley");
+  await expect(message).not.toContainText("I'm still here while that runs.");
+  const afterLate = JSON.parse(await conversationJSON(request, conversationId));
+  expect(afterLate.messages.filter((row: any) => row.type === "user").length).toBe(
+    JSON.parse(before).messages.filter((row: any) => row.type === "user").length + 1,
+  );
+  await emit(page, { type: "session.input_transcript.delta", delta: "echo: now lint", start_ms: 5000, end_ms: 6000 });
+  await emit(page, { type: "session.delegation.created", offset_ms: 6000, delegation: { id: "next-transcript", target: "client" } });
+  const nextMessage = page.getByTestId("message").filter({ hasText: "Spoken request:\necho: now lint" });
+  await expect(nextMessage).toHaveCount(1);
+  await expect(nextMessage).toContainText("LIVE: I'm still here while that runs.");
+  await expect(exchange).toBeHidden();
+  await expect(message).not.toContainText("I'm still here while that runs.");
+  const history = JSON.parse(await conversationJSON(request, conversationId));
+  expect(history.messages.some((row: any) => row.type === "livetranscript")).toBe(false);
+  await page.getByTestId("live-stop").click();
+  await page.reload();
+  await expect(message).toHaveCount(1);
+  await expect(message).not.toContainText("I'm still here while that runs.");
+  await expect(nextMessage).toContainText("LIVE: I'm still here while that runs.");
+});
+
+test("hangup does not append unsent captions to a sent request", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: final transcript ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  await speakAndDelegate(page, "hangup", "echo: save the whole transcript");
+  const message = page.getByTestId("message").filter({ hasText: "Spoken request:\necho: save the whole transcript" });
+  await expect(message).toHaveCount(1);
+
+  let held = false;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/live-session/*/events", async (route) => {
+    if (route.request().postDataJSON().events.some((event: any) => event.delta === "The live chat")) {
+      held = true;
+      await gate;
+    }
+    await route.continue();
+  });
+  await emit(page, { type: "session.output_transcript.delta", delta: "The live chat", start_ms: 1000, end_ms: 1800 });
+  await expect.poll(() => held).toBe(true);
+  await emit(page, { type: "session.output_transcript.delta", delta: " panel doesn't get too tall.", start_ms: 1800, end_ms: 3000 });
+  await expect(page.getByTestId("live-exchange")).toContainText("The live chat panel doesn't get too tall.");
+  await expect(message).not.toContainText("The live chat");
+  await page.getByTestId("live-stop").click();
+  release();
+  await expect(page.getByTestId("live-bar")).toHaveCount(0);
+  await expect(message).not.toContainText("The live chat");
+  await page.reload();
+  await expect(message).not.toContainText("The live chat");
+  const history = JSON.parse(await conversationJSON(request, conversationId));
+  expect(history.messages.some((row: any) => row.type === "livetranscript")).toBe(false);
+});
+
+test("Live groups overlapping thoughts and keeps the exchange bounded with optional scrollback", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: overlap ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  const exchange = page.getByTestId("live-exchange");
+  await emit(page, { type: "session.input_transcript.delta", delta: "The transcript keeps", start_ms: 0, end_ms: 1200 });
+  await emit(page, { type: "session.output_transcript.delta", delta: "Mm-hmm.", start_ms: 900, end_ms: 1300 });
+  await emit(page, { type: "session.input_transcript.delta", delta: " splitting up.", start_ms: 1300, end_ms: 2500 });
+  await expect(exchange.locator(".live-exchange-turn")).toHaveCount(2);
+  await expect(exchange.locator(".live-exchange-turn").first()).toContainText("The transcript keeps splitting up.");
+
+  const region = exchange.getByRole("region", { name: "Live exchange transcript" });
+  await emit(page, {
+    type: "session.output_transcript.delta",
+    delta: "A long reply with room to scroll back. ".repeat(80),
+    start_ms: 4000, end_ms: 20000,
+  });
+  await expect.poll(() => region.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+  expect(await region.evaluate((el) => el.clientHeight)).toBeLessThanOrEqual(192);
+  await expect.poll(() => region.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
+  await region.evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+  });
+  const latest = exchange.getByRole("button", { name: "Latest" });
+  await expect(latest).toBeVisible();
+  await emit(page, { type: "session.output_transcript.delta", delta: " The newest words.", start_ms: 20000, end_ms: 21000 });
+  await expect(exchange).toContainText("The newest words.");
+  expect(await region.evaluate((el) => el.scrollTop)).toBe(0);
+  await latest.click();
+  await expect.poll(() => region.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
+  await page.getByTestId("live-stop").click();
+});
+
+test("Live keeps a paused thought together without moving an answer before its question", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: boundaries ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  const turns = page.getByTestId("live-exchange").locator(".live-exchange-turn");
+  await emit(page, { type: "session.input_transcript.delta", delta: "This is", start_ms: 0, end_ms: 1000 });
+  await emit(page, { type: "session.output_transcript.delta", delta: "Mm.", start_ms: 900, end_ms: 1200 });
+  await emit(page, { type: "session.input_transcript.delta", delta: " still one thought", start_ms: 3500, end_ms: 4500 });
+  await emit(page, { type: "session.input_transcript.delta", delta: "\n.", start_ms: 4500, end_ms: 4500 });
+  await expect(turns).toHaveCount(2);
+  await expect(turns.first().locator("p")).toHaveText("This is still one thought.");
+
+  await emit(page, { type: "session.output_transcript.delta", delta: "Which panel?", start_ms: 5000, end_ms: 6000 });
+  await emit(page, { type: "session.input_transcript.delta", delta: "Sidebar.", start_ms: 6200, end_ms: 7000 });
+  await expect(turns).toHaveCount(4);
+  await expect(turns.nth(2)).toContainText("Which panel?");
+  await expect(turns.nth(3)).toContainText("Sidebar.");
+  await expect(turns.first()).not.toContainText("Sidebar.");
+  await page.getByTestId("live-stop").click();
+});
+
+test("late punctuation neither amends a sent request nor creates another task", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: punctuation ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  await speakAndDelegate(page, "punctuation", "echo: keep the period");
+  const message = page.getByTestId("message").filter({ hasText: "Spoken request:\necho: keep the period" });
+  await expect(message).toHaveCount(1);
+  await emit(page, { type: "session.input_transcript.delta", delta: ".", start_ms: 850, end_ms: 900 });
+  await emit(page, { type: "session.input_transcript.delta", delta: "Next thought.", start_ms: 5000, end_ms: 6000 });
+  const exchange = page.getByTestId("live-exchange");
+  await expect(exchange).toContainText("Next thought.");
+  await expect(exchange).not.toContainText(".Next thought.");
+  await expect(exchange).not.toContainText(". Next thought.");
+  await page.getByTestId("live-stop").click();
+  const history = JSON.parse(await conversationJSON(request, conversationId));
+  expect(history.messages.some((row: any) => row.type === "livetranscript")).toBe(false);
+  expect(JSON.stringify(history)).not.toContain("Spoken request (continued)");
+  await expect(message).not.toContainText("USER: echo: keep the period.");
+  await page.reload();
+  await expect(message).not.toContainText("USER: echo: keep the period.");
+});
+
+for (const endManually of [false, true]) {
+  test(`a failed pending relay still ends the call after ${endManually ? "manual hangup" : "automatic stop"}`, async ({ page, request }) => {
+    const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: relay failure ready");
+    await mockVoiceBrowser(page);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByTestId("live-call-header").click();
+    await expect(page.getByTestId("live-bar")).toContainText("On call");
+    let held = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/live-session/*/events", async (route) => {
+      held = true;
+      await gate;
+      await route.fulfill({ status: 503, body: "Relay failed for test" });
+    });
+    const hangup = page.waitForResponse((response) =>
+      response.request().method() === "DELETE" && response.url().includes("/live-session/"));
+    await emit(page, { type: "session.input_transcript.delta", delta: "Already received words", start_ms: 0, end_ms: 1000 });
+    await expect.poll(() => held).toBe(true);
+    if (endManually) await page.getByTestId("live-stop").click();
+    release();
+    expect((await hangup).ok()).toBe(true);
+    await expect(page.getByTestId("live-error")).toContainText("Could not send the call's final voice events");
+    await expect(page.getByTestId("live-error")).toContainText("Relay failed for test");
+    await expect(page.getByTestId("live-stop")).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__voiceTracksStopped)).toBeGreaterThan(0);
+  });
+}
+
+test("a failed hangup remains visible alongside a failed final transcript", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: hangup failure ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  await page.route("**/live-session/*/events", (route) =>
+    route.fulfill({ status: 503, body: "Relay failed for test" }));
+  await page.route("**/live-session/*", async (route) => {
+    if (route.request().method() === "DELETE") {
+      await route.fulfill({ status: 503, body: "Hangup failed for test" });
+    } else {
+      await route.continue();
+    }
+  });
+  await emit(page, { type: "session.input_transcript.delta", delta: "Already received words", start_ms: 0, end_ms: 1000 });
+  await expect(page.getByTestId("live-error")).toContainText("Could not send the call's final voice events");
+  await expect(page.getByTestId("live-error")).toContainText("Could not end the call");
+  await expect(page.getByTestId("live-error")).toContainText("Hangup failed for test");
+});
+
 test("Shelley's errors about a call show on its strip", async ({ page, request }) => {
   const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: ready");
   await mockVoiceBrowser(page);
@@ -163,10 +384,14 @@ test("a call stays pinned to its original chat while browsing other chats", asyn
   await page.getByTestId("live-call-header").click();
   const bar = page.getByTestId("live-bar");
   await expect(bar).toContainText("On call");
+  await emit(page, { type: "session.output_transcript.delta", delta: "Still in the original call.", start_ms: 0, end_ms: 500 });
+  await expect(page.getByTestId("live-exchange")).toContainText("Still in the original call.");
 
   await navigateWithinApp(page, `/c/${other.slug}`);
   await expect(page.locator(".header-title")).toHaveText(other.slug);
   await expect(bar).toBeVisible();
+  await expect(page.getByTestId("live-exchange")).toContainText("Still in the original call.");
+  await expect(page.getByTestId("live-exchange")).toContainText(origin.slug);
   await expect(page.getByTestId("live-call-header")).toHaveAttribute("aria-label", "End voice call");
   expect((await request.post(`/api/conversation/${other.conversationId}/chat`, {
     data: { message: "echo: unrelated private reply", model: "predictable" },
@@ -269,4 +494,67 @@ test("a call on /new starts one blank draft with the composer's selection, where
   await expect(page.getByTestId("live-bar")).toContainText("On call");
   expect(sessionSettings).not.toHaveProperty("conversation_options");
   await call.click();
+});
+
+test("Live exchange collapse keeps listening and stays closed across handoffs", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: collapse ready");
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  const before = await conversationJSON(request, conversationId);
+  await emit(page, { type: "session.input_transcript.delta", delta: "echo: collapse me", start_ms: 0, end_ms: 1000 });
+  const exchange = page.getByTestId("live-exchange");
+  const toggle = page.getByTestId("live-exchange-toggle");
+  const region = exchange.getByRole("region", { name: "Live exchange transcript" });
+  await toggle.click();
+  await expect(exchange).toHaveJSProperty("open", false);
+  await expect(region).toBeHidden();
+  await emit(page, { type: "session.output_transcript.delta", delta: "Still listening.", start_ms: 1100, end_ms: 1800 });
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  expect(await conversationJSON(request, conversationId)).toBe(before);
+  await emit(page, { type: "session.delegation.created", offset_ms: 1800, delegation: { id: "collapsed", target: "client" } });
+  await expect(page.getByTestId("message").filter({ hasText: "Spoken request:\necho: collapse me" })).toContainText("LIVE: Still listening.");
+  await expect(exchange).toBeHidden();
+  await emit(page, { type: "session.output_transcript.delta", delta: "More words while collapsed. ".repeat(80), start_ms: 2000, end_ms: 12000 });
+  await expect(exchange).toBeVisible();
+  await expect(exchange).toHaveJSProperty("open", false);
+  await expect(region).toBeHidden();
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(region).toBeVisible();
+  await expect(region).toContainText("More words while collapsed.");
+  await expect.poll(() => region.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
+  await page.getByTestId("live-stop").click();
+});
+
+test("Live delivery remains visible and replyable in brief view", async ({ page, request }) => {
+  const { conversationId } = await createConversationViaAPIWithDetails(request, "echo: brief ready", {
+    conversationOptions: { tool_overrides: { message_user: "on" } },
+  });
+  await mockVoiceBrowser(page);
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId("live-call-header").click();
+  await expect(page.getByTestId("live-bar")).toContainText("On call");
+  const before = JSON.parse(await conversationJSON(request, conversationId));
+  const turns = before.messages.filter((row: any) => row.end_of_turn).length;
+  await emit(page, { type: "session.input_transcript.delta", delta: "Review the build", start_ms: 0, end_ms: 1000 });
+  await emit(page, { type: "session.delegation.created", offset_ms: 1000, delegation: { id: "brief", target: "client" } });
+  const asked = page.getByTestId("message").filter({ hasText: "Spoken request:\nReview the build" });
+  await expect(asked).toBeVisible();
+  await expect.poll(async () => {
+    const history = JSON.parse(await conversationJSON(request, conversationId));
+    return history.messages.filter((row: any) => row.end_of_turn).length;
+  }).toBeGreaterThan(turns);
+  const history = JSON.parse(await conversationJSON(request, conversationId));
+  const spoken = history.messages.find((row: any) => row.user_data?.includes("live_delivery_id"));
+  expect(spoken).toBeTruthy();
+  const reply = await request.post(`/api/conversation/${conversationId}/chat`, {
+    data: { model: "predictable", message: `message_user: ${JSON.stringify({ text: "On it.", reply_to: spoken.sequence_id, reaction: "👍", end_turn: true })}` },
+  });
+  expect(reply.ok()).toBeTruthy();
+  const bubble = page.getByTestId("message-user-bubble").filter({ hasText: "On it." });
+  await expect(bubble.getByTestId("message-user-quote")).toContainText("Review the build");
+  await expect(asked.getByTestId("message-reactions")).toHaveText("👍");
+  await page.getByTestId("live-stop").click();
 });

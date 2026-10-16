@@ -21,6 +21,7 @@ import (
 // liveFragment is one transcript delta, timed in ms from the start of the
 // Live session.
 type liveFragment struct {
+	n              int  // cumulative delta ordinal, unaffected by compaction
 	user           bool // the caller; else Live
 	text           string
 	startMs, endMs float64
@@ -128,8 +129,9 @@ func liveVoiceContext(all []liveFragment, since int) string {
 			break
 		}
 	}
+	first := max(0, min(fresh, len(turns)-liveContextTurns))
 	lines := make([]string, 0, len(turns))
-	for _, t := range turns[max(0, min(fresh, len(turns)-liveContextTurns)):] {
+	for _, t := range turns[first:] {
 		label := "LIVE: "
 		if t.user {
 			label = "USER: "
@@ -137,8 +139,9 @@ func liveVoiceContext(all []liveFragment, since int) string {
 		lines = append(lines, label+strings.TrimSpace(t.text))
 	}
 	context := strings.Join(lines, "\n")
-	if r := []rune(context); len(r) > liveContextChars {
-		context = string(r[len(r)-liveContextChars:])
+	limit := max(liveContextChars, utf8.RuneCountInString(strings.Join(lines[fresh-first:], "\n")))
+	if r := []rune(context); len(r) > limit {
+		context = string(r[len(r)-limit:])
 	}
 	return context
 }

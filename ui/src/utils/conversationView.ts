@@ -38,19 +38,18 @@ export function isHumanUserMessage(message: Message): boolean {
   return human;
 }
 
-// The user_data a compaction stamps on the copies it carries forward.
-const CARRIED_KEYS = new Set(["compaction_carried", "carried_from_sequence_id"]);
+const TYPED_USER_KEYS = new Set(["compaction_carried", "carried_from_sequence_id", "live_delivery_id"]);
 
 // A message the user typed, as opposed to a user-role message from a subagent,
 // a background job, or another machine source (which carry user_data). Copies
-// carried forward by a compaction still count; they render behind a band.
+// carried forward by compaction and Live handoffs still count.
 export function isTypedUserMessage(message: Message): boolean {
   if (!isHumanUserMessage(message)) return false;
   if (!message.user_data) return true;
   try {
     const userData =
       typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data;
-    return !userData || Object.keys(userData).every((key) => CARRIED_KEYS.has(key));
+    return !userData || Object.keys(userData).every((key) => TYPED_USER_KEYS.has(key));
   } catch {
     // As in isHumanUserMessage: malformed metadata should not hide a message.
     return true;

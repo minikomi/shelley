@@ -78,6 +78,7 @@ func TestLiveSession(t *testing.T) {
 		{db.MessageTypeUser, llm.Content{Type: llm.ContentTypeToolResult, ToolUseID: "t", ToolResult: []llm.Content{llm.StringContent("TOOL SECRET OUTPUT")}}, nil, false},
 		{db.MessageTypeUser, llm.StringContent("subagent secret"), map[string]string{"sender_conversation_id": "child"}, false},
 		{db.MessageTypeUser, llm.StringContent("Spoken request:\nlint it" + liveVoiceExchange + "LIVE: Sure."), nil, false},
+		{db.MessageTypeUser, llm.StringContent("Spoken request:\nqueued lint"), liveDeliveryUserData{DeliveryID: "delivery"}, false},
 		{db.MessageTypeAgent, llm.StringContent("internal progress"), nil, false},
 		{db.MessageTypeAgent, llm.StringContent("fixed it"), nil, true},
 	} {
@@ -103,10 +104,10 @@ func TestLiveSession(t *testing.T) {
 	for _, item := range req.Session.Input {
 		dialogue = append(dialogue, item.Role+": "+item.Content[0].Text)
 	}
-	if got := strings.Join(dialogue, "|"); got != "user: fix the bug|user: Spoken request:\nlint it|assistant: fixed it" {
+	if got := strings.Join(dialogue, "|"); got != "user: fix the bug|user: Spoken request:\nlint it|user: Spoken request:\nqueued lint|assistant: fixed it" {
 		t.Errorf("Live got more than the dialogue: %q", got)
 	}
-	if n := len(e.ps.GetRecentRequests()); n != 0 || len(listMessages(t, e.database, id)) != 6 {
+	if n := len(e.ps.GetRecentRequests()); n != 0 || len(listMessages(t, e.database, id)) != 7 {
 		t.Fatalf("a call asked a model %d times or wrote messages", n)
 	}
 

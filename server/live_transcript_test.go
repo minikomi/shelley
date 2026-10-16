@@ -142,6 +142,16 @@ func TestLiveVoiceContext(t *testing.T) {
 		},
 		{"at least the recent turns when nothing is new", missed[5:], 2, "LIVE: Take your time.\nUSER: Can you delegate that?"},
 		{"a delegation splits a turn", []liveFragment{userSaid("Run tests.", 0, 500), userSaid("Lint it.", 600, 900)}, 1, "USER: Run tests.\nUSER: Lint it."},
+		{
+			"a long fresh response stays whole",
+			[]liveFragment{userSaid("Run tests.", 0, 500), liveSaid(strings.Repeat("界", 6000), 600, 7000)},
+			0, "USER: Run tests.\nLIVE: " + strings.Repeat("界", 6000),
+		},
+		{
+			"older context gives way to a long fresh exchange",
+			[]liveFragment{liveSaid(strings.Repeat("old ", 2000), 0, 1000), userSaid("Run tests.", 2000, 2500), liveSaid(strings.Repeat("界", 6000), 2600, 7000)},
+			1, "USER: Run tests.\nLIVE: " + strings.Repeat("界", 6000),
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := liveVoiceContext(tt.speech, tt.since); got != tt.want {
@@ -152,6 +162,14 @@ func TestLiveVoiceContext(t *testing.T) {
 	long := liveVoiceContext([]liveFragment{userSaid(strings.Repeat("a", 6000), 0, 1)}, 1)
 	if len(long) != liveContextChars || !strings.HasSuffix(long, "aaa") {
 		t.Errorf("context is not bounded to its last %d chars: %d", liveContextChars, len(long))
+	}
+	mixed := liveVoiceContext([]liveFragment{
+		liveSaid(strings.Repeat("old ", 2000), 0, 1000),
+		userSaid("Run tests.", 2000, 2500),
+		liveSaid("I'll run them.", 2600, 3000),
+	}, 1)
+	if len(mixed) != liveContextChars || !strings.HasSuffix(mixed, "\nUSER: Run tests.\nLIVE: I'll run them.") {
+		t.Error("older context must stay bounded without trimming the fresh exchange")
 	}
 }
 
@@ -220,6 +238,7 @@ func dialogueRow(typ, text string, final bool, userData string) generated.Messag
 func TestLiveDialogue(t *testing.T) {
 	toolResult, _ := json.Marshal(llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeToolResult, ToolUseID: "tool", ToolResult: []llm.Content{llm.StringContent("TOOL OUTPUT")}}}})
 	toolRaw := string(toolResult)
+	spoken := dialogueRow("user", "Spoken request:\nlint it"+liveVoiceExchange+"USER: lint it\nLIVE: Sure.", false, "")
 	rows := []generated.Message{
 		dialogueRow("user", "Please fix the tests", false, ""),
 		dialogueRow("user", "carried request", false, `{"compaction_carried":"true"}`),
@@ -234,7 +253,8 @@ func TestLiveDialogue(t *testing.T) {
 		dialogueRow("user", "MALFORMED METADATA", false, `{broken`),
 		dialogueRow("user", "NONOBJECT METADATA", false, `"unexpected"`),
 		dialogueRow("user", "distilled", false, `{"distilled":"true"}`),
-		dialogueRow("user", "Spoken request:\nlint it"+liveVoiceExchange+"USER: lint it\nLIVE: Sure.", false, ""),
+		spoken,
+		dialogueRow("user", "Spoken request:\nqueued lint", false, `{"live_delivery_id":"delivery"}`),
 	}
 	var heard []string
 	for _, row := range rows {
@@ -246,11 +266,11 @@ func TestLiveDialogue(t *testing.T) {
 			heard = append(heard, map[bool]string{true: "user", false: "assistant"}[user]+": "+text)
 		}
 	}
-	want := "user: Please fix the tests|user: carried request|assistant: Tests are fixed|user: Spoken request:\nlint it"
+	want := "user: Please fix the tests|user: carried request|assistant: Tests are fixed|user: Spoken request:\nlint it|user: Spoken request:\nqueued lint"
 	if got := strings.Join(heard, "|"); got != want {
 		t.Errorf("Live hears %q, want %q", got, want)
 	}
-	if _, _, full, _ := liveDialogue(rows[len(rows)-1]); !strings.HasSuffix(full, "LIVE: Sure.") {
+	if _, _, full, _ := liveDialogue(spoken); !strings.HasSuffix(full, "LIVE: Sure.") {
 		t.Errorf("full text lost the exchange: %q", full)
 	}
 	bad := "not JSON"

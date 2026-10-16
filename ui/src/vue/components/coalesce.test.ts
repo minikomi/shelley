@@ -350,6 +350,36 @@ function serverToolUse(id: string): LLMContent {
   );
 }
 
+{
+  const originalText =
+    "Spoken request:\nCheck it\n\nVoice exchange (for context only):\nLIVE: Let me";
+  const original = {
+    ...agentMessage([text(originalText)]),
+    type: "user",
+  } as Message;
+  const marker = {
+    ...agentMessage([]),
+    type: "livetranscript",
+    llm_data: null,
+    user_data: JSON.stringify({
+      session_id: "call",
+      message: originalText,
+      fragments: [{ n: 3, user: false, text: " check.", start_ms: 1000, end_ms: 1400 }],
+    }),
+  } as Message;
+  const projected = coalesceMessages([original, marker]);
+  check("Live transcript patches do not create phantom rows", projected.length === 1, projected);
+  check(
+    "late Live metadata never changes the sent transcript",
+    JSON.parse(projected[0].message!.llm_data!).Content[0].Text === originalText,
+  );
+  check("sent message identity is unchanged", projected[0].message === original);
+  check(
+    "stored model input remains unchanged",
+    JSON.parse(original.llm_data!).Content[0].Text === originalText,
+  );
+}
+
 console.log(`\ncoalesceMessages Tests: ${passed} passed, ${failed} failed\n`);
 if (failures.length > 0) {
   for (const f of failures) console.log(f);

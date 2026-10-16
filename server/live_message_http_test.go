@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
 )
@@ -71,8 +73,11 @@ func (e *liveMessageEnv) delegate(id, body string) (*heldLLMCall, string) {
 	if err := json.Unmarshal([]byte(*rows[len(rows)-1].LlmData), &message); err != nil {
 		e.t.Fatal(err)
 	}
-	if message.Content[0].Text != chat.Message || rows[len(rows)-1].UserData != nil {
+	if message.Content[0].Text != chat.Message || rows[len(rows)-1].UserData == nil {
 		e.t.Fatalf("stored message %q differs from receipt %q", message.Content[0].Text, chat.Message)
+	}
+	if _, err := uuid.Parse(liveDeliveryIDFromUserData([]byte(*rows[len(rows)-1].UserData))); err != nil {
+		e.t.Fatalf("stored message lacks a delivery UUID: %v", err)
 	}
 	return e.held.waitCall(e.t, chat.Message), chat.Message
 }

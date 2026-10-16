@@ -48,6 +48,16 @@ assert.equal(resolve({ target_message_id: "gone", target_sequence_id: 2 }), unde
 assert.equal(resolve({}), undefined);
 const forked = targetResolver([user("f1", 1)]);
 assert.equal(forked({ target_message_id: "m1", target_sequence_id: 1 }), "f1");
+const live = { ...user("live", 11), user_data: JSON.stringify({ live_delivery_id: "delivery-1" }) };
+const resolveLive = targetResolver([live]);
+assert.equal(resolveLive({ target_sequence_id: 11 }), "live");
+assert.deepEqual(
+  collectReactions(
+    [call({ reaction: "👍", reply_to: 11 }, { target_message_id: "live" })],
+    resolveLive,
+  ).get("live"),
+  [{ emoji: "👍", count: 1 }],
+);
 // A compaction copied m1 to seq 7, and the copy again to seq 9; originals win.
 const compacted = targetResolver([user("m1", 1), user("c1", 7, 1), user("cc1", 9, 1)]);
 assert.equal(compacted({ target_message_id: "gone", target_sequence_id: 1 }), "m1");
