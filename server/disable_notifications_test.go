@@ -103,7 +103,8 @@ func TestPublishConversationStateWaitsForDelegatedWork(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := database.QueriesTx(t.Context(), func(q *generated.Queries) error {
-				return q.MarkBackgroundJobExited(t.Context(), "job1")
+				_, err := q.MarkBackgroundJobExited(t.Context(), "job1")
+				return err
 			}); err != nil {
 				t.Fatal(err)
 			}

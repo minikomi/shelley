@@ -8,8 +8,11 @@ SELECT * FROM background_jobs WHERE NOT notified ORDER BY started_at;
 -- name: MarkBackgroundJobNotified :exec
 UPDATE background_jobs SET notified = TRUE WHERE job_id = ?;
 
--- name: MarkBackgroundJobExited :exec
-UPDATE background_jobs SET exited = TRUE WHERE job_id = ?;
+-- name: MarkBackgroundJobExited :execrows
+UPDATE background_jobs SET exited = TRUE WHERE job_id = ? AND NOT exited;
 
 -- name: ListRunningBackgroundJobs :many
 SELECT * FROM background_jobs WHERE conversation_id = ? AND NOT exited ORDER BY started_at;
+
+-- name: ListAllRunningBackgroundJobs :many
+SELECT * FROM background_jobs WHERE NOT exited ORDER BY started_at;

@@ -43,9 +43,39 @@ func (j BackgroundJob) pidfd() (int, error) {
 	}
 	if st, err := processStartTime(j.PID); err != nil || st != j.StartTime {
 		unix.Close(fd)
+		if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, unix.ESRCH) {
+			return -1, fmt.Errorf("process start time %d: %w", j.PID, err)
+		}
 		return -1, ErrBackgroundJobGone
 	}
 	return fd, nil
+}
+
+// Gone reports whether j's wrapper has exited or its PID now names
+// another process.
+func (j BackgroundJob) Gone() (bool, error) {
+	fd, err := j.pidfd()
+	if errors.Is(err, ErrBackgroundJobGone) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(fd)
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	for {
+		_, err := unix.Poll(fds, 0)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("poll pidfd %d: %w", j.PID, err)
+		}
+		if fds[0].Revents&(unix.POLLERR|unix.POLLNVAL) != 0 {
+			return false, fmt.Errorf("poll pidfd %d: unexpected events %#x", j.PID, fds[0].Revents)
+		}
+		return fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0, nil
+	}
 }
 
 // Exited returns a channel closed when j's wrapper process has exited. It

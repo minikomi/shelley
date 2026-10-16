@@ -1853,6 +1853,11 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	actualPort := tcpListener.Addr().(*net.TCPAddr).Port
 	s.listenPort = actualPort
 
+	// Recover before requests or resumed turns can report the same jobs.
+	if err := s.recoverBackgroundJobs(context.Background()); err != nil {
+		s.logger.Error("Failed to recover background jobs", "error", err)
+	}
+
 	// Start TCP server in goroutine
 	serverErrCh := make(chan error, 2)
 	go func() {
@@ -1897,10 +1902,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 		}
 	}()
 
-	// Report background jobs a previous process left running or unreported.
-	if err := s.recoverBackgroundJobs(context.Background()); err != nil {
-		s.logger.Error("Failed to recover background jobs", "error", err)
-	}
+	go s.sweepBackgroundJobs()
 
 	// Recover durable queued transcription workers independently of browser
 	// connections and request lifetimes.

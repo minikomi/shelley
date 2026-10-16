@@ -45,7 +45,9 @@ func TestBackgroundJobNoticeAfterStop(t *testing.T) {
 	}
 	cancelConversation(t, server, conv.ConversationID)
 
-	server.reportBackgroundJobExit(job)
+	if err := server.reportBackgroundJobExit(t.Context(), job); err != nil {
+		t.Fatal(err)
+	}
 	notice := `<background_job id="job1">` + "\n" + xmlProvenanceText(job.Outcome().Notice()) + "\n</background_job>"
 	held.waitCall(t, notice).Release()
 }

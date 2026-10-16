@@ -1671,7 +1671,8 @@ func TestConversationListCounts(t *testing.T) {
 				return err
 			}
 		}
-		return q.MarkBackgroundJobExited(ctx, "exited")
+		_, err := q.MarkBackgroundJobExited(ctx, "exited")
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}

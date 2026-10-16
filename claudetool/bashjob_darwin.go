@@ -110,9 +110,9 @@ func (j BackgroundJob) Exited() (<-chan struct{}, error) {
 	return exited, nil
 }
 
-// Kill sends SIGTERM to the job's process group after checking its leader.
-func (j BackgroundJob) Kill() error {
-	// kill(0) signals our group; kill(-1) signals every permitted process.
+// leader fails with ErrBackgroundJobGone unless j's wrapper is still
+// running and leads its process group.
+func (j BackgroundJob) leader() error {
 	if j.PID <= 1 {
 		return ErrBackgroundJobGone
 	}
@@ -124,10 +124,30 @@ func (j BackgroundJob) Kill() error {
 	if darwinStartTime(info) != j.StartTime || info.Proc.P_stat == szomb || int(info.Eproc.Pgid) != j.PID {
 		return ErrBackgroundJobGone
 	}
+	return nil
+}
+
+// Gone reports whether j's wrapper has exited or its PID now names
+// another process.
+func (j BackgroundJob) Gone() (bool, error) {
+	err := j.leader()
+	if errors.Is(err, ErrBackgroundJobGone) {
+		return true, nil
+	}
+	return false, err
+}
+
+// Kill sends SIGTERM to the job's process group after checking its leader.
+func (j BackgroundJob) Kill() error {
+	// kill(0) signals our group; kill(-1) signals every permitted process,
+	// so leader rejects PIDs <= 1.
+	if err := j.leader(); err != nil {
+		return err
+	}
 	// Darwin has no identity-bound process-group signal API: the numeric PGID
 	// can still be reused between this validation and kill. A kqueue watch does
 	// not reserve the PID or PGID and would not eliminate that race.
-	err = unix.Kill(-j.PID, unix.SIGTERM)
+	err := unix.Kill(-j.PID, unix.SIGTERM)
 	if errors.Is(err, unix.ESRCH) {
 		return ErrBackgroundJobGone
 	}
