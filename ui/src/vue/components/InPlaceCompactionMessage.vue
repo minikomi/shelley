@@ -29,35 +29,20 @@
               <code>#{{ s.from_sequence_id }}–#{{ s.to_sequence_id }}</code>
             </td>
             <td>
-              <details class="msg-compaction-summary">
-                <summary
-                  :aria-label="`Summary of messages #${s.from_sequence_id}–#${s.to_sequence_id}`"
-                >
-                  <span class="msg-compaction-preview">{{ s.summary }}</span>
-                  <ToolChevron :expanded="false" />
-                </summary>
-                <div class="msg-compaction-summary-text">{{ s.summary }}</div>
-              </details>
+              <div class="msg-compaction-summary-text">{{ s.summary }}</div>
             </td>
           </tr>
         </tbody>
       </table>
-      <details v-if="data.trims?.length" class="msg-compaction-footer">
-        <summary>
-          {{ plural(data.trims.length, "tool output") }} trimmed
-          <ToolChevron :expanded="false" />
-        </summary>
+      <div v-if="data.trims?.length" class="msg-compaction-footer">
+        <div>{{ plural(data.trims.length, "tool output") }} trimmed</div>
         <div class="msg-compaction-ids">
           {{ data.trims.map((t) => `#${t.sequence_id}`).join(", ") }}
         </div>
-      </details>
-      <details v-if="hiddenCount" class="msg-compaction-footer">
-        <summary>
-          {{ plural(hiddenCount, "housekeeping record") }} hidden
-          <ToolChevron :expanded="false" />
-        </summary>
+      </div>
+      <div v-if="hidden" class="msg-compaction-footer">
         <p>Hid {{ hidden }} from the agent. Original conversation messages remain unchanged.</p>
-      </details>
+      </div>
     </div>
   </details>
 </template>
@@ -84,11 +69,6 @@ const counts = computed(() => {
   if (data.value.trims?.length) parts.push(plural(data.value.trims.length, "tool output"));
   return parts.join(", ");
 });
-
-const hiddenCount = computed(
-  () =>
-    (data.value.hidden_sequence_ids?.length ?? 0) + (data.value.hidden_tool_use_ids?.length ?? 0),
-);
 
 const hidden = computed(() => {
   const parts: string[] = [];

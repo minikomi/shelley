@@ -154,24 +154,26 @@ test("compaction notices open their index and audit table directly", async ({ pa
   await status.click({ position: { x: 5, y: 10 } });
   await expect(table).toBeVisible();
   await expect(table.getByRole("columnheader")).toHaveText(["Messages", "Summary"]);
+  await expect(table.locator("thead")).toBeVisible();
+  await expect(table.locator("tbody tr").first()).toHaveCSS("display", "table-row");
   await expect(table.locator("tbody tr")).toHaveCount(2);
-  await expect(table.locator(".msg-compaction-summary-text").first()).toBeHidden();
-  await expect(table.locator(".msg-compaction-summary-text").nth(1)).toBeHidden();
-
-  const summary = table.getByLabel("Summary of messages #4–#12", { exact: true });
-  await summary.focus();
-  await page.keyboard.press("Space");
+  await expect(result.locator("details")).toHaveCount(0);
   await expect(table.locator(".msg-compaction-summary-text").first()).toBeVisible();
   await expect(table.locator(".msg-compaction-summary-text").first()).toHaveText(fullSummary);
-  await expect(table.locator(".msg-compaction-summary-text").nth(1)).toBeHidden();
+  await expect(table.locator(".msg-compaction-summary-text").nth(1)).toBeVisible();
   await expect(result).toHaveAttribute("open", "");
-  await expect(summary).toHaveAccessibleName("Summary of messages #4–#12");
-  await summary.click();
-  await expect(table.locator(".msg-compaction-summary-text").first()).toBeHidden();
-  await result.getByText("2 tool outputs trimmed", { exact: true }).click();
+  await expect(result.locator(".msg-compaction-ids")).toBeVisible();
   await expect(result.locator(".msg-compaction-ids")).toHaveText("#7, #18");
-  await result.getByText("2 housekeeping records hidden", { exact: true }).click();
-  await expect(result).toContainText("Hid 1 context nudge and 1 compaction call from the agent.");
+  const bookkeeping = result.getByText(
+    "Hid 1 context nudge and 1 compaction call from the agent.",
+    { exact: false },
+  );
+  await expect(bookkeeping).toBeVisible();
+  await status.focus();
+  await page.keyboard.press("Enter");
+  await expect(table).toBeHidden();
+  await expect(result.locator(".msg-compaction-ids")).toBeHidden();
+  await expect(bookkeeping).toBeHidden();
 });
 
 for (const { name, data, headline } of [
@@ -200,9 +202,22 @@ for (const { name, data, headline } of [
     const result = page.getByTestId("message-inplacecompaction");
     await expect(result.locator(":scope > summary")).toHaveText(headline);
     await result.locator(":scope > summary").click();
+    await expect(result.locator("details")).toHaveCount(0);
     if (data.squishes) {
-      const summary = result.locator(".msg-compaction-summary > summary");
-      await summary.click();
+      const table = result.locator(".msg-compaction-table");
+      await expect(table.locator("thead")).toHaveCSS("clip-path", "inset(50%)");
+      await expect(table.getByRole("columnheader")).toHaveText(["Messages", "Summary"]);
+      const cells = table.locator("tbody tr").first().locator("td");
+      await expect(cells.first()).toHaveCSS("display", "block");
+      await expect(cells.nth(1)).toHaveCSS("display", "block");
+      const header = await cells.first().boundingBox();
+      const content = await cells.nth(1).boundingBox();
+      expect(header).not.toBeNull();
+      expect(content).not.toBeNull();
+      expect(content!.y).toBeGreaterThanOrEqual(header!.y + header!.height);
+      expect(content!.x).toBe(header!.x);
+      expect(content!.width).toBe(header!.width);
+      await expect(result.locator(".msg-compaction-summary-text")).toBeVisible();
       await expect(result.locator(".msg-compaction-summary-text")).toHaveText(
         data.squishes[0].summary,
       );
@@ -210,12 +225,13 @@ for (const { name, data, headline } of [
       await expect(result.getByRole("table")).toHaveCount(0);
     }
     if (data.trims) {
-      await result.getByText("1 tool output trimmed", { exact: true }).click();
+      await expect(result.locator(".msg-compaction-ids")).toBeVisible();
       await expect(result.locator(".msg-compaction-ids")).toHaveText("#7");
     }
     if (data.hidden_sequence_ids) {
-      await result.getByText("1 housekeeping record hidden", { exact: true }).click();
-      await expect(result).toContainText("Hid 1 context nudge from the agent.");
+      await expect(
+        result.getByText("Hid 1 context nudge from the agent.", { exact: false }),
+      ).toBeVisible();
     }
     const overflows = await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth,

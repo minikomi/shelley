@@ -5352,8 +5352,7 @@ svg {
 /* No arrow for this panel; PrimeVue draws one via :before/:after. */
 .toc-popover.p-popover:before,
 .toc-popover.p-popover:after,
-.msg-compaction-event summary::-webkit-details-marker,
-.msg-compaction-summary[open] .msg-compaction-preview {
+.msg-compaction-event summary::-webkit-details-marker {
   display: none;
 }
 .toc-popover .toc-popover-content {
@@ -5398,8 +5397,7 @@ svg {
   line-height: 1.35;
   font-family: inherit;
 }
-.toc-entry:hover,
-.msg-compaction-table tbody tr:hover {
+.toc-entry:hover {
   background: var(--bg-hover);
 }
 .toc-entry-with-thumbnail {
@@ -12901,8 +12899,7 @@ kbd {
   gap: 1px 12px;
 }
 
-.context-legend-label,
-.msg-compaction-preview {
+.context-legend-label {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -13411,8 +13408,7 @@ kbd {
 }
 
 .tool-chevron-expanded,
-.msg-compaction-event[open] > summary .tool-chevron,
-.msg-compaction-event-body details[open] > summary .tool-chevron {
+.msg-compaction-event[open] > summary .tool-chevron {
   transform: rotate(90deg);
 }
 
@@ -17160,8 +17156,7 @@ kbd {
 }
 
 /* Context nudge and in-place compaction audit. */
-.msg-compaction-event > summary,
-.msg-compaction-event-body summary {
+.msg-compaction-event > summary {
   cursor: pointer;
   list-style: none;
 }
@@ -17215,18 +17210,6 @@ kbd {
   padding-top: 0.375rem;
 }
 
-.msg-compaction-summary > summary {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-.msg-compaction-summary[open] > summary {
-  float: right;
-  margin: 0.1875rem 0 0.25rem 0.5rem;
-}
-
 .msg-compaction-summary-text {
   padding: 0.0625rem 0 0.5rem;
   line-height: 1.65;
@@ -17238,13 +17221,6 @@ kbd {
   margin-top: 0.5625rem;
   font-size: var(--font-size-12);
   color: var(--text-secondary);
-}
-
-.msg-compaction-footer > summary {
-  display: flex;
-  align-items: center;
-  gap: 0.4375rem;
-  width: fit-content;
 }
 
 .msg-compaction-footer p {
@@ -17278,14 +17254,37 @@ kbd {
     margin-left: 0;
   }
 
-  .msg-compaction-table th:first-child {
-    width: 6rem;
+  .msg-compaction-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
 
-  .msg-compaction-table th,
+  .msg-compaction-table,
+  .msg-compaction-table tbody,
+  .msg-compaction-table tr,
   .msg-compaction-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .msg-compaction-table tr {
+    padding-top: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .msg-compaction-table td {
+    border: 0;
     padding-right: 0.25rem;
     padding-left: 0.25rem;
+  }
+
+  .msg-compaction-table td:first-child {
+    padding-bottom: 0;
+    font-size: var(--font-size-12);
+    color: var(--text-secondary);
   }
 }
 
