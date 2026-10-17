@@ -2,9 +2,11 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -535,8 +537,8 @@ type toolCallExecution struct {
 	endsTurn bool
 }
 
-// executeToolCalls runs all tools from an LLM response as a deterministic
-// sibling cohort and appends their results in original tool-call order.
+// executeToolCalls runs directory-delimited groups in order, with concurrent
+// calls within each group, and appends results in original tool-call order.
 func (l *RunConfig) executeToolCalls(ctx context.Context, content []llm.Content, messages *[]llm.Message) error {
 	var calls []llm.Content
 	for _, c := range content {
@@ -556,6 +558,77 @@ func (l *RunConfig) executeToolCalls(ctx context.Context, content []llm.Content,
 	ctx = llm.WithUsageCollector(ctx, otherUsage.Collect)
 
 	toolResults := make([]toolCallExecution, len(calls))
+	directoryFailed := false
+	for first := 0; first < len(calls); {
+		directoryChange := calls[first].ToolName == "change_dir"
+		last := first + 1
+		if !directoryChange {
+			for last < len(calls) && calls[last].ToolName != "change_dir" {
+				last++
+			}
+		}
+
+		skipReason := ""
+		if ctx.Err() != nil {
+			skipReason = notExecutedToolResultText
+		} else if directoryFailed {
+			var request struct {
+				Path string `json:"path"`
+			}
+			if !directoryChange || json.Unmarshal(calls[first].ToolInput, &request) != nil || !filepath.IsAbs(request.Path) {
+				skipReason = "Not executed: a preceding change_dir failed. Use an absolute change_dir to recover."
+			}
+		}
+		if skipReason != "" {
+			for i := first; i < last; i++ {
+				toolResults[i].content = llm.Content{
+					Type:       llm.ContentTypeToolResult,
+					ToolUseID:  calls[i].ID,
+					ToolError:  true,
+					ToolResult: llm.TextContent(skipReason),
+				}
+			}
+		} else {
+			l.executeToolGroup(ctx, calls[first:last], toolResults[first:last], len(calls))
+		}
+		if directoryChange {
+			directoryFailed = toolResults[first].content.ToolError
+		}
+		first = last
+	}
+
+	contents := make([]llm.Content, len(toolResults))
+	endsTurn := false
+	for i, result := range toolResults {
+		contents[i] = result.content
+		endsTurn = endsTurn || result.endsTurn
+	}
+
+	// Keep every result in history and persist it, including interrupted and
+	// never-started calls, without inheriting the canceled tool context.
+	toolMessage := llm.Message{Role: llm.MessageRoleUser, Content: contents}
+	if err := l.emitToolResponse(context.WithoutCancel(ctx), toolMessage, otherUsage.Take()); err != nil {
+		return fmt.Errorf("%w: tool result message: %v", errMessagePersistence, err)
+	}
+	*messages = append(*messages, toolMessage)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if endsTurn {
+		// A tool result is a user-role row; by itself it cannot clear the
+		// persisted agent_working flag or signal end-of-turn to subscribers.
+		// The empty excluded assistant marker does both without adding a
+		// visible bubble or another message to the model's future context.
+		marker := llm.Message{Role: llm.MessageRoleAssistant, EndOfTurn: true, ExcludedFromContext: true}
+		if err := l.emitResponse(context.WithoutCancel(ctx), marker, llm.Usage{}, "failed to record tool end-of-turn"); err != nil {
+			return fmt.Errorf("%w: tool end-of-turn: %v", errMessagePersistence, err)
+		}
+		return errToolEndedTurn
+	}
+	return nil
+}
+
+func (l *RunConfig) executeToolGroup(ctx context.Context, calls []llm.Content, toolResults []toolCallExecution, batchSize int) {
 	// Every worker reaches start before any tool is invoked. Cancellation
 	// before release produces a never-started result for every call.
 	var ready, finishedWorkers sync.WaitGroup
@@ -593,7 +666,7 @@ func (l *RunConfig) executeToolCalls(ctx context.Context, content []llm.Content,
 				}
 				return
 			}
-			if tool != nil && (tool.EndsTurn || (tool.EndsTurnWhen != nil && tool.EndsTurnWhen(call.ToolInput))) && len(calls) != 1 {
+			if tool != nil && (tool.EndsTurn || (tool.EndsTurnWhen != nil && tool.EndsTurnWhen(call.ToolInput))) && batchSize != 1 {
 				toolResults[i].content = llm.Content{
 					Type:       llm.ContentTypeToolResult,
 					ToolUseID:  call.ID,
@@ -609,36 +682,6 @@ func (l *RunConfig) executeToolCalls(ctx context.Context, content []llm.Content,
 	run = ctx.Err() == nil
 	close(start)
 	finishedWorkers.Wait()
-
-	contents := make([]llm.Content, len(toolResults))
-	endsTurn := false
-	for i, result := range toolResults {
-		contents[i] = result.content
-		endsTurn = endsTurn || result.endsTurn
-	}
-
-	// Keep every result in history and persist it, including interrupted and
-	// never-started calls, without inheriting the canceled tool context.
-	toolMessage := llm.Message{Role: llm.MessageRoleUser, Content: contents}
-	if err := l.emitToolResponse(context.WithoutCancel(ctx), toolMessage, otherUsage.Take()); err != nil {
-		return fmt.Errorf("%w: tool result message: %v", errMessagePersistence, err)
-	}
-	*messages = append(*messages, toolMessage)
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if endsTurn {
-		// A tool result is a user-role row; by itself it cannot clear the
-		// persisted agent_working flag or signal end-of-turn to subscribers.
-		// The empty excluded assistant marker does both without adding a
-		// visible bubble or another message to the model's future context.
-		marker := llm.Message{Role: llm.MessageRoleAssistant, EndOfTurn: true, ExcludedFromContext: true}
-		if err := l.emitResponse(context.WithoutCancel(ctx), marker, llm.Usage{}, "failed to record tool end-of-turn"); err != nil {
-			return fmt.Errorf("%w: tool end-of-turn: %v", errMessagePersistence, err)
-		}
-		return errToolEndedTurn
-	}
-	return nil
 }
 
 // executeToolCall runs one client-side tool call after its sibling cohort has
