@@ -9,20 +9,28 @@
       @click="toggleWork"
     >
       <span v-if="count > 0" class="running-work-dot" aria-hidden="true" />
-      <span class="running-work-count">
-        <span v-if="count === 0">No running work</span>
-        <span v-if="jobCount > 0">{{ jobCount }} task{{ jobCount === 1 ? "" : "s" }}</span>
-        <span
-          v-if="jobCount > 0 && subagents.length > 0"
-          class="running-work-separator"
-          aria-hidden="true"
-        />
-        <span v-if="subagents.length > 0">
-          {{ subagents.length }} subagent{{ subagents.length === 1 ? "" : "s" }}
+      <span class="running-work-summary">
+        <span v-if="!open && names.length" class="running-work-names">
+          <template v-for="(name, index) in names" :key="index">
+            <span v-if="index > 0" class="running-work-separator">,</span>
+            <span class="running-work-name" :class="{ command: name.command }">
+              {{ name.text }}
+            </span>
+          </template>
+          <span v-if="count > names.length" class="running-work-more">
+            and {{ count - names.length }} more
+          </span>
+        </span>
+        <span v-else class="running-work-count">{{ counts }}</span>
+        <span v-if="!open && names.length" class="running-work-activity">
+          {{ singleJob ? lastOutput : singleSubagent ? agentActivity || "Working…" : counts }}
         </span>
       </span>
       <span class="running-work-view">
-        {{ open ? "Hide work" : "View work" }}
+        <RunningToolTime v-if="!open && startedAt" v-slot="{ elapsed }" :start-time="startedAt">
+          {{ elapsed }}
+        </RunningToolTime>
+        <span v-if="open">Hide work</span>
         <ToolChevron :expanded="open" />
       </span>
     </button>
@@ -50,10 +58,11 @@ import { computed, inject, ref, shallowRef, watch } from "vue";
 import type { ConversationWithState } from "../../types";
 import type { BackgroundJob } from "../../services/api";
 import { BackgroundJobsKey } from "../composables/backgroundJobs";
-import { ConversationsListKey } from "../composables/subagentLive";
+import { ConversationsListKey, useSubagentLive } from "../composables/subagentLive";
 import BackgroundJobsList from "./BackgroundJobsList.vue";
 import RunningWorkAgent from "./RunningWorkAgent.vue";
 import ToolChevron from "./tools/ToolChevron.vue";
+import RunningToolTime from "./tools/RunningToolTime.vue";
 
 const props = defineProps<{ conversationId: string }>();
 const emit = defineEmits<{ toggle: [] }>();
@@ -80,6 +89,38 @@ const runningSubagentIds = computed(
 );
 
 const count = computed(() => jobCount.value + subagents.value.length);
+const counts = computed(() => {
+  const parts = [];
+  if (jobCount.value) parts.push(`${jobCount.value} task${jobCount.value === 1 ? "" : "s"}`);
+  if (subagents.value.length) {
+    parts.push(`${subagents.value.length} subagent${subagents.value.length === 1 ? "" : "s"}`);
+  }
+  return parts.join(" · ") || "No running work";
+});
+const singleJob = computed(() =>
+  count.value === 1 && jobCount.value === 1 ? backgroundJobs.jobs.value?.[0] : undefined,
+);
+const singleSubagent = computed(() => (count.value === 1 ? subagents.value[0] : undefined));
+const { activity: agentActivity, startedAt: agentStartedAt } = useSubagentLive(
+  computed(() => singleSubagent.value?.slug ?? ""),
+  computed(() => singleSubagent.value?.conversation_id),
+);
+const startedAt = computed(() => singleJob.value?.started_at ?? agentStartedAt.value);
+const lastOutput = computed(
+  () => singleJob.value?.tail.trim().split("\n").slice(-1)[0] || "No output yet.",
+);
+const names = computed(() =>
+  [
+    ...subagents.value.map((sub) => ({ text: sub.slug, command: false })),
+    ...(backgroundJobs.jobs.value ?? []).map((job) => {
+      const command = job.command.trim();
+      return {
+        text: command.split("\n")[0] + (command.includes("\n") ? " …" : ""),
+        command: true,
+      };
+    }),
+  ].slice(0, Math.min(2, count.value)),
+);
 
 function toggleWork() {
   open.value = !open.value;
@@ -138,6 +179,52 @@ watch([open, subagents, backgroundJobs.jobs], ([expanded, agents, jobs]) => {
   background: var(--bg-tertiary);
 }
 
+.running-work-summary {
+  flex: 1;
+  min-width: 0;
+}
+
+.running-work-names {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
+.running-work-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.running-work-name.command {
+  max-width: 40ch;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+}
+
+.running-work-activity {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--font-size-12);
+}
+
+.running-work-more {
+  flex-shrink: 0;
+}
+
+.running-work-separator {
+  flex-shrink: 0;
+  margin-left: -4px;
+  color: var(--text-secondary);
+}
+
 .running-work-dot {
   width: 7px;
   height: 7px;
@@ -146,18 +233,7 @@ watch([open, subagents, backgroundJobs.jobs], ([expanded, agents, jobs]) => {
   background: var(--primary);
 }
 
-.running-work-separator {
-  width: 3px;
-  height: 3px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: currentColor;
-}
-
 .running-work-count {
-  display: flex;
-  align-items: center;
-  gap: 7px;
   font-weight: 500;
 }
 
@@ -168,10 +244,14 @@ watch([open, subagents, backgroundJobs.jobs], ([expanded, agents, jobs]) => {
   margin-left: auto;
   color: var(--text-secondary);
   font-size: var(--font-size-12);
+  flex-shrink: 0;
 }
 
 .running-work-items {
   border-top: 1px solid var(--border);
   background: var(--bg-base);
+  max-height: min(420px, 50dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 </style>

@@ -40,6 +40,8 @@ test.describe("running work", () => {
       const strip = page.getByLabel("Running work", { exact: true });
       const toggle = strip.getByTestId("running-work-toggle");
       await expect(toggle).toContainText("2 tasks", { timeout: 15000 });
+      await expect(toggle).toContainText("echo ready; sleep 600");
+      await expect(toggle).toContainText("sleep 601");
       await expect(toggle).not.toContainText("Running:");
       expect(
         await strip.evaluate((element) =>
@@ -93,8 +95,8 @@ test.describe("running work", () => {
         .toBeLessThanOrEqual(2);
 
       const echo = jobs.filter({ hasText: "echo ready" });
-      await echo.locator("summary").click();
       await expect(echo.getByTestId("background-job-tail")).toContainText("ready");
+      await expect(items.locator("details, summary")).toHaveCount(0);
       const liveJobs = await (
         await request.get(`/api/conversation/${conversationId}/background-jobs`)
       ).json();
@@ -132,7 +134,7 @@ test.describe("running work", () => {
       await page.getByTestId("send-button").click();
 
       const strip = page.getByLabel("Running work", { exact: true });
-      await expect(strip.getByTestId("running-work-toggle")).toContainText("1 subagent", {
+      await expect(strip.getByTestId("running-work-toggle")).toContainText("statushelper", {
         timeout: 30000,
       });
       await strip.getByTestId("running-work-toggle").click();
@@ -172,7 +174,7 @@ test.describe("running work", () => {
       await page.getByTestId("send-button").click();
       const strip = page.getByLabel("Running work", { exact: true });
       const toggle = strip.getByTestId("running-work-toggle");
-      await expect(toggle).toContainText("1 subagent", { timeout: 30000 });
+      await expect(toggle).toContainText("finishhelper", { timeout: 30000 });
       await toggle.click();
       const row = strip.locator(".running-work-agent");
       await expect(row).toContainText("finishhelper");

@@ -3,14 +3,8 @@
     <div v-if="error" class="background-jobs-error" role="alert">{{ error }}</div>
     <div v-if="liveJobs === null" class="background-jobs-empty">{{ error ? "" : "Loading…" }}</div>
     <div v-else-if="jobs.length === 0" class="background-jobs-empty">No running jobs.</div>
-    <details
-      v-for="job in jobs"
-      :key="job.job_id"
-      class="running-command"
-      data-testid="background-job"
-    >
-      <summary>
-        <span class="running-command-name" :title="job.command">{{ job.command }}</span>
+    <div v-for="job in jobs" :key="job.job_id" class="running-command" data-testid="background-job">
+      <div class="running-command-heading">
         <span class="running-command-kind">Command</span>
         <RunningToolTime
           v-if="runningIds.has(job.job_id)"
@@ -21,28 +15,28 @@
           Running · {{ elapsed }}
         </RunningToolTime>
         <span v-else class="running-command-time">Finished</span>
-        <span class="running-command-chevron" aria-hidden="true">⌄</span>
-      </summary>
+        <button
+          v-if="runningIds.has(job.job_id)"
+          type="button"
+          class="running-command-stop"
+          data-testid="background-job-kill"
+          :disabled="killing.has(job.job_id)"
+          :aria-label="`Stop command: ${job.command}`"
+          @click="stop(job.job_id)"
+        >
+          {{ killing.has(job.job_id) ? "Stopping…" : "Stop command" }}
+        </button>
+      </div>
       <div class="running-command-body">
-        <div class="running-command-output-heading">
-          <span>Output</span>
-          <button
-            v-if="runningIds.has(job.job_id)"
-            type="button"
-            class="running-command-stop"
-            data-testid="background-job-kill"
-            :disabled="killing.has(job.job_id)"
-            :aria-label="`Stop command: ${job.command}`"
-            @click="stop(job.job_id)"
-          >
-            {{ killing.has(job.job_id) ? "Stopping…" : "Stop command" }}
-          </button>
-        </div>
+        <pre class="running-command-name" data-testid="background-job-command">{{
+          job.command
+        }}</pre>
+        <div class="running-command-output-heading">Output</div>
         <pre class="running-command-output" data-testid="background-job-tail">{{
           job.tail || "No output yet."
         }}</pre>
       </div>
-    </details>
+    </div>
   </div>
 </template>
 
@@ -65,38 +59,28 @@ const runningIds = computed(() => new Set((liveJobs.value ?? []).map((job) => jo
   border-top: 1px solid var(--border);
 }
 
-.running-command > summary {
+.running-command-heading {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
-  list-style: none;
-  cursor: pointer;
-}
-
-.running-command > summary::-webkit-details-marker {
-  display: none;
 }
 
 .running-command-name {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
+  margin: 0 0 12px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font: var(--font-size-12)/1.6 var(--font-mono);
 }
 
 .running-command-kind,
-.running-command-time,
-.running-command-chevron {
+.running-command-time {
   flex-shrink: 0;
   color: var(--text-secondary);
   font-size: var(--font-size-12);
-}
-
-.running-command[open] .running-command-chevron {
-  transform: rotate(180deg);
 }
 
 .running-command-body {
@@ -104,15 +88,13 @@ const runningIds = computed(() => new Set((liveJobs.value ?? []).map((job) => jo
 }
 
 .running-command-output-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   margin-bottom: 8px;
   color: var(--text-secondary);
   font-size: var(--font-size-12);
 }
 
 .running-command-stop {
+  margin-left: auto;
   padding: 5px 9px;
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -141,11 +123,7 @@ const runningIds = computed(() => new Set((liveJobs.value ?? []).map((job) => jo
   font-size: var(--font-size-12);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-@media (max-width: 600px) {
-  .running-command-kind {
-    display: none;
-  }
+  max-height: 160px;
+  overflow: auto;
 }
 </style>

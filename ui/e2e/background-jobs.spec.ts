@@ -1,14 +1,26 @@
 import { test, expect } from "@playwright/test";
 import { createConversationViaAPIWithDetails } from "./helpers";
 
-test("running work exposes live output in native details and stops the command", async ({
+test("running work exposes long commands and output in one expansion and stops the command", async ({
   page,
   request,
 }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
   const { slug, conversationId } = await createConversationViaAPIWithDetails(
     request,
     "bash-bg: echo ready; sleep 600",
   );
+  const displayCommand =
+    `python3 /tmp/${"long-command-".repeat(20)}.py <<'PY'\n` +
+    "print('a multiline command stays readable when expanded')\nPY";
+  await page.route(`**/api/conversation/${conversationId}/background-jobs`, async (route) => {
+    const response = await route.fetch();
+    const jobs = await response.json();
+    await route.fulfill({
+      response,
+      json: jobs.map((job: Record<string, unknown>) => ({ ...job, command: displayCommand })),
+    });
+  });
   await page.goto(`/c/${slug}`);
   await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
 
@@ -19,16 +31,30 @@ test("running work exposes live output in native details and stops the command",
   const [{ job_id: jobId }] = await jobsResponse.json();
 
   const strip = page.getByLabel("Running work", { exact: true });
-  await expect(strip.getByTestId("running-work-toggle")).toContainText("1 task", {
+  const toggle = strip.getByTestId("running-work-toggle");
+  await expect(toggle).toContainText("python3", {
     timeout: 15000,
   });
-  await strip.getByTestId("running-work-toggle").click();
+  await expect(toggle.locator(".running-work-activity")).toHaveText("ready");
+  await expect(toggle).not.toContainText("print(");
+  await expect(toggle.locator(".running-work-name")).toHaveCSS("text-overflow", "ellipsis");
+  expect(
+    await toggle.locator(".running-work-name").evaluate((el) => el.scrollWidth > el.clientWidth),
+  ).toBe(true);
+  const preview = await toggle.locator(".running-work-name").evaluate((el) => ({
+    width: el.getBoundingClientRect().width,
+    limit: parseFloat(getComputedStyle(el).maxWidth),
+  }));
+  expect(Number.isFinite(preview.limit)).toBe(true);
+  expect(preview.width).toBeLessThanOrEqual(preview.limit + 1);
+  await page.setViewportSize({ width: 390, height: 500 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await toggle.click();
   const job = strip.getByTestId("background-job");
   await expect(job).toHaveCount(1);
-  await expect(job).toContainText("echo ready; sleep 600");
-  await expect(job).not.toHaveAttribute("open", "");
-  await job.locator("summary").click();
-  await expect(job).toHaveAttribute("open", "");
+  await expect(job.getByTestId("background-job-command")).toHaveText(displayCommand);
+  await expect(toggle).not.toContainText("python3");
+  await expect(job.locator("details, summary")).toHaveCount(0);
   await expect(job.getByTestId("background-job-tail")).toContainText("ready");
   await expect(job).not.toContainText("PGID");
   await expect(job).not.toContainText(".log");
