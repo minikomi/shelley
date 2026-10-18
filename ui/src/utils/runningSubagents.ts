@@ -20,5 +20,11 @@ export function runningSubagents(
       pending.push(child.conversation_id);
     }
   }
-  return descendants.filter((c) => c.working || c.running_background_jobs > 0);
+  return descendants
+    .filter((c) => c.working || c.running_background_jobs > 0)
+    .sort(
+      (a, b) =>
+        a.created_at.localeCompare(b.created_at) ||
+        a.conversation_id.localeCompare(b.conversation_id),
+    );
 }
