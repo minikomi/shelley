@@ -146,10 +146,14 @@ test.describe("conversation drawer startup and app bar", () => {
 
   test("shows running and total subagent counts independently", async ({ page }) => {
     const activeParent = conversation("active-parent");
-    activeParent.subagent_count = 2;
+    activeParent.subagent_count = 3;
     const activeChild = conversation("active-child");
     activeChild.parent_conversation_id = activeParent.conversation_id;
     activeChild.working = true;
+    activeChild.running_background_jobs = 1;
+    const waitingChild = conversation("waiting-child");
+    waitingChild.parent_conversation_id = activeParent.conversation_id;
+    waitingChild.running_background_jobs = 2;
     const activeIdleChild = conversation("active-idle-child");
     activeIdleChild.parent_conversation_id = activeParent.conversation_id;
 
@@ -162,6 +166,7 @@ test.describe("conversation drawer startup and app bar", () => {
     await stubConversationList(page, [
       activeParent,
       activeChild,
+      waitingChild,
       activeIdleChild,
       idleParent,
       idleChild,
@@ -172,12 +177,23 @@ test.describe("conversation drawer startup and app bar", () => {
     const activeBadge = page.locator(
       '[data-conversation-id="active-parent"] .subagent-count-badge',
     );
-    await expect(activeBadge).toContainText("1/2");
+    await expect(activeBadge).toContainText("2/3");
     await expect(activeBadge.getByTestId("subagent-badge-running")).toBeVisible();
 
     const idleBadge = page.locator('[data-conversation-id="idle-parent"] .subagent-count-badge');
     await expect(idleBadge).toHaveText("2");
     await expect(idleBadge.getByTestId("subagent-badge-running")).toHaveCount(0);
+
+    activeChild.working = false;
+    activeChild.running_background_jobs = 0;
+    await page.reload();
+    await expect(activeBadge).toContainText("1/3");
+    await expect(activeBadge.getByTestId("subagent-badge-running")).toBeVisible();
+
+    waitingChild.running_background_jobs = 0;
+    await page.reload();
+    await expect(activeBadge).toHaveText("3");
+    await expect(activeBadge.getByTestId("subagent-badge-running")).toHaveCount(0);
   });
 
   test("truncates long slugs to one line with an ellipsis", async ({ page }) => {

@@ -344,11 +344,7 @@
             viewBox="0 0 24 24"
             aria-hidden="true"
           >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M5 12l4 4L19 6"
-            />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5 12l4 4L19 6" />
           </svg>
           <WorkspaceActionIcon v-else action="gitGraph" />
         </button>
@@ -577,7 +573,10 @@ const terminalCount = computed(
   () => ctx.terminalCounts.value[props.conversation.conversation_id] ?? 0,
 );
 const runningSubagentCount = computed(
-  () => conversationSubagents.value.filter((agent) => agent.working).length,
+  () =>
+    conversationSubagents.value.filter(
+      (agent) => agent.working || agent.running_background_jobs > 0,
+    ).length,
 );
 function taskTooltip(count: number): string {
   return `${count} task${count === 1 ? "" : "s"} running`;

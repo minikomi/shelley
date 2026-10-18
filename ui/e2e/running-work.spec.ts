@@ -17,6 +17,221 @@ async function stopWork(request: APIRequestContext, conversationIds: string[]) {
 }
 
 test.describe("running work", () => {
+  test("uses the full preview width for a lone agent name", async ({ page, request }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "echo: ready",
+    );
+    const agentSlug = "background-worker-alpha";
+    await page.route("**/api/stream2*", (route) => route.abort());
+    await page.route("**/api/conversations/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
+      const parent = snapshot.conversations.find(
+        (c: { conversation_id: string }) => c.conversation_id === conversationId,
+      );
+      expect(parent).toBeTruthy();
+      snapshot.conversations.push({
+        ...parent,
+        conversation_id: "label-preview-agent",
+        slug: agentSlug,
+        parent_conversation_id: conversationId,
+        user_initiated: false,
+        working: true,
+        agent_working: true,
+        running_background_jobs: 0,
+      });
+      await route.fulfill({ response, json: snapshot });
+    });
+    await page.goto(`/c/${slug}`);
+    const preview = page.getByTestId("running-work-toggle").locator(".running-work-name");
+    await expect(preview).toHaveText(agentSlug);
+    await expect
+      .poll(() => preview.evaluate((el) => el.scrollWidth - el.clientWidth))
+      .toBeLessThanOrEqual(1);
+    expect(
+      await preview.evaluate(
+        (el) => el.scrollWidth > el.closest<HTMLElement>(".running-work-summary")!.clientWidth / 2,
+      ),
+    ).toBe(true);
+  });
+
+  test("fits agent-first work previews to the available width", async ({ page, request }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "echo: ready",
+    );
+    await page.route("**/api/stream2*", (route) => route.abort());
+    await page.route("**/api/conversation/preview-agent-*/background-jobs", (route) =>
+      route.fulfill({
+        json: [
+          {
+            job_id: `job-${route.request().url().split("/").at(-2)}`,
+            command: "printf preview-ready; tail -f /dev/null",
+            tail: "preview-ready",
+            started_at: "2026-10-17T22:00:00Z",
+          },
+        ],
+      }),
+    );
+    await page.route("**/api/conversations/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
+      const parent = snapshot.conversations.find(
+        (c: { conversation_id: string }) => c.conversation_id === conversationId,
+      );
+      expect(parent).toBeTruthy();
+      for (let i = 1; i <= 3; i++) {
+        snapshot.conversations.push({
+          ...parent,
+          conversation_id: `preview-agent-${i}`,
+          slug: ["demo-index", "demo-assets", "demo-build"][i - 1],
+          parent_conversation_id: conversationId,
+          user_initiated: false,
+          working: false,
+          agent_working: false,
+          running_background_jobs: 1,
+        });
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+    await page.goto(`/c/${slug}`);
+    const toggle = page.getByTestId("running-work-toggle");
+    await expect(toggle.locator(".running-work-name")).toHaveCount(2);
+    await expect(toggle.locator(".running-work-name")).toHaveText(["demo-index", "demo-assets"]);
+    await expect(toggle.locator(".running-work-more")).toHaveText("and 4 more");
+    await expect(toggle).toContainText("3 tasks · 3 subagents");
+
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await expect(toggle.locator(".running-work-name")).toHaveText([
+      "demo-index",
+      "demo-assets",
+      "demo-build",
+      "printf preview-ready; tail -f /dev/null",
+      "printf preview-ready; tail -f /dev/null",
+      "printf preview-ready; tail -f /dev/null",
+    ]);
+    await expect(toggle.locator(".running-work-more")).toHaveCount(0);
+    await expect
+      .poll(() =>
+        toggle.locator(".running-work-names").evaluate((el) => el.scrollWidth - el.clientWidth),
+      )
+      .toBeLessThanOrEqual(1);
+
+    await page.setViewportSize({ width: 390, height: 700 });
+    await expect(toggle.locator(".running-work-name")).toHaveText(["demo-index", "demo-assets"]);
+    await expect(toggle.locator(".running-work-more")).toHaveText("and 4 more");
+    await expect
+      .poll(() =>
+        toggle.locator(".running-work-names").evaluate((el) => el.scrollWidth - el.clientWidth),
+      )
+      .toBeLessThanOrEqual(1);
+  });
+
+  test("keeps a subagent visible while its background task runs", async ({ page, request }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "subagent: backgroundhelper bash-bg: printf agent-ready; tail -f /dev/null",
+    );
+    let subagentId: string | undefined;
+    try {
+      await expect
+        .poll(
+          async () => {
+            const subagents = await (
+              await request.get(`/api/conversation/${conversationId}/subagents`)
+            ).json();
+            subagentId = subagents?.[0]?.conversation_id;
+            if (!subagentId) return false;
+            const response = await request.get(`/api/conversation/${subagentId}`);
+            const { conversation } = await response.json();
+            const jobs = await (
+              await request.get(`/api/conversation/${subagentId}/background-jobs`)
+            ).json();
+            return !conversation.agent_working && jobs.length === 1;
+          },
+          { timeout: 30000 },
+        )
+        .toBe(true);
+
+      await page.goto(`/c/${slug}`);
+      const strip = page.getByLabel("Running work", { exact: true });
+      const toggle = strip.getByTestId("running-work-toggle");
+      await expect(toggle).toContainText("1 subagent", { timeout: 30000 });
+      await expect(toggle).toContainText("1 task");
+      await expect(toggle.locator(".running-work-name")).toHaveText([
+        "backgroundhelper",
+        "printf agent-ready; tail -f /dev/null",
+      ]);
+      await expect
+        .poll(() =>
+          toggle
+            .locator(".running-work-name")
+            .first()
+            .evaluate((el) => el.scrollWidth - el.clientWidth),
+        )
+        .toBeLessThanOrEqual(1);
+      await expect(toggle.locator(".running-work-more")).toHaveCount(0);
+      await toggle.click();
+      const group = strip.getByRole("group", { name: "Work by backgroundhelper" });
+      const row = group.locator(".running-work-agent");
+      const job = group.getByTestId("background-job");
+      await expect(row).toContainText("backgroundhelper");
+      await expect(row).toContainText("Waiting on 1 background task");
+      await expect(row.locator(".running-work-agent-time")).toContainText("Running");
+      await expect(job).toContainText("printf agent-ready; tail -f /dev/null");
+      await expect(strip.locator("details, summary")).toHaveCount(0);
+      await expect(job.getByTestId("background-job-tail")).toContainText("agent-ready");
+
+      await toggle.click();
+      await expect(toggle).toContainText("1 subagent");
+      await expect(toggle.locator(".running-work-name")).toHaveText([
+        "backgroundhelper",
+        "printf agent-ready; tail -f /dev/null",
+      ]);
+      await expect(toggle.locator(".running-work-more")).toHaveCount(0);
+      await toggle.click();
+      await expect(row).toContainText("Waiting on 1 background task");
+      await expect(job.getByTestId("background-job-tail")).toBeVisible();
+      expect(
+        (
+          await request.post(`/api/conversation/${conversationId}/chat`, {
+            data: {
+              message: "bash-bg: printf parent-ready; tail -f /dev/null",
+              model: "predictable",
+            },
+          })
+        ).ok(),
+      ).toBe(true);
+      await expect(toggle).toContainText("2 tasks");
+      await expect(strip.getByTestId("background-job")).toHaveCount(2);
+      await expect(group.getByTestId("background-job")).toHaveCount(1);
+      const stopped = page.waitForResponse(
+        (response) =>
+          response.url().includes(`/api/conversation/${subagentId}/background-jobs/`) &&
+          response.url().endsWith("/kill") &&
+          response.request().method() === "POST",
+      );
+      await job.getByTestId("background-job-kill").click();
+      expect((await stopped).ok()).toBe(true);
+      await expect(job.locator(".running-command-time")).toHaveText("Finished");
+      await expect(job.getByTestId("background-job-kill")).toHaveCount(0);
+      await expect(job.getByTestId("background-job-tail")).toContainText("agent-ready");
+      await expect(row.locator(".running-work-agent-time")).toHaveText("Finished", {
+        timeout: 15000,
+      });
+      await expect(toggle).toContainText("1 task");
+      const parentJob = strip.getByTestId("background-job").filter({ hasText: "parent-ready" });
+      await expect(parentJob.locator(".running-command-time")).toContainText("Running");
+      await stopWork(request, [conversationId]);
+      await expect(toggle).toContainText("No running work");
+      await toggle.click();
+      await expect(strip).toHaveCount(0);
+    } finally {
+      await stopWork(request, [conversationId, ...(subagentId ? [subagentId] : [])]);
+    }
+  });
+
   test("keeps mobile work visible and retains finished jobs while others run", async ({
     page,
     request,
@@ -40,8 +255,9 @@ test.describe("running work", () => {
       const strip = page.getByLabel("Running work", { exact: true });
       const toggle = strip.getByTestId("running-work-toggle");
       await expect(toggle).toContainText("2 tasks", { timeout: 15000 });
-      await expect(toggle).toContainText("echo ready; sleep 600");
-      await expect(toggle).toContainText("sleep 601");
+      const previews = toggle.locator(".running-work-name");
+      await expect(previews.filter({ hasText: "echo ready; sleep 600" })).toBeVisible();
+      await expect(previews.filter({ hasText: "sleep 601" })).toBeVisible();
       await expect(toggle).not.toContainText("Running:");
       expect(
         await strip.evaluate((element) =>
@@ -74,7 +290,7 @@ test.describe("running work", () => {
           strip.evaluate((element) => {
             const container = element.closest(".messages-container")!.getBoundingClientRect();
             const panel = element.getBoundingClientRect();
-            return panel.top >= container.top && panel.bottom <= container.bottom;
+            return panel.bottom > container.top && panel.bottom <= container.bottom;
           }),
         )
         .toBe(true);

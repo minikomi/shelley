@@ -945,7 +945,7 @@ const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() =
   resetOrderRefsForResort();
   void resortKey.value;
   const out: Record<string, ConversationWithState[]> = {};
-  for (const conv of filterConversationsByDay(props.conversations, selectedDay.value)) {
+  for (const conv of props.conversations) {
     if (conv.parent_conversation_id) {
       (out[conv.parent_conversation_id] ||= []).push(conv);
     }

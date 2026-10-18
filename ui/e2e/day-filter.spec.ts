@@ -4,6 +4,55 @@ import { createConversationViaAPIWithDetails } from "./helpers";
 
 test.use({ timezoneId: "America/New_York" });
 
+test("Daily grouping expands subagents last touched on other days", async ({ page, request }) => {
+  await page.clock.setFixedTime(new Date("2026-10-08T16:00:00Z"));
+  const { conversationId, slug } = await createConversationViaAPIWithDetails(
+    request,
+    "echo: parent ready",
+  );
+  const corpus = (await (
+    await request.get("/api/conversations")
+  ).json()) as ConversationWithState[];
+  const original = corpus.find((c) => c.conversation_id === conversationId);
+  expect(original).toBeTruthy();
+  const parent = { ...original!, updated_at: "2026-10-08T16:00:00Z", subagent_count: 8 };
+  const children = Array.from({ length: 8 }, (_, index) => ({
+    ...parent,
+    conversation_id: `older-subagent-${index}`,
+    slug: `older-subagent-${index}`,
+    parent_conversation_id: conversationId,
+    user_initiated: false,
+    updated_at: index % 2 ? "2026-10-07T16:00:00Z" : "2026-10-06T16:00:00Z",
+    subagent_count: 0,
+    working: false,
+    agent_working: false,
+    running_background_jobs: 0,
+  }));
+  await page.route("**/api/conversations/snapshot", (route) =>
+    route.fulfill({ json: { conversations: [parent, ...children], hash: "cross-day-subagents" } }),
+  );
+  await page.route("**/api/stream2*", (route) => route.abort());
+  await page.goto(`/c/${slug}`);
+  await page.getByRole("button", { name: "Open conversations", exact: true }).click();
+  await page.getByRole("button", { name: "Group conversations" }).click();
+  await page
+    .locator(".group-by-menu-item")
+    .filter({ hasText: /^Daily$/ })
+    .click();
+  await expect(page.getByTestId("conversation-day-filter").locator(".drawer-day-count")).toHaveText(
+    "1",
+  );
+  const row = page.locator(`[data-conversation-id="${conversationId}"]`);
+  await expect(row.locator(".subagent-count-badge")).toHaveText("8");
+  await row.getByRole("button", { name: "Expand subagents", exact: true }).click();
+  await expect(page.locator(".drawer-subagent-list .subagent-item")).toHaveCount(8);
+  expect(
+    (await page.locator(".drawer-subagent-list .conversation-title").allTextContents())
+      .map((title) => title.trim())
+      .sort(),
+  ).toEqual(children.map((child) => child.slug).sort());
+});
+
 test("Daily returns to today only after sending in an older conversation", async ({
   page,
   request,
