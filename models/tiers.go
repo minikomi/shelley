@@ -1,5 +1,11 @@
 package models
 
+import (
+	"slices"
+
+	"shelley.exe.dev/models/modelsdev"
+)
+
 // --- Model tiers -----------------------------------------------------------
 //
 // The catalog keeps growing, and many models are strictly obviated by a newer
@@ -113,4 +119,39 @@ func AssignTiers(availableIDs []string) map[string]int {
 		}
 	}
 	return tiers
+}
+
+// ProviderTiers ranks one saved provider's models, keyed by upstream ID.
+// Catalog Tier1 models stay Tier1, and models.dev-recognised chat models
+// outside the catalog join them. Everything else is Tier2.
+func ProviderTiers(metadata map[string]*modelsdev.Metadata) map[string]int {
+	ids := make([]string, 0, len(metadata))
+	for id := range metadata {
+		ids = append(ids, id)
+	}
+	tiers := AssignTiers(ids)
+	for id, md := range metadata {
+		switch {
+		case KnownAgentIncompatible(md):
+			tiers[id] = Tier2
+		case ByID(id) == nil && recognizedChat(md):
+			tiers[id] = Tier1
+		}
+	}
+	return tiers
+}
+
+// ProviderModelEligible decides whether a saved provider's listed model is a
+// compatible agent route. It is admission evidence only: it ignores shadowPairs
+// and picker ranking, so a preferred sibling never makes a listed route ineligible.
+func ProviderModelEligible(id string, metadata *modelsdev.Metadata) bool {
+	return !KnownAgentIncompatible(metadata) && (ByID(id) != nil || recognizedChat(metadata))
+}
+
+// recognizedChat reports authoritative evidence of text in, text out, and tool calls.
+func recognizedChat(md *modelsdev.Metadata) bool {
+	return md != nil &&
+		md.Authoritative("tool_call") && md.ToolCall != nil && *md.ToolCall &&
+		md.Authoritative("input_modalities") && slices.Contains(md.InputModalities, "text") &&
+		md.Authoritative("output_modalities") && slices.Contains(md.OutputModalities, "text")
 }

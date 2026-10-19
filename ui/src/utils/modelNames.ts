@@ -151,3 +151,40 @@ export function prettyModelLabels(models: NamedModel[]): Map<string, string> {
   }
   return labels;
 }
+
+// Saved-provider routes are addressed as `provider:<b64url provider id>:<b64url
+// upstream id>` (modelproviders/manager.go routeID). When such a route is not
+// in the catalog (discovery failed, the provider stopped listing it, or the
+// connection was removed) show the upstream model id the user knows instead
+// of the opaque route id, plus the account label when known. Ids that are
+// not saved-provider routes, or fail to decode, are returned unchanged.
+export function unavailableModelLabel(id: string, accounts?: ReadonlyMap<string, string>): string {
+  const parts = id.split(":");
+  if (parts.length !== 3 || parts[0] !== "provider" || !parts[2]) return id;
+  try {
+    const upstream = decodeRoutePart(parts[2]);
+    if (!upstream) return id;
+    const account = accounts?.get(decodeRoutePart(parts[1]));
+    return account ? `${upstream} · ${account} (not listed)` : `${upstream} (not listed)`;
+  } catch {
+    return id;
+  }
+}
+
+export function savedProviderSourceID(id: string): string | undefined {
+  const parts = id.split(":");
+  if (parts.length !== 3 || parts[0] !== "provider" || !parts[1] || !parts[2]) return undefined;
+  try {
+    return decodeRoutePart(parts[1]) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeRoutePart(part: string): string {
+  const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+  const bytes = Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) =>
+    c.charCodeAt(0),
+  );
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}

@@ -46,6 +46,36 @@ async function responseError(response: Response, prefix: string): Promise<ApiErr
   return new ApiError(`${prefix}: ${detail}`, response.status);
 }
 
+// Provider-only variant of responseError: provider endpoints reply
+// `{"error": "..."}`; show the message, not the JSON. HTML bodies (proxy error
+// pages) are noise, so they fall back to the status. Other API calls keep the
+// generic responseError text.
+async function providerResponseError(response: Response, prefix: string): Promise<ApiError> {
+  let body = "";
+  try {
+    body = (await response.text()).trim();
+  } catch {
+    // ignore
+  }
+  return new ApiError(`${prefix}: ${providerErrorDetail(body, response)}`, response.status);
+}
+
+function providerErrorDetail(body: string, response: Response): string {
+  const fallback = response.statusText || `HTTP ${response.status}`;
+  if (!body) return fallback;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const message = (parsed as { error: unknown }).error;
+      if (typeof message === "string" && message.trim()) return message.trim();
+    }
+  } catch {
+    // not JSON; use the body as is unless it is an HTML page
+  }
+  if (response.headers.get("content-type")?.includes("text/html")) return fallback;
+  return body;
+}
+
 // A backgrounded bash command that has not exited (server BackgroundJobInfo).
 export interface BackgroundJob {
   job_id: string;
@@ -58,6 +88,8 @@ export interface AvailableModel {
   id: string;
   display_name?: string;
   source?: string;
+  /** Stable provider account id; unlike `source`, this is not a display label. */
+  source_id?: string;
   mode?: string;
   base_url?: string;
   api_type?: string;
@@ -66,6 +98,60 @@ export interface AvailableModel {
   max_context_tokens?: number;
   is_default?: boolean;
   supports_images?: boolean;
+  /** 2 means tucked behind "more models"; absent means 1. */
+  tier?: number;
+  capabilities?: ProviderModelCapabilities | null;
+}
+
+/** Provider metadata is descriptive evidence, not a successful inference test. */
+export interface ProviderModelCapabilities {
+  name?: string;
+  family?: string;
+  input_modalities?: string[] | null;
+  output_modalities?: string[] | null;
+  tool_call?: boolean | null;
+  images?: boolean | null;
+  reasoning?: boolean | null;
+  reasoning_levels?: string[] | null;
+  context_limit?: number;
+  output_limit?: number;
+  release_date?: string;
+  provider_id?: string;
+  model_id?: string;
+  match?: string;
+  snapshot?: string;
+  lifecycle?: string;
+  thinking_types?: string[];
+  provenance?: Record<string, string>;
+}
+
+export type ModelProviderType = "anthropic" | "openai" | "openai-responses";
+
+export interface ModelProviderInput {
+  provider_type: ModelProviderType;
+  endpoint: string;
+  api_key: string;
+  display_name: string;
+}
+
+export interface ModelProviderConnection {
+  provider_id: string;
+  provider_type: ModelProviderType;
+  endpoint: string;
+  display_name: string;
+  has_api_key: boolean;
+  created_at: string;
+  updated_at: string;
+  state: "ready" | "error" | "discovering";
+  model_count: number;
+  last_success?: string | null;
+  error?: string | null;
+}
+
+export interface ModelRefreshResponse {
+  models: AvailableModel[];
+  sources: ModelProviderConnection[];
+  error?: string;
 }
 
 export interface AttachedIntegration {
@@ -230,6 +316,124 @@ class ApiService {
     });
     if (!response.ok) {
       throw await responseError(response, "Failed to refresh models");
+    }
+    return response.json();
+  }
+
+  /** Rediscovers every saved provider connection; per-source failures are in each state. */
+  async refreshModelProviders(): Promise<ModelProviderConnection[]> {
+    const response = await fetch(`${this.baseUrl}/model-providers/refresh`, {
+      method: "POST",
+      headers: this.postHeaders,
+    });
+    if (!response.ok) {
+      throw await providerResponseError(response, "Failed to refresh provider connections");
+    }
+    let result: unknown;
+    try {
+      result = await response.json();
+    } catch {
+      throw new ApiError("Invalid provider refresh response", response.status);
+    }
+    if (!Array.isArray(result)) {
+      throw new ApiError("Invalid provider refresh response", response.status);
+    }
+    return result as ModelProviderConnection[];
+  }
+
+  // Both refreshes finish independently; request failures remain failures.
+  async refreshModelCatalog(): Promise<ModelRefreshResponse> {
+    const [legacy, saved] = await Promise.allSettled([
+      this.refreshModels(),
+      this.refreshModelProviders(),
+    ]);
+    if (legacy.status === "rejected") throw legacy.reason;
+    if (saved.status === "rejected") throw saved.reason;
+    const models = await this.getModels();
+    const sources = saved.value;
+    const errors = sources
+      .filter((source) => source.state === "error" && source.error)
+      .map((source) => `${source.display_name || source.provider_id}: ${source.error}`);
+    return errors.length ? { models, sources, error: errors.join("; ") } : { models, sources };
+  }
+
+  async listModelProviders(): Promise<ModelProviderConnection[]> {
+    const response = await fetch(`${this.baseUrl}/model-providers`);
+    if (!response.ok) {
+      throw await providerResponseError(response, "Failed to load provider connections");
+    }
+    return response.json();
+  }
+
+  async createModelProvider(input: ModelProviderInput): Promise<ModelProviderConnection> {
+    const response = await fetch(`${this.baseUrl}/model-providers`, {
+      method: "POST",
+      headers: this.postHeaders,
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      throw await providerResponseError(response, "Failed to add provider connection");
+    }
+    return response.json();
+  }
+
+  /** Discovers models for an unsaved configuration; nothing is persisted. */
+  async testModelProvider(
+    input: ModelProviderInput,
+    providerId?: string,
+  ): Promise<{ chat: string[]; key_checked: boolean }> {
+    const query = providerId ? `?provider_id=${encodeURIComponent(providerId)}` : "";
+    const response = await fetch(`${this.baseUrl}/model-providers/test${query}`, {
+      method: "POST",
+      headers: this.postHeaders,
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      throw await providerResponseError(response, "Model discovery failed");
+    }
+    return response.json();
+  }
+
+  async updateModelProvider(
+    providerId: string,
+    input: ModelProviderInput,
+  ): Promise<ModelProviderConnection> {
+    const response = await fetch(
+      `${this.baseUrl}/model-providers/${encodeURIComponent(providerId)}`,
+      {
+        method: "PUT",
+        headers: this.postHeaders,
+        body: JSON.stringify(input),
+      },
+    );
+    if (!response.ok) {
+      throw await providerResponseError(response, "Failed to update provider connection");
+    }
+    return response.json();
+  }
+
+  async deleteModelProvider(providerId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/model-providers/${encodeURIComponent(providerId)}`,
+      {
+        method: "DELETE",
+      },
+    );
+    if (!response.ok) {
+      throw await providerResponseError(response, "Failed to remove provider connection");
+    }
+  }
+
+  async refreshModelProvider(providerId: string): Promise<ModelProviderConnection> {
+    const response = await fetch(
+      `${this.baseUrl}/model-providers/${encodeURIComponent(providerId)}/refresh`,
+      {
+        method: "POST",
+        headers: this.postHeaders,
+      },
+    );
+    if (!response.ok) {
+      throw await providerResponseError(response, "Failed to refresh provider connection");
     }
     return response.json();
   }

@@ -65,6 +65,9 @@ type ConversationManager struct {
 	conversationOptions db.ConversationOptions
 	role                conversationRole
 	decorateService     func(llm.Service) (llm.Service, error)
+	resolveModelService func(string) (llm.Service, string, uint64, error)
+	loopSourceID        string
+	loopSourceRevision  uint64
 	db                  *db.DB
 	loop                *loop.Loop
 	loopCancel          context.CancelFunc
@@ -1633,9 +1636,32 @@ func (cm *ConversationManager) drainPendingMessagesOwned(s *Server) {
 func (cm *ConversationManager) feedQueued(ctx context.Context, s *Server, queued []db.QueuedMessage) (bool, error) {
 	cm.mu.Lock()
 	loopInstance := cm.loop
+	warmModelID := cm.modelID
+	warmIdleSaved := loopInstance != nil && !cm.agentWorking && cm.loopSourceID != ""
 	cm.mu.Unlock()
 
 	cm.logger.Info("Draining queued messages", "count", len(queued))
+	if warmIdleSaved && warmModelID != "" {
+		// A warm idle loop bypasses the cold-start path, but a saved route may
+		// have had its key rotated or been deleted since the loop was built.
+		// Reconcile before anything is recorded or dequeued: a rotated route
+		// gets a fresh loop; a deleted one fails here and leaves the queue
+		// intact. A running turn is never interrupted, and routes without a
+		// saved source keep their existing behavior.
+		svc, err := s.llmManager.GetService(warmModelID)
+		if err != nil {
+			return false, fmt.Errorf("failed to get LLM service %q: %w", warmModelID, err)
+		}
+		if err := cm.ensureLoopLocked(svc, warmModelID); err != nil {
+			return false, fmt.Errorf("failed to refresh loop: %w", err)
+		}
+		cm.mu.Lock()
+		loopInstance = cm.loop
+		cm.mu.Unlock()
+		if loopInstance == nil {
+			return false, errors.New("conversation loop not initialized")
+		}
+	}
 	if loopInstance == nil {
 		// Hydrate before reading the model: a stopped loop forgets it, and
 		// messages queued by subagents and background jobs carry none.
@@ -2150,6 +2176,8 @@ func (cm *ConversationManager) detachLoopLocked() detachedLoop {
 	cm.loopDone = nil
 	cm.loop = nil
 	cm.modelID = ""
+	cm.loopSourceID = ""
+	cm.loopSourceRevision = 0
 	cm.toolSet = nil
 	return detached
 }
@@ -2186,6 +2214,15 @@ func (cm *ConversationManager) serviceForLoop(service llm.Service) (llm.Service,
 }
 
 func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID string) error {
+	sourceID, sourceRevision := "", uint64(0)
+	if cm.resolveModelService != nil && isSavedProviderRouteID(modelID) {
+		current, currentSource, revision, err := cm.resolveModelService(modelID)
+		if err != nil {
+			return err
+		} else if currentSource != "" {
+			service, sourceID, sourceRevision = current, currentSource, revision
+		}
+	}
 	cm.mu.Lock()
 	// cm.modelID is the conversation's model once hydrated, even without a
 	// loop: a caller that resolved its model before a settings change must
@@ -2195,6 +2232,21 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		return fmt.Errorf("%w: conversation already uses model %s; requested %s", errConversationModelMismatch, existingModel, modelID)
 	}
 	if cm.loop != nil {
+		if !cm.agentWorking && cm.loopSourceID != "" &&
+			(cm.loopSourceID != sourceID || cm.loopSourceRevision != sourceRevision) {
+			// Same-model refresh: the conversation's account must survive a
+			// failed rebuild, or queued work and retries would fall back to
+			// the host default.
+			conversationModel := cm.modelID
+			detached := cm.detachLoopLocked()
+			cm.modelID = conversationModel
+			cm.mu.Unlock()
+			cm.loopLifecycleMu.Unlock()
+			detached.stop()
+			cm.loopLifecycleMu.Lock()
+			cm.finishLoopTeardownLocked(detached.generation)
+			return cm.ensureLoopLocked(service, modelID)
+		}
 		cm.mu.Unlock()
 		return nil
 	}
@@ -2404,6 +2456,8 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	loopDone := make(chan struct{})
 	cm.loopDone = loopDone
 	cm.modelID = modelID
+	cm.loopSourceID = sourceID
+	cm.loopSourceRevision = sourceRevision
 	cm.toolSet = toolSet
 	// The cwd was read at the top of this function and baked into the toolset,
 	// but building one takes a while (DB reads, tool construction) and none of

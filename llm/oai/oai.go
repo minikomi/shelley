@@ -560,6 +560,10 @@ type Service struct {
 	// "xhigh" or "none"). Overridden by Request.ThinkingLevel when set.
 	ReasoningEffort string
 
+	// DisableReasoning suppresses reasoning controls regardless of request,
+	// service, or model metadata. It does not alter ReasoningReplay.
+	DisableReasoning bool
+
 	// ReasoningReplay controls persisted reasoning replay. The zero value and
 	// "auto" resolve from models.dev; "none" disables replay explicitly.
 	ReasoningReplay ReasoningReplay
@@ -1365,6 +1369,9 @@ func (s *Service) PatchProfile() string {
 // emitted and the provider applies its own default (often not "off" for
 // reasoning models), which Shelley cannot name — so it returns "".
 func (s *Service) DefaultReasoningLevel() string {
+	if s.DisableReasoning {
+		return ""
+	}
 	if s.ReasoningEffort != "" {
 		return s.ReasoningEffort
 	}
@@ -1423,6 +1430,9 @@ func clampKnownReasoningEffort(effort string, levels []llm.ThinkingLevel) string
 // SupportsReasoning reports the models.dev capability when known. Unknown
 // models retain the historical default of supporting reasoning controls.
 func (s *Service) SupportsReasoning() bool {
+	if s.DisableReasoning {
+		return false
+	}
 	caps, found := modelReasoningCapabilities(s.ModelURL, cmp.Or(s.Model, DefaultModel))
 	return !found || caps.Supported
 }
@@ -1431,6 +1441,9 @@ func (s *Service) SupportsReasoning() bool {
 // Nil means the model has no exact effort metadata and callers use the
 // historical provider fallback.
 func (s *Service) SupportedReasoningLevels() []llm.ThinkingLevel {
+	if s.DisableReasoning {
+		return nil
+	}
 	caps, found := modelReasoningCapabilities(s.ModelURL, cmp.Or(s.Model, DefaultModel))
 	return advertisedReasoningLevels(caps, found)
 }
@@ -1528,6 +1541,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 	levels := s.SupportedReasoningLevels()
 	genericEffort := false
 	switch {
+	case s.DisableReasoning:
 	case ir.ReasoningEffort != "":
 		req.ReasoningEffort = ir.ReasoningEffort
 	case ir.ThinkingLevel == llm.ThinkingLevelOff:

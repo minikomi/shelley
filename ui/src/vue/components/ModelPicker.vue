@@ -52,7 +52,7 @@
       label: disabledReason ? { 'aria-description': disabledReason } : {},
     }"
     filter
-    :filter-fields="['label', 'id', 'source']"
+    :filter-fields="['label', 'id', 'api_model_name', 'source']"
     :filter-placeholder="t('searchModels')"
     :empty-filter-message="t('noModelsFound')"
     reset-filter-on-hide
@@ -136,9 +136,10 @@
         <div class="model-picker-option-content">
           <span class="model-picker-option-name">{{ option.label }}</span>
           <span
-            v-if="option.source && option.source !== dominantSource"
+            v-if="option.source && (option.source_id || option.source !== dominantSource)"
             class="model-picker-option-source"
-            >{{ option.source }}</span
+            :title="option.base_url || undefined"
+            >{{ option.source }}{{ accountSuffix(option) }}</span
           >
         </div>
         <span
@@ -149,7 +150,7 @@
         </span>
         <span v-if="!option.ready" class="model-picker-option-badge">{{ t("notReadyBadge") }}</span>
         <svg
-          v-else-if="option.kind === 'model' && option.id === selectedModel"
+          v-if="option.ready && option.kind === 'model' && option.id === selectedModel"
           class="model-picker-option-check"
           width="14"
           height="14"
@@ -383,7 +384,8 @@
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import Select from "primevue/select";
 import { statusPickerDt } from "./statusPickerDt";
-import { prettyModelLabels } from "../../utils/modelNames";
+import { prettyModelLabels, unavailableModelLabel } from "../../utils/modelNames";
+import { accountSuffixes } from "../../utils/providerAccounts";
 import { THINKING_LEVELS, type ThinkingLevel } from "./thinkingLevel";
 import { useI18n } from "../composables/i18n";
 import type { Model } from "../../types";
@@ -391,8 +393,13 @@ import { ConversationsListKey } from "../composables/subagentLive";
 import { recentModelCombinations, type RecentThinkingLevel } from "./recentModelCombinations";
 import type { SettingsDifference, SettingsKnob } from "../composables/profiles";
 import { COMPACT_IN_PLACE_TOOL, compactNudgeChoices } from "./autoCompaction";
+import { api, type ProviderModelCapabilities } from "../../services/api";
 
-type PickerModel = Model & { label: string };
+type PickerModelData = Model & {
+  source_id?: string;
+  capabilities?: ProviderModelCapabilities | null;
+};
+type PickerModel = PickerModelData & { label: string };
 type PickerOption = PickerModel & {
   kind: "model" | "recent";
   pickerValue: string;
@@ -407,7 +414,7 @@ type PickerGroup = {
 
 const props = withDefaults(
   defineProps<{
-    models: Model[];
+    models: PickerModelData[];
     selectedModel: string;
     thinkingLevel: ThinkingLevel;
     disabled?: boolean;
@@ -490,14 +497,30 @@ if (!conversations) throw new Error("ModelPicker requires ConversationsListKey")
 
 const labels = computed(() => prettyModelLabels(props.models));
 const decorated = computed<PickerModel[]>(() =>
-  props.models.map((m) => ({ ...m, label: labels.value.get(m.id) || m.id })),
+  props.models
+    // Known-incompatible saved-provider models stay visible only in Manage Models.
+    .filter((m) => m.ready || !m.source_id)
+    .map((m) => ({ ...m, label: labels.value.get(m.id) || m.id })),
 );
+
+// Explicit account labels can repeat; colliding saved accounts get a short id
+// suffix so the option still says which key would be used.
+const savedAccountSuffixes = computed(() =>
+  accountSuffixes(
+    props.models.flatMap((m) => (m.source_id ? [{ id: m.source_id, label: m.source || "" }] : [])),
+  ),
+);
+function accountSuffix(option: PickerModel): string {
+  const suffix = option.source_id ? savedAccountSuffixes.value.get(option.source_id) : undefined;
+  return suffix ? ` ${suffix}` : "";
+}
 
 // Source sub-labels are pure noise when every model comes from the same
 // place — and even in a customized install, the main gateway's name repeated
 // under dozens of options drowns out the few models it actually matters for.
 // So label only the models whose source differs from the dominant (most
-// common) source; in a single-source install that's nothing.
+// common) source; in a single-source install that's nothing. Saved provider
+// models are always labelled: the account decides which key pays.
 const dominantSource = computed(() => {
   const counts = new Map<string, number>();
   for (const m of props.models) {
@@ -595,12 +618,35 @@ const pickerOptionsByValue = computed(
 const selectedPickerValue = computed(() => `model:${props.selectedModel}`);
 
 const selectedModelObj = computed(() => props.models.find((m) => m.id === props.selectedModel));
-// selectedModel is "" when the server serves no models (see
-// utils/modelSetupHint). Show an explicit placeholder rather than an empty
-// control, so the trigger never looks like a model is selected.
+// An empty selection can mean no ready models or a choice the user must replace.
+// Account labels for a selected saved-provider route the catalog does not
+// list, fetched only when such a route is selected.
+const providerAccounts = ref<Map<string, string>>(new Map());
+watch(
+  [() => props.selectedModel, () => labels.value.has(props.selectedModel)],
+  async ([model, listed], _previous, onCleanup) => {
+    if (!model.startsWith("provider:") || listed) return;
+    let current = true;
+    onCleanup(() => {
+      current = false;
+    });
+    try {
+      const connections = await api.listModelProviders();
+      if (current) {
+        providerAccounts.value = new Map(connections.map((c) => [c.provider_id, c.display_name]));
+      }
+    } catch (err) {
+      if (current) console.error("Failed to load provider account labels:", err);
+    }
+  },
+  { immediate: true },
+);
 const selectedLabel = computed(
   () =>
-    labels.value.get(props.selectedModel) || props.selectedModel || t("noModelSelectedPlaceholder"),
+    labels.value.get(props.selectedModel) ||
+    (props.selectedModel
+      ? unavailableModelLabel(props.selectedModel, providerAccounts.value)
+      : t(props.models.some((m) => m.ready) ? "chooseModel" : "noModelSelectedPlaceholder")),
 );
 
 // ---- reasoning effort --------------------------------------------------
@@ -808,7 +854,7 @@ function describe(changes: SettingsDifference[]): string {
     .map((c) => {
       switch (c.kind) {
         case "model":
-          return `${labels.value.get(c.from) || c.from} → ${labels.value.get(c.to) || c.to}`;
+          return `${labels.value.get(c.from) || unavailableModelLabel(c.from)} → ${labels.value.get(c.to) || unavailableModelLabel(c.to)}`;
         case "reasoning":
           return swap("changeReasoning", level(c.from), level(c.to));
         case "tool":

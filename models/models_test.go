@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/ant"
 	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/llm/predictable"
 	"shelley.exe.dev/models/modelsdev"
@@ -676,6 +678,123 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 	}
 }
 
+func TestProviderSourceRevisionAndRefreshPreserveGatewayAndCustomRoutes(t *testing.T) {
+	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/provider-source.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer testDB.Close()
+	if err := testDB.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.CreateModel(t.Context(), generated.CreateModelParams{
+		ModelID: "custom-vendor-model", DisplayName: "Custom route",
+		ProviderType: "openai", Endpoint: "https://custom.example/v1",
+		ApiKey: "secret", ModelName: "vendor/shared-model",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gateway := Built{
+		ID: "vendor/shared-model", DisplayName: "Gateway route", Source: "exe.dev gateway",
+		Provider: ProviderOpenAI, Service: predictable.NewService(),
+	}
+	mgr, err := NewManager(&Config{Models: []Built{gateway}, DB: testDB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noTools := false
+	metadata := &modelsdev.Metadata{Match: "exact", ToolCall: &noTools, ModelID: "vendor/shared-model"}
+	provider := Built{
+		ID: "provider:c291cmNl:dmVuZG9yL3NoYXJlZC1tb2RlbA", DisplayName: "Saved route",
+		Provider: ProviderOpenAI, Source: SourceCustomLabel, SourceID: "source",
+		APIModelName: "vendor/shared-model", Service: predictable.NewService(),
+		Capabilities: metadata,
+	}
+	mgr.ReplaceProviderModels("source", []Built{provider})
+	if got := mgr.ProviderCatalogRevision("source"); got != 1 {
+		t.Fatalf("initial provider revision = %d, want 1", got)
+	}
+	if info := mgr.GetModelInfo(provider.ID); info == nil || info.SourceID != "source" || info.Capabilities == nil {
+		t.Fatalf("provider metadata = %+v", info)
+	}
+	if _, err := mgr.GetService(provider.ID); err == nil {
+		t.Fatal("GetService accepted a model known not to support tools")
+	}
+
+	if err := mgr.RefreshBuiltModels([]Built{gateway}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.RefreshCustomModels(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{gateway.ID, "custom-vendor-model", provider.ID} {
+		if !mgr.HasModel(id) {
+			t.Errorf("refresh lost route %q", id)
+		}
+	}
+	if got := mgr.ProviderCatalogRevision("source"); got != 1 {
+		t.Fatalf("built/custom refresh changed provider revision to %d", got)
+	}
+	mgr.ReplaceProviderModels("source", nil)
+	if got := mgr.ProviderCatalogRevision("source"); got != 2 {
+		t.Fatalf("delete revision = %d, want 2", got)
+	}
+	if mgr.HasModel(provider.ID) || !mgr.HasModel(gateway.ID) || !mgr.HasModel("custom-vendor-model") {
+		t.Fatal("provider deletion removed unrelated gateway/custom routes or retained provider route")
+	}
+}
+
+func TestProviderSourceCapabilitiesRequireExactEvidence(t *testing.T) {
+	yes := true
+	advisory, err := BuildProviderModel(
+		"source", "unfamiliar", "runtime", "Unfamiliar", "openai",
+		"https://provider.example/v1", "explicit-key", nil,
+		&modelsdev.Metadata{Match: "advisory", Images: &yes, Reasoning: &yes},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advisoryService := advisory.Service.(providerCapabilityService)
+	if advisoryService.SupportsImages() || advisoryService.SupportsReasoning() {
+		t.Fatal("advisory metadata enabled wire capabilities")
+	}
+
+	exact, err := BuildProviderModel(
+		"source", "known", "runtime-exact", "Known", "openai-responses",
+		"https://provider.example/v1", "explicit-key", nil,
+		&modelsdev.Metadata{Match: "exact", Images: &yes, Reasoning: &yes, ReasoningLevels: []llm.ThinkingLevel{llm.ThinkingLevelHigh}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactService := exact.Service.(providerCapabilityService)
+	if !exactService.SupportsImages() || !exactService.SupportsReasoning() ||
+		!reflect.DeepEqual(exactService.SupportedReasoningLevels(), []llm.ThinkingLevel{llm.ThinkingLevelHigh}) {
+		t.Fatalf("exact provider capabilities = %+v", exactService)
+	}
+}
+
+func TestProviderSourceKnownNonTextModalitiesAreNotAgentRoutes(t *testing.T) {
+	for _, match := range []string{"exact", "advisory"} {
+		t.Run(match, func(t *testing.T) {
+			manager, err := NewManager(&Config{Models: []Built{{
+				ID: "image-route", SourceID: "account", Service: predictable.NewService(),
+				Capabilities: &modelsdev.Metadata{Match: match, OutputModalities: []string{"image"}},
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = manager.GetService("image-route")
+			if (err != nil) != (match == "exact") {
+				t.Fatalf("GetService with %s metadata = %v", match, err)
+			}
+			if manager.GetModelInfo("image-route") == nil {
+				t.Fatal("incompatible model disappeared from management metadata")
+			}
+		})
+	}
+}
+
 func TestGetTranscriptionModelsIncludesIntegrationAndCustomRoutes(t *testing.T) {
 	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
 	if err != nil {
@@ -866,3 +985,108 @@ func TestReasoningServiceMapsServiceDefault(t *testing.T) {
 type defaultThinkingService struct{ captureThinkingService }
 
 func (s *defaultThinkingService) DefaultReasoningLevel() string { return "medium" }
+
+func providerServiceMaxTokens(t *testing.T, built Built) int {
+	t.Helper()
+	wrapped, ok := built.Service.(providerCapabilityService)
+	if !ok {
+		t.Fatalf("service = %T, want providerCapabilityService", built.Service)
+	}
+	switch svc := wrapped.Service.(type) {
+	case *ant.Service:
+		return svc.MaxTokens
+	case *oai.Service:
+		return svc.MaxTokens
+	case *oai.ResponsesService:
+		return svc.MaxTokens
+	}
+	t.Fatalf("unexpected wrapped service %T", wrapped.Service)
+	return 0
+}
+
+func TestBuildProviderModelOutputCapUsesAuthoritativeLimitsOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		md   *modelsdev.Metadata
+		want int
+	}{
+		{"missing metadata stays conservative", nil, ProviderOutputTokenCap},
+		{"unknown without limit", &modelsdev.Metadata{Match: "unknown"}, ProviderOutputTokenCap},
+		{"advisory limit never raises", &modelsdev.Metadata{Match: "advisory", OutputLimit: 128000}, ProviderOutputTokenCap},
+		{"advisory limit never lowers", &modelsdev.Metadata{Match: "advisory", OutputLimit: 1024}, ProviderOutputTokenCap},
+		{"exact zero limit", &modelsdev.Metadata{Match: "exact"}, ProviderOutputTokenCap},
+		{"exact limit above conservative cap", &modelsdev.Metadata{Match: "exact", OutputLimit: 64000}, 64000},
+		{"exact limit below conservative cap", &modelsdev.Metadata{Match: "exact", OutputLimit: 4096}, 4096},
+		{"provider-reported limit", &modelsdev.Metadata{Match: "unknown", OutputLimit: 32000, Provenance: map[string]string{"output_limit": "provider"}}, 32000},
+		{"advisory match with provider-reported limit", &modelsdev.Metadata{Match: "advisory", OutputLimit: 32000, Provenance: map[string]string{"output_limit": "provider"}}, 32000},
+		{"provider limit field is not another field's evidence", &modelsdev.Metadata{Match: "advisory", OutputLimit: 32000, Provenance: map[string]string{"context_limit": "provider"}}, ProviderOutputTokenCap},
+	} {
+		for _, providerType := range []string{"anthropic", "openai", "openai-responses"} {
+			t.Run(tc.name+"/"+providerType, func(t *testing.T) {
+				built, err := BuildProviderModel("source", "wire-model", "provider:id", "Account", providerType,
+					"https://provider.example/v1", "key", http.DefaultClient, tc.md)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := providerServiceMaxTokens(t, built); got != tc.want {
+					t.Fatalf("max tokens = %d, want %d", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestReplaceProviderModelsPreservesSourcePositionAndDefaultOrder(t *testing.T) {
+	route := func(source, name string) Built {
+		return Built{ID: "provider:" + source + ":" + name, Provider: ProviderOpenAI, SourceID: source,
+			APIModelName: name, Source: source, Service: predictable.NewService()}
+	}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}, Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := func() []string { return mgr.GetAvailableModels() }
+	a1, a2, a3, b1, c1 := route("A", "a1"), route("A", "a2"), route("A", "a3"), route("B", "b1"), route("C", "c1")
+	mgr.ReplaceProviderModels("A", []Built{a1, a2})
+	mgr.ReplaceProviderModels("B", []Built{b1})
+	wantOrder := func(want ...Built) {
+		t.Helper()
+		got := order()
+		ids := []string{"predictable"}
+		for _, b := range want {
+			ids = append(ids, b.ID)
+		}
+		if !reflect.DeepEqual(got, ids) {
+			t.Fatalf("order = %v, want %v", got, ids)
+		}
+	}
+	wantOrder(a1, a2, b1)
+
+	// No-op refresh of the first source keeps it first (the default account).
+	mgr.ReplaceProviderModels("A", []Built{a1, a2})
+	wantOrder(a1, a2, b1)
+	// A changed catalog replaces in place, in the order supplied.
+	mgr.ReplaceProviderModels("A", []Built{a3, a1})
+	wantOrder(a3, a1, b1)
+	// Refreshing the last source or adding another keeps existing positions.
+	mgr.ReplaceProviderModels("B", []Built{b1})
+	mgr.ReplaceProviderModels("C", []Built{c1})
+	wantOrder(a3, a1, b1, c1)
+	mgr.ReplaceProviderModels("B", []Built{b1, route("B", "b2")})
+	wantOrder(a3, a1, b1, route("B", "b2"), c1)
+	// Deleting one source leaves the rest in order.
+	mgr.ReplaceProviderModels("A", nil)
+	wantOrder(b1, route("B", "b2"), c1)
+	if mgr.ProviderCatalogRevision("A") != 4 || mgr.ProviderCatalogRevision("B") != 3 {
+		t.Fatalf("revisions A=%d B=%d, want 4/3", mgr.ProviderCatalogRevision("A"), mgr.ProviderCatalogRevision("B"))
+	}
+
+	if !strings.Contains(logs.String(), "Registered model") || !strings.Contains(logs.String(), "predictable") {
+		t.Fatalf("built-in registration was not logged at info:\n%s", logs.String())
+	}
+	if strings.Contains(logs.String(), "provider:") {
+		t.Fatalf("saved provider routes spammed the info log:\n%s", logs.String())
+	}
+}

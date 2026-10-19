@@ -1,0 +1,3 @@
+{"object":"list","data":[
+ {"id":"gpt-6-astra","object":"model","created":1700000000,"owned_by":"mistralai","capabilities":{"completion_chat":true,"function_calling":true,"vision":false},"name":"fixture","description":"fixture","max_context_length":32768,"aliases":["fixture-latest"],"deprecation":null,"type":"base"}
+]}

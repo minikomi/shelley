@@ -1,3 +1,5 @@
+import { savedProviderSourceID } from "./modelNames";
+
 // Messaging for the "no models configured" state.
 //
 // When the server serves an empty model list the composer cannot send
@@ -127,11 +129,21 @@ export function suggestURL(command: string): string {
 //
 // readyModelIds omitted/undefined means "unknown" (e.g. not loaded yet); we
 // then only require a non-empty selection rather than blocking every send.
+//
+// Saved-provider routes are the exception: the server rebuilds them from the
+// connection even when discovery failed or no longer lists the model, and
+// rejects them itself once the connection is removed. A loaded connection
+// list lets the client reject deleted accounts without rejecting unlisted models.
 export function canSendWithModel(
   model: string | undefined,
   readyModelIds?: readonly string[],
+  providerIds?: readonly string[],
 ): boolean {
   if (!model || model.trim() === "") return false;
+  if (model.startsWith("provider:")) {
+    const source = savedProviderSourceID(model);
+    return providerIds === undefined || (!!source && providerIds.includes(source));
+  }
   if (!readyModelIds) return true;
   return readyModelIds.includes(model);
 }

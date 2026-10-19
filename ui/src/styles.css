@@ -10125,6 +10125,18 @@ button.tour-visibility-control:focus-visible,
   font-family: var(--font-mono);
   font-size: var(--font-size-11);
   color: var(--text-tertiary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.models-cell-mono {
+  display: inline-block;
+  max-width: 24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 .models-cell-mono,
@@ -10979,6 +10991,7 @@ button.tour-visibility-control:focus-visible,
 
 .provider-buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
 }
 
@@ -16776,7 +16789,8 @@ kbd {
   width: 0.8125rem;
   height: 0.8125rem;
 }
-.p-select-overlay.model-picker-panel .model-picker-refresh-icon.spinning {
+.p-select-overlay.model-picker-panel .model-picker-refresh-icon.spinning,
+.models-provider-actions svg.spinning {
   animation: spin 1s linear infinite;
 }
 
@@ -17396,4 +17410,53 @@ kbd {
   color: var(--text-primary);
   font-size: var(--font-size-13);
   text-align: right;
+}
+
+.endpoint-preset {
+  display: grid;
+  gap: 0.125rem;
+}
+.endpoint-preset small {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Provider connection group header inside the models table. */
+.models-provider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  /* Don't let the nowrap endpoint widen the whole table. */
+  width: 0;
+  min-width: 100%;
+}
+.models-provider-line {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 1.75rem;
+}
+.models-provider-actions {
+  display: flex;
+  margin-left: auto;
+}
+.models-provider-actions .btn-icon {
+  padding: 0.25rem;
+  width: 1.75rem;
+  height: 1.75rem;
+}
+.models-provider-error {
+  font-size: var(--font-size-12);
+  color: var(--warning-text, #b45309);
+}
+
+@media (max-width: 520px) {
+  .provider-btn {
+    flex: 1 1 30%;
+    font-size: var(--font-size-12);
+    padding: 0.5rem 0.25rem;
+  }
+  .endpoint-display {
+    overflow-wrap: anywhere;
+  }
 }

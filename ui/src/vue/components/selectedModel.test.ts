@@ -38,6 +38,18 @@ withDefault("server-default", () => {
   );
   check("no preference uses server default", pickReadyModel(models) === "server-default");
   check("empty catalog yields no model", pickReadyModel([], "other") === "");
+  const saved = "provider:YWNjb3VudA:Z3B0LTUuNQ";
+  check("saved account survives pending discovery", pickReadyModel([], saved) === saved);
+  check(
+    "another account arriving does not replace saved preference",
+    pickReadyModel(models, saved) === saved,
+  );
+  check("unlisted saved account remains usable", pickReadyModel([], saved, ["account"]) === saved);
+  check("deleted account requires an explicit new pick", pickReadyModel(models, saved, []) === "");
+  check(
+    "a stale ready catalog cannot revive a deleted account",
+    pickReadyModel([{ id: saved, ready: true }, ...models], saved, []) === "",
+  );
   check("no ready models yields no model", pickReadyModel([{ id: "stale", ready: false }]) === "");
 });
 

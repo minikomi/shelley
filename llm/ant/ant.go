@@ -77,14 +77,26 @@ func (s *Service) PatchProfile() string {
 }
 
 func (s *Service) SupportsReasoning() bool {
+	if s.reasoningDisabled() {
+		return false
+	}
+	if s.ReasoningLevels != nil || s.ThinkingTypes != nil {
+		return true
+	}
 	caps, found := modelsdev.LookupReasoningCapabilities(s.URL, cmp.Or(s.Model, DefaultModel))
 	return !found || caps.Supported
 }
 
-// SupportedReasoningLevels advertises exact effort levels from models.dev.
+// SupportedReasoningLevels advertises explicit effort levels or models.dev.
 // Budget-token and unknown models return nil and retain the historical
 // standard-level fallback.
 func (s *Service) SupportedReasoningLevels() []llm.ThinkingLevel {
+	if s.reasoningDisabled() {
+		return nil
+	}
+	if s.ReasoningLevels != nil {
+		return slices.Clone(s.ReasoningLevels)
+	}
 	caps, found := modelsdev.LookupReasoningCapabilities(s.URL, cmp.Or(s.Model, DefaultModel))
 	if !found {
 		return nil
@@ -103,11 +115,16 @@ func (s *Service) SupportsServerSideWebSearch() bool {
 }
 
 // DefaultReasoningLevel reports the reasoning level applied to requests that
-// carry no per-conversation override. applyAnthropicThinking treats both
-// ThinkingLevelDefault and ThinkingLevelOff as "send no thinking", so those
-// surface as "off"; any other configured level surfaces by name.
+// carry no per-conversation override. Explicit provider policy is applied
+// before reporting; without overrides, retain the configured level.
 func (s *Service) DefaultReasoningLevel() string {
+	if s.reasoningDisabled() {
+		return ""
+	}
 	eff := s.ThinkingLevel
+	if s.ReasoningLevels != nil || s.ThinkingTypes != nil {
+		eff, _ = s.thinkingPolicy(cmp.Or(s.Model, DefaultModel), eff)
+	}
 	if eff == llm.ThinkingLevelDefault || eff == llm.ThinkingLevelOff {
 		return "off"
 	}
@@ -168,6 +185,19 @@ type Service struct {
 	Backoff               []time.Duration   // retry backoff durations; defaults to {15s, 30s, 60s} if nil
 	SupportsImages_       bool              // whether this service accepts image inputs
 	EnableThinkingBinding bool              // send drop_block binding controls; native api.anthropic.com always does
+
+	// DisableReasoning suppresses thinking controls regardless of request,
+	// service, or model metadata. It does not alter persisted thinking replay.
+	DisableReasoning bool
+
+	// ReasoningLevels overrides catalog effort levels. Nil retains catalog
+	// behavior; an explicit empty list disables thinking.
+	ReasoningLevels []llm.ThinkingLevel
+
+	// ThinkingTypes overrides model-name inference with allowed types:
+	// "adaptive" (preferred when both are allowed) and "enabled". Nil retains
+	// model-name behavior; an explicit empty list disables thinking.
+	ThinkingTypes []string
 }
 
 var _ llm.Service = (*Service)(nil)
@@ -840,7 +870,10 @@ func (s *Service) buildRequest(r *llm.Request, stripThinking bool) *request {
 		System:     mapped(r.System, fromLLMSystem),
 	}
 
-	applyAnthropicThinking(req, model, llm.EffectiveThinkingLevel(s.ThinkingLevel, r.ThinkingLevel), maxTokens, s.supportsThinkingBinding())
+	if !s.reasoningDisabled() {
+		level, adaptive := s.thinkingPolicy(model, llm.EffectiveThinkingLevel(s.ThinkingLevel, r.ThinkingLevel))
+		req.Thinking, req.OutputConfig = anthropicThinkingConfig(level, adaptive, maxTokens, s.supportsThinkingBinding())
+	}
 	if req.Thinking != nil && req.Thinking.Type == "adaptive" && r.ToolChoice != nil {
 		switch r.ToolChoice.Type {
 		case llm.ToolChoiceTypeAny, llm.ToolChoiceTypeTool:
@@ -853,12 +886,20 @@ func (s *Service) buildRequest(r *llm.Request, stripThinking bool) *request {
 
 const minAnthropicThinkingBudget = 1024
 
-// applyAnthropicThinking sets the Thinking / OutputConfig fields without
-// increasing the configured output allowance. Budget-style thinking shares
-// max_tokens with the final answer, so leave 1024 tokens for that answer.
-func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel, maxTokens int, supportsBinding bool) {
+func (s *Service) reasoningDisabled() bool {
+	return s.DisableReasoning ||
+		s.ReasoningLevels != nil && len(s.ReasoningLevels) == 0 ||
+		s.ThinkingTypes != nil && !slices.Contains(s.ThinkingTypes, "adaptive") && !slices.Contains(s.ThinkingTypes, "enabled")
+}
+
+func (s *Service) thinkingPolicy(model string, level llm.ThinkingLevel) (llm.ThinkingLevel, bool) {
 	adaptive := useAdaptiveThinking(model)
-	if adaptive {
+	if s.ThinkingTypes != nil {
+		adaptive = slices.Contains(s.ThinkingTypes, "adaptive")
+	}
+	if s.ReasoningLevels != nil {
+		level = llm.ClampThinkingLevel(level, s.ReasoningLevels)
+	} else if adaptive {
 		caps, found := modelsdev.LookupReasoningCapabilities("", model)
 		if found && len(caps.Levels) > 0 {
 			level = llm.ClampThinkingLevel(level, caps.Levels)
@@ -867,30 +908,40 @@ func applyAnthropicThinking(req *request, model string, level llm.ThinkingLevel,
 			level = llm.ThinkingLevelLow
 		}
 	}
+	return level, adaptive
+}
+
+// anthropicThinkingConfig constructs wire controls from resolved policy without
+// increasing the configured output allowance. Budget-style thinking shares
+// max_tokens with the final answer, so leave 1024 tokens for that answer.
+func anthropicThinkingConfig(level llm.ThinkingLevel, adaptive bool, maxTokens int, supportsBinding bool) (*thinking, *outputConfig) {
 	if level == llm.ThinkingLevelOff || level == llm.ThinkingLevelDefault {
-		return
+		return nil, nil
 	}
+	var config *thinking
+	var output *outputConfig
 	if adaptive {
 		effort := level.ThinkingEffort()
 		// Adaptive-thinking models default thinking.display to "omitted", which
 		// returns thinking blocks with an empty thinking field. Request summarized
 		// thinking so the UI can show the model's reasoning.
-		req.Thinking = &thinking{Type: "adaptive", Display: "summarized"}
-		req.OutputConfig = &outputConfig{Effort: effort}
+		config = &thinking{Type: "adaptive", Display: "summarized"}
+		output = &outputConfig{Effort: effort}
 	} else {
 		budget := level.ThinkingBudgetTokens()
 		if budget == 0 {
-			return
+			return nil, nil
 		}
 		budget = min(budget, maxTokens-minAnthropicThinkingBudget)
 		if budget < minAnthropicThinkingBudget {
-			return
+			return nil, nil
 		}
-		req.Thinking = &thinking{Type: "enabled", BudgetTokens: budget}
+		config = &thinking{Type: "enabled", BudgetTokens: budget}
 	}
 	if supportsBinding {
-		req.Thinking.BlockBinding = &thinkingBlockBinding{PrefixMismatchBehavior: "drop_block"}
+		config.BlockBinding = &thinkingBlockBinding{PrefixMismatchBehavior: "drop_block"}
 	}
+	return config, output
 }
 
 func toLLMUsage(u usage) llm.Usage {

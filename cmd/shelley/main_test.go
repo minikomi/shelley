@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"shelley.exe.dev/claudetool"
+	"shelley.exe.dev/db"
 	"shelley.exe.dev/exeenv"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/models/modelsdev"
 	"shelley.exe.dev/modelsources"
 	"shelley.exe.dev/slug"
 )
@@ -151,6 +153,158 @@ func TestBuildLLMConfigDoesNotOverrideMetadataEnvironment(t *testing.T) {
 	}
 	if !gatewayFound {
 		t.Fatal("parsed llm_gateway was not reused")
+	}
+}
+
+func TestLegacyPredictableOnlyKeepsBaselineSourcesAndDatabase(t *testing.T) {
+	var calls int
+	oldDiscover := discoverLLMIntegrations
+	discoverLLMIntegrations = func(context.Context, *http.Client, *slog.Logger) modelsources.LLMIntegrationDiscoveryResult {
+		calls++
+		return modelsources.LLMIntegrationDiscoveryResult{}
+	}
+	t.Cleanup(func() { discoverLLMIntegrations = oldDiscover })
+
+	configPath := filepath.Join(t.TempDir(), "shelley.json")
+	if err := os.WriteFile(configPath, []byte(`{"llm_gateway":"https://gateway.example.test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database := new(db.DB)
+	cfg, err := buildLLMConfig(GlobalConfig{PredictableOnly: true, ConfigPath: configPath}, slog.Default(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("integration discovery calls = %d, want baseline discovery even when predictable-only", calls)
+	}
+	if cfg.DB != database {
+		t.Fatal("predictable-only config dropped the database; baseline keeps it")
+	}
+	if len(cfg.Models) < 2 || !slices.ContainsFunc(cfg.Models, func(m models.Built) bool { return m.ID == "predictable" }) {
+		t.Fatalf("predictable-only models = %d, want baseline gateway models plus predictable", len(cfg.Models))
+	}
+}
+
+func TestLegacyToolModelsKeepNonSavedRoutesRegardlessOfCapabilities(t *testing.T) {
+	toolCall := false
+	provider := &tieredModelProvider{
+		ids: []string{"my-custom-model"},
+		infos: map[string]*models.ModelInfo{
+			"my-custom-model": {
+				Source:       models.SourceCustomLabel,
+				Capabilities: &modelsdev.Metadata{Match: "exact", ToolCall: &toolCall},
+			},
+		},
+	}
+	want := []claudetool.AvailableModel{{Name: "my-custom-model", ID: "my-custom-model"}}
+	if got := setupToolSetConfig(nil, provider).BuildAvailableModels(""); !slices.Equal(got, want) {
+		t.Fatalf("legacy helpers = %+v, want %+v", got, want)
+	}
+}
+
+func TestSavedProviderModelsAreSubagentSelectable(t *testing.T) {
+	const id = "provider:cHJvdmlkZXItMQ:dW5rbm93bi1jaGF0"
+	const incompatibleID = "provider:cHJvdmlkZXItMQ:aW5jb21wYXRpYmxl"
+	toolCall := false
+	provider := &tieredModelProvider{
+		ids: []string{id, incompatibleID},
+		infos: map[string]*models.ModelInfo{
+			id: {SourceID: "provider-1", APIModelName: "gpt-luna-custom"},
+			incompatibleID: {
+				SourceID: "provider-1",
+				Capabilities: &modelsdev.Metadata{
+					Match: "exact", ToolCall: &toolCall,
+				},
+			},
+		},
+	}
+	available := setupToolSetConfig(nil, provider).BuildAvailableModels(id)
+	if len(available) != 1 || available[0].ID != id {
+		t.Fatalf("subagent models = %+v, want parent provider route selectable", available)
+	}
+}
+
+func TestToolModelsScopeSavedRoutesToParentAccountWithReadableNames(t *testing.T) {
+	const (
+		parentA = "provider:QQ:Zmlyc3Q"
+		otherA  = "provider:QQ:c2Vjb25k"
+		sameA   = "provider:QQ:Y3VzdG9t"
+		parentB = "provider:Qg:Zmlyc3Q"
+	)
+	provider := &tieredModelProvider{
+		ids: []string{"my-custom-model", parentB, parentA, otherA, sameA},
+		infos: map[string]*models.ModelInfo{
+			"my-custom-model": {Source: models.SourceCustomLabel},
+			parentA:           {SourceID: "A", Source: "Work", APIModelName: "gpt-luna-custom"},
+			otherA:            {SourceID: "A", Source: "Work", APIModelName: "second-model"},
+			sameA:             {SourceID: "A", Source: "Work", APIModelName: "my-custom-model"},
+			parentB:           {SourceID: "B", Source: "Work", APIModelName: "gpt-luna-custom"},
+		},
+	}
+	build := setupToolSetConfig(nil, provider).BuildAvailableModels
+
+	want := []claudetool.AvailableModel{
+		{Name: "my-custom-model", ID: "my-custom-model"},
+		{Name: "gpt-luna-custom", ID: parentA},
+		{Name: "second-model", ID: otherA},
+		{Name: "Work: my-custom-model", ID: sameA},
+	}
+	if got := build(parentA); !slices.Equal(got, want) {
+		t.Fatalf("account A helpers = %+v, want %+v", got, want)
+	}
+	// The same upstream name and label in another account never leaks or
+	// collides: account B's helper sees only its own route.
+	want = []claudetool.AvailableModel{
+		{Name: "my-custom-model", ID: "my-custom-model"},
+		{Name: "gpt-luna-custom", ID: parentB},
+	}
+	if got := build(parentB); !slices.Equal(got, want) {
+		t.Fatalf("account B helpers = %+v, want %+v", got, want)
+	}
+	// Custom parents and an unknown parent see no saved account.
+	want = []claudetool.AvailableModel{{Name: "my-custom-model", ID: "my-custom-model"}}
+	for _, parent := range []string{"my-custom-model", ""} {
+		if got := build(parent); !slices.Equal(got, want) {
+			t.Fatalf("parent %q helpers = %+v, want only the custom route", parent, got)
+		}
+	}
+}
+
+func TestToolModelsBoundSavedAccountCatalogAndRetainParent(t *testing.T) {
+	provider := &tieredModelProvider{
+		ids:   []string{"manual"},
+		infos: map[string]*models.ModelInfo{"manual": {Source: models.SourceCustomLabel}},
+	}
+	parent := "provider:account:0"
+	for i := range 80 {
+		id := fmt.Sprintf("provider:account:%d", i)
+		provider.ids = append(provider.ids, id)
+		provider.infos[id] = &models.ModelInfo{
+			SourceID: "account", APIModelName: fmt.Sprintf("model-%02d", i),
+			ReleaseDate: time.Date(2026, time.January, 1+i, 0, 0, 0, 0, time.UTC).Format("2006-01-02"),
+		}
+	}
+	build := setupToolSetConfig(nil, provider).BuildAvailableModels
+	got := build(parent)
+	if len(got) != providerHelperModelLimit+1 {
+		t.Fatalf("helper count = %d, want %d saved routes plus manual", len(got), providerHelperModelLimit)
+	}
+	for _, id := range []string{"manual", parent, "provider:account:79"} {
+		if !slices.ContainsFunc(got, func(model claudetool.AvailableModel) bool { return model.ID == id }) {
+			t.Fatalf("helper catalog omitted %s", id)
+		}
+	}
+	if slices.ContainsFunc(got, func(model claudetool.AvailableModel) bool {
+		return model.ID == "provider:account:1" || strings.HasPrefix(model.Name, "provider:")
+	}) {
+		t.Fatalf("helper catalog retained an old route or opaque name: %+v", got)
+	}
+	slices.Reverse(provider.ids)
+	reversed := build(parent)
+	for _, model := range got {
+		if !slices.Contains(reversed, model) {
+			t.Fatalf("registry order changed bounded selection: missing %+v", model)
+		}
 	}
 }
 

@@ -105,6 +105,7 @@ export interface StreamResponseForTS {
   heartbeat?: boolean;
   notification_event?: NotificationEventForTS | null;
   disk_space_status?: DiskSpaceStatus | null;
+  models_changed?: boolean;
   max_sequence_id?: number;
 }
 

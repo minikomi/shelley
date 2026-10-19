@@ -1,0 +1,4 @@
+[
+ {"id":"gpt-6-sol","object":"model","created":1700000000,"type":"chat","display_name":"Fixture chat","organization":"Fixture","context_length":131072,"license":"fixture","link":null,"pricing":{"input":0.1,"output":0.2}},
+ {"id":"vendor/fixture-image","object":"model","type":"image","pricing":{"hourly":0,"input":0,"output":0,"base":0,"finetune":0}}
+]

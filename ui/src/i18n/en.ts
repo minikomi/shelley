@@ -165,7 +165,35 @@ export const en: TranslationKeys = {
 
   // Models Modal
   manageModels: "Manage Models",
-  addModel: "Add Model",
+  addModel: "Add models",
+  modelsAndKeys: "Add models",
+  editProviderCredentials: "Edit provider connection",
+  providerLastSuccess: "Last successful refresh",
+  providerUsingSavedList: "Using the last discovered model list.",
+  providerChatModelCount: "{count} chat models",
+  providerKeyNotChecked: "this endpoint lists models without a key, so the key was not checked",
+  checkModels: "Check models",
+  checkingModels: "Checking…",
+  providerNoModels:
+    "No supported chat models found. To use a specific model, add it with “Add single model”.",
+  providerNoModelsFailed: "No models loaded. Fix the error above, then refresh.",
+  providerDiscovering: "Discovering models…",
+  providerKeyRequiredNewHost:
+    "This endpoint is on a different host. Enter the API key for it; the saved key is not sent there.",
+  connectingProvider: "Connecting…",
+  savingProvider: "Saving…",
+  addSingleModelSubmit: "Add model",
+  providerCapabilitiesUnknown: "Capabilities unknown",
+  providerKeyBlankRetains: "Leave blank to keep the saved API key.",
+  removeProvider: "Remove connection",
+  removeProviderTitle: "Remove provider connection?",
+  removeProviderConfirmation:
+    "Removing {name} deletes the saved credentials and removes its discovered models.",
+  addModelAll: "Add provider",
+  addModelSingle: "Add single model",
+  connectProvider: "Connect",
+  accountLabel: "Account label",
+  accountLabelPlaceholder: "Optional, e.g. Work",
   refreshModels: "Refresh",
   refreshingModels: "Refreshing...",
   searchModels: "Search models",
@@ -210,7 +238,6 @@ export const en: TranslationKeys = {
   providerApiFormat: "Provider / API Format",
   endpoint: "Endpoint",
   defaultEndpoint: "Default endpoint",
-  customEndpoint: "Custom endpoint",
   model: "Model",
   displayName: "Display Name",
   nameShownInSelector: "Name shown in the model selector",
@@ -416,6 +443,8 @@ export const en: TranslationKeys = {
   noModelsLocalNote: "Add a model with Ctrl+K or ⌘+K.",
   noModelsExeRefresh: "Then Refresh in the model picker.",
   noModelSelectedPlaceholder: "No model available",
+  chooseModel: "Choose a model",
+  providerConnectionRemoved: "The selected provider connection was removed. Choose another model.",
 
   // Status Bar
   dirLabel: "Dir:",

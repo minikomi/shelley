@@ -1,6 +1,10 @@
 package models
 
-import "testing"
+import (
+	"testing"
+
+	"shelley.exe.dev/models/modelsdev"
+)
 
 func TestAssignTiers(t *testing.T) {
 	t.Run("haiku 5.5 supersedes haiku 4.5", func(t *testing.T) {
@@ -162,4 +166,29 @@ func TestAssignTiers(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestProviderTiers(t *testing.T) {
+	yes, no := true, false
+	exact := func(tools *bool, in, out []string) *modelsdev.Metadata {
+		return &modelsdev.Metadata{Match: "exact", ToolCall: tools, InputModalities: in, OutputModalities: out}
+	}
+	text := []string{"text"}
+	tiers := ProviderTiers(map[string]*modelsdev.Metadata{
+		"fresh-chat":       exact(&yes, text, text),
+		"moderation":       exact(&no, text, text),
+		"speech":           exact(&yes, []string{"audio"}, []string{"audio"}),
+		"unknown":          nil,
+		"advisory-chat":    {Match: "advisory", ToolCall: &yes, InputModalities: text, OutputModalities: text},
+		"no-tool-evidence": exact(nil, text, text),
+	})
+	want := map[string]int{
+		"fresh-chat": Tier1, "moderation": Tier2, "speech": Tier2,
+		"unknown": Tier2, "advisory-chat": Tier2, "no-tool-evidence": Tier2,
+	}
+	for id, tier := range want {
+		if tiers[id] != tier {
+			t.Errorf("%s: tier %d, want %d", id, tiers[id], tier)
+		}
+	}
 }

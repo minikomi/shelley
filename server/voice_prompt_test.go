@@ -129,3 +129,44 @@ func TestVoicePromptGenerate(t *testing.T) {
 		t.Errorf("empty: %d %s", code, got)
 	}
 }
+
+// Saved accounts are identified by SourceID, not by their mutable label: two
+// accounts may share a label, endpoint and models, and the prompt for one must
+// never be written with the other's key.
+func TestVoicePromptModelSavedAccountsMatchBySourceIDNotLabel(t *testing.T) {
+	t.Parallel()
+	const endpoint = "https://api.example.test/v1"
+	route := func(id, sourceID, catalogID string) models.Built {
+		m := models.ByID(catalogID)
+		return models.Built{
+			ID: id, Provider: m.Provider, APIModelName: m.APIModelName, ReleaseDate: "2026-01-01",
+			Source: "Shared label", SourceID: sourceID, BaseURL: endpoint, Service: predictable.NewService(),
+		}
+	}
+	manager, err := models.NewManager(&models.Config{Models: []models.Built{
+		// Account A's terra is listed first, so a label-based match from
+		// account B would pick it.
+		route("a/terra", "A", "gpt-5.6-terra"),
+		route("a/sol", "A", "gpt-6.1-sol"),
+		route("b/sol", "B", "gpt-6.1-sol"),
+		route("b/terra", "B", "gpt-5.6-terra"),
+		route("c/sol", "C", "gpt-6.1-sol"), // same label, no terra of its own
+		route("legacy/sol", "", "gpt-6.1-sol"),
+		route("legacy/terra", "", "gpt-5.6-terra"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{llmManager: manager}
+	for model, want := range map[string]string{
+		"a/sol":      "a/terra",
+		"b/sol":      "b/terra",
+		"c/sol":      "c/sol", // never borrows A's or B's credentials
+		"legacy/sol": "legacy/terra",
+		"b/terra":    "b/terra",
+	} {
+		if got := s.voicePromptModel(model); got != want {
+			t.Errorf("voicePromptModel(%q) = %q, want %q", model, got, want)
+		}
+	}
+}

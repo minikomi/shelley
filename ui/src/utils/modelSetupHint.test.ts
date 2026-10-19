@@ -223,6 +223,22 @@ check(
   "undefined ready list falls back to non-empty",
   canSendWithModel("anything", undefined) === true,
 );
+check(
+  "saved-provider route outside the ready list is left to the server",
+  canSendWithModel("provider:YQ:Yg", READY) === true,
+);
+check(
+  "existing saved account can send an unlisted model",
+  canSendWithModel("provider:YQ:Yg", [], ["a"]) === true,
+);
+check(
+  "deleted saved account cannot send even through a stale ready catalog",
+  canSendWithModel("provider:YQ:Yg", ["provider:YQ:Yg"], []) === false,
+);
+check(
+  "malformed saved route cannot bypass a known connection list",
+  canSendWithModel("provider:invalid", [], ["a"]) === false,
+);
 check("undefined ready list still rejects empty", canSendWithModel("", undefined) === false);
 
 // needsModel decides which sends are blocked with no model. Blocking too

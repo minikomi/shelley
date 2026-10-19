@@ -1,0 +1,4 @@
+{"object":"list","data":[
+ {"id":"gpt-6-luna","object":"model","created":1700000000,"owned_by":"Fixture","active":true,"context_window":131072,"public_apps":null,"max_completion_tokens":8192},
+ {"id":"whisper-fixture","object":"model","created":1700000001,"owned_by":"Fixture","active":true,"context_window":448,"public_apps":null}
+]}

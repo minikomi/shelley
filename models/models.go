@@ -3,10 +3,13 @@ package models
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -116,6 +119,218 @@ type Built struct {
 	// BaseURL is the resolved upstream base URL (after applying any source
 	// override on top of the catalog's DefaultBaseURL).
 	BaseURL string
+
+	// SourceID identifies a saved provider connection. It is empty for
+	// built-in, integration, and custom models.
+	SourceID string
+
+	// Capabilities contains provider-aware catalog metadata when available.
+	Capabilities *modelsdev.Metadata
+
+	serviceRevision uint64
+}
+
+// ProviderOutputTokenCap is the conservative output allowance for saved
+// provider routes whose output limit is missing or advisory. Advisory catalog
+// matches may describe a different model behind a proxy, so they never raise
+// it. An authoritative output_limit (provider-reported or exact models.dev)
+// is used as-is, including above this value; the wire services still lower
+// it to any known catalog limit.
+const ProviderOutputTokenCap = 8192
+
+// providerOutputCap returns the max output tokens for a saved provider route.
+func providerOutputCap(capabilities *modelsdev.Metadata) int {
+	if capabilities.Authoritative("output_limit") && capabilities.OutputLimit > 0 {
+		return capabilities.OutputLimit
+	}
+	return ProviderOutputTokenCap
+}
+
+// BuildProviderModel creates a runtime model for one explicitly configured
+// saved provider route. endpoint is the complete API base (including its
+// version/custom prefix); apiKey is always passed explicitly to the transport.
+func BuildProviderModel(providerID, upstreamID, runtimeID, displayName, providerType, endpoint, apiKey string, httpc *http.Client, capabilities *modelsdev.Metadata) (Built, error) {
+	var (
+		apiType  APIType
+		provider Provider
+		service  llm.Service
+	)
+	images := capabilities.Authoritative("images") && capabilities.Images != nil && *capabilities.Images
+	reasoning := providerReasoningEnabled(capabilities)
+	outputCap := providerOutputCap(capabilities)
+
+	switch providerType {
+	case "anthropic":
+		apiType, provider = APITypeAnthropicMessages, ProviderAnthropic
+		svc := &ant.Service{
+			URL: endpoint + "/messages", APIKey: apiKey, Model: upstreamID,
+			HTTPC: httpc, MaxTokens: outputCap, ThinkingLevel: llm.ThinkingLevelOff,
+			SupportsImages_: images, EnableThinkingBinding: reasoning,
+			DisableReasoning: !reasoning,
+		}
+		if capabilities != nil {
+			if capabilities.Provenance["reasoning_levels"] == "provider" {
+				svc.ReasoningLevels = append([]llm.ThinkingLevel{}, capabilities.ReasoningLevels...)
+			}
+			if capabilities.Provenance["thinking_types"] == "provider" {
+				svc.ThinkingTypes = append([]string{}, capabilities.ThinkingTypes...)
+			}
+		}
+		service = providerCapabilityService{Service: svc, metadata: capabilities}
+	case "openai":
+		apiType, provider = APITypeOpenAIChat, ProviderOpenAI
+		model := oai.Model{UserName: upstreamID, ModelName: upstreamID, URL: endpoint, SupportsImages: images}
+		// Reasoning replay stays on the adapter's auto policy: it is wire
+		// state for tool continuations, independent of reasoning controls.
+		svc := &oai.Service{
+			Model: model, ModelURL: endpoint, APIKey: apiKey, HTTPC: httpc,
+			MaxTokens: outputCap, ProviderName: "openai", ThinkingLevel: llm.ThinkingLevelOff,
+			DisableReasoning: !reasoning,
+		}
+		service = providerCapabilityService{Service: svc, metadata: capabilities}
+	case "openai-responses":
+		apiType, provider = APITypeOpenAIResponses, ProviderOpenAI
+		model := oai.Model{UserName: upstreamID, ModelName: upstreamID, URL: endpoint, SupportsImages: images}
+		if catalog, ok := officialResponsesModel(upstreamID, capabilities); ok {
+			model.TextVerbosity, model.SupportsApplyPatch = catalog.TextVerbosity, catalog.SupportsApplyPatch
+		}
+		svc := &oai.ResponsesService{
+			Model: model, ModelURL: endpoint, APIKey: apiKey, HTTPC: httpc,
+			MaxTokens: outputCap, ProviderName: "openai", ThinkingLevel: llm.ThinkingLevelOff,
+			DisableReasoning: !reasoning,
+		}
+		service = providerCapabilityService{Service: svc, metadata: capabilities}
+	default:
+		return Built{}, fmt.Errorf("unsupported provider type %q", providerType)
+	}
+	if displayName == "" {
+		displayName = upstreamID
+	}
+	identity, err := json.Marshal(struct {
+		ProviderType, Endpoint, APIKey, UpstreamID string
+		Capabilities                               *modelsdev.Metadata
+	}{providerType, endpoint, apiKey, upstreamID, capabilities})
+	if err != nil {
+		return Built{}, err
+	}
+	digest := sha256.Sum256(identity)
+	var releaseDate string
+	if capabilities != nil {
+		releaseDate = capabilities.ReleaseDate
+	}
+	return Built{
+		ID: runtimeID, DisplayName: displayName, Provider: provider,
+		Source: displayName, ReleaseDate: releaseDate, Service: service,
+		APIModelName: upstreamID, APIType: apiType, BaseURL: endpoint,
+		SourceID: providerID, Capabilities: cloneProviderMetadata(capabilities),
+		serviceRevision: binary.BigEndian.Uint64(digest[:8]),
+	}, nil
+}
+
+// officialResponsesModel returns the built-in catalog's Responses model
+// settings (text verbosity, apply_patch training) for a wire ID that exact
+// models.dev evidence ties to OpenAI's own endpoint.
+func officialResponsesModel(upstreamID string, capabilities *modelsdev.Metadata) (oai.Model, bool) {
+	if capabilities == nil || capabilities.Match != "exact" || capabilities.ProviderID != "openai" {
+		return oai.Model{}, false
+	}
+	for _, m := range All() {
+		if m.Provider == ProviderOpenAI && m.APIType == APITypeOpenAIResponses && m.APIModelName == upstreamID {
+			if svc, ok := m.Build("", "", nil).(*oai.ResponsesService); ok {
+				return svc.Model, true
+			}
+		}
+	}
+	return oai.Model{}, false
+}
+
+type providerCapabilityService struct {
+	llm.Service
+	metadata *modelsdev.Metadata
+}
+
+func (s providerCapabilityService) PatchProfile() string { return llm.PatchProfile(s.Service) }
+
+func (s providerCapabilityService) SupportsImages() bool {
+	return s.metadata.Authoritative("images") && s.metadata.Images != nil && *s.metadata.Images
+}
+
+func (s providerCapabilityService) SupportsReasoning() bool {
+	return providerReasoningEnabled(s.metadata)
+}
+
+func providerReasoningEnabled(metadata *modelsdev.Metadata) bool {
+	// Reasoning support alone does not establish a model's wire vocabulary.
+	return metadata != nil && metadata.Match == "exact" &&
+		(metadata.Provenance["thinking_types"] != "provider" || len(metadata.ThinkingTypes) > 0) &&
+		metadata.Authoritative("reasoning") && metadata.Reasoning != nil && *metadata.Reasoning &&
+		metadata.Authoritative("reasoning_levels") && len(metadata.ReasoningLevels) > 0
+}
+
+func (s providerCapabilityService) SupportedReasoningLevels() []llm.ThinkingLevel {
+	if !providerReasoningEnabled(s.metadata) {
+		return []llm.ThinkingLevel{}
+	}
+	return append([]llm.ThinkingLevel(nil), s.metadata.ReasoningLevels...)
+}
+
+func (s providerCapabilityService) DefaultReasoningLevel() string {
+	if !s.SupportsReasoning() {
+		return ""
+	}
+	return llm.ServiceDefaultReasoningLevel(s.Service)
+}
+
+func (s providerCapabilityService) SupportsServerSideWebSearch() bool { return false }
+
+func (s providerCapabilityService) CacheTTL() time.Duration { return llm.CacheTTL(s.Service) }
+
+func (s providerCapabilityService) WarmCache(ctx context.Context, request *llm.Request) (llm.Usage, error) {
+	return llm.WarmCache(ctx, s.Service, s.prepareRequest(request))
+}
+
+func (s providerCapabilityService) Do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
+	return s.Service.Do(ctx, s.prepareRequest(request))
+}
+
+func (s providerCapabilityService) prepareRequest(request *llm.Request) *llm.Request {
+	if !providerReasoningEnabled(s.metadata) {
+		copyRequest := *request
+		copyRequest.ThinkingLevel = llm.ThinkingLevelOff
+		copyRequest.ReasoningEffort = ""
+		request = &copyRequest
+	}
+	return request
+}
+
+func cloneProviderMetadata(value *modelsdev.Metadata) *modelsdev.Metadata {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	copy.InputModalities = append([]string(nil), value.InputModalities...)
+	copy.OutputModalities = append([]string(nil), value.OutputModalities...)
+	copy.ThinkingTypes = append([]string(nil), value.ThinkingTypes...)
+	copy.ReasoningLevels = append([]llm.ThinkingLevel(nil), value.ReasoningLevels...)
+	if value.Provenance != nil {
+		copy.Provenance = make(map[string]string, len(value.Provenance))
+		for field, source := range value.Provenance {
+			copy.Provenance[field] = source
+		}
+	}
+	if value.ToolCall != nil {
+		v := *value.ToolCall
+		copy.ToolCall = &v
+	}
+	if value.Images != nil {
+		v := *value.Images
+		copy.Images = &v
+	}
+	if value.Reasoning != nil {
+		v := *value.Reasoning
+		copy.Reasoning = &v
+	}
+	return &copy
 }
 
 // OpenAI transcription models used for recordings: TranscriptionTextModel
@@ -503,9 +718,13 @@ type Manager struct {
 	services            map[string]serviceEntry
 	modelOrder          []string
 	transcriptionModels []TranscriptionModel
-	logger              *slog.Logger
-	db                  *db.DB
-	httpc               *http.Client
+	providerRevisions   map[string]uint64
+	// providerEpoch increases with every provider revision.
+	providerEpoch   uint64
+	resolveProvider func(modelID string) (Built, error)
+	logger          *slog.Logger
+	db              *db.DB
+	httpc           *http.Client
 }
 
 // GetWorkhorseService returns a service that uses a cheap model from the
@@ -526,6 +745,11 @@ type serviceEntry struct {
 	apiType     APIType
 	// apiModelName is the wire model name used for models.dev lookups.
 	apiModelName string
+	sourceID     string
+	capabilities *modelsdev.Metadata
+	incompatible bool
+
+	serviceRevision uint64
 }
 
 // ConfigInfo is an optional interface that services can implement to provide configuration details for logging
@@ -648,6 +872,7 @@ func NewManager(cfg *Config) (*Manager, error) {
 	}
 	m := &Manager{
 		services:            map[string]serviceEntry{},
+		providerRevisions:   map[string]uint64{},
 		transcriptionModels: append([]TranscriptionModel(nil), cfg.TranscriptionModels...),
 		logger:              cfg.Logger,
 		db:                  cfg.DB,
@@ -662,27 +887,37 @@ func NewManager(cfg *Config) (*Manager, error) {
 	return m, nil
 }
 
+func newServiceEntry(b Built) serviceEntry {
+	return serviceEntry{
+		service:      b.Service,
+		provider:     b.Provider,
+		modelID:      b.ID,
+		mode:         b.Mode,
+		source:       b.Source,
+		displayName:  cmp.Or(b.DisplayName, b.ID),
+		releaseDate:  b.ReleaseDate,
+		baseURL:      b.BaseURL,
+		apiType:      b.APIType,
+		apiModelName: b.APIModelName,
+		sourceID:     b.SourceID,
+		capabilities: cloneProviderMetadata(b.Capabilities),
+		incompatible: b.SourceID != "" && KnownAgentIncompatible(b.Capabilities),
+
+		serviceRevision: b.serviceRevision,
+	}
+}
+
 func (m *Manager) registerBuiltModelsLocked(built []Built) {
 	for _, b := range built {
-		dn := b.DisplayName
-		if dn == "" {
-			dn = b.ID
-		}
-		m.services[b.ID] = serviceEntry{
-			service:      b.Service,
-			provider:     b.Provider,
-			modelID:      b.ID,
-			mode:         b.Mode,
-			source:       b.Source,
-			displayName:  dn,
-			releaseDate:  b.ReleaseDate,
-			baseURL:      b.BaseURL,
-			apiType:      b.APIType,
-			apiModelName: b.APIModelName,
-		}
+		m.services[b.ID] = newServiceEntry(b)
 		m.modelOrder = append(m.modelOrder, b.ID)
 		if m.logger != nil {
-			m.logger.Info("Registered model", "id", b.ID, "source", b.Source)
+			// Saved providers can publish hundreds of routes per refresh.
+			level := slog.LevelInfo
+			if b.SourceID != "" {
+				level = slog.LevelDebug
+			}
+			m.logger.Log(context.Background(), level, "Registered model", "id", b.ID, "source", b.Source)
 		}
 	}
 }
@@ -734,10 +969,12 @@ func (m *Manager) RefreshCustomModels() error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	previousOrder := m.modelOrder
+	hasSaved := m.hasProviderRoutesLocked()
 	newOrder := make([]string, 0, len(m.modelOrder))
 	for _, id := range m.modelOrder {
 		entry, ok := m.services[id]
-		if ok && entry.source != SourceCustomLabel {
+		if ok && (entry.sourceID != "" || entry.source != SourceCustomLabel) {
 			newOrder = append(newOrder, id)
 		} else {
 			delete(m.services, id)
@@ -745,7 +982,35 @@ func (m *Manager) RefreshCustomModels() error {
 	}
 	m.modelOrder = newOrder
 	m.loadCustomModelsLocked(dbModels)
+	// Only a catalog with saved routes needs its order kept stable; without
+	// any, the order is exactly the baseline's.
+	if hasSaved {
+		preserveModelOrder(m.modelOrder, previousOrder)
+	}
 	return nil
+}
+
+func (m *Manager) hasProviderRoutesLocked() bool {
+	for _, entry := range m.services {
+		if entry.sourceID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func preserveModelOrder(order, previous []string) {
+	rank := make(map[string]int, len(previous))
+	for i, id := range previous {
+		rank[id] = i
+	}
+	position := func(id string) int {
+		if i, ok := rank[id]; ok {
+			return i
+		}
+		return len(previous)
+	}
+	slices.SortStableFunc(order, func(a, b string) int { return position(a) - position(b) })
 }
 
 // RefreshBuiltModels replaces the non-custom models with a freshly discovered
@@ -757,20 +1022,132 @@ func (m *Manager) RefreshBuiltModels(built []Built) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	providerBuilt := make([]Built, 0)
+	for _, id := range m.modelOrder {
+		entry, ok := m.services[id]
+		if !ok || entry.sourceID == "" {
+			continue
+		}
+		providerBuilt = append(providerBuilt, Built{
+			ID: entry.modelID, DisplayName: entry.displayName, Provider: entry.provider,
+			Mode: entry.mode, Source: entry.source,
+			ReleaseDate: entry.releaseDate, Service: entry.service,
+			APIModelName: entry.apiModelName, APIType: entry.apiType,
+			BaseURL: entry.baseURL, SourceID: entry.sourceID,
+			Capabilities: entry.capabilities, serviceRevision: entry.serviceRevision,
+		})
+	}
+	var previousOrder []string
+	if len(providerBuilt) > 0 {
+		for _, id := range m.modelOrder {
+			if entry, ok := m.services[id]; ok && (entry.sourceID != "" || entry.source == SourceCustomLabel) {
+				previousOrder = append(previousOrder, id)
+			}
+		}
+	}
 	m.services = map[string]serviceEntry{}
 	m.modelOrder = nil
 	m.registerBuiltModelsLocked(built)
+	head := len(m.modelOrder)
+	m.registerBuiltModelsLocked(providerBuilt)
 	m.loadCustomModelsLocked(dbModels)
+	// With saved routes, they and individual custom routes keep their
+	// relative order (so the first-ready default account cannot flip);
+	// genuinely new routes follow. Without any, the order is the baseline's.
+	if len(providerBuilt) > 0 {
+		preserveModelOrder(m.modelOrder[head:], previousOrder)
+	}
 	return nil
+}
+
+// RelabelProviderModels changes the display source of one saved provider's
+// routes. It never alters services, order or the provider revision.
+func (m *Manager) RelabelProviderModels(providerID, source string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, entry := range m.services {
+		if entry.sourceID == providerID {
+			entry.source = source
+			m.services[id] = entry
+		}
+	}
+}
+
+// ReplaceProviderModels atomically replaces the complete in-memory catalog for
+// one saved provider source. Callers must materialize and validate all models
+// before persistence; this method deliberately has no fallible work.
+func (m *Manager) ReplaceProviderModels(providerID string, built []Built) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.services == nil {
+		m.services = make(map[string]serviceEntry)
+	}
+	if m.providerRevisions == nil {
+		m.providerRevisions = make(map[string]uint64)
+	}
+	// Replace in place: the source keeps the position of its first existing
+	// route, so a no-op refresh cannot change which source comes first (and
+	// so which account is the default). A source with no routes appends.
+	newOrder := make([]string, 0, len(m.modelOrder)+len(built))
+	anchor := -1
+	for _, id := range m.modelOrder {
+		entry, ok := m.services[id]
+		if ok && entry.sourceID != providerID {
+			newOrder = append(newOrder, id)
+		} else if ok {
+			if anchor < 0 {
+				anchor = len(newOrder)
+			}
+			delete(m.services, id)
+		}
+	}
+	m.modelOrder = newOrder
+	prefix := len(m.modelOrder)
+	seen := make(map[string]struct{}, len(m.services))
+	for id := range m.services {
+		seen[id] = struct{}{}
+	}
+	for _, model := range built {
+		if model.SourceID != providerID {
+			model.SourceID = providerID
+		}
+		if _, exists := seen[model.ID]; exists {
+			continue
+		}
+		seen[model.ID] = struct{}{}
+		m.registerBuiltModelsLocked([]Built{model})
+	}
+	if anchor >= 0 && anchor < prefix {
+		added := append([]string(nil), m.modelOrder[prefix:]...)
+		rest := append([]string(nil), m.modelOrder[anchor:prefix]...)
+		m.modelOrder = append(append(m.modelOrder[:anchor], added...), rest...)
+	}
+	m.providerRevisions[providerID]++
+	m.providerEpoch++
+}
+
+// ProviderCatalogRevision returns the revision for a saved provider catalog.
+// It increases after each successful complete replacement or deletion.
+func (m *Manager) ProviderCatalogRevision(providerID string) uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.providerRevisions[providerID]
 }
 
 // GetService returns the LLM service for modelID, wrapped with logging.
 func (m *Manager) GetService(modelID string) (llm.Service, error) {
-	m.mu.RLock()
-	entry, ok := m.services[modelID]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("unsupported model: %s", modelID)
+	service, _, _, err := m.GetServiceSnapshot(modelID)
+	return service, err
+}
+
+// GetServiceSnapshot samples the route and its service configuration revision together.
+func (m *Manager) GetServiceSnapshot(modelID string) (llm.Service, string, uint64, error) {
+	entry, revision, err := m.lookup(modelID)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	if entry.incompatible {
+		return nil, "", 0, fmt.Errorf("model %s is known not to support text and tool calling", modelID)
 	}
 	if m.logger != nil {
 		return &loggingService{
@@ -778,9 +1155,27 @@ func (m *Manager) GetService(modelID string) (llm.Service, error) {
 			logger:   m.logger,
 			modelID:  entry.modelID,
 			provider: entry.provider,
-		}, nil
+		}, entry.sourceID, revision, nil
 	}
-	return entry.service, nil
+	return entry.service, entry.sourceID, revision, nil
+}
+
+// KnownAgentIncompatible excludes only authoritative non-text/non-tool routes.
+func KnownAgentIncompatible(metadata *modelsdev.Metadata) bool {
+	if metadata == nil {
+		return false
+	}
+	if metadata.Authoritative("tool_call") && metadata.ToolCall != nil && !*metadata.ToolCall {
+		return true
+	}
+	for field, modalities := range map[string][]string{
+		"input_modalities": metadata.InputModalities, "output_modalities": metadata.OutputModalities,
+	} {
+		if metadata.Authoritative(field) && modalities != nil && !slices.Contains(modalities, "text") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) GetAvailableModels() []string {
@@ -821,10 +1216,48 @@ func (m *Manager) GetTranscriptionModels(modelName string) ([]TranscriptionModel
 }
 
 func (m *Manager) HasModel(modelID string) bool {
-	m.mu.RLock()
-	_, ok := m.services[modelID]
-	m.mu.RUnlock()
-	return ok
+	_, _, err := m.lookup(modelID)
+	return err == nil
+}
+
+// SetProviderResolver supplies saved provider routes the catalog does not
+// list, such as an existing conversation's model after discovery failed or
+// the provider stopped listing it.
+func (m *Manager) SetProviderResolver(resolve func(modelID string) (Built, error)) {
+	m.mu.Lock()
+	m.resolveProvider = resolve
+	m.mu.Unlock()
+}
+
+// lookup returns a registered entry, or one built by the provider resolver.
+// A resolved entry is not registered: it never appears in model lists. Its
+// revision is returned only when no provider changed during resolution, so a
+// concurrent rotation can never label an old service as current.
+func (m *Manager) lookup(modelID string) (serviceEntry, uint64, error) {
+	for {
+		m.mu.RLock()
+		entry, ok := m.services[modelID]
+		revision := entry.serviceRevision
+		epoch, resolve := m.providerEpoch, m.resolveProvider
+		m.mu.RUnlock()
+		if ok {
+			return entry, revision, nil
+		}
+		if resolve == nil || !strings.HasPrefix(modelID, "provider:") {
+			return serviceEntry{}, 0, fmt.Errorf("unsupported model: %s", modelID)
+		}
+		built, err := resolve(modelID)
+		if err != nil {
+			return serviceEntry{}, 0, err
+		}
+		m.mu.RLock()
+		stable := m.providerEpoch == epoch
+		revision = built.serviceRevision
+		m.mu.RUnlock()
+		if stable {
+			return newServiceEntry(built), revision, nil
+		}
+	}
 }
 
 // ModelInfo contains display name, provider metadata, and release date for a model.
@@ -839,16 +1272,22 @@ type ModelInfo struct {
 	// APIModelName is the wire model name (e.g. "claude-opus-5"), for
 	// models.dev lookups.
 	APIModelName string
+	SourceID     string
+	Capabilities *modelsdev.Metadata
 }
 
 func (m *Manager) GetModelInfo(modelID string) *ModelInfo {
-	m.mu.RLock()
-	entry, ok := m.services[modelID]
-	m.mu.RUnlock()
-	if !ok {
+	entry, _, err := m.lookup(modelID)
+	if err != nil {
 		return nil
 	}
-	return &ModelInfo{DisplayName: entry.displayName, Provider: entry.provider, Mode: entry.mode, Source: entry.source, ReleaseDate: entry.releaseDate, BaseURL: entry.baseURL, APIType: string(entry.apiType), APIModelName: entry.apiModelName}
+	return &ModelInfo{
+		DisplayName: entry.displayName, Provider: entry.provider, Mode: entry.mode,
+		Source: entry.source, ReleaseDate: entry.releaseDate,
+		BaseURL: entry.baseURL, APIType: string(entry.apiType),
+		APIModelName: entry.apiModelName, SourceID: entry.sourceID,
+		Capabilities: cloneProviderMetadata(entry.capabilities),
+	}
 }
 
 type reasoningMapping struct {

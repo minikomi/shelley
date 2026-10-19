@@ -191,6 +191,7 @@
 
       <ModelsModal
         :is-open="modelsModalOpen"
+        :refresh-trigger="modelsRefreshTrigger"
         @close="
           () => {
             modelsModalOpen = false;
@@ -1067,6 +1068,7 @@ onMounted(() => {
     onNotificationEvent: handleNotificationEvent,
     onStatusChange: (status) => (streamStatus.value = status),
     onDiskSpaceStatus: applyDiskSpaceStatus,
+    onModelsChanged: () => modelsRefreshTrigger.value++,
     onReconnect: () => {
       reconnectNonce.value++;
     },

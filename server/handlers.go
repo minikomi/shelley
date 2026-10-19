@@ -1839,6 +1839,19 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 			s.internalError(w, "Failed to ensure loop for retry", err, "conversationID", conversationID)
 			return
 		}
+	} else if modelID := manager.GetModel(); isSavedProviderRouteID(modelID) {
+		// A warm idle loop can be pinned to a saved provider catalog revision
+		// that has since changed, so saved routes re-resolve before retrying.
+		// Every other warm loop is retried as it is.
+		llmService, err := s.llmManager.GetService(modelID)
+		if err != nil {
+			http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
+			return
+		}
+		if err := manager.ensureLoop(llmService, modelID); err != nil {
+			s.internalError(w, "Failed to ensure loop for retry", err, "conversationID", conversationID)
+			return
+		}
 	}
 
 	if err := manager.RetryLastLLMRequest(ctx); err != nil {
@@ -2277,6 +2290,13 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 		}
 	}
 
+	// Subscribed above, so a change between the client's catalog fetch and
+	// this stream opening cannot be missed. Installs without saved providers
+	// (no manager, or no source with visible state) get no catalog frame.
+	if includeConversationListPatches && s.streamPub != nil && s.modelProviders != nil && s.modelProviders.HasCatalogState() && !writeStreamData(StreamResponse{ModelsChanged: true}) {
+		return
+	}
+
 	if conversationID == "" {
 		// Stream without backfill: forward events from streamPub and list
 		// patches, with a periodic heartbeat so intermediaries don't time
@@ -2544,14 +2564,16 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 // ModelInfo represents a model in the API response
 type ModelInfo struct {
-	ID           string `json:"id"`
-	DisplayName  string `json:"display_name,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	Source       string `json:"source,omitempty"`   // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
-	BaseURL      string `json:"base_url,omitempty"` // Upstream origin (e.g., "https://llm.int.exe.xyz")
-	APIType      string `json:"api_type,omitempty"` // Wire protocol (e.g., "anthropic-messages")
-	APIModelName string `json:"api_model_name,omitempty"`
-	Ready        bool   `json:"ready"`
+	ID           string              `json:"id"`
+	SourceID     string              `json:"source_id,omitempty"`
+	Capabilities *modelsdev.Metadata `json:"capabilities,omitempty"`
+	DisplayName  string              `json:"display_name,omitempty"`
+	Mode         string              `json:"mode,omitempty"`
+	Source       string              `json:"source,omitempty"`   // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
+	BaseURL      string              `json:"base_url,omitempty"` // Upstream origin (e.g., "https://llm.int.exe.xyz")
+	APIType      string              `json:"api_type,omitempty"` // Wire protocol (e.g., "anthropic-messages")
+	APIModelName string              `json:"api_model_name,omitempty"`
+	Ready        bool                `json:"ready"`
 	// MaxContextTokens is the models.dev context window (clamped to the
 	// pricing tier, see modelsdev.LookupContextLimit); 0 when unknown.
 	MaxContextTokens int  `json:"max_context_tokens,omitempty"`
@@ -2878,6 +2900,8 @@ func (s *Server) getModelList() []ModelInfo {
 			info := ModelInfo{ID: id, Ready: err == nil, SupportsImages: supportsImages, SupportsReasoning: supportsReasoning, ReasoningLevels: reasoningLevels, DefaultReasoningLevel: defaultReasoning}
 			// Add display name and source from model info
 			if modelInfo := s.llmManager.GetModelInfo(id); modelInfo != nil {
+				info.SourceID = modelInfo.SourceID
+				info.Capabilities = modelInfo.Capabilities
 				info.DisplayName = modelInfo.DisplayName
 				info.Mode = modelInfo.Mode
 				info.Source = modelInfo.Source
@@ -2885,6 +2909,12 @@ func (s *Server) getModelList() []ModelInfo {
 				info.APIType = modelInfo.APIType
 				info.APIModelName = modelInfo.APIModelName
 				info.MaxContextTokens, _ = modelsdev.LookupContextLimit(modelInfo.BaseURL, modelInfo.APIModelName)
+				if modelInfo.SourceID != "" {
+					info.MaxContextTokens = 0
+					if modelInfo.Capabilities.Authoritative("context_limit") {
+						info.MaxContextTokens = modelInfo.Capabilities.ContextLimit
+					}
+				}
 			}
 			modelList = append(modelList, info)
 		}
@@ -2898,15 +2928,28 @@ func (s *Server) getModelList() []ModelInfo {
 // Not-ready models are left at their zero tier (omitted from JSON).
 func assignModelTiers(modelList []ModelInfo) {
 	var readyIDs []string
+	sourceModels := make(map[string]map[string]*modelsdev.Metadata)
 	for _, m := range modelList {
 		if m.Ready {
 			readyIDs = append(readyIDs, m.ID)
+			if m.SourceID != "" {
+				if sourceModels[m.SourceID] == nil {
+					sourceModels[m.SourceID] = make(map[string]*modelsdev.Metadata)
+				}
+				sourceModels[m.SourceID][m.APIModelName] = m.Capabilities
+			}
 		}
 	}
 	tiers := models.AssignTiers(readyIDs)
+	sourceTiers := make(map[string]map[string]int)
+	for sourceID, metadata := range sourceModels {
+		sourceTiers[sourceID] = models.ProviderTiers(metadata)
+	}
 	for i := range modelList {
 		if modelList[i].Ready {
-			if modelList[i].Source == models.SourceCustomLabel {
+			if modelList[i].SourceID != "" {
+				modelList[i].Tier = sourceTiers[modelList[i].SourceID][modelList[i].APIModelName]
+			} else if modelList[i].Source == models.SourceCustomLabel {
 				modelList[i].Tier = models.Tier1
 			} else {
 				modelList[i].Tier = tiers[modelList[i].ID]

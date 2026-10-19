@@ -226,7 +226,7 @@ import SystemPromptEditor from "./SystemPromptEditor.vue";
 import ToolSettings from "./ToolSettings.vue";
 import { profilesApi } from "../../services/api";
 import { settingsOf, toolOn, useProfiles } from "../composables/profiles";
-import { prettyModelLabels } from "../../utils/modelNames";
+import { prettyModelLabels, unavailableModelLabel } from "../../utils/modelNames";
 import { COMPACT_IN_PLACE_TOOL } from "./autoCompaction";
 import { serverDefaultModel } from "./selectedModel";
 import { normalizeThinkingLevelForModel, type ThinkingLevel } from "./thinkingLevel";
@@ -300,7 +300,7 @@ function summarize(s: Settings): string {
   // Unset model and reasoning resolve to the server's and the model's
   // defaults.
   const model = s.model || defaultModel;
-  const parts = [labels.value.get(model) || model];
+  const parts = [labels.value.get(model) || unavailableModelLabel(model)];
   const m = props.models.find((candidate) => candidate.id === model);
   const level = m?.supports_reasoning ? s.thinking_level || m.default_reasoning_level : "";
   if (level) parts.push(`${level} reasoning`);

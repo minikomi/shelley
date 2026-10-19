@@ -105,7 +105,15 @@ func (m *Manager) workhorseModel(conversationModelID string) string {
 	bestDate := ""
 	for _, modelID := range m.GetAvailableModels() {
 		candidate := m.GetModelInfo(modelID)
-		if candidate == nil || candidate.Provider != info.Provider || !matchesWorkhorseFamily(modelID, family) {
+		candidateName := modelID
+		// Saved routes have opaque IDs, so they match by upstream name; every
+		// other route matches by its registered ID, as before.
+		if candidate != nil && candidate.SourceID != "" && candidate.APIModelName != "" {
+			candidateName = candidate.APIModelName
+		}
+		if candidate == nil || candidate.Provider != info.Provider ||
+			candidate.SourceID != info.SourceID ||
+			!matchesWorkhorseFamily(candidateName, family) {
 			continue
 		}
 		if bestID == "" || candidate.ReleaseDate > bestDate {

@@ -1,0 +1,4 @@
+{"data":[
+ {"id":"vendor/fixture-chat","canonical_slug":"vendor/fixture-chat","name":"Vendor: Fixture","created":1700000000,"context_length":128000,"architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000002"},"top_provider":{"max_completion_tokens":null},"supported_parameters":["tools","max_tokens"]},
+ {"id":"gpt-6-astra","name":"OpenAI: Fixture","context_length":400000,"pricing":{"prompt":"0","completion":"0"}}
+]}

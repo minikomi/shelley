@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +38,16 @@ func unsupportedModelMessage(modelID string, modelList []ModelInfo) string {
 // host happens to be on (dev VMs are on exe.dev, CI is not).
 func unsupportedModelMessageIn(modelID string, modelList []ModelInfo, onExeDev bool) string {
 	if len(modelList) > 0 {
+		if provider, upstream, ok := savedProviderRoute(modelID); ok {
+			account := "its saved provider"
+			for _, m := range modelList {
+				if m.SourceID == provider && m.Source != "" {
+					account = m.Source
+					break
+				}
+			}
+			return fmt.Sprintf("Saved provider model %q is no longer available from %s (route %s). Reconnect that provider or choose another model.", upstream, account, modelID)
+		}
 		return fmt.Sprintf("Unsupported model: %s", modelID)
 	}
 	if !onExeDev {
@@ -48,6 +60,30 @@ func unsupportedModelMessageIn(modelID string, modelList []ModelInfo, onExeDev b
 	// all we have.
 	return "No AI models are configured. On exe.dev, attach the llm " +
 		"integration (and reflection) to this VM, then refresh the model list."
+}
+
+// isSavedProviderRouteID reports whether modelID names a saved provider route.
+func isSavedProviderRouteID(modelID string) bool {
+	return strings.HasPrefix(modelID, "provider:")
+}
+
+// savedProviderRoute decodes a saved provider route ID
+// (provider:<base64url provider id>:<base64url upstream model id>), so errors
+// can name the model and account rather than only the opaque ID.
+func savedProviderRoute(modelID string) (provider, upstream string, ok bool) {
+	parts := strings.Split(modelID, ":")
+	if len(parts) != 3 || parts[0] != "provider" {
+		return "", "", false
+	}
+	p, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", false
+	}
+	u, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", "", false
+	}
+	return string(p), string(u), true
 }
 
 // Machine-readable reasons for an empty model list. The UI maps these to

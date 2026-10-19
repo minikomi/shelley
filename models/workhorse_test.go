@@ -317,3 +317,26 @@ func assertRequestUnchanged(t *testing.T, req *llm.Request) {
 		t.Fatalf("caller request was mutated: (%v, %q)", req.ThinkingLevel, req.ReasoningEffort)
 	}
 }
+
+// Legacy routes match the family by registered ID only; the wire name never
+// substitutes for it. Saved routes (SourceID set) match by wire name within
+// their own account and never mix with legacy routes.
+func TestLegacyWorkhorseMatchesRegisteredIDNotAPIModelName(t *testing.T) {
+	manager := newWorkhorseManager(
+		t,
+		Built{ID: "claude-opus-5", Provider: ProviderAnthropic},
+		Built{ID: "claude-haiku-4-5", Provider: ProviderAnthropic, ReleaseDate: "2025-10-15"},
+		// Wire name says haiku but the registered ID does not: not a candidate.
+		Built{ID: "fast-alias", Provider: ProviderAnthropic, ReleaseDate: "2026-10-07", APIModelName: "claude-haiku-5.5"},
+		// Registered ID matches, wire name does not: still a candidate.
+		Built{ID: "claude-haiku-4-6@integration", Provider: ProviderAnthropic, ReleaseDate: "2026-08-15", APIModelName: "unrelated"},
+		Built{ID: "provider:YQ:b3B1cw", Provider: ProviderAnthropic, ReleaseDate: "2026-11-01", SourceID: "a", APIModelName: "claude-opus-5"},
+		Built{ID: "provider:YQ:aGFpa3U", Provider: ProviderAnthropic, ReleaseDate: "2026-11-02", SourceID: "a", APIModelName: "claude-haiku-6"},
+	)
+	if got := manager.workhorseModel("claude-opus-5"); got != "claude-haiku-4-6@integration" {
+		t.Fatalf("legacy workhorse = %q, want the registered-ID match", got)
+	}
+	if got := manager.workhorseModel("provider:YQ:b3B1cw"); got != "provider:YQ:aGFpa3U" {
+		t.Fatalf("saved workhorse = %q, want same-account wire-name match", got)
+	}
+}

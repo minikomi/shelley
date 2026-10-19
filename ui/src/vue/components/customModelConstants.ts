@@ -2,6 +2,25 @@
 // ModelsModal.vue (the list) and ModelFormModal.vue (the add/edit dialog).
 
 export type ProviderType = "anthropic" | "openai" | "openai-responses" | "gemini";
+export type ConnectionProviderType = "anthropic" | "openai" | "openai-responses";
+
+export const CONNECTION_DEFAULT_ENDPOINTS: Record<ConnectionProviderType, string> = {
+  anthropic: "https://api.anthropic.com/v1",
+  openai: "https://api.openai.com/v1",
+  "openai-responses": "https://api.openai.com/v1",
+};
+
+export const CONNECTION_PROVIDER_LABELS: Record<ConnectionProviderType, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI (Chat Completions)",
+  "openai-responses": "OpenAI (Responses)",
+};
+
+export const connectionProviderTypes: ConnectionProviderType[] = [
+  "anthropic",
+  "openai",
+  "openai-responses",
+];
 
 export const DEFAULT_ENDPOINTS: Record<ProviderType, string> = {
   anthropic: "https://api.anthropic.com/v1/messages",
@@ -10,11 +29,38 @@ export const DEFAULT_ENDPOINTS: Record<ProviderType, string> = {
   gemini: "https://generativelanguage.googleapis.com/v1beta",
 };
 
+export const ENDPOINT_PRESETS: Record<ProviderType, { name: string; url: string }[]> = {
+  anthropic: [{ name: "Anthropic", url: CONNECTION_DEFAULT_ENDPOINTS.anthropic }],
+  openai: [
+    { name: "OpenAI", url: CONNECTION_DEFAULT_ENDPOINTS.openai },
+    { name: "OpenRouter", url: "https://openrouter.ai/api/v1" },
+    { name: "z.ai", url: "https://api.z.ai/api/paas/v4" },
+    { name: "z.ai Coding Plan", url: "https://api.z.ai/api/coding/paas/v4" },
+    { name: "Groq", url: "https://api.groq.com/openai/v1" },
+    { name: "DeepSeek", url: "https://api.deepseek.com/v1" },
+    { name: "Mistral", url: "https://api.mistral.ai/v1" },
+    { name: "Together AI", url: "https://api.together.ai/v1" },
+  ],
+  "openai-responses": [
+    { name: "OpenAI", url: CONNECTION_DEFAULT_ENDPOINTS["openai-responses"] },
+    { name: "OpenRouter", url: "https://openrouter.ai/api/v1" },
+    { name: "Groq", url: "https://api.groq.com/openai/v1" },
+  ],
+  gemini: [{ name: "Google Gemini", url: DEFAULT_ENDPOINTS.gemini }],
+};
+
 export const PROVIDER_LABELS: Record<ProviderType, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI (Chat API)",
   "openai-responses": "OpenAI (Responses API)",
   gemini: "Google Gemini",
+};
+
+export const PROVIDER_TAB_LABELS: Record<ProviderType, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI Chat",
+  "openai-responses": "OpenAI Responses",
+  gemini: "Gemini",
 };
 
 // Autocomplete suggestions offered for the model-name field, per provider.
@@ -91,7 +137,7 @@ export interface FormData {
   display_name: string;
   provider_type: ProviderType;
   endpoint: string;
-  endpoint_custom: boolean;
+
   api_key: string;
   model_name: string;
   max_tokens: number;
@@ -106,7 +152,7 @@ export const emptyForm: FormData = {
   display_name: "",
   provider_type: "anthropic",
   endpoint: DEFAULT_ENDPOINTS.anthropic,
-  endpoint_custom: false,
+
   api_key: "",
   model_name: "",
   max_tokens: 0,

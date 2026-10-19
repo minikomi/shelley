@@ -261,6 +261,7 @@ interface StreamResponse {
   };
 
   heartbeat?: true;                 // sent every 30s if nothing else to say
+  models_changed?: true;            // re-fetch the model list and provider status
   snapshot_complete?: true;         // once, after the initial replay
 }
 ```
@@ -328,6 +329,9 @@ fresh reset event.
 ### Models, tools, notifications
 
 - `GET /api/models` — available models.
+- `POST /api/models/refresh` — refresh integration/catalog sources and return
+  the model array. Saved provider discovery is separate; this endpoint keeps
+  its existing response and failure behavior.
 - `GET /api/tools` — registered tool definitions.
 - `GET/POST/PUT/DELETE /api/custom-models[/<id>]` — custom model CRUD.
   OpenAI-compatible models accept `reasoning_replay` as `auto`,
@@ -336,6 +340,164 @@ fresh reset event.
 - `POST /api/custom-models-test` — test a custom model config.
 - `GET/POST/PUT/DELETE /api/notification-channels[/<id>]`,
   `GET /api/notification-channel-types` — notification CRUD.
+
+### Saved model providers
+
+A connection stores one endpoint and credential in `model_providers`; that is
+all that is saved. Like integrations, its models are discovered at startup and
+held in memory. Existing custom models remain independent, including
+deliberately configured per-model overrides.
+
+- `GET /api/model-providers` — connections and their current discovery status.
+- `POST /api/model-providers/refresh` — refresh saved connections independently
+  and return their connection/status array. A discovery failure appears in the
+  affected connection's `state` and `error`; other connections can succeed.
+  Database failures return HTTP `500`. Without a provider manager, returns `[]`.
+- `POST /api/model-providers` — discover and save a connection.
+- `POST /api/model-providers/test[?provider_id=<id>]` — check the proposed
+  configuration without saving it or publishing routes. Uses the same model
+  filtering as Connect and returns `{"chat": ["Display name", ...],
+  "key_checked": true}`. `chat` contains the names of exactly the models that
+  would be added, not every upstream model ID.
+- `PUT /api/model-providers/<id>` — discover proposed settings, then save and
+  replace that connection's published routes. An empty `api_key` retains the current key
+  only when the endpoint origin is unchanged. Changing scheme, host, or
+  non-default port requires the key to be entered again; Test applies the same
+  rule when `provider_id` is supplied.
+- `DELETE /api/model-providers/<id>` — remove the connection; its routes stop
+  resolving.
+- `POST /api/model-providers/<id>/refresh` — rediscover only this connection.
+  Failure returns a non-success HTTP status and preserves the published catalog.
+
+Create/update bodies contain `provider_type`, `endpoint`, `api_key`, and optional
+`display_name`. Provider types are `anthropic`, `openai` (Chat Completions), and
+`openai-responses`. The endpoint is an API base including its version/prefix,
+for example `https://api.anthropic.com/v1` or
+`https://example.com/tenant/api/v1`. Discovery appends `/models`; inference
+appends the selected protocol's path. Shelley does not switch protocols or
+credentials when discovery fails.
+
+Hostnames and default ports are normalized; custom prefixes and path case are
+preserved. Saving the same canonical endpoint and key twice returns `409`,
+including across Chat Completions and Responses connections. Test also checks
+for this duplicate, excluding the connection being edited. Different keys can
+use the same endpoint; an omitted account label gets a host-based name with a
+numeric suffix when necessary.
+
+Successful discovery is not always an authentication check: some providers
+publish their model list publicly. OpenRouter's public listing is followed by
+its authenticated key-information request. For compatible endpoints without
+an authentication-specific check, `key_checked` is false when listing succeeds
+without a key. This is not a successful inference probe, and no inference
+request is made automatically.
+
+Responses contain `provider_id`, `provider_type`, `endpoint`, `display_name`,
+`has_api_key`, `created_at`, `updated_at`, `state` (`ready`, `error`, or
+`discovering`), `model_count`, and optional
+`last_success` and `error`. They never return the saved API key. Credentials
+are stored in the local SQLite database; response redaction is not encryption
+at rest. Protect the database and its backups accordingly.
+
+Model responses identify ownership using `source_id`, independently of the
+human-readable source label. Runtime IDs encode both the connection ID and
+upstream model ID; `api_model_name` retains the wire ID. Rotating credentials
+does not rename routes, and matching model names on two accounts do not merge
+their routes.
+
+Discovery determines available IDs. Provider metadata and the embedded
+models.dev snapshot enrich capabilities, limits, and names. A Shelley catalog
+entry is not required when an exact metadata match establishes text input,
+text output, and tool support. Capability provenance distinguishes exact catalog
+matches from advisory matches and unknown fields. Catalog-reported support is
+not verification that this endpoint/key can run the model. In particular,
+OpenAI model listing does not determine Chat Completions versus Responses
+support.
+
+Eligible routes are supported Shelley catalog entries or exact metadata matches
+establishing agent compatibility, unless authoritative metadata establishes
+incompatibility. Known incompatible, unknown, and advisory-only models are not
+automatically added. Check and Connect apply this identical filter, so their
+counts agree. Picker tiers affect prominence, not availability: discovering a
+newer model does not remove an older model that is still listed and eligible.
+Use Add single model for deliberate configuration of an excluded model. This
+conservative policy can omit newly released usable models until the catalog
+gains sufficient metadata.
+
+The optional `capabilities.provenance` map marks individual provider-supplied
+fields as `provider`; remaining fields retain the catalog's `match` strength.
+Reporting one provider capability never promotes unrelated advisory metadata.
+Reported reasoning support alone does not establish a wire vocabulary, so
+models without a known reasoning vocabulary have reasoning controls disabled.
+Reasoning controls are separate from replaying a model's reasoning state during
+tool continuations; saved routes retain the existing transport's origin checks
+and replay behavior.
+Saved routes use an authoritative output limit when available; missing or
+advisory-only limits use the conservative 8192-token allowance. Their
+context limit is the reported technical limit, not a pricing-tier threshold.
+
+The UI's Refresh All calls the existing model-refresh and saved-provider-refresh
+endpoints independently, then reads the current model list. Provider failures
+remain visible without changing the legacy API's response contract or the
+existing integration refresh policy.
+
+Startup does not wait for discovery: connections are discovered in the
+background, with bounded concurrency, publishing results in saved-source order.
+Until then a connection's `state` is `discovering`; one that fails is retried
+once after 30 seconds. Catalog and status changes notify open clients over
+`/api/stream2` using `models_changed: true`; clients re-fetch the current lists
+without triggering another discovery. Once provider state has changed, a
+stream's initial notification also covers changes between page load and
+subscription, including reconnects after the last provider was deleted.
+An installation that has not published any provider state sends no such frame.
+Within each connection, accepted models are
+ordered newest-first by the available release date; undated models follow
+dated models and equal dates retain the provider's order. Check, Add, and
+Refresh share this ordering. There is no further timer-based refresh: sources
+that still fail are retried with Refresh. A failed refresh keeps the published
+catalog and `last_success`; a failed startup discovery publishes nothing and
+reports the error, while a database failure is an initialization error. Label-only edits
+make no request and keep the catalog and status. An unchanged refresh records
+its success without replacing the running services.
+
+Discovery and key checks run outside the provider mutation lock. Edits and
+deletions can complete while another request is still discovering models.
+Only current results are published: a late refresh cannot overwrite newer
+settings or recreate a deleted connection. An edit superseded by a newer
+configuration change returns `409`; duplicate endpoint/key pairs are checked
+again when saving.
+
+A route ID that the published catalog does not list (discovery failed, or the
+provider stopped listing the model) is rebuilt from the ID and its
+connection's current endpoint and key, with metadata from the embedded
+catalog. Existing conversations therefore keep their model and account, and
+the provider itself reports whether the model still works. Such routes are
+never offered for new chats. Once the connection is removed they fail with an
+explicit error and need a replacement model rather than another account.
+Connections do not implicitly become recording/transcription credential
+sources.
+
+Refreshing or editing a source preserves its registry position and does not
+silently change the fallback default account, including when individual and
+saved-provider models coexist. A failed conversation-service rebuild retains
+the selected route; retries must not substitute the default account.
+The existing `shelley models` CLI remains database-independent and lists
+integration/catalog sources, not DB-backed providers or individual models.
+Saved routes offered to subagent
+and one-shot tools are scoped to the parent conversation's provider connection;
+at most 32 saved routes are offered, retaining the parent and preferring the
+newest release dates with deterministic ties. This bound affects helper tool
+schemas, not the conversation picker. Legacy integration/custom-model
+selection behavior remains separate. Helper
+selection for a saved route must use its stable source identity, not an account
+label shared by another connection.
+
+The storage migration is additive: one `model_providers` table, without
+rewriting conversations or existing custom models. For application rollback,
+leave that table and the migration record intact and run the previous binary.
+That binary does not know saved-provider route IDs, so conversations using
+those routes require an explicit model change; their history is preserved.
+Re-upgrading resolves those routes again. Restoring an older database
+backup is not the normal rollback path because it discards newer conversations.
 
 ### Profiles
 

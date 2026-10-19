@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 	"shelley.exe.dev/client"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm/llmhttp"
+	"shelley.exe.dev/modelproviders"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/modelsources"
 	"shelley.exe.dev/server"
@@ -199,8 +202,14 @@ func runServe(global GlobalConfig, args []string) {
 
 	// Initialize LLM service manager (includes custom model support via database)
 	llmManager := server.NewLLMServiceManager(llmConfig)
+	providerManager, err := loadSavedProviders(global, database, llmManager, llmConfig.HTTPC)
+	if err != nil {
+		logger.Error("Failed to load saved model providers", "error", err)
+		os.Exit(1)
+	}
 
-	// Log available models
+	// Log available models. Saved providers publish theirs once background
+	// discovery finishes.
 	availableModels := llmManager.GetAvailableModels()
 	logger.Info("Available models", "models", strings.Join(availableModels, ", "))
 
@@ -209,6 +218,13 @@ func runServe(global GlobalConfig, args []string) {
 	// Create server
 	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
 	svr.SetModelRefresher(llmConfig.RefreshBuiltModels)
+	// Background discovery lasts as long as serving does.
+	providersCtx, stopProviders := context.WithCancel(context.Background())
+	defer stopProviders()
+	if err := startSavedProviders(providersCtx, svr, providerManager); err != nil {
+		logger.Error("Failed to load saved model providers", "error", err)
+		os.Exit(1)
+	}
 	svr.Banner = *banner
 
 	// Load notification channels from DB.
@@ -287,6 +303,27 @@ func setupDatabase(dbPath string, logger *slog.Logger) *db.DB {
 	// which either clears them or resumes the interrupted turns after an upgrade
 	// restart.
 	return database
+}
+
+func loadSavedProviders(global GlobalConfig, database *db.DB, llmManager server.LLMProvider, httpc *http.Client) (*modelproviders.Manager, error) {
+	if global.PredictableOnly {
+		return nil, nil
+	}
+	publisher, ok := llmManager.(modelproviders.Publisher)
+	if !ok {
+		return nil, errors.New("LLM manager does not support saved model providers")
+	}
+	return modelproviders.New(database, publisher, httpc), nil
+}
+
+// startSavedProviders registers the manager with the server before starting
+// background discovery, so no catalog change goes unannounced to open UIs.
+func startSavedProviders(ctx context.Context, svr *server.Server, manager *modelproviders.Manager) error {
+	svr.SetModelProviderManager(manager)
+	if manager == nil {
+		return nil
+	}
+	return manager.Start(ctx)
 }
 
 // runUnpackTemplate unpacks a project template to a directory
@@ -390,6 +427,8 @@ func isChatGPTSubscriptionRoute(info *models.ModelInfo, baseURL string) bool {
 		info.Mode == "chatgpt" && info.BaseURL == baseURL
 }
 
+const providerHelperModelLimit = 32
+
 func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager server.LLMProvider) claudetool.ToolSetConfig {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -418,32 +457,112 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 		}
 		tiers := models.AssignTiers(names)
 		var out []claudetool.AvailableModel
+		var outInfos []*models.ModelInfo
 		nameCount := make(map[string]int)
+		legacyCount := make(map[string]int)
 		for i, id := range availableIDs {
 			info := infos[i]
-			// Only surface tier-1 models to agents; tier-2 models are
-			// overshadowed by a better available sibling (see
-			// models.AssignTiers) or are unknown integration models and would
-			// just clutter the model enum. Explicit custom models stay visible.
-			keepParentRoute := alwaysIncludeID != "" && id == alwaysIncludeID
-			if !keepParentRoute && tiers[names[i]] == models.Tier2 && (info == nil || info.Source != models.SourceCustomLabel) {
+			if info != nil && info.SourceID != "" && models.KnownAgentIncompatible(info.Capabilities) {
 				continue
 			}
-			nameCount[names[i]]++
-			out = append(out, claudetool.AvailableModel{Name: names[i], ID: id})
+			// Only surface tier-1 models to agents; tier-2 models are
+			// overshadowed by a better available sibling (see
+			// models.AssignTiers). Saved routes were filtered independently,
+			// and the parent route is always retained.
+			keepParentRoute := alwaysIncludeID != "" && id == alwaysIncludeID
+			if !keepParentRoute && tiers[names[i]] == models.Tier2 &&
+				(info == nil || (info.Source != models.SourceCustomLabel && info.SourceID == "")) {
+				continue
+			}
+			// Saved routes have opaque encoded IDs; show the upstream model
+			// name. Tiers above still use the route's own name, so a saved
+			// route never reshuffles the built-in catalog's tiers.
+			name := names[i]
+			if info != nil && info.SourceID != "" && info.APIModelName != "" {
+				name = info.APIModelName
+			}
+			nameCount[name]++
+			if info == nil || info.SourceID == "" {
+				legacyCount[name]++
+			}
+			out = append(out, claudetool.AvailableModel{Name: name, ID: id})
+			outInfos = append(outInfos, info)
 		}
-		// Names must identify exactly one route; fall back to the full ID
-		// when two surviving routes would otherwise share a name.
+		// Names must identify exactly one route. Legacy routes fall back to the
+		// full ID only when another legacy route shares the name (baseline). A
+		// saved route that shares a name with any route is qualified by its
+		// account label; anything still ambiguous falls back to the full ID.
 		for i := range out {
-			if nameCount[out[i].Name] > 1 {
+			info := outInfos[i]
+			if info == nil || info.SourceID == "" {
+				if legacyCount[out[i].Name] > 1 {
+					out[i].Name = out[i].ID
+				}
+				continue
+			}
+			if nameCount[out[i].Name] <= 1 {
+				continue
+			}
+			if info.Source != "" && info.APIModelName != "" {
+				out[i].Name = info.Source + ": " + info.APIModelName
+			} else {
+				out[i].Name = out[i].ID
+			}
+		}
+		finalCount := make(map[string]int, len(out))
+		for _, m := range out {
+			finalCount[m.Name]++
+		}
+		for i := range out {
+			// Only saved routes are renamed here; legacy names keep baseline behavior.
+			if info := outInfos[i]; info != nil && info.SourceID != "" && finalCount[out[i].Name] > 1 {
 				out[i].Name = out[i].ID
 			}
 		}
 		return out
 	}
 
+	// Keep the parent's saved account, bounded to its newest routes plus the
+	// parent. Existing built-in, integration, and custom choices are unchanged.
+	scopeSavedRoutes := func(ids []string, parentModelID string) []string {
+		parentSource := ""
+		if parentInfo := llmManager.GetModelInfo(parentModelID); parentInfo != nil {
+			parentSource = parentInfo.SourceID
+		}
+		type candidate struct{ id, date, name string }
+		var saved []candidate
+		allowed := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			info := llmManager.GetModelInfo(id)
+			if info == nil || info.SourceID == "" {
+				allowed[id] = true
+			} else if info.SourceID == parentSource {
+				saved = append(saved, candidate{id, info.ReleaseDate, info.APIModelName})
+			}
+		}
+		slices.SortFunc(saved, func(a, b candidate) int {
+			if (a.id == parentModelID) != (b.id == parentModelID) {
+				if a.id == parentModelID {
+					return -1
+				}
+				return 1
+			}
+			if order := strings.Compare(b.date, a.date); order != 0 {
+				return order
+			}
+			if order := strings.Compare(a.name, b.name); order != 0 {
+				return order
+			}
+			return strings.Compare(a.id, b.id)
+		})
+		for _, model := range saved[:min(len(saved), providerHelperModelLimit)] {
+			allowed[model.id] = true
+		}
+		return slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return !allowed[id] })
+	}
+
 	buildAvailableModels := func(parentModelID string) []claudetool.AvailableModel {
-		availableIDs := llmManager.GetAvailableModels()
+		availableIDs := scopeSavedRoutes(llmManager.GetAvailableModels(), parentModelID)
 		parentInfo := llmManager.GetModelInfo(parentModelID)
 		if parentInfo == nil || !isChatGPTSubscriptionRoute(parentInfo, parentInfo.BaseURL) {
 			return buildAvailableModelsForIDs(availableIDs, "", "")

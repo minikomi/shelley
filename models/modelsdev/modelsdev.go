@@ -7,8 +7,10 @@
 package modelsdev
 
 import (
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
@@ -22,7 +24,10 @@ import (
 var apiJSON []byte
 
 type modelEntry struct {
-	Reasoning        bool                `json:"reasoning"`
+	Name             string              `json:"name"`
+	Family           string              `json:"family"`
+	ToolCall         *bool               `json:"tool_call"`
+	Reasoning        *bool               `json:"reasoning"`
 	ReasoningOptions []reasoningOption   `json:"reasoning_options"`
 	Interleaved      interleavedMetadata `json:"interleaved"`
 	ReleaseDate      string              `json:"release_date"`
@@ -35,6 +40,43 @@ type modelEntry struct {
 		Output []string `json:"output"`
 	} `json:"modalities"`
 	Cost Cost `json:"cost"`
+}
+
+// Metadata is the snapshot metadata associated with a discovered model.
+// Match is "exact" only when both the endpoint resolves to one models.dev
+// provider and upstreamID exactly matches that provider's wire model ID;
+// otherwise the metadata is advisory evidence.
+type Metadata struct {
+	Name             string              `json:"name"`
+	Family           string              `json:"family"`
+	InputModalities  []string            `json:"input_modalities"`
+	OutputModalities []string            `json:"output_modalities"`
+	ToolCall         *bool               `json:"tool_call"`
+	Images           *bool               `json:"images"`
+	Reasoning        *bool               `json:"reasoning"`
+	ReasoningLevels  []llm.ThinkingLevel `json:"reasoning_levels"`
+	ContextLimit     int                 `json:"context_limit"`
+	OutputLimit      int                 `json:"output_limit"`
+	ReleaseDate      string              `json:"release_date"`
+	ProviderID       string              `json:"provider_id"`
+	ModelID          string              `json:"model_id"`
+	Match            string              `json:"match"`
+	Snapshot         string              `json:"snapshot"`
+	Lifecycle        string              `json:"lifecycle,omitempty"`
+	ThinkingTypes    []string            `json:"thinking_types,omitempty"`
+	Provenance       map[string]string   `json:"provenance,omitempty"`
+}
+
+// Authoritative distinguishes provider/exact evidence from advisory aliases
+// independently for each field.
+func (m *Metadata) Authoritative(field string) bool {
+	if m == nil {
+		return false
+	}
+	if source, ok := m.Provenance[field]; ok {
+		return source == "provider" || source == "models.dev:exact"
+	}
+	return m.Match == "exact"
 }
 
 type reasoningOption struct {
@@ -109,8 +151,10 @@ type providerEntry struct {
 }
 
 var (
-	parseOnce sync.Once
-	parsed    map[string]providerEntry
+	parseOnce    sync.Once
+	parsed       map[string]providerEntry
+	snapshotOnce sync.Once
+	snapshotID   string
 	// hostIndex maps a normalized host (e.g. "opencode.ai") to the provider
 	// entries whose "api" URL lives on that host. A host may serve more than
 	// one provider (e.g. opencode / opencode-go), so this is a slice.
@@ -152,6 +196,9 @@ func load() map[string]providerEntry {
 var knownHosts = map[string]string{
 	"api.anthropic.com":                 "anthropic",
 	"api.openai.com":                    "openai",
+	"api.groq.com":                      "groq",
+	"api.mistral.ai":                    "mistral",
+	"api.together.ai":                   "togetherai",
 	"generativelanguage.googleapis.com": "google",
 }
 
@@ -204,7 +251,7 @@ func LookupImageSupport(endpoint, modelName string) (supported, found bool) {
 // reasoning. The second return value is false when the model is unknown.
 func LookupReasoningSupport(endpoint, modelName string) (supported, found bool) {
 	m, found := lookup(endpoint, modelName)
-	return m.Reasoning, found
+	return m.Reasoning != nil && *m.Reasoning, found
 }
 
 // LookupReasoningCapabilities returns the reasoning support and explicit effort
@@ -229,8 +276,8 @@ func LookupInterleavedReasoningField(endpoint, modelName string) (string, bool) 
 }
 
 func parseReasoningCapabilities(m modelEntry) (caps ReasoningCapabilities) {
-	caps.Supported = m.Reasoning
-	if !m.Reasoning {
+	caps.Supported = m.Reasoning != nil && *m.Reasoning
+	if !caps.Supported {
 		return caps
 	}
 
@@ -267,6 +314,114 @@ func parseReasoningCapabilities(m modelEntry) (caps ReasoningCapabilities) {
 		}
 	}
 	return caps
+}
+
+// LookupMetadata resolves metadata using endpoint/provider identity before
+// falling back to advisory catalog matches. The result is never an admission
+// decision: callers decide whether an unknown ID is usable.
+func LookupMetadata(endpoint, upstreamID string) (Metadata, bool) {
+	upstreamID = strings.TrimSpace(upstreamID)
+	if upstreamID == "" {
+		return Metadata{}, false
+	}
+	data := load()
+	hostProviders := hostIndex[hostOf(endpoint)]
+
+	// Only an endpoint that identifies a single provider and an exact wire ID
+	// authorize provider-specific controls.
+	if p, ok := providerForEndpoint(hostProviders, pathSegments(endpoint)); ok {
+		if m, exists := p.Models[upstreamID]; exists {
+			return metadataFor(p, upstreamID, m, "exact"), true
+		}
+		// Endpoint-local aliases are useful for display, but are not wire-exact.
+		if id, m, exists := lookupInProviderID(p, upstreamID); exists {
+			return metadataFor(p, id, m, "advisory"), true
+		}
+	}
+
+	// A model-aware host/path selection may still give useful advisory evidence
+	// where endpoint paths collide or are incomplete.
+	if p, ok := bestProviderForPath(hostProviders, pathSegments(endpoint), upstreamID); ok {
+		if id, m, exists := lookupInProviderID(p, upstreamID); exists {
+			return metadataFor(p, id, m, "advisory"), true
+		}
+	}
+
+	// Gateway endpoints are not evidence of a provider wire format. Search
+	// first-party catalogs and OpenRouter by exact ID, date alias, then tail;
+	// all such results remain advisory.
+	names := modelNames(upstreamID)
+	providers := append(append([]string(nil), firstPartyProviders...), "openrouter")
+	for _, name := range names {
+		for _, providerID := range providers {
+			p, ok := data[providerID]
+			if !ok {
+				continue
+			}
+			if id, m, ok := lookupInProviderID(p, name); ok {
+				return metadataFor(p, id, m, "advisory"), true
+			}
+		}
+	}
+	return Metadata{}, false
+}
+
+func metadataFor(p providerEntry, modelID string, m modelEntry, match string) Metadata {
+	result := Metadata{
+		Name:             m.Name,
+		Family:           m.Family,
+		InputModalities:  cloneStrings(m.Modalities.Input),
+		OutputModalities: cloneStrings(m.Modalities.Output),
+		ToolCall:         cloneBool(m.ToolCall),
+		Reasoning:        cloneBool(m.Reasoning),
+		ContextLimit:     m.Limit.Context,
+		OutputLimit:      m.Limit.Output,
+		ReleaseDate:      m.ReleaseDate,
+		ProviderID:       p.ID,
+		ModelID:          modelID,
+		Match:            match,
+		Snapshot:         snapshotIdentity(),
+	}
+	if m.Modalities.Input != nil {
+		images := containsString(m.Modalities.Input, "image")
+		result.Images = &images
+	}
+	if m.Reasoning != nil && *m.Reasoning {
+		result.ReasoningLevels = parseReasoningCapabilities(m).Levels
+	}
+	return result
+}
+
+func snapshotIdentity() string {
+	snapshotOnce.Do(func() {
+		sum := sha256.Sum256(apiJSON)
+		snapshotID = fmt.Sprintf("%x", sum)
+	})
+	return snapshotID
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 var reasoningLevels = []llm.ThinkingLevel{
@@ -505,6 +660,31 @@ func bestProviderForPath(providers []providerEntry, endpointSegs []string, model
 	return bestProviderForPathMatching(providers, endpointSegs, modelName, lookupInProvider)
 }
 
+// providerForEndpoint resolves a catalog using only endpoint identity, not
+// model-name coincidences. A unique host catalog is sufficient; shared hosts
+// require a uniquely best path match with at least one matching segment.
+func providerForEndpoint(providers []providerEntry, endpointSegs []string) (providerEntry, bool) {
+	if len(providers) == 1 {
+		return providers[0], true
+	}
+	var best providerEntry
+	bestScore := 0
+	tied := false
+	for _, p := range providers {
+		score := commonPrefixLen(pathSegments(p.API), endpointSegs)
+		switch {
+		case score > bestScore:
+			best, bestScore, tied = p, score, false
+		case score == bestScore && score > 0:
+			tied = true
+		}
+	}
+	if bestScore == 0 || tied {
+		return providerEntry{}, false
+	}
+	return best, true
+}
+
 func bestProviderForPathMatching(providers []providerEntry, endpointSegs []string, modelName string, match func(providerEntry, string) (modelEntry, bool)) (providerEntry, bool) {
 	var best providerEntry
 	bestScore := -1
@@ -563,26 +743,41 @@ func commonPrefixLen(a, b []string) int {
 // lookupInProvider tries exact, case-insensitive, and last-segment matches
 // for modelName within p.Models.
 func lookupInProvider(p providerEntry, modelName string) (modelEntry, bool) {
-	if m, ok := lookupExactInProvider(p, modelName); ok {
-		return m, true
+	_, m, ok := lookupInProviderID(p, modelName)
+	return m, ok
+}
+
+func lookupInProviderID(p providerEntry, modelName string) (string, modelEntry, bool) {
+	if id, m, ok := lookupExactIDInProvider(p, modelName); ok {
+		return id, m, true
 	}
-	return lookupTailInProvider(p, modelName)
+	return lookupTailIDInProvider(p, modelName)
 }
 
 func lookupExactInProvider(p providerEntry, modelName string) (modelEntry, bool) {
+	_, m, ok := lookupExactIDInProvider(p, modelName)
+	return m, ok
+}
+
+func lookupExactIDInProvider(p providerEntry, modelName string) (string, modelEntry, bool) {
 	if m, ok := p.Models[modelName]; ok {
-		return m, true
+		return modelName, m, true
 	}
 	lower := strings.ToLower(modelName)
 	for _, id := range sortedModelIDs(p) {
 		if strings.ToLower(id) == lower {
-			return p.Models[id], true
+			return id, p.Models[id], true
 		}
 	}
-	return modelEntry{}, false
+	return "", modelEntry{}, false
 }
 
 func lookupTailInProvider(p providerEntry, modelName string) (modelEntry, bool) {
+	_, m, ok := lookupTailIDInProvider(p, modelName)
+	return m, ok
+}
+
+func lookupTailIDInProvider(p providerEntry, modelName string) (string, modelEntry, bool) {
 	// Match the final path segment on both sides (e.g. "glm-5p2" or
 	// "fireworks/glm-5p2" -> "accounts/fireworks/models/glm-5p2").
 	// Refuse ambiguous matches instead of depending on map iteration order.
@@ -591,19 +786,19 @@ func lookupTailInProvider(p providerEntry, modelName string) (modelEntry, bool) 
 		tail = modelName[i+1:]
 	}
 	if tail == "" {
-		return modelEntry{}, false
+		return "", modelEntry{}, false
 	}
 	if m, ok := p.Models[tail]; ok {
-		return m, true
+		return tail, m, true
 	}
 	tailLower := strings.ToLower(tail)
 	ids := sortedModelIDs(p)
 	for _, id := range ids {
 		if strings.ToLower(id) == tailLower {
-			return p.Models[id], true
+			return id, p.Models[id], true
 		}
 	}
-	var match modelEntry
+	var matchID string
 	found := false
 	for _, id := range ids {
 		idTail := id
@@ -614,12 +809,15 @@ func lookupTailInProvider(p providerEntry, modelName string) (modelEntry, bool) 
 			continue
 		}
 		if found {
-			return modelEntry{}, false
+			return "", modelEntry{}, false
 		}
-		match = p.Models[id]
+		matchID = id
 		found = true
 	}
-	return match, found
+	if !found {
+		return "", modelEntry{}, false
+	}
+	return matchID, p.Models[matchID], true
 }
 
 func sortedModelIDs(p providerEntry) []string {

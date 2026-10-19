@@ -606,5 +606,30 @@ await run("disk_space_status frames reach onDiskSpaceStatus (no conversation_id)
   handle.close();
 });
 
+await run(
+  "models_changed frames reach onModelsChanged, including the one sent on every reconnect",
+  () => {
+    reset();
+    let changes = 0;
+    const handle = connectGlobalStream({
+      getHash: () => "hash0",
+      onListPatch: () => {},
+      onModelsChanged: () => changes++,
+    });
+    latest().emitOpen();
+    latest().emitMessage({ heartbeat: true });
+    assert(changes === 0, "frames without models_changed are ignored");
+    latest().emitMessage({ models_changed: true }); // connect-time invalidation
+    latest().emitMessage({ models_changed: true }); // background provider change
+    assert(changes === 2, `models_changed delivered once per frame, got ${changes}`);
+    latest().emitError();
+    advance(1000);
+    latest().emitOpen();
+    latest().emitMessage({ models_changed: true }); // reconnect invalidation
+    assert(changes === 3, "reconnect invalidation delivered");
+    handle.close();
+  },
+);
+
 Date.now = realDateNow;
 console.log("\nglobalStream: all scenarios passed");

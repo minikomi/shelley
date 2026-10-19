@@ -81,7 +81,7 @@
             :class="{ 'is-active': voicePhase !== 'idle' }"
             :disabled="
               voicePhase === 'idle' &&
-              (!!currentConversation?.archived || !canSendWithModel(selectedModel, readyModelIds))
+              (!!currentConversation?.archived || !canSendWithModel(selectedModel, readyModelIds, providerIds))
             "
             :aria-label="headerCallLabel"
             :title="headerCallLabel"
@@ -89,7 +89,10 @@
             @click="onHeaderCallClick"
           >
             <svg fill="currentColor" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-              <path :transform="voicePhase !== 'idle' ? 'rotate(135 12 12)' : undefined" d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2Z" />
+              <path
+                :transform="voicePhase !== 'idle' ? 'rotate(135 12 12)' : undefined"
+                d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2Z"
+              />
             </svg>
           </button>
           <button
@@ -171,7 +174,13 @@
                 <p v-if="modelSetupHint.footer">{{ t(modelSetupHint.footer) }}</p>
               </PvMessage>
               <p v-else-if="voicePhase === 'idle'" class="text-sm chat-secondary-text">
-                {{ t(canSendWithModel(selectedModel, readyModelIds) ? "sendOrTalkToStart" : "sendMessageToStart") }}
+                {{
+                  t(
+                    canSendWithModel(selectedModel, readyModelIds, providerIds)
+                      ? "sendOrTalkToStart"
+                      : "sendMessageToStart",
+                  )
+                }}
               </p>
             </div>
           </div>
@@ -267,7 +276,10 @@
               :on-cancel="conversationId ? cancelQueuedMessage : undefined"
             />
           </template>
-          <div v-if="visibleQueuedGhosts.length > 1 && conversationId" class="queued-cancel-all-row">
+          <div
+            v-if="visibleQueuedGhosts.length > 1 && conversationId"
+            class="queued-cancel-all-row"
+          >
             <button
               class="queued-message-badge-cancel"
               data-testid="cancel-all-queued"
@@ -621,6 +633,7 @@ import {
   DEFAULT_COMPACT_NUDGE_TOKENS,
 } from "./autoCompaction";
 import { api, ApiError, profilesApi } from "../../services/api";
+import { latestGate } from "../../services/latestGate";
 import { btwStore } from "../../services/btwStore";
 import { messageStore } from "../../services/messageStore";
 import { cacheDiag } from "../../services/cacheDiag";
@@ -905,7 +918,9 @@ const liveExchangeOriginTitle = computed(() => {
 const headerCallLabel = computed(() =>
   voicePhase.value === "idle"
     ? t("startVoiceConversation")
-    : voicePhase.value === "connecting" ? "Cancel voice call" : "End voice call",
+    : voicePhase.value === "connecting"
+      ? "Cancel voice call"
+      : "End voice call",
 );
 function startVoice() {
   void liveVoiceRef.value?.start();
@@ -1002,6 +1017,7 @@ async function dismissDiskSpaceNotice() {
   }
 }
 const models = ref<Model[]>(window.__SHELLEY_INIT__?.models || []);
+const providerIds = ref<string[]>();
 
 // Ready model ids, surfaced to MessageInput for /model argument autocomplete.
 const readyModelIds = computed(() => models.value.filter((m) => m.ready).map((m) => m.id));
@@ -1024,6 +1040,13 @@ const modelSetupHint = computed(() =>
 // links), so repeating them in the status bar would just be noise; inside an
 // existing conversation the panel is hidden, so add the one-line note.
 function noModelErrorMessage(): string {
+  if (!selectedModel.value && readyModelIds.value.length > 0) return t("chooseModel");
+  if (
+    selectedModel.value.startsWith("provider:") &&
+    !canSendWithModel(selectedModel.value, readyModelIds.value, providerIds.value)
+  ) {
+    return t("providerConnectionRemoved");
+  }
   const hint = modelSetupHint.value;
   if (messages.value.length === 0 || !hint.note) return t(hint.title);
   return `${t(hint.title)}. ${t(hint.note)}`;
@@ -1818,7 +1841,13 @@ watch([composerProfile, () => conversationLive.value], ([p, live]) => {
 watch(
   () => conversationLive.value,
   (live) => {
-    if (!live) selectedModel.value = pickReadyModel(models.value, storedSelectedModel());
+    if (live) return;
+    const preferred = storedSelectedModel();
+    selectedModel.value = pickReadyModel(models.value, preferred, providerIds.value);
+    if (preferred?.startsWith("provider:") && !selectedModel.value) {
+      applyModel("");
+      error.value = t("providerConnectionRemoved");
+    }
   },
 );
 // Switches whichever settings are in effect to the named profile's.
@@ -3211,7 +3240,7 @@ async function queueMessageTo(conversationId: string, model: string, message: st
   // Same guard as sendMessage: a queued turn runs the LLM later, so an
   // unavailable model just defers the confusing "Unsupported model" error.
   // Throws (not returns) so MessageInput's catch restores the composer text.
-  if (!canSendWithModel(model, readyModelIds.value)) {
+  if (!canSendWithModel(model, readyModelIds.value, providerIds.value)) {
     const err = new Error(noModelErrorMessage());
     error.value = err.message;
     throw err;
@@ -3244,15 +3273,17 @@ async function queueMessageTo(conversationId: string, model: string, message: st
 }
 
 function getLiveConversation(id: string): Conversation | undefined {
-  return props.conversations.find((row) => row.conversation_id === id) ??
-    (props.currentConversation?.conversation_id === id ? props.currentConversation : undefined);
+  return (
+    props.conversations.find((row) => row.conversation_id === id) ??
+    (props.currentConversation?.conversation_id === id ? props.currentConversation : undefined)
+  );
 }
 
 // A call is pinned to the conversation on screen when it is tapped. On /new,
 // the draft is created only once the call can proceed, as a recording's is,
 // and belongs to this composer session even if the user navigates meanwhile.
 function captureLiveConversation(): LiveCallDestination {
-  if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value, providerIds.value)) {
     throw new Error(noModelErrorMessage());
   }
   const conversationId = props.conversationId;
@@ -3263,10 +3294,13 @@ function captureLiveConversation(): LiveCallDestination {
   return {
     conversationId,
     conversation: props.currentConversation,
-    settings: isDraft ? { ...creation, conversation_options: buildConversationOptions() } : undefined,
-    prepareConversation: () => sessionVersion === draftSessionVersion
-      ? ensureDraftConversation(draftText, creation)
-      : createDraftForSession(draft, sessionVersion, creation),
+    settings: isDraft
+      ? { ...creation, conversation_options: buildConversationOptions() }
+      : undefined,
+    prepareConversation: () =>
+      sessionVersion === draftSessionVersion
+        ? ensureDraftConversation(draftText, creation)
+        : createDraftForSession(draft, sessionVersion, creation),
   };
 }
 
@@ -3354,7 +3388,7 @@ function buildConversationOptions(): ChatRequest["conversation_options"] {
 // composer recording, to this page's draft; if the page has moved on by the
 // time it's sent (or is archived), elsewhere (see ReviewConversationStart).
 function startReviewConversation(): ReviewConversationStart {
-  if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value, providerIds.value)) {
     throw new Error(noModelErrorMessage());
   }
   const sessionVersion = draftSessionVersion;
@@ -3402,7 +3436,7 @@ function followReviewConversation() {
 
 async function sendFirstMessage(prompt: string) {
   if (!props.onFirstMessage) return;
-  if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value, providerIds.value)) {
     throw new Error(noModelErrorMessage());
   }
   if (selectedCwd.value) {
@@ -3594,7 +3628,7 @@ async function sendMessage(message: string) {
   // and only restores it in its catch ("Keep the message on error so user can
   // retry"). Returning would look like success and silently discard what the
   // user typed — along with its cached draft — exactly when they can't send.
-  if (!canSendWithModel(selectedModel.value, readyModelIds.value) && needsModel(trimmedMessage)) {
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value, providerIds.value) && needsModel(trimmedMessage)) {
     const err = new Error(noModelErrorMessage());
     error.value = err.message;
     throw err;
@@ -4516,13 +4550,21 @@ watch(
 // User-triggered model catalog refresh (re-runs LLM integration discovery
 // server-side, like Shelley startup does).
 const refreshingModels = ref(false);
+// Only the newest catalog load may replace `models`.
+const catalogLoads = latestGate();
 async function handleRefreshModels() {
   if (refreshingModels.value) return;
   refreshingModels.value = true;
+  const isCurrent = catalogLoads.begin();
   try {
-    const newModels = await api.refreshModels();
-    models.value = newModels;
-    if (window.__SHELLEY_INIT__) window.__SHELLEY_INIT__.models = newModels;
+    const result = await api.refreshModelCatalog();
+    if (isCurrent()) {
+      providerIds.value = result.sources.map((source) => source.provider_id);
+      models.value = result.models;
+      if (window.__SHELLEY_INIT__) window.__SHELLEY_INIT__.models = result.models;
+    }
+    // A clean refresh must not wipe an unrelated error the user hasn't read.
+    if (result.error) error.value = result.error;
   } catch (err) {
     error.value = err instanceof Error ? err.message : "Failed to refresh models";
   } finally {
@@ -4536,32 +4578,41 @@ watch(
   () => {
     if (props.modelsRefreshTrigger === undefined) return;
     if (props.modelsRefreshTrigger === 0 && props.conversationId !== null) return;
-    api
-      .getModels()
-      .then((newModels) => {
-        models.value = newModels;
-        if (window.__SHELLEY_INIT__) window.__SHELLEY_INIT__.models = newModels;
+    const isCurrent = catalogLoads.begin();
+    Promise.allSettled([api.getModels(), api.listModelProviders()])
+      .then(([catalog, connections]) => {
+        if (!isCurrent()) return;
+        if (catalog.status === "fulfilled") {
+          models.value = catalog.value;
+          if (window.__SHELLEY_INIT__) window.__SHELLEY_INIT__.models = catalog.value;
+        } else {
+          console.error("Failed to refresh models:", catalog.reason);
+        }
+        if (connections.status === "fulfilled") {
+          providerIds.value = connections.value.map((connection) => connection.provider_id);
+        } else {
+          providerIds.value = undefined;
+          console.error("Failed to load provider connections:", connections.reason);
+        }
       })
       .catch((err) => console.error("Failed to refresh models:", err));
   },
   { immediate: true },
 );
 
-// Keep the picker honest about availability. A model id can go stale two
-// ways: it was persisted in localStorage while the integrations were healthy,
-// or the catalog shrank under us (integration detached, refresh returned
-// fewer models). Displaying a stale id invites the user to send it, and the
-// server then rejects it with a confusing "Unsupported model" naming a model
-// they never chose — the same class of bug as the old hardcoded fallback.
-// Clear the selection so the picker reads "No model available" and the send
-// guard blocks locally with setup advice.
+// Unlisted routes remain usable while their saved connection exists.
 watch(
-  readyModelIds,
-  (ready) => {
+  [readyModelIds, providerIds],
+  ([ready, providers]) => {
     // A conversation under way keeps its model; the server names the
     // problem if it's gone.
     if (!selectedModel.value || conversationLive.value) return;
-    if (ready.includes(selectedModel.value)) return;
+    if (canSendWithModel(selectedModel.value, ready, providers)) return;
+    if (selectedModel.value.startsWith("provider:")) {
+      applyModel("");
+      error.value = t("providerConnectionRemoved");
+      return;
+    }
     // Prefer the server's default (or any ready model) over showing nothing,
     // so a mere catalog reshuffle doesn't strand the composer.
     applyModel(pickReadyModel(models.value));

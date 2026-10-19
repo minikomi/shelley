@@ -165,6 +165,31 @@ export interface TranslationKeys {
   // Models Modal
   manageModels: string;
   addModel: string;
+  modelsAndKeys: string;
+  editProviderCredentials: string;
+  providerLastSuccess: string;
+  providerUsingSavedList: string;
+  providerChatModelCount: string;
+  providerKeyNotChecked: string;
+  checkModels: string;
+  checkingModels: string;
+  providerNoModels: string;
+  providerNoModelsFailed: string;
+  providerDiscovering: string;
+  providerKeyRequiredNewHost: string;
+  connectingProvider: string;
+  savingProvider: string;
+  addSingleModelSubmit: string;
+  providerCapabilitiesUnknown: string;
+  providerKeyBlankRetains: string;
+  removeProvider: string;
+  removeProviderTitle: string;
+  removeProviderConfirmation: string;
+  addModelAll: string;
+  addModelSingle: string;
+  connectProvider: string;
+  accountLabel: string;
+  accountLabelPlaceholder: string;
   refreshModels: string;
   refreshingModels: string;
   searchModels: string;
@@ -210,7 +235,6 @@ export interface TranslationKeys {
   providerApiFormat: string;
   endpoint: string;
   defaultEndpoint: string;
-  customEndpoint: string;
   model: string;
   displayName: string;
   nameShownInSelector: string;
@@ -407,6 +431,8 @@ export interface TranslationKeys {
   noModelsLocalNote: string;
   noModelsExeRefresh: string;
   noModelSelectedPlaceholder: string;
+  chooseModel: string;
+  providerConnectionRemoved: string;
 
   // Status Bar
   dirLabel: string;

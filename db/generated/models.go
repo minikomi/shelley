@@ -115,6 +115,16 @@ type Model struct {
 	ReasoningReplay  string    `json:"reasoning_replay"`
 }
 
+type ModelProvider struct {
+	ProviderID   string    `json:"provider_id"`
+	ProviderType string    `json:"provider_type"`
+	Endpoint     string    `json:"endpoint"`
+	ApiKey       string    `json:"api_key"`
+	DisplayName  string    `json:"display_name"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 type NotificationChannel struct {
 	ChannelID   string    `json:"channel_id"`
 	ChannelType string    `json:"channel_type"`

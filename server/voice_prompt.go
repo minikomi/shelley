@@ -48,12 +48,16 @@ func catalogued(info *models.ModelInfo) bool {
 // voicePromptModel is the model that writes a voice prompt for the profile
 // model modelID: the newest catalogued model of its provider's preferred
 // family from the same source, so the same account and credentials; or else
-// modelID itself. A model without a source and endpoint, or a custom one,
+// modelID itself. A saved provider route names its account by SourceID: the
+// mutable label is not an identity, so two accounts sharing a label never
+// borrow each other's credentials. Other routes use the legacy source label
+// and endpoint. A model without a source and endpoint, or a custom one,
 // names no account, and an unknown model may not be bigger, so they use
 // themselves.
 func (s *Server) voicePromptModel(modelID string) string {
 	info := s.llmManager.GetModelInfo(modelID)
-	if info == nil || info.Source == "" || info.BaseURL == "" || info.Source == models.SourceCustomLabel || !catalogued(info) {
+	if info == nil || info.Source == "" || info.BaseURL == "" || !catalogued(info) ||
+		(info.SourceID == "" && info.Source == models.SourceCustomLabel) {
 		return modelID
 	}
 	family, ok := voicePromptFamilies[info.Provider]
@@ -63,7 +67,8 @@ func (s *Server) voicePromptModel(modelID string) string {
 	best, bestDate := "", ""
 	for _, id := range s.llmManager.GetAvailableModels() {
 		c := s.llmManager.GetModelInfo(id)
-		if c == nil || c.Provider != info.Provider || c.Source != info.Source || c.BaseURL != info.BaseURL || !strings.Contains(c.APIModelName, family) || !catalogued(c) {
+		if c == nil || c.Provider != info.Provider || !sameVoicePromptAccount(info, c) ||
+			!strings.Contains(c.APIModelName, family) || !catalogued(c) || models.KnownAgentIncompatible(c.Capabilities) {
 			continue
 		}
 		if best == "" || c.ReleaseDate > bestDate {
@@ -71,6 +76,16 @@ func (s *Server) voicePromptModel(modelID string) string {
 		}
 	}
 	return cmp.Or(best, modelID)
+}
+
+// sameVoicePromptAccount reports whether candidate uses the same account and
+// credentials as info. Saved routes match by SourceID only; they never match
+// a legacy route, nor the reverse, even with the same label and endpoint.
+func sameVoicePromptAccount(info, candidate *models.ModelInfo) bool {
+	if info.SourceID != "" || candidate.SourceID != "" {
+		return info.SourceID == candidate.SourceID
+	}
+	return candidate.Source == info.Source && candidate.BaseURL == info.BaseURL
 }
 
 // generateVoicePrompt is a single, no-tools completion that turns a system

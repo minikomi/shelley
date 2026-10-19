@@ -8,6 +8,138 @@ import (
 	"shelley.exe.dev/llm"
 )
 
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func TestMetadataProviderAwareExactAndEndpointPrefixes(t *testing.T) {
+	tests := []struct {
+		name       string
+		endpoint   string
+		modelID    string
+		providerID string
+		context    int
+	}{
+		{
+			name:       "Groq preset",
+			endpoint:   "https://api.groq.com/openai/v1",
+			modelID:    "llama-3.1-8b-instant",
+			providerID: "groq",
+		},
+		{
+			name:       "Mistral preset",
+			endpoint:   "https://api.mistral.ai/v1",
+			modelID:    "pixtral-12b",
+			providerID: "mistral",
+		},
+		{
+			name:       "Together preset",
+			endpoint:   "https://api.together.ai/v1",
+			modelID:    "essentialai/Rnj-1-Instruct",
+			providerID: "togetherai",
+		},
+		{
+			name:       "fireworks custom endpoint prefix",
+			endpoint:   "https://api.fireworks.ai/inference/v1/custom",
+			modelID:    "accounts/fireworks/models/glm-5p3-flash",
+			providerID: "fireworks-ai",
+		},
+		{
+			name:       "opencode shared host",
+			endpoint:   "https://opencode.ai/zen/v1/chat/completions",
+			modelID:    "glm-5",
+			providerID: "opencode",
+			context:    204800,
+		},
+		{
+			name:       "opencode go shared host",
+			endpoint:   "https://opencode.ai/zen/go/v1/chat/completions",
+			modelID:    "glm-5",
+			providerID: "opencode-go",
+			context:    202752,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := LookupMetadata(tt.endpoint, tt.modelID)
+			if !found {
+				t.Fatal("LookupMetadata() found=false")
+			}
+			if got.Match != "exact" || got.ProviderID != tt.providerID || got.ModelID != tt.modelID {
+				t.Fatalf("metadata identity = (%q, %q, %q), want (exact, %q, %q)",
+					got.Match, got.ProviderID, got.ModelID, tt.providerID, tt.modelID)
+			}
+			if tt.context != 0 && got.ContextLimit != tt.context {
+				t.Errorf("context limit = %d, want %d", got.ContextLimit, tt.context)
+			}
+			if tt.name == "fireworks custom endpoint prefix" {
+				if got.ToolCall == nil || !*got.ToolCall || got.Images == nil || !*got.Images ||
+					got.Reasoning == nil || !*got.Reasoning || got.OutputLimit <= 0 || len(got.InputModalities) == 0 {
+					t.Errorf("metadata lacks expected capabilities: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestMetadataPresenceAwareFields(t *testing.T) {
+	var explicit modelEntry
+	if err := json.Unmarshal([]byte(`{"tool_call":false,"reasoning":false,"modalities":{"input":[]}}`), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	got := metadataFor(providerEntry{ID: "test"}, "m", explicit, "exact")
+	if got.ToolCall == nil || *got.ToolCall || got.Reasoning == nil || *got.Reasoning {
+		t.Fatalf("explicit false values were lost: %+v", got)
+	}
+	if got.Images == nil || *got.Images {
+		t.Fatalf("present empty input modalities should mean known text-only: %+v", got.Images)
+	}
+	if got.Name != "" || got.Family != "" || got.ContextLimit != 0 || got.OutputLimit != 0 {
+		t.Fatalf("missing fields should remain unknown/zero: %+v", got)
+	}
+
+	missing := metadataFor(providerEntry{ID: "test"}, "missing", modelEntry{}, "advisory")
+	if missing.ToolCall != nil || missing.Reasoning != nil || missing.Images != nil ||
+		missing.InputModalities != nil || missing.OutputModalities != nil {
+		t.Fatalf("absent fields should remain unknown: %+v", missing)
+	}
+}
+
+func TestMetadataUnknownAndAdvisoryMatches(t *testing.T) {
+	advisory, found := LookupMetadata("https://proxy.example/v1", "gpt-5.4")
+	if !found || advisory.Match != "advisory" || advisory.ProviderID != "openai" {
+		t.Fatalf("proxy bare-ID match = (%+v, %v), want advisory OpenAI metadata", advisory, found)
+	}
+	if _, found := LookupMetadata("https://proxy.example/v1", "not-in-models-dev"); found {
+		t.Fatal("unknown model unexpectedly matched")
+	}
+}
+
+func TestMetadataDateSuffixIsAdvisory(t *testing.T) {
+	got, found := LookupMetadata("https://api.anthropic.com/v1", "claude-haiku-4-5-2026-04-23")
+	if !found || got.Match != "advisory" || got.ProviderID != "anthropic" || got.ModelID != "claude-haiku-4-5" {
+		t.Fatalf("date-suffix match = (%+v, %v), want advisory canonical Anthropic model", got, found)
+	}
+}
+
+func TestMetadataSnapshotIdentityAndUnclampedContext(t *testing.T) {
+	got, found := LookupMetadata("https://api.openai.com/v1", "gpt-5.6-sol")
+	if !found || got.Match != "exact" {
+		t.Fatalf("LookupMetadata() = (%+v, %v), want exact OpenAI metadata", got, found)
+	}
+	if got.Snapshot == "" || got.Snapshot != snapshotIdentity() {
+		t.Fatalf("snapshot identity = %q, want %q", got.Snapshot, snapshotIdentity())
+	}
+	again, found := LookupMetadata("https://api.openai.com/v1", "gpt-5.6-sol")
+	if !found || again.Snapshot != got.Snapshot {
+		t.Fatalf("snapshot changed between lookups: first %q, second %+v", got.Snapshot, again)
+	}
+	clamped, found := LookupContextLimit("https://api.openai.com/v1", "gpt-5.6-sol")
+	if !found || got.ContextLimit != 1050000 || clamped != 272000 || got.ContextLimit <= clamped {
+		t.Fatalf("context capacity=%d, legacy pricing-clamped limit=(%d,%v)", got.ContextLimit, clamped, found)
+	}
+}
+
 func TestLookupImageSupport(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -167,27 +299,27 @@ func TestParseReasoningCapabilities(t *testing.T) {
 		{name: "unsupported", in: modelEntry{}},
 		{
 			name: "explicit efforts",
-			in:   modelEntry{Reasoning: true, ReasoningOptions: []reasoningOption{{Type: "effort", Values: []string{"none", "low", "medium", "high", "xhigh", "max"}}}},
+			in:   modelEntry{Reasoning: boolPointer(true), ReasoningOptions: []reasoningOption{{Type: "effort", Values: []string{"none", "low", "medium", "high", "xhigh", "max"}}}},
 			want: ReasoningCapabilities{Supported: true, Levels: levels("off", "low", "medium", "high", "xhigh", "max")},
 		},
 		{
 			name: "toggle adds off",
-			in:   modelEntry{Reasoning: true, ReasoningOptions: []reasoningOption{{Type: "toggle"}, {Type: "effort", Values: []string{"high", "max"}}}},
+			in:   modelEntry{Reasoning: boolPointer(true), ReasoningOptions: []reasoningOption{{Type: "toggle"}, {Type: "effort", Values: []string{"high", "max"}}}},
 			want: ReasoningCapabilities{Supported: true, Levels: levels("off", "high", "max")},
 		},
 		{
 			name: "toggle only leaves levels unknown",
-			in:   modelEntry{Reasoning: true, ReasoningOptions: []reasoningOption{{Type: "toggle"}}},
+			in:   modelEntry{Reasoning: boolPointer(true), ReasoningOptions: []reasoningOption{{Type: "toggle"}}},
 			want: ReasoningCapabilities{Supported: true},
 		},
 		{
 			name: "budget only leaves levels unknown",
-			in:   modelEntry{Reasoning: true, ReasoningOptions: []reasoningOption{{Type: "budget_tokens"}}},
+			in:   modelEntry{Reasoning: boolPointer(true), ReasoningOptions: []reasoningOption{{Type: "budget_tokens"}}},
 			want: ReasoningCapabilities{Supported: true},
 		},
 		{
 			name: "default and unknown values are ignored",
-			in:   modelEntry{Reasoning: true, ReasoningOptions: []reasoningOption{{Type: "effort", Values: []string{"default", "future"}}}},
+			in:   modelEntry{Reasoning: boolPointer(true), ReasoningOptions: []reasoningOption{{Type: "effort", Values: []string{"default", "future"}}}},
 			want: ReasoningCapabilities{Supported: true},
 		},
 	}

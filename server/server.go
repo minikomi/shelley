@@ -30,6 +30,7 @@ import (
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/mcp"
+	"shelley.exe.dev/modelproviders"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
@@ -114,6 +115,10 @@ type StreamResponse struct {
 	NotificationEvent *notifications.Event `json:"notification_event,omitempty"`
 	// DiskSpaceStatus is global, including an immediate snapshot on reconnect.
 	DiskSpaceStatus *diskspace.DiskSpaceStatus `json:"disk_space_status,omitempty"`
+	// ModelsChanged tells clients to reload the model catalog and saved
+	// provider status. It is sent on every (re)connect and after a provider
+	// changes; it carries no data.
+	ModelsChanged bool `json:"models_changed,omitempty"`
 	// ToolProgress is set when a running tool reports partial output.
 	ToolProgress *llm.ToolProgress `json:"tool_progress,omitempty"`
 	// StreamDelta is set when the LLM streams partial text content.
@@ -347,6 +352,7 @@ type Server struct {
 	defaultModel             string
 	requireHeader            string
 	refreshBuiltModels       func(context.Context) ([]models.Built, error)
+	modelProviders           *modelproviders.Manager
 	conversationGroup        singleflight.Group[string, *ConversationManager]
 	versionChecker           *VersionChecker
 	notifDispatcher          *notifications.Dispatcher
@@ -508,6 +514,20 @@ func (s *Server) SetModelRefresher(refresh func(context.Context) ([]models.Built
 	s.refreshBuiltModels = refresh
 }
 
+// SetModelProviderManager configures saved-provider management routes and
+// source refreshes. A nil manager is used by predictable-only servers. Call it
+// before manager.Start so no background change is missed.
+func (s *Server) SetModelProviderManager(manager *modelproviders.Manager) {
+	s.modelProviders = manager
+	if manager != nil {
+		manager.SetOnChange(func() {
+			if s.streamPub != nil {
+				s.streamPub.Broadcast(StreamResponse{ModelsChanged: true})
+			}
+		})
+	}
+}
+
 // RegisterNotificationChannel adds a backend notification channel to the dispatcher.
 func (s *Server) RegisterNotificationChannel(ch notifications.Channel) {
 	s.notifDispatcher.Register(ch)
@@ -574,6 +594,15 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	api.HandleFunc("DELETE /api/custom-models/{id}", func(w http.ResponseWriter, r *http.Request) { s.handleDeleteModel(w, r, r.PathValue("id")) })
 	api.HandleFunc("POST /api/custom-models/{id}/duplicate", func(w http.ResponseWriter, r *http.Request) { s.handleDuplicateModel(w, r, r.PathValue("id")) })
 	api.HandleFunc("POST /api/custom-models-test", s.handleTestModel)
+
+	// Saved model provider connections.
+	api.HandleFunc("GET /api/model-providers", s.handleListModelProviders)
+	api.HandleFunc("POST /api/model-providers", s.handleCreateModelProvider)
+	api.HandleFunc("POST /api/model-providers/refresh", s.handleRefreshModelProviders)
+	api.HandleFunc("POST /api/model-providers/test", s.handleTestModelProvider)
+	api.HandleFunc("PUT /api/model-providers/{id}", s.handleUpdateModelProvider)
+	api.HandleFunc("DELETE /api/model-providers/{id}", s.handleDeleteModelProvider)
+	api.HandleFunc("POST /api/model-providers/{id}/refresh", s.handleRefreshModelProvider)
 
 	s.registerMCPRoutes(api, mux)
 	s.registerProfileRoutes(api)
@@ -1032,6 +1061,11 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 			config.ParentMessenger = nil
 		}
 		manager := NewConversationManager(conversationID, s.db, s.logger, config, s.integrationSkills, recordMessage, recordTurnStart, onStateChange, s.streamPub)
+		if snapshots, ok := s.llmManager.(interface {
+			GetServiceSnapshot(string) (llm.Service, string, uint64, error)
+		}); ok {
+			manager.resolveModelService = snapshots.GetServiceSnapshot
+		}
 		manager.role = role
 		manager.onTurnStartRejected = func() { go manager.drainPendingMessages(s) }
 		manager.followProfile = func(ctx context.Context) (llm.Service, string, error) {

@@ -46,6 +46,10 @@ type ResponsesService struct {
 	// (e.g. "xhigh", "none") without Shelley needing to know them.
 	ReasoningEffort string
 
+	// DisableReasoning suppresses reasoning controls regardless of request,
+	// service, or model metadata. It does not alter ReasoningReplay.
+	DisableReasoning bool
+
 	// ReasoningReplay controls persisted reasoning replay. The zero value and
 	// "auto" resolve from models.dev; "none" disables replay explicitly.
 	ReasoningReplay ReasoningReplay
@@ -628,6 +632,9 @@ func (s *ResponsesService) Provider() string { return s.ProviderName }
 // neither is set, no reasoning field is emitted and the provider applies its
 // own default (which Shelley cannot name), so it returns "".
 func (s *ResponsesService) DefaultReasoningLevel() string {
+	if s.DisableReasoning {
+		return ""
+	}
 	if s.ReasoningEffort != "" {
 		return s.ReasoningEffort
 	}
@@ -642,6 +649,9 @@ func (s *ResponsesService) SupportsServerSideWebSearch() bool { return true }
 // SupportsReasoning reports the models.dev capability when known. Unknown
 // models retain the historical default of supporting reasoning controls.
 func (s *ResponsesService) SupportsReasoning() bool {
+	if s.DisableReasoning {
+		return false
+	}
 	caps, found := modelReasoningCapabilities(s.ModelURL, cmp.Or(s.Model, DefaultModel))
 	return !found || caps.Supported
 }
@@ -650,6 +660,9 @@ func (s *ResponsesService) SupportsReasoning() bool {
 // Nil means the model has no exact effort metadata and callers use the
 // historical provider fallback.
 func (s *ResponsesService) SupportedReasoningLevels() []llm.ThinkingLevel {
+	if s.DisableReasoning {
+		return nil
+	}
 	caps, found := modelReasoningCapabilities(s.ModelURL, cmp.Or(s.Model, DefaultModel))
 	return advertisedReasoningLevels(caps, found)
 }
@@ -742,7 +755,9 @@ func (s *ResponsesService) buildRequest(ctx context.Context, ir *llm.Request) (r
 		MaxOutputTokens: maxOutputTokens(baseURL, model.ModelName, s.MaxTokens),
 	}
 	if openAIResponses {
-		req.Include = []string{"reasoning.encrypted_content"}
+		if !s.DisableReasoning {
+			req.Include = []string{"reasoning.encrypted_content"}
+		}
 		req.ToolChoice = "auto"
 		req.ParallelToolCalls = true
 		req.PromptCacheKey = llmhttp.PromptCacheKeyFromContext(ctx)
@@ -760,6 +775,7 @@ func (s *ResponsesService) buildRequest(ctx context.Context, ir *llm.Request) (r
 	genericEffort := false
 	var effort string
 	switch {
+	case s.DisableReasoning:
 	case ir.ReasoningEffort != "":
 		effort = ir.ReasoningEffort
 	case ir.ThinkingLevel == llm.ThinkingLevelOff:

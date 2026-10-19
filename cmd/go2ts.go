@@ -153,6 +153,7 @@ type streamResponseForTS struct {
 	Heartbeat         bool                       `json:"heartbeat,omitempty"`
 	NotificationEvent *notificationEventForTS    `json:"notification_event,omitempty"`
 	DiskSpaceStatus   *diskspace.DiskSpaceStatus `json:"disk_space_status,omitempty"`
+	ModelsChanged     bool                       `json:"models_changed,omitempty"`
 	MaxSequenceID     int64                      `json:"max_sequence_id,omitempty"`
 }
 

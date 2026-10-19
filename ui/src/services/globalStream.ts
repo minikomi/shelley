@@ -12,6 +12,7 @@
 //     messageStore transient state
 //   * list patches → onListPatch handler
 //   * notification events → onNotificationEvent handler
+//   * models_changed → onModelsChanged handler
 //
 // Components NEVER open their own EventSource; they subscribe to messageStore.
 
@@ -79,6 +80,11 @@ export interface GlobalStreamOptions {
    * transitions. snapshot is true for the first status on each connection.
    */
   onDiskSpaceStatus?: (status: DiskSpaceStatus, snapshot: boolean) => void;
+  /**
+   * The model catalog or saved-provider status changed. The server also sends
+   * it on every (re)connect, covering changes made while disconnected.
+   */
+  onModelsChanged?: () => void;
 }
 
 export interface GlobalStreamHandle {
@@ -111,6 +117,7 @@ export function connectGlobalStream({
   onStatusChange,
   onReconnect,
   onDiskSpaceStatus,
+  onModelsChanged,
 }: GlobalStreamOptions): GlobalStreamHandle {
   let closed = false;
   let eventSource: EventSource | null = null;
@@ -223,6 +230,7 @@ export function connectGlobalStream({
       onDiskSpaceStatus(data.disk_space_status, !diskSnapshotSeen);
       diskSnapshotSeen = true;
     }
+    if (data.models_changed) onModelsChanged?.();
 
     const convId = data.conversation_id;
     if (!convId) return;
