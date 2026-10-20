@@ -2415,9 +2415,7 @@ function buildRenderModel(): GenerationBlock[] {
       message.type === "system" &&
       !isDistillStatusMessage(message)
     ) {
-      const existing = systemMessagesByGeneration.get(message.generation) || [];
-      existing.push(message);
-      systemMessagesByGeneration.set(message.generation, existing);
+      systemMessagesByGeneration.set(message.generation, [message]);
     }
     if (message.usage_data) {
       try {

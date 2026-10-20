@@ -1,5 +1,44 @@
 import { expect, test, type Locator } from "@playwright/test";
+import type { Message } from "../src/types";
 import { createConversationViaAPIWithDetails } from "./helpers";
+
+test("shows only the latest system prompt after in-place compaction refreshes it", async ({
+  page,
+  request,
+}) => {
+  const { conversationId, slug } = await createConversationViaAPIWithDetails(
+    request,
+    "echo: refreshed context card",
+  );
+  const response = await request.get(`/api/conversation/${conversationId}`);
+  expect(response.ok()).toBeTruthy();
+  const body = await response.json();
+  const original = body.messages.find((message: Message) => message.type === "system");
+  expect(original).toBeTruthy();
+  const lastSequence = body.messages.at(-1).sequence_id;
+  for (let revision = 1; revision <= 2; revision++) {
+    body.messages.push({
+      ...original,
+      message_id: `refreshed-system-${revision}`,
+      sequence_id: lastSequence + revision,
+      llm_data: JSON.stringify({
+        Content: [{ Type: 2, Text: `Refreshed system prompt ${revision}` }],
+      }),
+      display_data: JSON.stringify({ tools: [], skills: [] }),
+    });
+  }
+  await page.route("**/api/stream2*", (route) => route.abort());
+  await page.route(`**/api/conversation/${conversationId}`, (route) =>
+    route.fulfill({ json: body }),
+  );
+  await page.goto(`/c/${slug}`);
+
+  const card = page.getByTestId("generation-context");
+  await expect(card.locator(":scope > .system-prompt-view")).toHaveCount(1);
+  await card.getByRole("button", { name: /System Prompt:/ }).click();
+  await expect(card.locator(".system-prompt-text")).toHaveText("Refreshed system prompt 2");
+  await expect(card.locator(".model-bar")).toBeVisible();
+});
 
 test("groups model and system prompt into one context card", async ({ page, request }) => {
   await page.setViewportSize({ width: 1000, height: 800 });

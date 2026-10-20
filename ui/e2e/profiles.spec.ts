@@ -452,12 +452,15 @@ test.describe("Settings knob", () => {
       const body = await (await request.get(`/api/conversation/${conversationId}`)).json();
       const prompts = body.messages.filter((m: { type: string }) => m.type === "system");
       expect(JSON.parse(prompts.at(-1).llm_data).Content[0].Text).toMatch(/^Be brief in \/.+\.\n$/);
+      const contextPrompts = page.getByTestId("generation-context").locator(".system-prompt-view");
+      await expect(contextPrompts).toHaveCount(1);
 
       await pills.getByRole("radio", { name: "Default" }).click();
       await expect(markers.last()).toHaveAttribute(
         "aria-label",
         /^Profile changed to Default; tools turned on: browser; system prompt changed\.$/,
       );
+      await expect(contextPrompts).toHaveCount(1);
     } finally {
       await request.delete(`/api/profiles/${encodeURIComponent(name)}`);
     }
