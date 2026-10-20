@@ -1070,7 +1070,19 @@ body {
 }
 
 .drawer-subagent-list {
+  position: relative;
   margin-left: 1.5rem;
+}
+
+.drawer-subagent-list::before {
+  content: "";
+  position: absolute;
+  left: -0.75rem;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 .background-jobs-empty,
@@ -1499,7 +1511,7 @@ body {
   text-align: left;
   padding: 0.75rem;
   border-radius: 0.5rem;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.375rem;
   transition: background-color 0.2s;
   display: flex;
   flex-direction: row;
@@ -1508,7 +1520,7 @@ body {
 }
 
 .conversation-item:hover {
-  background: var(--bg-tertiary);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 
 .conversation-item.active {
@@ -13953,11 +13965,7 @@ kbd {
   color: inherit;
 }
 
-/* "Working" mark shared by the drawer rows, subagent badges, and the live
-   subagent strips/chips: a subtle, non-animated hollow ring in the current
-   text color. Tracks the foreground so it stays legible on both the default
-   and selected (var(--primary)) backgrounds without re-using the same hue as
-   the row fill. */
+/* Drawer dots match the running-work strip; other working marks stay rings. */
 .working-indicator {
   width: 7px;
   height: 7px;
@@ -13969,11 +13977,24 @@ kbd {
   flex-shrink: 0;
 }
 
+.conversation-item .working-indicator {
+  display: inline-block;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border: 0;
+  background-color: var(--primary);
+  color: var(--primary);
+  opacity: 1;
+}
+
+.conversation-item.active .working-indicator {
+  background-color: white;
+  color: white;
+}
+
 .drawer-working-indicator {
-  width: 8px;
-  height: 8px;
-  align-self: flex-start;
-  margin-top: 0.35rem;
+  transform: translateX(8px);
 }
 
 .drawer-interrupted-indicator {
@@ -14181,7 +14202,7 @@ kbd {
 }
 
 .drawer-git-info-active {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.8);
 }
 
 .drawer-git-copy {
@@ -14213,7 +14234,6 @@ kbd {
   cursor: pointer;
   font-size: var(--font-size-14);
   padding-left: 0.5rem;
-  border-left: 2px solid var(--border-color);
 }
 
 .drawer-subagent-date {
