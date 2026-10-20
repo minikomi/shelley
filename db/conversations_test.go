@@ -1433,7 +1433,7 @@ func TestListConversationsParticipants(t *testing.T) {
 	}
 	check("SearchConversationsWithMessages", items, onlyShared)
 
-	hits, err := db.SearchConversationsFTS(ctx, "shared", 10, 0)
+	hits, err := db.SearchConversationsFTS(ctx, "shared", false, 10, 0)
 	if err != nil {
 		t.Fatalf("SearchConversationsFTS: %v", err)
 	}
@@ -1685,7 +1685,7 @@ func TestConversationListCounts(t *testing.T) {
 			return db.SearchConversationsWithMessages(ctx, "counted-parent", 100, 0)
 		},
 		"SearchConversationsFTS": func() ([]ConversationListItem, error) {
-			hits, err := db.SearchConversationsFTS(ctx, "counted-parent", 100, 0)
+			hits, err := db.SearchConversationsFTS(ctx, "counted-parent", false, 100, 0)
 			items := make([]ConversationListItem, len(hits))
 			for i, h := range hits {
 				items[i] = h.ConversationListItem

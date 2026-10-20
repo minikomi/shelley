@@ -97,7 +97,12 @@ function buildMarked(messageId?: string, localhostLinks?: LocalhostLinkOptions):
 }
 
 function setLinkTarget(node: Element): void {
-  node.setAttribute("target", "_blank");
+ if(node.getAttribute("href")?.includes("message_id=") && node.textContent?.trim()==="↗") {
+ node.classList.add("message-source-link");node.setAttribute("aria-label","Open supporting message");node.setAttribute("title","Open supporting message");
+ }
+
+  if (node.getAttribute("href")?.startsWith("/c/")) node.removeAttribute("target");
+  else node.setAttribute("target", "_blank");
   node.setAttribute("rel", "noopener noreferrer");
 }
 

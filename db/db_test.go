@@ -548,7 +548,7 @@ func assertTriggersExist(t *testing.T, db *DB, ctx context.Context, names ...str
 func assertSearchHits(t *testing.T, db *DB, ctx context.Context, query, conversationID string) {
 	t.Helper()
 
-	results, err := db.SearchConversationsFTS(ctx, query, 50, 0)
+	results, err := db.SearchConversationsFTS(ctx, query, false, 50, 0)
 	if err != nil {
 		t.Fatalf("SearchConversationsFTS(%q): %v", query, err)
 	}
@@ -563,7 +563,7 @@ func assertSearchHits(t *testing.T, db *DB, ctx context.Context, query, conversa
 func assertSearchMisses(t *testing.T, db *DB, ctx context.Context, query string) {
 	t.Helper()
 
-	results, err := db.SearchConversationsFTS(ctx, query, 50, 0)
+	results, err := db.SearchConversationsFTS(ctx, query, false, 50, 0)
 	if err != nil {
 		t.Fatalf("SearchConversationsFTS(%q): %v", query, err)
 	}

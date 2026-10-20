@@ -334,6 +334,16 @@
         >
           # tag
         </button>
+        <button
+          v-if="isSearching"
+          type="button"
+          class="drawer-filter-action drawer-search-shelley"
+          :disabled="enhanceDisabled"
+          title="Open a search conversation with AI. Provider billing applies."
+          @click="openEnhancement"
+        >
+          Ask Shelley
+        </button>
         <span
           class="drawer-filter-result-count"
           :aria-label="`${displayedConversations.length} results`"
@@ -341,6 +351,7 @@
           {{ displayedConversations.length }}
         </span>
       </div>
+      <p v-if="enhanceError" role="alert">{{ enhanceError }}</p>
       <!-- Tag dropdown. Opens on a `tag:` term, listing only tags carried by
            conversations still on screen, each with the count it would leave —
            so a suggestion can never lead to an empty list. -->
@@ -412,6 +423,10 @@
         class="text-secondary drawer-empty-state"
       >
         <p>{{ t("searching") }}</p>
+      </div>
+      <div v-else-if="isSearching && searchError" role="alert" class="drawer-empty-state">
+        <p>{{ searchError }}</p>
+        <Button text :label="t('retry')" @click="refreshSearchResults" />
       </div>
       <div
         v-else-if="loadingArchived && showArchived && !isSearching"
@@ -632,6 +647,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  (e: "open"): void;
   (e: "close"): void;
   (e: "toggle-collapse"): void;
   (e: "select-conversation", c: Conversation): void;
@@ -713,9 +729,41 @@ const queryEditorRef = ref<InstanceType<typeof ConversationQueryEditor> | null>(
 const activeStructuredEdit = ref<ActiveStructuredQueryEdit | null>(null);
 const searchResults = ref<ConversationWithState[] | null>(null);
 const searching = ref(false);
+const searchError = ref<string | null>(null);
+const enhancing = ref(false);
+const enhanceError = ref<string | null>(null);
+let enhanceController: AbortController | null = null;
+const enhanceDisabled = computed(() => enhancing.value || searching.value || searchResults.value === null || !!searchError.value || !searchText.value.trim());
+function stopEnhancement() {
+  enhanceController?.abort();
+  enhanceController = null;
+  enhancing.value = false;
+}
+function clearEnhancement() { stopEnhancement(); enhanceError.value = null; }
+async function openEnhancement() {
+  if (enhanceDisabled.value) return;
+  emit("close");
+  const controller = new AbortController();
+  enhanceController = controller;
+  enhanceError.value = null;
+  enhancing.value = true;
+  try {
+    const result = await api.startSearchChat(searchText.value.trim(), showArchived.value, controller.signal, displayedConversations.value);
+    if (!controller.signal.aborted) emit("select-conversation", result.conversation);
+  } catch (err) {
+    if (!controller.signal.aborted) {
+      enhanceError.value = err instanceof Error ? err.message : String(err);
+      emit("open");
+    }
+  } finally {
+    if (enhanceController === controller) { enhanceController = null; enhancing.value = false; }
+  }
+}
+watch([searchQuery, showArchived], clearEnhancement);
 let searchTimeout: ReturnType<typeof setTimeout> | null = null;
 let searchSeq = 0;
-const SEARCH_DEBOUNCE_MS = 250;
+let searchController: AbortController | null = null;
+const SEARCH_DEBOUNCE_MS = 80;
 const editingId = ref<string | null>(null);
 const editingSlug = ref("");
 const tagEditorId = ref<string | null>(null);
@@ -879,25 +927,35 @@ watch(showArchived, (sa) => {
   if (sa && archivedConversations.value.length === 0) {
     void loadArchivedConversations();
   }
+  if (searchText.value.trim()) {
+    searchResults.value = null;
+    void refreshSearchResults();
+  }
 });
 
 async function fetchSearchResults(query: string, seq: number) {
+  searchController?.abort();
+  const controller = new AbortController();
+  searchController = controller;
   try {
-    const results = await api.searchConversationsFTS(query);
-    if (seq !== searchSeq) return;
-    searchResults.value = results;
-  } catch (err) {
-    if (seq !== searchSeq) return;
-    console.error("Conversation search failed:", err);
+    const results = await api.searchConversationsFTS(query, controller.signal, showArchived.value);
+    if (!controller.signal.aborted && seq === searchSeq) searchResults.value = results;
+  } catch (error) {
+    if (controller.signal.aborted || seq !== searchSeq) return;
     searchResults.value = [];
+    searchError.value = error instanceof Error ? error.message : String(error);
   } finally {
+    if (searchController === controller) searchController = null;
     if (seq === searchSeq) searching.value = false;
   }
 }
 
-// Debounced FTS search across active + archived conversations. Only the free
+// Debounced FTS search within the current archive view. Only the free
 // text goes to the server; `tag:` terms are applied client-side.
 watch(searchText, () => {
+  searchResults.value = null;
+  searchError.value = null;
+  searchController?.abort();
   if (searchTimeout) {
     clearTimeout(searchTimeout);
     searchTimeout = null;
@@ -920,6 +978,8 @@ async function refreshSearchResults() {
     clearTimeout(searchTimeout);
     searchTimeout = null;
   }
+  searchResults.value = null;
+  searchError.value = null;
   searching.value = true;
   await fetchSearchResults(query, ++searchSeq);
 }
@@ -1811,6 +1871,8 @@ watch(
 );
 
 onUnmounted(() => {
+  stopEnhancement();
+  searchController?.abort();
   if (searchTimeout) clearTimeout(searchTimeout);
   if (copyTimeout) clearTimeout(copyTimeout);
   document.removeEventListener("mousedown", onGroupMenuOutside);
@@ -1873,3 +1935,10 @@ provide(DrawerCtxKey, {
   handleCancelDelete,
 });
 </script>
+
+
+<style scoped>
+button.drawer-search-shelley { border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; background: var(--bg-secondary); color: var(--text-primary); font-weight: 500; }
+button.drawer-search-shelley:hover:not(:disabled) { border-color: var(--link-color); background: var(--bg-base); }
+button.drawer-search-shelley:disabled { opacity: .5; }
+</style>

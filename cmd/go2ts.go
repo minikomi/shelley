@@ -141,6 +141,7 @@ type conversationWithStateForTS struct {
 	Preview                string                       `json:"preview,omitempty"`
 	PreviewUpdatedAt       string                       `json:"preview_updated_at,omitempty"`
 	SearchSnippet          string                       `json:"search_snippet,omitempty"`
+	SearchSnippetMessageID string                       `json:"search_snippet_message_id,omitempty"`
 	MaxSequenceID          int64                        `json:"max_sequence_id"`
 	Participants           []db.ConversationParticipant `json:"participants,omitempty"`
 }

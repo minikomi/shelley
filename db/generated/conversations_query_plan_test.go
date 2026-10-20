@@ -64,3 +64,49 @@ func TestSubagentUsageQueriesSearchMessagesByConversation(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchSnippetsScanFTSBeforeRankedMessages(t *testing.T) {
+	t.Parallel()
+	database, err := sql.Open("sqlite", "file:"+t.TempDir()+"/snippet-plan.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	for _, statement := range []string{
+		`CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT)`,
+		`CREATE VIRTUAL TABLE messages_fts USING fts5(text)`,
+	} {
+		if _, err := database.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := strings.Replace(searchConversationsFTSSnippets, "/*SLICE:conv_ids*/?", "?,?", 1)
+	rows, err := database.Query("EXPLAIN QUERY PLAN "+query, "[", "]", `"sub"*`, "first", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var plan []string
+	ftsLoop, rankedLoop := -1, -1
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(detail, "SCAN messages_fts VIRTUAL TABLE") {
+			ftsLoop = len(plan)
+		}
+		if detail == "SCAN ranked" || strings.HasPrefix(detail, "SEARCH ranked ") {
+			rankedLoop = len(plan)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if ftsLoop < 0 || rankedLoop < ftsLoop {
+		t.Fatalf("FTS must scan outside the ranked-message loop:\n%s", strings.Join(plan, "\n"))
+	}
+}

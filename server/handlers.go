@@ -751,11 +751,11 @@ func (s *Server) conversationListWithState(ctx context.Context, limit, offset in
 	return s.conversationListWithStateInternal(ctx, limit, offset, query, searchContent, false)
 }
 
-// searchConversationsFTSWithState performs a full-text search across active
-// AND archived top-level conversations and decorates the results with the
-// same working/subagent/preview metadata as the regular list.
-func (s *Server) searchConversationsFTSWithState(ctx context.Context, query string, limit, offset int) ([]ConversationWithState, error) {
-	hits, err := s.db.SearchConversationsFTS(ctx, query, int64(limit), int64(offset))
+// searchConversationsFTSWithState searches the requested archive state
+// with the regular working/subagent/preview metadata, without git filesystem
+// probes on each search.
+func (s *Server) searchConversationsFTSWithState(ctx context.Context, query string, archived bool, limit, offset int) ([]ConversationWithState, error) {
+	hits, err := s.db.SearchConversationsFTS(ctx, query, archived, int64(limit), int64(offset))
 	if err != nil {
 		return nil, err
 	}
@@ -763,9 +763,9 @@ func (s *Server) searchConversationsFTSWithState(ctx context.Context, query stri
 	for i, h := range hits {
 		conversations[i] = h.ConversationListItem
 	}
-	decorated := s.decorateConversations(conversations)
+	decorated := make([]ConversationWithState, len(conversations))
 	for i := range decorated {
-		decorated[i].SearchSnippet = hits[i].Snippet
+		decorated[i] = ConversationWithState{ConversationListItem: conversations[i], Working: conversations[i].AgentWorking, SearchSnippet: hits[i].Snippet, SearchSnippetMessageID: hits[i].SnippetMessageID}
 	}
 	return decorated, nil
 }
@@ -3017,8 +3017,8 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSearchConversations handles GET /api/conversations/search?q=...
-// Performs an FTS5 full-text search across active AND archived top-level
-// conversations, returning the same shape as /api/conversations so the UI
+// Performs an FTS5 full-text search of active top-level conversations by
+// default, or archived conversations with archived=true, so the UI
 // can render results directly.
 func (s *Server) handleSearchConversations(w http.ResponseWriter, r *http.Request) {
 	limit := 200
@@ -3039,7 +3039,8 @@ func (s *Server) handleSearchConversations(w http.ResponseWriter, r *http.Reques
 		w.Write([]byte("[]"))
 		return
 	}
-	results, err := s.searchConversationsFTSWithState(r.Context(), query, limit, offset)
+	archived := r.URL.Query().Get("archived") == "true"
+	results, err := s.searchConversationsFTSWithState(r.Context(), query, archived, limit, offset)
 	if err != nil {
 		s.internalError(w, "Failed to search conversations", err)
 		return

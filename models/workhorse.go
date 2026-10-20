@@ -62,7 +62,7 @@ func (s *workhorseService) MaxImageBytes() int     { return s.primary.MaxImageBy
 func (s *workhorseService) SupportsImages() bool   { return s.primary.SupportsImages() }
 
 func (m *Manager) getWorkhorseService(conversationModelID string) (llm.Service, error) {
-	modelID := m.workhorseModel(conversationModelID)
+	modelID := m.GetWorkhorseModelID(conversationModelID)
 	if modelID == "" {
 		return nil, fmt.Errorf("no workhorse model available (conversation model %q)", conversationModelID)
 	}
@@ -92,7 +92,7 @@ func (m *Manager) newWorkhorseService(modelID, conversationModelID string) (llm.
 	}, nil
 }
 
-func (m *Manager) workhorseModel(conversationModelID string) string {
+func (m *Manager) GetWorkhorseModelID(conversationModelID string) string {
 	info := m.GetModelInfo(conversationModelID)
 	if info == nil {
 		return conversationModelID

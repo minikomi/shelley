@@ -3,7 +3,7 @@ export type InlineSegment =
   | { type: "code"; content: string }
   | { type: "codeblock"; content: string };
 
-const FENCE = /```([\s\S]*?)```/g;
+const FENCE = /^```([^\n]*\n[\s\S]*?)^```[ \t]*(?=$)|```([\s\S]*?)```/gm;
 const INLINE_CODE = /`([^`\n]+)`/g;
 
 /**
@@ -21,7 +21,7 @@ export function parseInlineSegments(text: string): InlineSegment[] {
     if (m.index > last) {
       splitInline(text.slice(last, m.index), out);
     }
-    let body = m[1];
+    let body = m[1] ?? m[2];
     // Strip an optional language hint: a first line containing no whitespace,
     // followed by a newline. `"js\ncode"` -> `"code"`. `"code"` -> `"code"`.
     const nl = body.indexOf("\n");

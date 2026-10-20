@@ -1458,9 +1458,15 @@ func (q *Queries) SearchConversations(ctx context.Context, arg SearchConversatio
 const searchConversationsFTSList = `-- name: SearchConversationsFTSList :many
 WITH fts_hits AS (
   SELECT DISTINCT m.conversation_id
-  FROM messages m
-  JOIN messages_fts ON messages_fts.rowid = m.rowid
-  WHERE messages_fts MATCH ?4
+  FROM messages_fts
+  CROSS JOIN messages m ON m.rowid = messages_fts.rowid
+  CROSS JOIN conversations eligible ON eligible.conversation_id = m.conversation_id
+  WHERE messages_fts MATCH ?5
+    AND eligible.parent_conversation_id IS NULL
+    AND eligible.archived = ?2
+    AND json_extract(eligible.conversation_options, '$.kind') IS NOT 'search'
+  ORDER BY eligible.updated_at DESC
+  LIMIT ?4 + ?3
 )
 SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, c.cwd, c.archived, c.parent_conversation_id, c.model, c.conversation_options, c.current_generation, c.agent_working, c.tags, c.is_draft, c.draft, c.queued_messages, c.turn_interrupted, c.external_conversation_id, c.external_endpoint,
   CAST(CASE WHEN c.slug LIKE ?1 ESCAPE '\' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
@@ -1507,16 +1513,19 @@ SELECT c.conversation_id, c.slug, c.user_initiated, c.created_at, c.updated_at, 
          WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS INTEGER) AS running_background_jobs
 FROM conversations c
 WHERE c.parent_conversation_id IS NULL
+  AND c.archived = ?2
+  AND json_extract(c.conversation_options, '$.kind') IS NOT 'search'
   AND (
     c.slug LIKE ?1 ESCAPE '\'
     OR c.conversation_id IN (SELECT conversation_id FROM fts_hits)
   )
 ORDER BY slug_rank, c.archived ASC, c.updated_at DESC
-LIMIT ?3 OFFSET ?2
+LIMIT ?4 OFFSET ?3
 `
 
 type SearchConversationsFTSListParams struct {
 	SlugLike *string `json:"slug_like"`
+	Archived bool    `json:"archived"`
 	Offset   int64   `json:"offset"`
 	Limit    int64   `json:"limit"`
 	FtsMatch *string `json:"fts_match"`
@@ -1539,6 +1548,7 @@ type SearchConversationsFTSListRow struct {
 func (q *Queries) SearchConversationsFTSList(ctx context.Context, arg SearchConversationsFTSListParams) ([]SearchConversationsFTSListRow, error) {
 	rows, err := q.db.QueryContext(ctx, searchConversationsFTSList,
 		arg.SlugLike,
+		arg.Archived,
 		arg.Offset,
 		arg.Limit,
 		arg.FtsMatch,
@@ -1592,8 +1602,8 @@ func (q *Queries) SearchConversationsFTSList(ctx context.Context, arg SearchConv
 
 const searchConversationsFTSSnippets = `-- name: SearchConversationsFTSSnippets :many
 WITH ranked AS (
-  SELECT m.conversation_id,
-         m.message_id,
+  SELECT m.conversation_id, m.message_id,
+         CAST(m.rowid AS INTEGER) AS message_rowid,
          row_number() OVER (
            PARTITION BY m.conversation_id
            ORDER BY hits.rank
@@ -1603,11 +1613,10 @@ WITH ranked AS (
   WHERE hits.messages_fts MATCH ?3
     AND m.conversation_id IN (/*SLICE:conv_ids*/?)
 )
-SELECT ranked.conversation_id,
+SELECT ranked.conversation_id, ranked.message_id,
        snippet(messages_fts, 0, ?1, ?2, '...', 16) AS snippet
-FROM ranked
-JOIN messages m ON m.message_id = ranked.message_id
-JOIN messages_fts ON messages_fts.rowid = m.rowid
+FROM messages_fts
+CROSS JOIN ranked ON ranked.message_rowid = messages_fts.rowid
 WHERE ranked.rank_in_conversation = 1
   AND messages_fts.messages_fts MATCH ?3
 `
@@ -1621,11 +1630,13 @@ type SearchConversationsFTSSnippetsParams struct {
 
 type SearchConversationsFTSSnippetsRow struct {
 	ConversationID string `json:"conversation_id"`
+	MessageID      string `json:"message_id"`
 	Snippet        string `json:"snippet"`
 }
 
 // Best-ranked snippet per conversation for the given conversation IDs.
 // snippet(table, columnIndex=-1 (any), start, end, ellipsis, tokenCount).
+// Keep FTS outermost so the prefix scan starts once, not once per snippet.
 func (q *Queries) SearchConversationsFTSSnippets(ctx context.Context, arg SearchConversationsFTSSnippetsParams) ([]SearchConversationsFTSSnippetsRow, error) {
 	query := searchConversationsFTSSnippets
 	var queryParams []interface{}
@@ -1648,7 +1659,7 @@ func (q *Queries) SearchConversationsFTSSnippets(ctx context.Context, arg Search
 	items := []SearchConversationsFTSSnippetsRow{}
 	for rows.Next() {
 		var i SearchConversationsFTSSnippetsRow
-		if err := rows.Scan(&i.ConversationID, &i.Snippet); err != nil {
+		if err := rows.Scan(&i.ConversationID, &i.MessageID, &i.Snippet); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

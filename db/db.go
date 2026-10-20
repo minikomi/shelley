@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"shelley.exe.dev/db/generated"
@@ -1168,7 +1169,8 @@ type ConversationSearchResult struct {
 	// as the regular list, computed in the search query itself (see
 	// SearchConversationsFTSList).
 	ConversationListItem
-	Snippet string // empty if matched only by slug
+	Snippet          string // empty if matched only by slug
+	SnippetMessageID string
 }
 
 // SnippetMarkStart and SnippetMarkEnd surround matched terms inside
@@ -1180,14 +1182,14 @@ const (
 
 // SearchConversationsFTS performs a full-text search over user/agent message
 // content (via the messages_fts FTS5 virtual table) and slug substring across
-// ALL top-level conversations (active and archived). Slug matches come first;
-// within each match tier, active conversations precede archived conversations,
-// then results are ordered by updated_at DESC.
+// top-level conversations in the requested archive state. Slug matches come
+// first, then results are ordered by updated_at DESC.
+// Queries shorter than three non-space characters search slugs only.
 // Each FTS hit comes with a Snippet drawn from the best-ranking message;
 // slug-only matches have an empty snippet.
 // The query is the raw user input; this function handles tokenisation and
 // escaping for both the FTS5 MATCH branch and the LIKE branch.
-func (db *DB) SearchConversationsFTS(ctx context.Context, query string, limit, offset int64) ([]ConversationSearchResult, error) {
+func (db *DB) SearchConversationsFTS(ctx context.Context, query string, archived bool, limit, offset int64) ([]ConversationSearchResult, error) {
 	fields := strings.Fields(query)
 	if len(fields) == 0 {
 		return nil, nil
@@ -1200,6 +1202,11 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, limit, o
 		ftsParts = append(ftsParts, `"`+strings.ReplaceAll(f, `"`, `""`)+`"*`)
 	}
 	ftsMatch := strings.Join(ftsParts, " AND ")
+	if utf8.RuneCountInString(strings.Join(fields, "")) < 3 {
+		// An empty FTS phrase matches nothing, avoiding broad prefix scans
+		// while retaining slug matches in the requested archive state.
+		ftsMatch = `""`
+	}
 
 	// Escape LIKE wildcards (%, _) and the escape char itself in the slug
 	// pattern so typing a literal % doesn't match every conversation.
@@ -1210,6 +1217,7 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, limit, o
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		convs, err := q.SearchConversationsFTSList(ctx, generated.SearchConversationsFTSListParams{
+			Archived: archived,
 			SlugLike: &slugLike,
 			FtsMatch: &ftsMatch,
 			Limit:    limit,
@@ -1240,17 +1248,20 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, limit, o
 		if err != nil {
 			return err
 		}
-		snippets := make(map[string]string, len(convIDs))
+		snippets := make(map[string]generated.SearchConversationsFTSSnippetsRow, len(convIDs))
 		for _, r := range snipRows {
 			// The FTS source column is built from raw message JSON, so
 			// snippets carry citation markup. Strip before centering: the
 			// mark sentinels are outside the marker range, and stripping
 			// first keeps centerOnMark's byte slicing off a marker's
 			// 3-byte sequence.
-			snippets[r.ConversationID] = centerOnMark(llm.StripInlineCitationMarkers(r.Snippet), 120)
+			r.Snippet = centerOnMark(llm.StripInlineCitationMarkers(r.Snippet), 120)
+			snippets[r.ConversationID] = r
 		}
 		for i := range results {
-			results[i].Snippet = snippets[results[i].Conversation.ConversationID]
+			snippet := snippets[results[i].Conversation.ConversationID]
+			results[i].Snippet = snippet.Snippet
+			results[i].SnippetMessageID = snippet.MessageID
 		}
 		return nil
 	})

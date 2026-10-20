@@ -143,6 +143,7 @@ export interface ConversationWithStateForTS {
   preview?: string;
   preview_updated_at?: string;
   search_snippet?: string;
+  search_snippet_message_id?: string;
   max_sequence_id: number;
   participants?: ConversationParticipant[] | null;
 }

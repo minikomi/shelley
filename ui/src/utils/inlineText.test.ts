@@ -46,6 +46,11 @@ const testCases: TestCase[] = [
     expected: [{ type: "codeblock", content: "console.log(1)" }],
   },
   {
+    name: "JSON fence preserves literal backticks inside a string",
+    input: '```json\n[{"text":"sample ``` code"}]\n```',
+    expected: [{ type: "codeblock", content: '[{"text":"sample ``` code"}]' }],
+  },
+  {
     name: "fenced block inline on one line",
     input: "```code```",
     expected: [{ type: "codeblock", content: "code" }],

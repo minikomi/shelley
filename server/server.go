@@ -92,7 +92,8 @@ type ConversationWithState struct {
 	// SearchSnippet is set on hits from /api/conversations/search. Matched
 	// terms are wrapped in \x02..\x03 sentinels (see db.SnippetMarkStart /
 	// SnippetMarkEnd) so the UI can substitute spans without HTML injection.
-	SearchSnippet string `json:"search_snippet,omitempty"`
+	SearchSnippet          string `json:"search_snippet,omitempty"`
+	SearchSnippetMessageID string `json:"search_snippet_message_id,omitempty"`
 }
 
 // StreamResponse represents the response format for conversation streaming
@@ -343,6 +344,7 @@ type Server struct {
 	// restart a parent whose queue was just cleared.
 	stoppedParents           map[string]bool // guarded by mu
 	stoppingParents          map[string]bool // guarded by mu; a send during Stop must not reopen the fence
+	searchChatMu             sync.Mutex
 	mu                       sync.Mutex
 	deletingConversations    map[string]bool
 	logger                   *slog.Logger
@@ -535,6 +537,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	api.Handle("GET /api/conversations", compressionHandler(http.HandlerFunc(s.handleConversations)))
 	api.Handle("GET /api/conversations/snapshot", compressionHandler(http.HandlerFunc(s.handleConversationsSnapshot)))
 	api.Handle("GET /api/conversations/search", compressionHandler(http.HandlerFunc(s.handleSearchConversations)))
+	api.HandleFunc("POST /api/conversations/search/enhance", s.handleEnhanceSearch)
 	api.HandleFunc("GET /api/stream2", s.handleStream)
 	api.HandleFunc("POST /api/disk-space/dismiss", s.handleDismissDiskSpace)
 	api.Handle("GET /api/conversations/archived", compressionHandler(http.HandlerFunc(s.handleArchivedConversations)))

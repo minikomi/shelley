@@ -245,13 +245,25 @@ class ApiService {
     return response.json();
   }
 
-  // searchConversationsFTS performs a full-text search across both active AND
-  // archived top-level conversations, using SQLite FTS5 over message bodies.
+  async startSearchChat(query: string, archived: boolean, signal: AbortSignal, matches: Array<Pick<Conversation, "conversation_id" | "slug"> & {search_snippet?: string; search_snippet_message_id?: string}>): Promise<{conversation: ConversationWithState}> {
+    const response = await fetch(`${this.baseUrl}/conversations/search/enhance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shelley-Request": "1" },
+      body: JSON.stringify({ q: query, archived, matches: matches.map(c => ({conversation_id: c.conversation_id, slug: c.slug, snippet: c.search_snippet ?? "", message_id: c.search_snippet_message_id ?? ""})) }),
+      signal,
+    });
+    if (!response.ok) throw await responseError(response, "Could not start search chat");
+    return response.json();
+  }
+
+  // Search active top-level conversations, or only archived ones when requested.
   async searchConversationsFTS(
     query: string,
     signal?: AbortSignal,
+    archived = false,
   ): Promise<ConversationWithState[]> {
     const params = new URLSearchParams({ q: query });
+    if (archived) params.set("archived", "true");
     const response = await fetch(`${this.baseUrl}/conversations/search?${params}`, { signal });
     if (!response.ok) {
       throw await responseError(response, "Failed to search conversations");

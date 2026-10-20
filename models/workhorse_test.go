@@ -80,8 +80,8 @@ func TestWorkhorseModel(t *testing.T) {
 		{"unknown-custom-model", "unknown-custom-model"},
 		{"", ""},
 	} {
-		if got := manager.workhorseModel(test.conversationModel); got != test.want {
-			t.Errorf("workhorseModel(%q) = %q, want %q", test.conversationModel, got, test.want)
+		if got := manager.GetWorkhorseModelID(test.conversationModel); got != test.want {
+			t.Errorf("GetWorkhorseModelID(%q) = %q, want %q", test.conversationModel, got, test.want)
 		}
 	}
 }

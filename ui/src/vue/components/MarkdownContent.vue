@@ -281,3 +281,8 @@ function onActivate(e: MouseEvent | KeyboardEvent) {
   handleImageCommentClick(e, { src: img.src });
 }
 </script>
+
+<style scoped>
+:deep(a.message-source-link) { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-left: 4px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; text-decoration: none; vertical-align: middle; }
+:deep(a.message-source-link:hover) { background: var(--bg-secondary); }
+</style>

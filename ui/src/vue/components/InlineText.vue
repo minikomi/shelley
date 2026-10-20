@@ -13,9 +13,9 @@
     <template v-else>
       <template v-for="(p, j) in links(seg.content)" :key="j">
         <a
-          v-if="p.type === 'link'"
+          v-if="p.type === 'link' && p.href"
           :href="p.href"
-          target="_blank"
+          :target="p.href.startsWith('/c/') ? undefined : '_blank'"
           rel="noopener noreferrer"
           class="text-link"
           >{{ p.content }}</a

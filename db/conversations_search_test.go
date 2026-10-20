@@ -66,14 +66,14 @@ func TestSearchConversationsPreferSlugMatches(t *testing.T) {
 		{
 			name: "FTS",
 			search: func(ctx context.Context, query string, limit, offset int64) ([]ConversationListItem, error) {
-				hits, err := db.SearchConversationsFTS(ctx, query, limit, offset)
+				hits, err := db.SearchConversationsFTS(ctx, query, false, limit, offset)
 				items := make([]ConversationListItem, len(hits))
 				for i, hit := range hits {
 					items[i] = hit.ConversationListItem
 				}
 				return items, err
 			},
-			want: []string{ids[1], ids[0], ids[2], ids[5], ids[4], ids[3], ids[6]},
+			want: []string{ids[1], ids[0], ids[5], ids[4], ids[3]},
 		},
 		{
 			name:   "WithMessages",
@@ -102,6 +102,76 @@ func TestSearchConversationsPreferSlugMatches(t *testing.T) {
 			}
 			check(1, int64(len(tc.want)), nil)
 		})
+	}
+}
+
+func TestSearchConversationsFTSShortQueries(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	ctx := t.Context()
+
+	active, err := db.CreateConversation(ctx, stringPtr("pelican-猫咪"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, err := db.CreateConversation(ctx, stringPtr("pelican-猫咪-archived"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ArchiveConversation(ctx, archived.ConversationID); err != nil {
+		t.Fatal(err)
+	}
+	messageOnly, err := db.CreateConversation(ctx, stringPtr("notes"), true, nil, nil, ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateMessage(ctx, CreateMessageParams{
+		ConversationID: messageOnly.ConversationID,
+		Type:           MessageTypeAgent,
+		LLMData:        map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "A pelican 猫咪 nearby"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, query := range []string{"p", "pe", "猫", "猫咪"} {
+		t.Run(query, func(t *testing.T) {
+			results, err := db.SearchConversationsFTS(ctx, query, false, 50, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, len(results))
+			for i, result := range results {
+				got[i] = result.ConversationID
+				if result.Snippet != "" {
+					t.Errorf("short query returned a message snippet: %q", result.Snippet)
+				}
+			}
+			if want := []string{active.ConversationID}; !slices.Equal(got, want) {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+			page, err := db.SearchConversationsFTS(ctx, query, false, 1, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page) != 0 {
+				t.Fatalf("archived result leaked onto second active page: %#v", page)
+			}
+			archivedResults, err := db.SearchConversationsFTS(ctx, query, true, 50, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(archivedResults) != 1 || archivedResults[0].ConversationID != archived.ConversationID || archivedResults[0].Snippet != "" {
+				t.Fatalf("unexpected archived slug results: %#v", archivedResults)
+			}
+		})
+	}
+
+	results, err := db.SearchConversationsFTS(ctx, "pel", false, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[1].ConversationID != messageOnly.ConversationID || results[1].Snippet == "" {
+		t.Fatalf("three-character prefix did not search messages: %#v", results)
 	}
 }
 
@@ -153,12 +223,12 @@ func TestSearchConversationsFTS(t *testing.T) {
 		t.Fatalf("create decoy: %v", err)
 	}
 
-	results, err := db.SearchConversationsFTS(ctx, "pelican", 50, 0)
+	results, err := db.SearchConversationsFTS(ctx, "pelican", false, 50, 0)
 	if err != nil {
 		t.Fatalf("SearchConversationsFTS: %v", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d: %#v", len(results), results)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 active result, got %d: %#v", len(results), results)
 	}
 	gotActive := false
 	gotArchived := false
@@ -181,8 +251,15 @@ func TestSearchConversationsFTS(t *testing.T) {
 			t.Errorf("snippet does not contain match term: %q", r.Snippet)
 		}
 	}
-	if !gotActive || !gotArchived {
-		t.Errorf("missing expected conversations: active=%v archived=%v", gotActive, gotArchived)
+	if !gotActive || gotArchived {
+		t.Errorf("unexpected active search results: active=%v archived=%v", gotActive, gotArchived)
+	}
+	archivedResults, err := db.SearchConversationsFTS(ctx, "pelican", true, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archivedResults) != 1 || archivedResults[0].ConversationID != archived.ConversationID || !strings.Contains(archivedResults[0].Snippet, SnippetMarkStart) {
+		t.Fatalf("unexpected archived FTS results: %#v", archivedResults)
 	}
 	var snippets []generated.SearchConversationsFTSSnippetsRow
 	if err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
@@ -203,7 +280,7 @@ func TestSearchConversationsFTS(t *testing.T) {
 	}
 
 	// Slug match should still work even with no message hits.
-	results, err = db.SearchConversationsFTS(ctx, "decoy", 50, 0)
+	results, err = db.SearchConversationsFTS(ctx, "decoy", false, 50, 0)
 	if err != nil {
 		t.Fatalf("SearchConversationsFTS slug: %v", err)
 	}
@@ -216,16 +293,16 @@ func TestSearchConversationsFTS(t *testing.T) {
 	}
 
 	// Prefix matching: typing "peli" should still find the pelican messages.
-	results, err = db.SearchConversationsFTS(ctx, "peli", 50, 0)
+	results, err = db.SearchConversationsFTS(ctx, "peli", false, 50, 0)
 	if err != nil {
 		t.Fatalf("SearchConversationsFTS prefix: %v", err)
 	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 prefix results, got %d", len(results))
+	if len(results) != 1 {
+		t.Fatalf("expected 1 active prefix result, got %d", len(results))
 	}
 
 	// Empty query returns no results without erroring.
-	emptyResults, err := db.SearchConversationsFTS(ctx, "   ", 50, 0)
+	emptyResults, err := db.SearchConversationsFTS(ctx, "   ", false, 50, 0)
 	if err != nil {
 		t.Fatalf("empty query: %v", err)
 	}
@@ -234,12 +311,12 @@ func TestSearchConversationsFTS(t *testing.T) {
 	}
 
 	// FTS5 syntax characters in user input must not break the query.
-	if _, err := db.SearchConversationsFTS(ctx, `pel"ican AND foo*`, 50, 0); err != nil {
+	if _, err := db.SearchConversationsFTS(ctx, `pel"ican AND foo*`, false, 50, 0); err != nil {
 		t.Fatalf("escaped query: %v", err)
 	}
 
 	// A literal % in the search query must not match every slug via LIKE.
-	noise, err := db.SearchConversationsFTS(ctx, "%", 50, 0)
+	noise, err := db.SearchConversationsFTS(ctx, "%", false, 50, 0)
 	if err != nil {
 		t.Fatalf("percent query: %v", err)
 	}
@@ -270,7 +347,7 @@ func TestSearchConversationsFTSStripsCitationMarkers(t *testing.T) {
 		t.Fatalf("create agent msg: %v", err)
 	}
 
-	results, err := db.SearchConversationsFTS(ctx, "pelican", 50, 0)
+	results, err := db.SearchConversationsFTS(ctx, "pelican", false, 50, 0)
 	if err != nil {
 		t.Fatalf("SearchConversationsFTS: %v", err)
 	}
@@ -286,5 +363,35 @@ func TestSearchConversationsFTSStripsCitationMarkers(t *testing.T) {
 	}
 	if !strings.Contains(snippet, "that fishes in flocks.") {
 		t.Errorf("snippet lost text following the citation: %q", snippet)
+	}
+}
+
+func TestSearchConversationsFTSBodyPaginationUsesUpdatedOrder(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	var ids []string
+	for _, name := range []string{"first", "second"} {
+		slug := name
+		c, err := database.CreateConversation(t.Context(), &slug, true, nil, nil, ConversationOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = database.CreateMessage(t.Context(), CreateMessageParams{ConversationID: c.ConversationID, Type: MessageTypeUser, LLMData: map[string]any{"Content": []any{map[string]any{"Type": 2, "Text": "needle"}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, c.ConversationID)
+	}
+	if err := database.Pool().Exec(t.Context(), "UPDATE conversations SET updated_at='2099-01-01T00:00:00Z' WHERE conversation_id=?", ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	for offset, want := range ids {
+		hits, err := database.SearchConversationsFTS(t.Context(), "needle", false, 1, int64(offset))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(hits) != 1 || hits[0].ConversationID != want {
+			t.Fatalf("page %d: %#v, want %s", offset, hits, want)
+		}
 	}
 }

@@ -258,9 +258,15 @@ LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 -- expression from user input.
 WITH fts_hits AS (
   SELECT DISTINCT m.conversation_id
-  FROM messages m
-  JOIN messages_fts ON messages_fts.rowid = m.rowid
+  FROM messages_fts
+  CROSS JOIN messages m ON m.rowid = messages_fts.rowid
+  CROSS JOIN conversations eligible ON eligible.conversation_id = m.conversation_id
   WHERE messages_fts MATCH @fts_match
+    AND eligible.parent_conversation_id IS NULL
+    AND eligible.archived = sqlc.arg('archived')
+    AND json_extract(eligible.conversation_options, '$.kind') IS NOT 'search'
+  ORDER BY eligible.updated_at DESC
+  LIMIT sqlc.arg('limit') + sqlc.arg('offset')
 )
 SELECT sqlc.embed(c),
   CAST(CASE WHEN c.slug LIKE sqlc.arg('slug_like') ESCAPE '\' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
@@ -307,6 +313,8 @@ SELECT sqlc.embed(c),
          WHERE bj.conversation_id = c.conversation_id AND NOT bj.exited) AS INTEGER) AS running_background_jobs
 FROM conversations c
 WHERE c.parent_conversation_id IS NULL
+  AND c.archived = sqlc.arg('archived')
+  AND json_extract(c.conversation_options, '$.kind') IS NOT 'search'
   AND (
     c.slug LIKE @slug_like ESCAPE '\'
     OR c.conversation_id IN (SELECT conversation_id FROM fts_hits)
@@ -581,8 +589,8 @@ ORDER BY updated_at DESC;
 -- Best-ranked snippet per conversation for the given conversation IDs.
 -- snippet(table, columnIndex=-1 (any), start, end, ellipsis, tokenCount).
 WITH ranked AS (
-  SELECT m.conversation_id,
-         m.message_id,
+  SELECT m.conversation_id, m.message_id,
+         CAST(m.rowid AS INTEGER) AS message_rowid,
          row_number() OVER (
            PARTITION BY m.conversation_id
            ORDER BY hits.rank
@@ -592,11 +600,11 @@ WITH ranked AS (
   WHERE hits.messages_fts MATCH @fts_match
     AND m.conversation_id IN (sqlc.slice('conv_ids'))
 )
-SELECT ranked.conversation_id,
+SELECT ranked.conversation_id, ranked.message_id,
        snippet(messages_fts, 0, sqlc.arg(mark_start), sqlc.arg(mark_end), '...', 16) AS snippet
-FROM ranked
-JOIN messages m ON m.message_id = ranked.message_id
-JOIN messages_fts ON messages_fts.rowid = m.rowid
+-- Keep FTS outermost so the prefix scan starts once, not once per snippet.
+FROM messages_fts
+CROSS JOIN ranked ON ranked.message_rowid = messages_fts.rowid
 WHERE ranked.rank_in_conversation = 1
   AND messages_fts.messages_fts MATCH @fts_match;
 

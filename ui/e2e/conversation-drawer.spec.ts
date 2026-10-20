@@ -321,10 +321,142 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(paletteTitle.locator("mark")).toHaveCount(0);
   });
 
+  test("drawer clears stale matches while the next query is pending", async ({ page }) => {
+    await stubConversationList(page, [conversation("recent")]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    await page.route("**/api/conversations/search**", async route => {
+      if (new URL(route.request().url()).searchParams.get("q") === "pending") await gate;
+      await route.fulfill({ json: [conversation("needle-match")] });
+    });
+    await page.goto("/new");
+    await page.getByRole("button", { name: "Search conversations..." }).click();
+    const editor = queryEditor(page);
+    await editor.fill("needle");
+    await expect(page.locator('[data-conversation-id="needle-match"]')).toBeVisible();
+    await editor.fill("pending");
+    await expect(page.locator('[data-conversation-id="needle-match"]')).toHaveCount(0);
+    await expect(page.getByText("Searching...", { exact: true })).toBeVisible();
+    release();
+    await editor.fill("");
+  });
+
+  test("Ask Shelley waits for results and immediately closes the mobile drawer", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const match = conversation("needle-match");
+    match.search_snippet = "Supporting passage";
+    match.search_snippet_message_id = "source-message";
+    const chat = conversation("ask-shelley-fixture");
+    chat.conversation_options = JSON.stringify({ kind: "search" });
+    await stubConversationList(page, [conversation("recent")]);
+    let releaseResults!: () => void;
+    const resultsGate = new Promise<void>(resolve => { releaseResults = resolve; });
+    let releaseChat!: () => void;
+    const chatGate = new Promise<void>(resolve => { releaseChat = resolve; });
+    let searchPayload: unknown;
+    await page.route("**/api/conversations/search?*", async route => {
+      await resultsGate;
+      await route.fulfill({ json: [match] });
+    });
+    await page.route("**/api/conversations/search/enhance", async route => {
+      searchPayload = route.request().postDataJSON();
+      await chatGate;
+      await route.fulfill({ status: 202, json: { conversation: chat } });
+    });
+    await page.route("**/api/conversation/ask-shelley-fixture**", route =>
+      route.fulfill({ json: { conversation: chat, messages: [] } }),
+    );
+    await page.goto("/new");
+    await page.getByRole("button", { name: "Open conversations", exact: true }).click();
+    await page.getByRole("button", { name: "Search conversations..." }).click();
+    await queryEditor(page).fill("needle");
+    const ask = page.getByRole("button", { name: "Ask Shelley", exact: true });
+    await expect(ask).toBeDisabled();
+    releaseResults();
+    await expect(ask).toBeEnabled();
+    await ask.click();
+    await expect(page.locator(".drawer")).not.toHaveClass(/\bopen\b/);
+    await expect(page).toHaveURL(/\/new$/);
+    releaseChat();
+    await expect(page).toHaveURL(/\/c\/ask-shelley-fixture$/);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(searchPayload).toEqual({
+      q: "needle", archived: false,
+      matches: [{ conversation_id: match.conversation_id, slug: match.slug, snippet: match.search_snippet, message_id: match.search_snippet_message_id }],
+    });
+  });
+
+  test("drawer searches only the current archive view", async ({ page }) => {
+    const active = conversation("needle-active");
+    const archived = conversation("needle-archived");
+    archived.archived = true;
+    await stubConversationList(page, [conversation("recent")]);
+    await page.route("**/api/conversations/archived**", (route) =>
+      route.fulfill({ json: [archived] }),
+    );
+    const scopes: boolean[] = [];
+    await page.route("**/api/conversations/search**", (route) => {
+      const archiveScope = new URL(route.request().url()).searchParams.get("archived") === "true";
+      scopes.push(archiveScope);
+      return route.fulfill({ json: [archiveScope ? archived : active] });
+    });
+    await page.goto("/new");
+    await page.getByRole("button", { name: "Search conversations..." }).click();
+    const editor = queryEditor(page);
+    const titles = page.locator(".drawer .conversation-title");
+    await editor.fill("needle");
+    await expect(titles).toHaveText(["needle-active"]);
+
+    await page.getByRole("button", { name: "View Archived", exact: true }).click();
+    await expect(titles).toHaveText(["needle-archived"]);
+    await expect(editor).toHaveText("needle");
+
+    await page.getByRole("button", { name: "Back to conversations", exact: true }).click();
+    await expect(titles).toHaveText(["needle-active"]);
+    expect(scopes).toEqual([false, true, false]);
+  });
+
+  test("drawer cancels superseded and cleared searches", async ({ page }) => {
+    const recent = conversation("recent");
+    const hit = conversation("needle-active");
+    await stubConversationList(page, [recent]);
+    const searches: string[] = [];
+    await page.route("**/api/conversations/search**", (route) => {
+      const query = new URL(route.request().url()).searchParams.get("q")!;
+      searches.push(query);
+      if (query === "slow" || query === "cleared") return;
+      return route.fulfill({ json: [hit] });
+    });
+    await page.goto("/new");
+    await page.getByRole("button", { name: "Search conversations..." }).click();
+    const editor = queryEditor(page);
+
+    const slowRequest = page.waitForRequest(
+      (request) => new URL(request.url()).searchParams.get("q") === "slow",
+    );
+    await editor.fill("slow");
+    const slow = await slowRequest;
+    const slowCancelled = page.waitForEvent("requestfailed", (request) => request === slow);
+    await editor.fill("needle");
+    await slowCancelled;
+    await expect(page.locator('[data-conversation-id="needle-active"]')).toBeVisible();
+
+    const pendingRequest = page.waitForRequest(
+      (request) => new URL(request.url()).searchParams.get("q") === "cleared",
+    );
+    await editor.fill("cleared");
+    const pending = await pendingRequest;
+    const pendingCancelled = page.waitForEvent("requestfailed", (request) => request === pending);
+    await editor.fill("");
+    await pendingCancelled;
+    await expect(page.locator('[data-conversation-id="recent"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="needle-active"]')).toHaveCount(0);
+    expect(searches).toEqual(["slow", "needle", "cleared"]);
+  });
+
   test("command palette uses indexed search and cancels superseded requests", async ({ page }) => {
     const recent = conversation("recent");
-    const slugHit = conversation("needle-archived");
-    slugHit.archived = true;
+    const slugHit = conversation("needle-active");
     const messageHit = conversation("message-only");
     await stubConversationList(page, [recent]);
     const searches: string[] = [];
@@ -353,7 +485,7 @@ test.describe("conversation drawer startup and app bar", () => {
     const slowCancelled = page.waitForEvent("requestfailed", (request) => request === slow);
     await input.fill(" needle ");
     await slowCancelled;
-    await expect(titles).toHaveText(["needle-archived", "message-only"]);
+    await expect(titles).toHaveText(["needle-active", "message-only"]);
     await expect(titles.first().locator("mark")).toHaveText(["needle"]);
 
     const pendingRequest = page.waitForRequest(
@@ -365,7 +497,7 @@ test.describe("conversation drawer startup and app bar", () => {
     await input.fill("");
     await pendingCancelled;
     await expect(titles.filter({ hasText: "recent" })).toBeVisible();
-    await expect(titles.filter({ hasText: "needle-archived" })).toHaveCount(0);
+    await expect(titles.filter({ hasText: "needle-active" })).toHaveCount(0);
     expect(searches).toEqual(["slow", "needle", "cleared"]);
     expect(legacySearches).toEqual([]);
   });

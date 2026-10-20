@@ -171,7 +171,7 @@ func TestDirectManagedChatProvenanceReachesModelWithoutChangingStoredText(t *tes
 			assertSenderSource(t, storedUserData(t, message), senderID, senderSlug, tc.relationship, rawText)
 
 			if !tc.reverse {
-				results, err := database.SearchConversationsFTS(t.Context(), "progress", 10, 0)
+				results, err := database.SearchConversationsFTS(t.Context(), "progress", false, 10, 0)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -559,7 +559,7 @@ func TestTranscriptionSenderProvenanceAppliesOnlyToFinalUserMessage(t *testing.T
 	if auditRows != 2 || finalRows != 1 {
 		t.Fatalf("transcription rows: audit=%d final=%d", auditRows, finalRows)
 	}
-	results, err := database.SearchConversationsFTS(t.Context(), "spoken", 10, 0)
+	results, err := database.SearchConversationsFTS(t.Context(), "spoken", false, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,6 +42,7 @@
         :viewed-conversation="viewedConversation"
         :show-active-trigger="showActiveTrigger"
         :message-sent-trigger="messageSentTrigger"
+        @open="drawerOpen = true"
         @close="drawerOpen = false"
         @toggle-collapse="toggleDrawerCollapsed"
         @select-conversation="selectConversation"

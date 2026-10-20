@@ -3,7 +3,7 @@
      bar, terminal/diff/git panels, model/thinking pickers, distill, TOC,
      scroll behavior. Preserves the e2e DOM/ARIA/CSS contract. -->
 <template>
-  <div ref="chatRootRef" class="full-height flex flex-col">
+  <div ref="chatRootRef" class="full-height flex flex-col" @click="onConversationLinkClick">
     <!-- Header -->
     <div class="header">
       <div class="header-left">
@@ -116,7 +116,7 @@
       <div ref="messagesContainerRef" class="messages-container scrollable">
         <div v-if="!loading || renderingConversation" ref="messagesListRef" class="messages-list">
           <!-- empty state -->
-          <div v-if="messages.length === 0 && liveExchangeTurns.length === 0" class="empty-state">
+          <div v-if="conversationOptions.kind !== 'search' && messages.length === 0 && liveExchangeTurns.length === 0" class="empty-state">
             <div class="empty-state-content">
               <p class="text-base chat-welcome-text">
                 <template v-for="(part, i) in welcomeParts" :key="i">
@@ -852,7 +852,7 @@ const { markdownMode } = useMarkdownMode();
 // The open conversation's options: its settings (as of the last change) and
 // the profile they came from.
 const conversationOptions = computed<
-  Partial<Settings> & { profile?: string; disable_all_tools?: boolean }
+  Partial<Settings> & { profile?: string; disable_all_tools?: boolean; kind?: string }
 >(() => {
   try {
     return JSON.parse(props.currentConversation?.conversation_options || "{}") ?? {};
@@ -5010,7 +5010,7 @@ async function jumpToMessage(messageId: string) {
   if (pending) await nextTick();
   const container = messagesContainerRef.value;
   const el = container?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`);
-  if (!container || !el) return;
+  if (!container || !el) return false;
   // A message already in full view only needs the highlight. Scrolling to it
   // would not move, and marking the user scrolled up would then stop
   // following new messages with nothing to undo it.
@@ -5021,7 +5021,39 @@ async function jumpToMessage(messageId: string) {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
   }
   highlightMessage(el);
+  return true;
 }
+
+// Match the native SubagentTool navigation path: no document reload.
+function onConversationLinkClick(event: MouseEvent) {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+  if (!link || link.hasAttribute("download")) return;
+  const url = new URL(link.href, window.location.href);
+  if (url.origin !== window.location.origin || !/^\/c\/[^/]+\/?$/.test(url.pathname)) return;
+  event.preventDefault();
+  window.history.pushState({}, "", url.pathname + url.search + url.hash);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+const messageLinkNavigation = ref(0);
+function onMessageLinkNavigation() {
+  appliedMessageLink = "";
+  messageLinkNavigation.value++;
+}
+onMounted(() => window.addEventListener("popstate", onMessageLinkNavigation));
+onUnmounted(() => window.removeEventListener("popstate", onMessageLinkNavigation));
+
+// Search citations link to full message IDs, independent of the optional TOC.
+let appliedMessageLink = "";
+watch([() => props.conversationId, messages, loading, messageLinkNavigation], async () => {
+  const id = new URLSearchParams(window.location.search).get("message_id");
+  const key = `${props.conversationId}:${id}`;
+  if (!id || loading.value || key === appliedMessageLink || !messages.value.some(m => m.message_id === id)) return;
+  appliedMessageLink = key;
+  await nextTick();
+  if (!(await jumpToMessage(id))) appliedMessageLink = "";
+}, {flush: "post"});
 
 // Auto-scroll after DOM updates (mirrors the useLayoutEffect).
 watch(
