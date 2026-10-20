@@ -23,7 +23,7 @@
 <template>
   <div class="token-cost-graph">
     <div v-if="stack && stack.n > 0">
-      <div class="token-cost-controls">
+      <div v-if="!timeline" class="token-cost-controls">
         <button
           :class="{ 'token-cost-toggle-active': xMode === 'calls' }"
           class="token-cost-toggle"
@@ -101,9 +101,9 @@
           </g>
           <path v-if="missMarks" :d="missMarks" class="token-cost-miss-mark" />
           <path
-            v-for="i in markStarts"
+            v-for="(x, i) in compactionMarks"
             :key="`mark-${i}`"
-            :d="guide(markX(i))"
+            :d="guide(x)"
             class="token-cost-gen-line"
           />
           <path
@@ -205,7 +205,7 @@
       <thead>
         <tr>
           <th scope="col">Model / tokens</th>
-          <th scope="col">Main conversation</th>
+          <th scope="col">{{ timeline ? "All agents" : "Main conversation" }}</th>
           <th v-if="hasSubagents" scope="col">Sub-agents</th>
         </tr>
       </thead>
@@ -364,6 +364,13 @@ const props = defineProps<{
   active?: boolean;
   /** Which graphs are on; they stack in a fixed order whatever this one is. */
   panes: UsagePane[];
+  /** Embed on the activity timeline's shared clock. */
+  timeline?: {
+    layout: XLayout;
+    contextLayout: XLayout;
+    compactions: number[];
+    label: string;
+  };
 }>();
 
 // Pixel geometry, drawn 1:1: the viewBox is as wide as the svg actually is
@@ -655,10 +662,11 @@ const showCostSummary = computed(() => {
   );
 });
 
-const xMode = ref<"calls" | "time">("calls");
+const xMode = ref<"calls" | "time">(props.timeline ? "time" : "calls");
 
 const layout = computed<XLayout>(() =>
-  xMode.value === "time" ? timeXLayout(props.entries) : callXLayout(stack.value?.n ?? 0),
+  props.timeline?.layout ??
+  (xMode.value === "time" ? timeXLayout(props.entries) : callXLayout(stack.value?.n ?? 0)),
 );
 
 function xAt(i: number): number {
@@ -676,9 +684,12 @@ const ctxPoints = computed<Point[]>(() =>
 );
 const categories = computed(() => contextCategories(ctxPoints.value));
 const ctxLayers = computed(() => contextLayers(ctxPoints.value, categories.value));
-const ctxAligned = computed(() => ctxPoints.value.length === (stack.value?.n ?? 0));
+const ctxAligned = computed(
+  () => !props.timeline && ctxPoints.value.length === (stack.value?.n ?? 0),
+);
 const ctxLayout = computed<XLayout>(() =>
-  ctxAligned.value ? layout.value : callXLayout(ctxPoints.value.length),
+  props.timeline?.contextLayout ??
+  (ctxAligned.value ? layout.value : callXLayout(ctxPoints.value.length)),
 );
 
 // A vertical guide through every pane, skipping the gaps between them.
@@ -698,6 +709,12 @@ const markStarts = computed<number[]>(() => {
 function markX(i: number): number {
   return PADL + generationBoundary(bars.value, layout.value.xs, i) * plotW.value;
 }
+
+const compactionMarks = computed(() =>
+  props.timeline
+    ? props.timeline.compactions.map((x) => PADL + x * plotW.value)
+    : markStarts.value.map(markX),
+);
 
 // Non-overlapping per-call bars; each draws (and hovers as) one call.
 const bars = computed<DeltaBar[]>(() => {
@@ -833,6 +850,7 @@ const paneViews = computed<PaneView[]>(() => {
 });
 
 const xAxisLabel = computed(() => {
+  if (props.timeline) return props.timeline.label;
   const s = stack.value;
   if (!s) return "";
   if (xMode.value === "calls") return "LLM call";
@@ -844,7 +862,11 @@ const xAxisLabel = computed(() => {
 const hintText = computed(() =>
   [
     needsPricing.value ? "Hover a call to see what drove its cost." : "",
-    markStarts.value.length ? "Dashed lines mark compactions." : "",
+    compactionMarks.value.length
+      ? props.timeline
+        ? "Colored lines mark compactions."
+        : "Dashed lines mark compactions."
+      : "",
   ]
     .filter(Boolean)
     .join(" "),
