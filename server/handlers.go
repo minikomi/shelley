@@ -799,25 +799,31 @@ func (s *Server) conversationListWithStateInternal(ctx context.Context, limit, o
 func (s *Server) decorateConversations(conversations []db.ConversationListItem) []ConversationWithState {
 	now := time.Now()
 	result := make([]ConversationWithState, len(conversations))
+	gitEntries := make(map[string]conversationListGitCacheEntry)
 	for i, item := range conversations {
 		conv := item.Conversation
 		cws := ConversationWithState{ConversationListItem: item, Working: conv.AgentWorking}
 		if conv.Cwd != nil {
-			entry, ok := s.conversationListGitCache.get(*conv.Cwd, now)
+			cwd := *conv.Cwd
+			entry, ok := gitEntries[cwd]
 			if !ok {
-				gs := gitstate.GetGitState(*conv.Cwd)
-				entry = conversationListGitCacheEntry{
-					state:     gs,
-					expiresAt: now.Add(conversationListGitCacheTTL),
-				}
-				if gs.IsRepo {
-					entry.worktree = getGitWorktreeRoot(gs.Worktree)
-					if gitDir, err := resolveGitDir(gs.Worktree); err == nil {
-						entry.gitDir = gitDir
-						entry.fingerprint = gitFingerprint(gitDir)
+				entry, ok = s.conversationListGitCache.get(cwd, now)
+				if !ok {
+					gs := gitstate.GetGitState(cwd)
+					entry = conversationListGitCacheEntry{
+						state:     gs,
+						expiresAt: now.Add(conversationListGitCacheTTL),
 					}
+					if gs.IsRepo {
+						entry.worktree = getGitWorktreeRoot(gs.Worktree)
+						if gitDir, err := resolveGitDir(gs.Worktree); err == nil {
+							entry.gitDir = gitDir
+							entry.fingerprint = gitFingerprint(gitDir)
+						}
+					}
+					s.conversationListGitCache.set(cwd, entry)
 				}
-				s.conversationListGitCache.set(*conv.Cwd, entry)
+				gitEntries[cwd] = entry
 			}
 			if entry.state.IsRepo {
 				cws.GitRepoRoot = entry.state.Worktree
@@ -1569,7 +1575,18 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 			modelID = hookResult.Model
 			llmService = newService
 			if err := s.db.ForceUpdateConversationModel(ctx, conversationID, modelID); err != nil {
-				s.logger.Error("Failed to update model from hook", "error", err)
+				s.internalError(w, "Failed to update model from hook", err)
+				return
+			}
+			if _, _, err := s.db.ModifyConversationOptions(ctx, conversationID, func(o *db.ConversationOptions) bool {
+				if o.Profile == "" || o.SettingsEdited {
+					return false
+				}
+				o.SettingsEdited = true
+				return true
+			}); err != nil {
+				s.internalError(w, "Failed to save hook model override", err)
+				return
 			}
 		}
 	}
