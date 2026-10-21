@@ -65,6 +65,7 @@ for (const theme of ["light", "dark"] as const) {
         child.working = child.agent_working = subWorking;
         child.running_background_jobs = subJobs;
         const subRunning = subWorking || subJobs > 0;
+        const parentRunning = working || jobs > 0 || subRunning;
         await page.goto("/new");
         await openDrawer(page);
         await page.mouse.move(0, 0);
@@ -87,8 +88,8 @@ for (const theme of ["light", "dark"] as const) {
         });
         await expect(card).toHaveCSS("background-color", primary);
         const parentCircle = card.locator(".drawer-working-indicator");
-        await expect(parentCircle).toHaveCount(working ? 1 : 0);
-        if (working) {
+        await expect(parentCircle).toHaveCount(parentRunning ? 1 : 0);
+        if (parentRunning) {
           await expectCentered(parentCircle, card.locator(".drawer-conversation-header-row"));
         }
         await expect(badge).toHaveText(subRunning ? "1/1" : "1");

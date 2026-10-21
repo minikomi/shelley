@@ -640,6 +640,7 @@ import {
   reconcileComposerDraft,
 } from "../../services/draftCache";
 import { setFaviconStatus } from "../../services/favicon";
+import { workingConversationIds } from "../../utils/workingConversations";
 import {
   modelSetupHintKeys,
   canSendWithModel,
@@ -1284,6 +1285,12 @@ const diffCommentText = ref("");
 const imageCommentTarget = useImageCommentTarget();
 const markdownDoc = useMarkdownDoc();
 const agentWorking = ref(false);
+const conversationWorking = computed(
+  () =>
+    agentWorking.value ||
+    (!!props.conversationId &&
+      workingConversationIds(conversations.value).has(props.conversationId)),
+);
 const resumingInterrupted = ref(false);
 const cancelling = ref(false);
 const contextWindowSize = ref(0);
@@ -4404,6 +4411,7 @@ const statusContentProps = computed(() => {
     streamStatus: props.streamStatus,
     error: error.value,
     agentWorking: agentWorking.value,
+    working: conversationWorking.value,
     interrupted: conversationInterrupted.value,
     resumingInterrupted: resumingInterrupted.value,
     cancelling: cancelling.value,
@@ -4647,7 +4655,7 @@ mobileMq.addEventListener("change", onMobileChange);
 
 // Favicon working indicator.
 watch(
-  agentWorking,
+  conversationWorking,
   (working) => {
     // The completion notification is best-effort: a sleeping/backgrounded tab
     // can miss it. The conversation's authoritative working state is also
