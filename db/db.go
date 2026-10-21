@@ -1184,7 +1184,7 @@ const (
 // content (via the messages_fts FTS5 virtual table) and slug substring across
 // top-level conversations in the requested archive state. Slug matches come
 // first, then results are ordered by updated_at DESC.
-// Queries shorter than three non-space characters search slugs only.
+// Message terms shorter than three characters match whole tokens, not prefixes.
 // Each FTS hit comes with a Snippet drawn from the best-ranking message;
 // slug-only matches have an empty snippet.
 // The query is the raw user input; this function handles tokenisation and
@@ -1195,18 +1195,17 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, archived
 		return nil, nil
 	}
 
-	// Build an FTS5 MATCH expression: each token becomes a quoted prefix
-	// term, all AND'd together. Escape embedded double quotes by doubling.
+	// Quote terms and AND them together, allowing prefixes only for longer terms.
+	// Escape embedded double quotes by doubling.
 	ftsParts := make([]string, 0, len(fields))
 	for _, f := range fields {
-		ftsParts = append(ftsParts, `"`+strings.ReplaceAll(f, `"`, `""`)+`"*`)
+		part := `"` + strings.ReplaceAll(f, `"`, `""`) + `"`
+		if utf8.RuneCountInString(f) >= 3 {
+			part += "*"
+		}
+		ftsParts = append(ftsParts, part)
 	}
 	ftsMatch := strings.Join(ftsParts, " AND ")
-	if utf8.RuneCountInString(strings.Join(fields, "")) < 3 {
-		// An empty FTS phrase matches nothing, avoiding broad prefix scans
-		// while retaining slug matches in the requested archive state.
-		ftsMatch = `""`
-	}
 
 	// Escape LIKE wildcards (%, _) and the escape char itself in the slug
 	// pattern so typing a literal % doesn't match every conversation.
