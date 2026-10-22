@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/models/modelsdev"
 )
 
 func TestDefaultReasoningLevel(t *testing.T) {
@@ -30,5 +31,52 @@ func TestDefaultReasoningLevel(t *testing.T) {
 				t.Fatalf("ServiceDefaultReasoningLevel() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExplicitControlsPreserveLegacyBudgetAndAdaptiveEncoding(t *testing.T) {
+	const endpoint = "https://api.pioneer.ai/v1/messages"
+	for _, tc := range []struct {
+		name, model          string
+		override             *modelsdev.ReasoningCapabilities
+		wantType, wantEffort string
+	}{
+		{"adaptive without override", Claude48Opus, nil, "adaptive", "max"},
+		{"adaptive explicit levels", Claude48Opus, &modelsdev.ReasoningCapabilities{Supported: true, Levels: []llm.ThinkingLevel{llm.ThinkingLevelLow, llm.ThinkingLevelMedium, llm.ThinkingLevelHigh, llm.ThinkingLevelXHigh}}, "adaptive", "xhigh"},
+		{"budget without override", "claude-sonnet-4-5", nil, "enabled", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Service{Model: tc.model, URL: endpoint, ThinkingLevel: llm.ThinkingLevelMax, ReasoningOverride: tc.override}
+			got := s.fromLLMRequest(&llm.Request{})
+			if got.Thinking == nil || got.Thinking.Type != tc.wantType {
+				t.Fatalf("thinking = %+v, want %s", got.Thinking, tc.wantType)
+			}
+			if tc.wantEffort != "" {
+				if got.OutputConfig == nil || got.OutputConfig.Effort != tc.wantEffort {
+					t.Fatalf("output_config = %+v, want effort %s", got.OutputConfig, tc.wantEffort)
+				}
+			} else if got.OutputConfig != nil || got.Thinking.BudgetTokens != 16384 {
+				t.Fatalf("budget thinking changed: %+v, output_config %+v", got.Thinking, got.OutputConfig)
+			}
+		})
+	}
+}
+
+func TestDisableReasoningOverridesEndpointControls(t *testing.T) {
+	for _, caps := range []*modelsdev.ReasoningCapabilities{
+		nil,
+		{Supported: true, Levels: []llm.ThinkingLevel{llm.ThinkingLevelHigh}},
+	} {
+		s := &Service{
+			Model: Claude48Opus, DisableReasoning: true,
+			ThinkingLevel: llm.ThinkingLevelHigh, ReasoningOverride: caps,
+		}
+		if s.SupportsReasoning() || len(s.SupportedReasoningLevels()) != 0 || s.DefaultReasoningLevel() != "off" {
+			t.Fatalf("disabled reasoning exposed controls with override %+v", caps)
+		}
+		req := s.fromLLMRequest(&llm.Request{ThinkingLevel: llm.ThinkingLevelHigh})
+		if req.Thinking != nil || req.OutputConfig != nil {
+			t.Fatalf("disabled reasoning emitted thinking: %+v, output_config: %+v", req.Thinking, req.OutputConfig)
+		}
 	}
 }
