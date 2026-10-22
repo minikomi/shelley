@@ -1,3 +1,4 @@
+import { openModelPicker } from "./helpers";
 import { expect, test } from "@playwright/test";
 
 const customModel = (overrides: Record<string, unknown> = {}) => ({
@@ -43,7 +44,7 @@ test.describe("custom model output token limit", () => {
     });
 
     await page.goto("/new");
-    await page.locator(".model-picker").click();
+    await openModelPicker(page);
     await page.getByRole("button", { name: "Manage Models" }).click();
     await page.getByRole("button", { name: "Edit Model" }).click();
 

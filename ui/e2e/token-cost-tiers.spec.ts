@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Message, Model } from "../src/types";
 
+test.use({ viewport: { width: 1280, height: 900 } });
+
 // Context-size pricing tiers (issue #322): a model like Claude Haiku 5.5 bills
 // 5x more once a call's prompt exceeds 100k tokens. The cost graph must price
 // each call at the tier its prompt lands in, not always at the base rate.

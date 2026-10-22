@@ -188,7 +188,12 @@ test.describe("running work", () => {
       await expect(page.locator(".status-stop-button")).toHaveCount(0);
       await expect(page.locator(".status-readout-model")).toBeEnabled();
       await page.setViewportSize({ width: 390, height: 800 });
-      await expect(page.locator(".status-bar-active > .working-indicator")).toBeVisible();
+      await expect(page.locator(".status-bar-active > .working-indicator")).toBeHidden();
+      await page.getByRole("button", { name: "More options", exact: true }).click();
+      const model = page.locator(".model-picker-menu");
+      await expect(model).toHaveClass(/p-disabled/);
+      await expect(model).toHaveCSS("opacity", "0.5");
+      await page.keyboard.press("Escape");
       await page.setViewportSize({ width: 1280, height: 800 });
       await toggle.click();
       const group = strip.getByRole("group", { name: "Work by backgroundhelper" });
