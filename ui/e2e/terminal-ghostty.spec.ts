@@ -73,7 +73,7 @@ test("survives theme switches and keeps Ctrl+V and Ctrl+Shift+C off paste and ^C
   request,
 }) => {
   const terminal = await runScript(page, request, [
-    "stty raw -echo",
+    "stty raw -echo lnext undef",
     "printf 'ghostty-ready A\\033[24GB 漢字 👩‍💻\\r\\n'",
     "IFS= read -r -d q keys",
     "stty sane",
@@ -108,10 +108,26 @@ test("survives theme switches and keeps Ctrl+V and Ctrl+Shift+C off paste and ^C
   const terminalInput = terminal.getByRole("textbox", { name: "Terminal input", exact: true });
   await terminalInput.focus();
   canvas = await terminal.locator("canvas").elementHandle();
+  const sessions = await (await request.get("/api/terminals")).json();
+  const session = sessions.find((terminal: { cwd: string }) => terminal.cwd === cwd);
+  const replay = page
+    .waitForEvent(
+      "websocket",
+      (socket) => new URL(socket.url()).searchParams.get("term_id") === session.id,
+    )
+    .then((socket) =>
+      socket.waitForEvent("framereceived", {
+        predicate: ({ payload }) => JSON.parse(payload.toString()).type === "output",
+      }),
+    );
   await setTheme(page, "light");
   await expect.poll(() => canvas!.evaluate((el) => el.isConnected)).toBe(false);
   await expect.poll(() => canvasBackground(terminal)).toBe(LIGHT);
   await expect(terminalInput).toBeFocused();
+
+  // Focus returns before the replacement socket opens. Wait for replay
+  // without moving focus through the composer to inspect the output.
+  await replay;
 
   await page.keyboard.press("Control+v");
   await page.keyboard.press("Control+Shift+c");
@@ -191,20 +207,19 @@ for (const [direction, delta] of [
   test(`fits the grid after a burst of resizes (${direction})`, async ({ page, request }) => {
     const terminal = await runScript(page, request, ["printf 'ghostty-ready\\n'", "exec cat"]);
     await expect.poll(inserted(page, "all output")).toContain("ghostty-ready");
-    // Drag the divider one step per frame, as a hand does: faster than
-    // ghostty-web's FitAddon accepts resizes.
-    await page.evaluate(async (delta) => {
-      const handle = document.querySelector(".terminal-panel-resize-handle")!;
-      const box = handle.getBoundingClientRect();
-      let clientY = box.y + box.height / 2;
-      handle.dispatchEvent(new MouseEvent("mousedown", { clientY, bubbles: true }));
-      for (let i = 0; i < 3; i++) {
-        clientY += delta;
-        document.dispatchEvent(new MouseEvent("mousemove", { clientY }));
-        await new Promise(requestAnimationFrame);
-      }
-      document.dispatchEvent(new MouseEvent("mouseup"));
-    }, delta);
+    // Drag the divider in a short burst, faster than ghostty-web's
+    // FitAddon accepts resizes.
+    const handle = page.locator(".terminal-panel-resize-handle");
+    const box = (await handle.boundingBox())!;
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, y + delta * 3, { steps: 3 });
+    await page.mouse.up();
+    await expect
+      .poll(async () => (await handle.boundingBox())!.y)
+      .toBeCloseTo(box.y + delta * 3, 0);
     const slack = () =>
       terminal.evaluate((el) => {
         const host = el.firstElementChild!.getBoundingClientRect();
@@ -320,6 +335,7 @@ test("xterm.js chosen while ghostty-web loads takes over when the load fails", a
 test("a new terminal shows none of a closed one's text", async ({ page, request }) => {
   await runScript(page, request, [
     "seq -f 'closed-terminal %g zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' 3000",
+    "exec cat",
   ]);
   const output = inserted(page, "all output");
   await expect.poll(output).toContain("closed-terminal 3000");
@@ -387,6 +403,69 @@ test("reopened and closed terminals free their emulators", async ({ page, reques
 // xterm.js scrolls on touch itself; ghostty-web doesn't, so Shelley does.
 // Either way a drag scrolls as far as the finger moves: once, not twice.
 for (const renderer of ["ghostty", "xterm"] as const) {
+  test(`tab switches retain output written while hidden (${renderer})`, async ({
+    page,
+    request,
+  }) => {
+    await setPageTerminalRenderer(page, renderer);
+    const sockets: string[] = [];
+    let received = "";
+    page.on("websocket", (socket) => {
+      if (!socket.url().includes("/api/exec-ws")) return;
+      sockets.push(socket.url());
+      if (sockets.length === 1)
+        socket.on("framereceived", ({ payload }) => {
+          const message = JSON.parse(payload.toString());
+          if (message.type === "output") received += Buffer.from(message.data, "base64").toString();
+        });
+    });
+    const terminal = await runScript(page, request, [
+      "mkfifo gate",
+      "exec 3<>gate",
+      "for batch in 0 1 2 3; do",
+      "  for ((i=batch*25+1; i<=(batch+1)*25; i++)); do printf 'COUNT-%03d\\n' \"$i\"; done",
+      "  read -r -u 3",
+      "done",
+      "exec cat",
+    ]);
+    const id = await terminal.getAttribute("data-terminal-id");
+    const first = page.locator(`[data-terminal-id="${id}"]`);
+    const surface = await first
+      .locator(renderer === "ghostty" ? "canvas" : ".xterm-screen")
+      .elementHandle();
+    const firstTab = page.locator('.terminal-panel-tab[title="bash t.sh"]');
+    const output = inserted(page, "all output");
+    await expect.poll(output).toContain("COUNT-025");
+    await page.getByRole("button", { name: "New terminal", exact: true }).click();
+    await expect(first).toBeHidden();
+    await expect.poll(() => sockets.length).toBe(2);
+    const secondId = await terminal.getAttribute("data-terminal-id");
+    const second = page.locator(`[data-terminal-id="${secondId}"]`);
+    const secondTab = page.locator(".terminal-panel-tab").last();
+
+    // Release each batch while the counter is hidden. No timers: the FIFO
+    // keeps output stopped while we inspect a tab, so new output cannot
+    // conceal a lost screen by immediately repainting it.
+    for (const end of [50, 75, 100]) {
+      writeFileSync(join(cwd, "gate"), "next\n");
+      await expect.poll(() => received).toContain(`COUNT-${String(end).padStart(3, "0")}`);
+      await expect(first).toBeHidden();
+      await firstTab.click();
+      await expect(first).toBeVisible();
+      await expect.poll(output).toContain(`COUNT-${String(end).padStart(3, "0")}`);
+      expect((await output()).match(/COUNT-\d{3}/g)).toEqual(
+        Array.from({ length: end }, (_, i) => `COUNT-${String(i + 1).padStart(3, "0")}`),
+      );
+      expect(await surface!.evaluate((el) => el.isConnected)).toBe(true);
+      await secondTab.click();
+      await expect(second).toBeVisible();
+      expect(await output()).not.toContain("COUNT-");
+    }
+    await firstTab.click();
+    await expect.poll(inserted(page, "visible screen")).toContain("COUNT-100");
+    expect(sockets).toHaveLength(2);
+  });
+
   test(`a touch drag scrolls back as far as the finger moves, without focusing (${renderer})`, async ({
     page,
     request,

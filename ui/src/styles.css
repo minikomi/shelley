@@ -5525,7 +5525,9 @@ svg {
 /* Wrapper for messages area to position scroll-to-bottom button */
 .messages-area-wrapper {
   position: relative;
-  flex: 1 1 auto;
+  /* Give messages the space left after the terminal and composer. This lets
+     the terminal shrink only when the keyboard leaves too little room. */
+  flex: 1;
   min-height: 0; /* Important for flex children to shrink properly */
   overflow: hidden;
 }
@@ -11281,6 +11283,7 @@ kbd {
 
 /* ===== Terminal Panel ===== */
 .terminal-panel {
+  --terminal-chrome-display: flex;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border);
@@ -11304,7 +11307,7 @@ kbd {
 .terminal-panel-resize-handle {
   height: 6px;
   cursor: ns-resize;
-  display: flex;
+  display: var(--terminal-chrome-display);
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
@@ -11325,7 +11328,7 @@ kbd {
 }
 
 .terminal-panel-header {
-  display: flex;
+  display: var(--terminal-chrome-display);
   align-items: center;
   justify-content: space-between;
   padding: 0 8px;
@@ -11615,6 +11618,19 @@ kbd {
      font-size is < 16px; prevent that. */
   .terminal-panel-content textarea {
     font-size: 16px !important;
+  }
+}
+
+/* A landscape keyboard can leave only a few terminal rows of screen space. */
+@media (pointer: coarse) and (max-height: 200px) {
+  .terminal-panel:not(.terminal-panel-minimized):focus-within {
+    position: fixed;
+    inset: 0;
+    height: 100dvh !important;
+    min-height: 0;
+    max-height: none;
+    z-index: 100;
+    --terminal-chrome-display: none;
   }
 }
 

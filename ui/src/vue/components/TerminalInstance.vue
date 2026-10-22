@@ -84,7 +84,7 @@ function setTitle(raw: string) {
 let settled = false;
 
 function fitAndNotifyServer() {
-  if (!view) return;
+  if (!view || !props.isVisible || !containerRef.value?.clientHeight) return;
   view.fit();
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "resize", cols: view.cols, rows: view.rows }));
@@ -278,11 +278,12 @@ function syncView() {
 }
 watch(() => [props.renderer, props.isDark], syncView);
 
-// Refit when visibility changes (React effect on [isVisible]).
+// Fit after Vue has made the active tab measurable.
 watch(
   () => props.isVisible,
   (visible) => {
-    if (visible) setTimeout(() => view?.fit(), 20);
+    if (visible) fitAndNotifyServer();
   },
+  { flush: "post" },
 );
 </script>

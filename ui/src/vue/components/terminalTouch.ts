@@ -141,7 +141,21 @@ export function attachTerminalTouch(host: HTMLElement, opts: TerminalTouchOption
       return;
     }
     const { clientX: x, clientY: y } = live[0];
-    if (Math.abs(x - startX) > TAP_SLOP_PX || Math.abs(y - startY) > TAP_SLOP_PX) phase = "drag";
+    if (
+      phase !== "drag" &&
+      (Math.abs(x - startX) > TAP_SLOP_PX || Math.abs(y - startY) > TAP_SLOP_PX)
+    ) {
+      phase = "drag";
+      // Android retains input focus after dismissing the keyboard and can
+      // reopen it during a drag. Release it once this is a scroll, not a tap.
+      const active = host.ownerDocument.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        (active.matches("input, textarea") || active.isContentEditable)
+      ) {
+        active.blur();
+      }
+    }
     const dy = lastY - y;
     lastY = y;
     if (!opts.ownsScrolling()) {

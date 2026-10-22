@@ -1,5 +1,39 @@
 import { test, expect } from "@playwright/test";
-import { openWorkspaceTool, createConversationViaAPIWithDetails } from "./helpers";
+import {
+  openWorkspaceTool,
+  createConversationViaAPIWithDetails,
+  setPageTerminalRenderer,
+} from "./helpers";
+
+for (const renderer of ["ghostty", "xterm"] as const) {
+  test(`terminal fits above a tall phone keyboard (${renderer})`, async ({ page }) => {
+    await setPageTerminalRenderer(page, renderer);
+    await page.setViewportSize({ width: 393, height: 851 });
+    await page.goto("/new");
+    await openWorkspaceTool(page, "Terminal");
+    const panel = page.locator(".terminal-panel");
+    const screen = panel.locator(
+      renderer === "ghostty" ? "canvas:visible" : ".xterm-screen:visible",
+    );
+    await expect(screen).toBeVisible();
+    const originalHeight = (await panel.boundingBox())!.height;
+
+    // Android's resizes-content viewport policy makes a tall keyboard (or
+    // landscape) reduce the layout viewport. Both the grid and its input
+    // must remain reachable, then recover their chosen height on dismissal.
+    await page.setViewportSize({ width: 393, height: 320 });
+    await expect(async () => {
+      const box = (await screen.boundingBox())!;
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height).toBeLessThanOrEqual(320);
+      const composer = (await page.getByTestId("message-input").boundingBox())!;
+      expect(composer.y + composer.height).toBeLessThanOrEqual(320);
+    }).toPass({ timeout: 5000 });
+    await page.setViewportSize({ width: 393, height: 851 });
+    await expect.poll(async () => (await panel.boundingBox())!.height).toBe(originalHeight);
+    await page.getByRole("button", { name: "Close active terminal", exact: true }).click();
+  });
+}
 
 test("keeps the terminal inside its padded content area", async ({ page, request }) => {
   await page.addInitScript(() => {
