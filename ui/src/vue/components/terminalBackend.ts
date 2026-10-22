@@ -158,6 +158,20 @@ function openXTerm(host: HTMLElement, opts: TerminalViewOptions): RendererView {
   term.open(host);
   loadWebgl(term, opts);
   const detachTouch = attachTouch(host, () => term.focus(), false);
+  let scrollFrame = 0;
+  let followResize = false;
+  term.onRender(() => {
+    if (!followResize) return;
+    followResize = false;
+    cancelAnimationFrame(scrollFrame);
+    // After a hidden tab resizes, xterm's scrollbar can already be at the
+    // bottom while its buffer still shows the old viewport. Move it one row
+    // and back after rendering to synchronize them without a visible jump.
+    scrollFrame = requestAnimationFrame(() => {
+      term.scrollLines(-1);
+      term.scrollLines(term.buffer.active.length);
+    });
+  });
 
   return {
     get cols() {
@@ -168,7 +182,13 @@ function openXTerm(host: HTMLElement, opts: TerminalViewOptions): RendererView {
     },
     write: (data) => term.write(data),
     focus: () => term.focus(),
-    fit: () => fit.fit(),
+    fit: () => {
+      if (!host.clientWidth || !host.clientHeight) return;
+      const atBottom = term.buffer.active.viewportY === term.buffer.active.baseY;
+      const { cols, rows } = term;
+      fit.fit();
+      if (atBottom && (cols !== term.cols || rows !== term.rows)) followResize = true;
+    },
     lines: (which) => {
       const buffer = term.buffer.active;
       return which === "screen"
@@ -181,6 +201,7 @@ function openXTerm(host: HTMLElement, opts: TerminalViewOptions): RendererView {
     },
     setFontFamily: (fontFamily) => (term.options.fontFamily = fontFamily),
     dispose: () => {
+      cancelAnimationFrame(scrollFrame);
       detachTouch();
       term.dispose();
       host.remove();

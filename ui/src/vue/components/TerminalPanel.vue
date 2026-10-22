@@ -21,7 +21,7 @@
   <div
     v-show="visible.length > 0"
     :class="`terminal-panel${minimized ? ' terminal-panel-minimized' : ''}`"
-    :style="minimized ? undefined : { height: `${height}px`, flexShrink: 0 }"
+    :style="minimized ? undefined : { height: `${height}px` }"
   >
     <!-- Resize handle at top — hidden when minimized -->
     <div v-if="!minimized" class="terminal-panel-resize-handle" @mousedown="handleResizeMouseDown">
