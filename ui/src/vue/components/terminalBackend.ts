@@ -31,6 +31,8 @@ export interface TerminalView {
   readonly rows: number;
   write(data: Uint8Array | string): void;
   focus(): void;
+  paste(data: string): void;
+  input(data: string): void;
   /** Size the grid to the container. */
   fit(): void;
   /** The visible screen, or the whole buffer, one string per row. */
@@ -41,7 +43,7 @@ export interface TerminalView {
 }
 
 /** What the terminal panel uses of a terminal. */
-export type TerminalHandle = Pick<TerminalView, "focus" | "lines">;
+export type TerminalHandle = Pick<TerminalView, "focus" | "lines" | "paste" | "input">;
 
 export interface TerminalViewOptions {
   isDark: boolean;
@@ -89,6 +91,20 @@ export async function openTerminalView(
 
 interface RendererView extends TerminalView {
   setFontFamily(fontFamily: string): void;
+}
+
+// The shortcut row supplies normal cursor-key sequences. Full-screen apps
+// can request application cursor mode; modified keys retain their CSI form.
+function shortcutInput(data: string, applicationCursor: boolean): string {
+  if (
+    applicationCursor &&
+    data.length === 3 &&
+    data.startsWith("\x1b[") &&
+    "ABCDHF".includes(data[2])
+  ) {
+    return "\x1bO" + data[2];
+  }
+  return data;
 }
 
 function bufferLines(
@@ -182,6 +198,8 @@ function openXTerm(host: HTMLElement, opts: TerminalViewOptions): RendererView {
     },
     write: (data) => term.write(data),
     focus: () => term.focus(),
+    paste: (data) => term.paste(data),
+    input: (data) => term.input(shortcutInput(data, term.modes.applicationCursorKeysMode), true),
     fit: () => {
       if (!host.clientWidth || !host.clientHeight) return;
       const atBottom = term.buffer.active.viewportY === term.buffer.active.baseY;
@@ -348,6 +366,8 @@ async function openGhostty(host: HTMLElement, opts: TerminalViewOptions): Promis
       }
     },
     focus,
+    paste: (data) => term.paste(data),
+    input: (data) => term.input(shortcutInput(data, term.getMode(1, false)), true),
     // FitAddon.fit() ignores calls for 50ms after a resize, so the last
     // resize of a burst (a divider drag, a keyboard sliding in) was lost.
     fit: () => {
