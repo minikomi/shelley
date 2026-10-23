@@ -24,6 +24,7 @@ import {
   type TerminalRenderer,
   type TerminalView,
 } from "./terminalBackend";
+import { useTerminalFontSizePreference } from "../composables/terminalFontSizePreference";
 import { cleanTerminalTitle, TerminalTitleParser } from "./terminalTitle";
 
 const props = defineProps<{
@@ -46,6 +47,8 @@ const emit = defineEmits<{
   // title-change: id, the window title the program set (null when cleared)
   (e: "title-change", id: string, title: string | null): void;
 }>();
+
+const { terminalFontSize, setTerminalFontSize } = useTerminalFontSizePreference();
 
 const containerRef = ref<HTMLDivElement | null>(null);
 // Why the terminal couldn't be shown, when it couldn't.
@@ -130,6 +133,8 @@ async function connect(size?: { cols: number; rows: number }, focus = false) {
   try {
     opened = await openTerminalView(renderer, containerRef.value!, {
       isDark: dark,
+      fontSize: terminalFontSize.value,
+      onFontSizeChange: setTerminalFontSize,
       ...size,
       onData: (data) => sendInput(props.transformInput?.(data) ?? data),
       onCellSizeChange: fitAndNotifyServer,
@@ -284,6 +289,10 @@ function syncView() {
   void connect({ cols, rows }, focused);
 }
 watch(() => [props.renderer, props.isDark], syncView);
+watch(terminalFontSize, (size) => {
+  view?.setFontSize(size);
+  fitAndNotifyServer();
+});
 
 // Fit after Vue has made the active tab measurable.
 watch(
