@@ -433,7 +433,7 @@ export const zhCN: TranslationKeys = {
   startVoiceConversation: "开始语音对话",
   noModelsTitle: "没有可用的 AI 模型",
   noModelsExeNote: "Shelley 从 exe.dev 的 llm 集成获取模型。运行以下任一命令即可修复：",
-  noModelsLocalNote: "按 Ctrl+K 或 ⌘+K 添加模型。",
+  noModelsAddLink: "点击此处添加模型",
   noModelsExeRefresh: "然后在模型选择器中点击 Refresh。",
   noModelSelectedPlaceholder: "无可用模型",
 

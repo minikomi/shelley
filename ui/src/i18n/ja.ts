@@ -440,7 +440,7 @@ export const ja: TranslationKeys = {
   noModelsTitle: "利用可能なAIモデルがありません",
   noModelsExeNote:
     "Shelley は exe.dev の llm 統合からモデルを取得します。次のいずれかを実行して修正してください:",
-  noModelsLocalNote: "Ctrl+K または ⌘+K でモデルを追加してください。",
+  noModelsAddLink: "ここをクリックしてモデルを追加",
   noModelsExeRefresh: "その後モデルピッカーで Refresh を押してください。",
   noModelSelectedPlaceholder: "利用可能なモデルなし",
 

@@ -439,7 +439,7 @@ export const en: TranslationKeys = {
   noModelsTitle: "No AI models available",
   noModelsExeNote:
     "Shelley gets its models from the exe.dev llm integration. Run one of these to fix it:",
-  noModelsLocalNote: "Add a model with Ctrl+K or ⌘+K.",
+  noModelsAddLink: "Click here to add models",
   noModelsExeRefresh: "Then Refresh in the model picker.",
   noModelSelectedPlaceholder: "No model available",
 

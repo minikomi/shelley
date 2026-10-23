@@ -442,7 +442,7 @@ export const es: TranslationKeys = {
   noModelsTitle: "No hay modelos de IA disponibles",
   noModelsExeNote:
     "Shelley obtiene sus modelos de la integración llm de exe.dev. Ejecuta uno de estos para solucionarlo:",
-  noModelsLocalNote: "Agregue un modelo con Ctrl+K o ⌘+K.",
+  noModelsAddLink: "Haga clic aquí para agregar modelos",
   noModelsExeRefresh: "Luego pulse Refresh en el selector de modelos.",
   noModelSelectedPlaceholder: "Ningún modelo disponible",
 

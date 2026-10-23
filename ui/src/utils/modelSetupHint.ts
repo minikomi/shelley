@@ -69,7 +69,6 @@ const EXE_REFLECTION_FIRST: ModelSetupHintCopy = {
 
 const LOCAL: ModelSetupHintCopy = {
   title: "noModelsTitle",
-  note: "noModelsLocalNote",
   actions: [],
 };
 

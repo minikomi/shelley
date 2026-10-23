@@ -13428,6 +13428,41 @@ kbd {
   font-weight: 600;
 }
 
+.no-models-message-add .p-message-text {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+}
+
+.no-models-add-link {
+  margin-left: auto;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: visible;
+  color: inherit;
+  font-family: inherit;
+  font-size: var(--font-size-13);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+@media (max-width: 767px) {
+  .no-models-message-add .p-message-text {
+    flex-direction: column;
+    gap: 0.375rem;
+    text-align: center;
+  }
+
+  .no-models-add-link {
+    margin-inline: auto;
+  }
+}
+
 .no-models-message p + p,
 .no-models-message .no-models-commands + p {
   margin: 0.375rem 0 0;

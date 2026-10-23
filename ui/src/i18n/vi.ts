@@ -437,7 +437,7 @@ export const vi: TranslationKeys = {
   noModelsTitle: "Không có model AI khả dụng",
   noModelsExeNote:
     "Shelley lấy các mô hình từ tích hợp llm của exe.dev. Chạy một trong các lệnh này để sửa:",
-  noModelsLocalNote: "Thêm model bằng Ctrl+K hoặc ⌘+K.",
+  noModelsAddLink: "Nhấp vào đây để thêm model",
   noModelsExeRefresh: "Sau đó nhấn Refresh trong bộ chọn model.",
   noModelSelectedPlaceholder: "Không có model khả dụng",
 

@@ -78,7 +78,7 @@
           :open-terminal-trigger="terminalTrigger"
           :models-refresh-trigger="modelsRefreshTrigger"
           :cwd-sync-trigger="cwdSyncTrigger"
-          :on-open-models-modal="() => (modelsModalOpen = true)"
+          :on-open-models-modal="(mode = 'manage') => (modelsModalMode = mode)"
           :on-open-mcp-servers-modal="() => (mcpServersModalOpen = true)"
           :on-open-file-finder="openFileFinder"
           :on-open-command-palette="() => (commandPaletteOpen = true)"
@@ -149,7 +149,7 @@
         @open-file-finder="openFileFinder"
         @open-models-modal="
           () => {
-            modelsModalOpen = true;
+            modelsModalMode = 'manage';
             commandPaletteOpen = false;
           }
         "
@@ -190,10 +190,10 @@
       />
 
       <ModelsModal
-        :is-open="modelsModalOpen"
+        :mode="modelsModalMode"
         @close="
           () => {
-            modelsModalOpen = false;
+            modelsModalMode = null;
             focusMessageInputIfUnfocused();
           }
         "
@@ -217,7 +217,7 @@
         @open-models-modal="
           () => {
             integrationsModalOpen = false;
-            modelsModalOpen = true;
+            modelsModalMode = 'manage';
           }
         "
         @close="
@@ -412,7 +412,7 @@ const commandPaletteOpen = ref(false);
 const diffViewerTrigger = ref(0);
 const gitGraphTrigger = ref(0);
 const terminalTrigger = ref(0);
-const modelsModalOpen = ref(false);
+const modelsModalMode = ref<"manage" | "add" | null>(null);
 // The MCP login callback redirects to /?mcp_login=NAME, with &mcp_error=MSG if
 // it failed (or only ?mcp_error=MSG): show that in the MCP Servers dialog.
 const mcpLoginResult = ref(takeMcpLoginResult());

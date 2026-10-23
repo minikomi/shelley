@@ -1,6 +1,42 @@
 import { test, expect } from "@playwright/test";
 import { openModelPicker } from "./helpers";
 
+test("empty model warning links directly to the add form", async ({ page }) => {
+  await page.addInitScript(() => {
+    let init: Record<string, unknown> | undefined;
+    Object.defineProperty(window, "__SHELLEY_INIT__", {
+      configurable: true,
+      get: () => init,
+      set: (value) => {
+        init = { ...value, models: [], default_model: "", model_setup_hint: "add_model" };
+      },
+    });
+  });
+  await page.route("**/api/models", (route) => route.fulfill({ json: [] }));
+  await page.goto("/new");
+  const hint = page.locator(".no-models-message");
+  const action = hint.getByRole("button", { name: "Click here to add models", exact: true });
+  await expect(hint).not.toContainText(/Ctrl|⌘/);
+  await expect(action).toHaveCSS("text-decoration-line", "underline");
+  await expect(action).toHaveCSS("overflow", "visible");
+  for (const width of [1280, 412]) {
+    await page.setViewportSize({ width, height: 800 });
+    const title = (await hint.locator(".no-models-title").boundingBox())!;
+    const link = (await action.boundingBox())!;
+    if (width < 768) {
+      await expect(hint.locator(".no-models-title")).toHaveCSS("text-align", "center");
+      expect(link.y).toBeGreaterThanOrEqual(title.y + title.height);
+      expect(Math.abs(link.x + link.width / 2 - (title.x + title.width / 2))).toBeLessThan(1);
+    } else {
+      expect(link.x).toBeGreaterThan(title.x + title.width);
+      expect(Math.abs(link.y - title.y)).toBeLessThan(10);
+    }
+  }
+  await action.click();
+  await expect(page.getByTestId("model-provider-form")).toBeVisible();
+  await expect(page.getByTestId("model-mode-provider")).toHaveAttribute("aria-pressed", "true");
+});
+
 test("catalog refresh lets an empty model selection send the preserved draft", async ({ page }) => {
   await page.addInitScript(() => {
     let init: Record<string, unknown> | undefined;

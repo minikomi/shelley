@@ -440,7 +440,7 @@ export const ru: TranslationKeys = {
   noModelsTitle: "Нет доступных моделей ИИ",
   noModelsExeNote:
     "Shelley получает модели из интеграции llm в exe.dev. Выполните одну из этих команд, чтобы исправить:",
-  noModelsLocalNote: "Добавьте модель через Ctrl+K или ⌘+K.",
+  noModelsAddLink: "Нажмите здесь, чтобы добавить модели",
   noModelsExeRefresh: "Затем нажмите Refresh в списке моделей.",
   noModelSelectedPlaceholder: "Нет доступных моделей",
 

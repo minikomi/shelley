@@ -207,9 +207,22 @@
                   <template v-else>{{ part }}</template>
                 </template>
               </p>
-              <PvMessage v-if="models.length === 0" severity="warn" class="no-models-message">
+              <PvMessage
+                v-if="models.length === 0"
+                severity="warn"
+                class="no-models-message"
+                :class="{ 'no-models-message-add': !modelSetupHint.actions.length }"
+              >
                 <p class="no-models-title">{{ t(modelSetupHint.title) }}</p>
                 <p v-if="modelSetupHint.note">{{ t(modelSetupHint.note) }}</p>
+                <button
+                  v-if="!modelSetupHint.actions.length"
+                  type="button"
+                  class="no-models-add-link"
+                  @click="props.onOpenModelsModal?.('add')"
+                >
+                  {{ t("noModelsAddLink") }}
+                </button>
                 <!-- Render each remedy as the literal command it runs, so the
                      user can see what a click does (and copy it to a terminal
                      instead if they prefer). -->
@@ -845,7 +858,7 @@ const props = withDefaults(
     openTerminalTrigger?: number;
     modelsRefreshTrigger?: number;
     cwdSyncTrigger?: number;
-    onOpenModelsModal?: () => void;
+    onOpenModelsModal?: (mode?: "manage" | "add") => void;
     onOpenMcpServersModal?: () => void;
     onOpenFileFinder?: () => void;
     onOpenCommandPalette?: () => void;

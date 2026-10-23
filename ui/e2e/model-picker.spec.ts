@@ -60,7 +60,7 @@ test.describe("Model picker (PrimeVue)", () => {
     await openModelPicker(page);
     await expect(panel).toBeVisible();
     await panel.getByRole("button", { name: "Manage Models" }).click();
-    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Manage Models", exact: true })).toBeVisible();
     await expect(panel).toBeHidden();
   });
 

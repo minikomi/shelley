@@ -436,7 +436,7 @@ export const upgoer5: TranslationKeys = {
   noModelsTitle: "No brains to talk to",
   noModelsExeNote:
     "Shelley gets its thinking friends from the exe.dev llm thing. Run one of these to fix it:",
-  noModelsLocalNote: "Add a brain with Ctrl+K or ⌘+K.",
+  noModelsAddLink: "Click here to add brains",
   noModelsExeRefresh: "Then press Refresh in the brain picker.",
   noModelSelectedPlaceholder: "No brain to use",
 

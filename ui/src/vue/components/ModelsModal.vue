@@ -11,7 +11,7 @@
      in customModelConstants.ts. -->
 <template>
   <Modal
-    :is-open="isOpen"
+    :is-open="mode !== null"
     :title="t('manageModels')"
     class-name="modal-xwide"
     @close="emit('close')"
@@ -316,7 +316,7 @@ import {
   type ModelProviderConnection,
 } from "../../services/api";
 
-const props = defineProps<{ isOpen: boolean }>();
+const props = defineProps<{ mode: "manage" | "add" | null }>();
 const emit = defineEmits<{ (e: "close"): void; (e: "modelsChanged"): void }>();
 
 const { t } = useI18n();
@@ -658,9 +658,10 @@ async function handleRefreshModels() {
 }
 
 watch(
-  () => props.isOpen,
-  (open) => {
-    if (open) {
+  () => props.mode,
+  (mode) => {
+    if (mode) {
+      if (mode === "add") handleAddNew();
       loadModels();
       const initData = window.__SHELLEY_INIT__;
       if (initData?.models) {

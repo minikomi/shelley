@@ -429,7 +429,7 @@ export interface TranslationKeys {
   startVoiceConversation: string;
   noModelsTitle: string;
   noModelsExeNote: string;
-  noModelsLocalNote: string;
+  noModelsAddLink: string;
   noModelsExeRefresh: string;
   noModelSelectedPlaceholder: string;
 
