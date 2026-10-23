@@ -33,6 +33,7 @@ export interface TerminalView {
   focus(): void;
   paste(data: string): void;
   input(data: string): void;
+  setFontSize(size: number): void;
   /** Size the grid to the container. */
   fit(): void;
   /** The visible screen, or the whole buffer, one string per row. */
@@ -47,6 +48,8 @@ export type TerminalHandle = Pick<TerminalView, "focus" | "lines" | "paste" | "i
 
 export interface TerminalViewOptions {
   isDark: boolean;
+  fontSize: number;
+  onFontSizeChange(size: number): void;
   /** Size until the first fit, e.g. while hidden. */
   cols?: number;
   rows?: number;
@@ -77,7 +80,7 @@ export async function openTerminalView(
     // loaded before it joins the stack; otherwise icons are measured as
     // fallback glyphs (in xterm's DOM renderer they also push the rest of
     // their row off the cell grid).
-    void document.fonts.load(`14px ${ICON_FONT}`, "\ue0a0").then(() => {
+    void document.fonts.load(`${opts.fontSize}px ${ICON_FONT}`, "\ue0a0").then(() => {
       if (!host.isConnected) return;
       view.setFontFamily(`${FONT_FAMILY}, ${ICON_FONT}`);
       opts.onCellSizeChange();
@@ -122,10 +125,18 @@ function bufferLines(
   return lines;
 }
 
-function attachTouch(host: HTMLElement, focus: () => void, ownsScrolling: boolean) {
+function attachTouch(
+  host: HTMLElement,
+  focus: () => void,
+  ownsScrolling: boolean,
+  fontSize: () => number,
+  setFontSize: (size: number) => void,
+) {
   return attachTerminalTouch(host, {
     focus,
     ownsScrolling: () => ownsScrolling,
+    fontSize,
+    setFontSize,
     // Feed a drag back in as wheel events, so it takes the same path as the
     // mouse wheel: scrollback, or the program's own scrolling in a TUI.
     scrollBy: (deltaY) => {
@@ -141,7 +152,7 @@ function openXTerm(host: HTMLElement, opts: TerminalViewOptions): RendererView {
     cols: opts.cols,
     rows: opts.rows,
     cursorBlink: true,
-    fontSize: 14,
+    fontSize: opts.fontSize,
     fontFamily: FONT_FAMILY,
     theme: getTerminalTheme(opts.isDark),
     scrollback: 10000,
@@ -173,7 +184,13 @@ function openXTerm(host: HTMLElement, opts: TerminalViewOptions): RendererView {
   term.loadAddon(new WebLinksAddon());
   term.open(host);
   loadWebgl(term, opts);
-  const detachTouch = attachTouch(host, () => term.focus(), false);
+  const detachTouch = attachTouch(
+    host,
+    () => term.focus(),
+    false,
+    () => term.options.fontSize!,
+    opts.onFontSizeChange,
+  );
   let scrollFrame = 0;
   let followResize = false;
   term.onRender(() => {
@@ -200,6 +217,7 @@ function openXTerm(host: HTMLElement, opts: TerminalViewOptions): RendererView {
     focus: () => term.focus(),
     paste: (data) => term.paste(data),
     input: (data) => term.input(shortcutInput(data, term.modes.applicationCursorKeysMode), true),
+    setFontSize: (size) => (term.options.fontSize = size),
     fit: () => {
       if (!host.clientWidth || !host.clientHeight) return;
       const atBottom = term.buffer.active.viewportY === term.buffer.active.baseY;
@@ -272,7 +290,7 @@ async function openGhostty(host: HTMLElement, opts: TerminalViewOptions): Promis
     cols: opts.cols,
     rows: opts.rows,
     cursorBlink: true,
-    fontSize: 14,
+    fontSize: opts.fontSize,
     fontFamily: FONT_FAMILY,
     theme: getTerminalTheme(opts.isDark),
     // ghostty's limit is in bytes, about 14 per cell: room for xterm.js's
@@ -348,7 +366,13 @@ async function openGhostty(host: HTMLElement, opts: TerminalViewOptions): Promis
   // timeout, outside the tap that has to open a soft keyboard.
   const input = host.querySelector("textarea")!;
   const focus = () => input.focus({ preventScroll: true });
-  const detachTouch = attachTouch(host, focus, true);
+  const detachTouch = attachTouch(
+    host,
+    focus,
+    true,
+    () => term.options.fontSize!,
+    opts.onFontSizeChange,
+  );
 
   return {
     get cols() {
@@ -368,6 +392,7 @@ async function openGhostty(host: HTMLElement, opts: TerminalViewOptions): Promis
     focus,
     paste: (data) => term.paste(data),
     input: (data) => term.input(shortcutInput(data, term.getMode(1, false)), true),
+    setFontSize: (size) => (term.options.fontSize = size),
     // FitAddon.fit() ignores calls for 50ms after a resize, so the last
     // resize of a burst (a divider drag, a keyboard sliding in) was lost.
     fit: () => {

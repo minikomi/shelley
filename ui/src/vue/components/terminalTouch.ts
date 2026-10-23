@@ -29,8 +29,8 @@
 //     double-scroll.
 //   - A long stationary press keeps its default action so iOS still offers its
 //     "Paste" menu, but does not focus (a keyboard would cover the menu).
-//   - Multi-touch is left to the browser so pinch-zoom keeps working, and stays
-//     latched until every finger lifts so no intermediate touchend focuses.
+//   - Two fingers resize the terminal font. Multi-touch stays latched until
+//     every finger lifts so no intermediate touchend focuses.
 
 /** Movement (px) beyond which a touch is a drag, not a tap. */
 export const TAP_SLOP_PX = 10;
@@ -73,6 +73,8 @@ const SYNTHETIC_MOUSE_MS = 700;
 export interface TerminalTouchOptions {
   /** Focus the terminal's real input element (the only keyboard-summoning path). */
   focus(): void;
+  fontSize(): number;
+  setFontSize(size: number): void;
   /**
    * True when this module must scroll the terminal itself because the live
    * backend does nothing on touch.
@@ -104,6 +106,8 @@ export function attachTerminalTouch(host: HTMLElement, opts: TerminalTouchOption
   let startY = 0;
   let startAt = 0;
   let lastY = 0;
+  let pinchDistance = 0;
+  let pinchFontSize = 0;
   // Unflushed finger travel. Wheel deltas below one line are rounded to zero by
   // consumers (see WHEEL_LINE_PX), so batch instead of dropping the remainder.
   let pending = 0;
@@ -111,12 +115,27 @@ export function attachTerminalTouch(host: HTMLElement, opts: TerminalTouchOption
   // 0 means "let them through" (a tap, or genuine mouse input).
   let suppressMouseUntil = 0;
 
+  const releaseInputFocus = () => {
+    const active = host.ownerDocument.activeElement;
+    if (
+      active instanceof HTMLElement &&
+      (active.matches("input, textarea") || active.isContentEditable)
+    ) {
+      active.blur();
+    }
+  };
+
   const onStart = (ev: Event) => {
     const live = liveTouches(ev);
     if (live.length !== 1 || phase === "multi") {
-      // Second finger down: pinch/two-finger gesture. Hands off until all lift,
-      // and keep it away from the backend's gesture recognizer — see onMove.
+      if (phase !== "multi" && live.length === 2) {
+        pinchDistance = touchDistance(live);
+        pinchFontSize = opts.fontSize();
+        releaseInputFocus();
+      }
       phase = "multi";
+      pending = 0;
+      ev.preventDefault();
       stop(ev);
       return;
     }
@@ -133,10 +152,12 @@ export function attachTerminalTouch(host: HTMLElement, opts: TerminalTouchOption
     const live = liveTouches(ev);
     if (phase === "multi" || live.length !== 1) {
       phase = "multi";
-      // Keep multi-touch away from the backend's own gesture recognizer, which
-      // would otherwise interpret a pinch as a scroll (xterm.js dispatches its
-      // Gesture from these very events). We never preventDefault here: a pinch
-      // is the browser's to handle.
+      if (live.length === 2 && pinchDistance > 0) {
+        opts.setFontSize((pinchFontSize * touchDistance(live)) / pinchDistance);
+      }
+      // Neither page zoom nor the renderer's one-finger scroller should
+      // handle this gesture.
+      ev.preventDefault();
       stop(ev);
       return;
     }
@@ -148,13 +169,7 @@ export function attachTerminalTouch(host: HTMLElement, opts: TerminalTouchOption
       phase = "drag";
       // Android retains input focus after dismissing the keyboard and can
       // reopen it during a drag. Release it once this is a scroll, not a tap.
-      const active = host.ownerDocument.activeElement;
-      if (
-        active instanceof HTMLElement &&
-        (active.matches("input, textarea") || active.isContentEditable)
-      ) {
-        active.blur();
-      }
+      releaseInputFocus();
     }
     const dy = lastY - y;
     lastY = y;
@@ -187,12 +202,12 @@ export function attachTerminalTouch(host: HTMLElement, opts: TerminalTouchOption
     // up so no intermediate touchend reaches the renderer.
     phase = remaining > 0 ? "multi" : "idle";
     pending = 0;
+    pinchDistance = 0;
 
     if (ended === "idle") return;
     if (ended === "multi") {
-      // Pinch-zoom. Suppress the renderer's focus-on-touchend (it would raise
-      // the keyboard on top of the zoom) but leave the default action alone so
-      // the browser's own zoom handling is untouched.
+      // Keep lifting either finger from focusing the terminal.
+      ev.preventDefault();
       stop(ev);
       suppressMouseUntil = now() + SYNTHETIC_MOUSE_MS;
       return;
@@ -240,6 +255,7 @@ export function attachTerminalTouch(host: HTMLElement, opts: TerminalTouchOption
   };
 
   const onCancel = (ev: Event) => {
+    pinchDistance = 0;
     phase = liveTouches(ev).length > 0 ? "multi" : "idle";
     pending = 0;
     suppressMouseUntil = now() + SYNTHETIC_MOUSE_MS;
@@ -287,6 +303,13 @@ function stop(ev: Event) {
 function liveTouches(ev: Event): { clientX: number; clientY: number }[] {
   const te = ev as TouchEvent;
   return te.touches ? Array.from(te.touches) : [];
+}
+
+function touchDistance(touches: { clientX: number; clientY: number }[]): number {
+  return Math.hypot(
+    touches[0].clientX - touches[1].clientX,
+    touches[0].clientY - touches[1].clientY,
+  );
 }
 
 function now(): number {
