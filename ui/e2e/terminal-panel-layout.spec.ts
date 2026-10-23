@@ -5,6 +5,28 @@ import {
   setPageTerminalRenderer,
 } from "./helpers";
 
+test("contains shortcut overscroll while keeping the row scrollable", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("shelley-terminal-key-shortcuts", "true");
+  });
+  await page.setViewportSize({ width: 393, height: 851 });
+  await page.goto("/new");
+  await openWorkspaceTool(page, "Terminal");
+
+  const shortcuts = page.getByRole("group", { name: "Terminal key shortcuts" });
+  await expect(shortcuts).toBeVisible();
+  await expect(shortcuts).toHaveCSS("overscroll-behavior-x", "contain");
+  await expect
+    .poll(() => shortcuts.evaluate((row) => row.scrollWidth - row.clientWidth))
+    .toBeGreaterThan(0);
+  await shortcuts.evaluate((row) => {
+    row.scrollLeft = row.scrollWidth;
+  });
+  await expect.poll(() => shortcuts.evaluate((row) => row.scrollLeft)).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Close active terminal", exact: true }).click();
+});
+
 for (const renderer of ["ghostty", "xterm"] as const) {
   test(`terminal fits above a tall phone keyboard (${renderer})`, async ({ page }) => {
     await setPageTerminalRenderer(page, renderer);
