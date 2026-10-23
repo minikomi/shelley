@@ -11536,7 +11536,8 @@ kbd {
   flex-shrink: 0;
 }
 
-.terminal-panel-action-btn:disabled {
+.terminal-panel-action-btn:disabled,
+.terminal-key-shortcuts button:disabled {
   opacity: 0.4;
   cursor: default;
 }
@@ -17416,4 +17417,36 @@ kbd {
   color: var(--text-primary);
   font-size: var(--font-size-13);
   text-align: right;
+}
+
+.terminal-key-shortcuts {
+  display: var(--terminal-chrome-display);
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 4px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+
+.terminal-key-shortcuts button {
+  flex-shrink: 0;
+  min-width: 40px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: var(--font-size-13);
+  touch-action: pan-x;
+}
+
+.terminal-key-shortcuts button[aria-pressed="true"] {
+  border-color: var(--blue-border);
+  background: var(--blue-bg);
+  color: var(--blue-text);
+}
+
+.terminal-panel:has(.terminal-key-shortcuts) {
+  min-height: 140px;
 }

@@ -32,6 +32,7 @@ const props = defineProps<{
   isDark: boolean;
   renderer: TerminalRenderer;
   model?: string | null;
+  transformInput?: (data: string) => string;
 }>();
 
 const emit = defineEmits<{
@@ -57,6 +58,8 @@ let viewDark = props.isDark;
 // What the panel holds: whichever view is current, across reopens.
 const handle: TerminalHandle = {
   focus: () => view?.focus(),
+  paste: (data) => view?.paste(data),
+  input: (data) => view?.input(data),
   lines: (which) => view?.lines(which) ?? [],
 };
 let registered = false;
@@ -82,6 +85,12 @@ function setTitle(raw: string) {
 // settled is set once the server reported a definitive outcome (exit or
 // error) for this session, so a later socket close is not mistaken for one.
 let settled = false;
+
+function sendInput(data: string) {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "input", data }));
+  }
+}
 
 function fitAndNotifyServer() {
   if (!view || !props.isVisible || !containerRef.value?.clientHeight) return;
@@ -122,9 +131,7 @@ async function connect(size?: { cols: number; rows: number }, focus = false) {
     opened = await openTerminalView(renderer, containerRef.value!, {
       isDark: dark,
       ...size,
-      onData: (data) => {
-        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data }));
-      },
+      onData: (data) => sendInput(props.transformInput?.(data) ?? data),
       onCellSizeChange: fitAndNotifyServer,
     });
   } catch (err) {

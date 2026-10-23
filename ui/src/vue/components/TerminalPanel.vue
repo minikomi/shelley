@@ -174,6 +174,17 @@
               Insert all output into input
             </button>
           </template>
+          <button
+            class="overflow-menu-item"
+            :aria-pressed="showKeyShortcuts"
+            @click="toggleKeyShortcuts"
+          >
+            <CheckIcon
+              class="chat-menu-icon"
+              :style="{ visibility: showKeyShortcuts ? 'visible' : 'hidden' }"
+            />
+            {{ showKeyShortcuts ? "Hide key shortcuts" : "Show key shortcuts" }}
+          </button>
           <div class="overflow-menu-divider" />
           <button
             v-for="choice in RENDERERS"
@@ -201,6 +212,14 @@
       </div>
     </div>
 
+    <TerminalKeyShortcuts
+      v-if="showKeyShortcuts && !minimized"
+      :key="activeTabId ?? ''"
+      ref="keyShortcutsRef"
+      :terminal="activeView"
+      :disabled="!activeTabId || statusMap.get(activeTabId)?.status !== 'running'"
+    />
+
     <!-- Terminal content area — hidden (not unmounted) when minimized -->
     <div class="terminal-panel-content" :style="minimized ? { display: 'none' } : undefined">
       <TerminalInstance
@@ -211,6 +230,7 @@
         :is-dark="isDark"
         :renderer="terminalRenderer"
         :model="model ?? null"
+        :transform-input="t.id === activeTabId ? transformInput : undefined"
         @status-change="handleStatusChange"
         @register="registerView"
         @unregister="unregisterView"
@@ -227,6 +247,7 @@ import Popover from "primevue/popover";
 import type { TerminalHandle, TerminalRenderer } from "./terminalBackend";
 import { useTerminalRendererPreference } from "../composables/terminalRendererPreference";
 import { isDarkModeActive } from "../../services/theme";
+import TerminalKeyShortcuts from "./TerminalKeyShortcuts.vue";
 import TerminalInstance from "./TerminalInstance.vue";
 import type { TermStatus } from "./terminalHelpers";
 import { nextActiveTab, terminalFallbackLabel, visibleTerminals } from "./terminalHelpers";
@@ -277,6 +298,19 @@ const emit = defineEmits<{
 
 const activeTabId = ref<string | null>(null);
 const height = ref(300);
+const showKeyShortcuts = ref(localStorage.getItem("shelley-terminal-key-shortcuts") === "true");
+const keyShortcutsRef = ref<InstanceType<typeof TerminalKeyShortcuts> | null>(null);
+function toggleKeyShortcuts() {
+  showKeyShortcuts.value = !showKeyShortcuts.value;
+  localStorage.setItem("shelley-terminal-key-shortcuts", String(showKeyShortcuts.value));
+  closeMenu();
+}
+function activeView() {
+  return activeTabId.value ? viewRegistry.get(activeTabId.value) : undefined;
+}
+function transformInput(data: string) {
+  return keyShortcutsRef.value?.transformInput(data) ?? data;
+}
 const minimized = ref(false);
 // The menu's trigger shows a check for a moment after a copy or insert.
 const copyFeedback = ref(false);
