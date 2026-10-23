@@ -4591,7 +4591,7 @@ watch(
   ([ready, providers]) => {
     // A conversation under way keeps its model; the server names the
     // problem if it's gone.
-    if (!selectedModel.value || conversationLive.value) return;
+    if (conversationLive.value) return;
     if (canSendWithModel(selectedModel.value, ready, providers)) return;
     if (selectedModel.value.startsWith("provider:")) {
       error.value = t("providerSelectionRequired");

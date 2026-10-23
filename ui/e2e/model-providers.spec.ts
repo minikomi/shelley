@@ -1,6 +1,41 @@
 import { test, expect } from "@playwright/test";
 import { openModelPicker } from "./helpers";
 
+test("catalog refresh lets an empty model selection send the preserved draft", async ({ page }) => {
+  await page.addInitScript(() => {
+    let init: Record<string, unknown> | undefined;
+    Object.defineProperty(window, "__SHELLEY_INIT__", {
+      configurable: true,
+      get: () => init,
+      set: (value) => {
+        init = { ...value, models: [], default_model: "" };
+      },
+    });
+  });
+  let models: { id: string; ready: boolean }[] = [];
+  await page.route("**/api/models", (route) => route.fulfill({ json: models }));
+  await page.route("**/api/models/refresh", (route) => {
+    models = [{ id: "predictable", ready: true }];
+    return route.fulfill({ json: models });
+  });
+
+  await page.goto("/new");
+  await expect(page.locator(".no-models-message")).toBeVisible();
+  const input = page.getByTestId("message-input");
+  await input.fill("hello");
+  await expect(page).toHaveURL(/\/c\//);
+  await openModelPicker(page);
+  const panel = page.locator(".model-picker-panel");
+  await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(panel.locator(".model-picker-option-check")).toBeVisible();
+  await panel.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "More options", exact: true }).click();
+  await expect(input).toHaveValue("hello");
+  const sent = page.waitForRequest("**/api/conversation/*/chat");
+  await page.getByTestId("send-button").click();
+  expect((await sent).postDataJSON()).toMatchObject({ message: "hello", model: "predictable" });
+});
+
 test("shared add dialog, endpoint presets, and provider failure recovery", async ({ page }) => {
   const accountID = "account-1";
   const routeID = "provider:YWNjb3VudC0x:bW9kZWwtMQ";
