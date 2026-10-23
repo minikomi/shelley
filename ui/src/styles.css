@@ -11043,6 +11043,28 @@ button.tour-visibility-control:focus-visible,
   color: var(--text-primary);
 }
 
+.mode-tabs {
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.mode-tabs .toggle-btn {
+  margin-bottom: -1px;
+  padding: 0.65rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem 0.5rem 0 0;
+  background: var(--bg-tertiary);
+  font-size: var(--font-size-14);
+  font-weight: 500;
+}
+
+.mode-tabs .toggle-btn.selected {
+  background: var(--bg-base);
+  border-bottom-color: var(--bg-base);
+  font-weight: 700;
+}
+
 .endpoint-display {
   padding: 0.5rem 0.75rem;
   background: var(--bg-tertiary);

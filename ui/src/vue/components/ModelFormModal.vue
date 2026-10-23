@@ -7,7 +7,7 @@
     @close="requestClose"
   >
     <div v-if="!editModel && !editProvider" class="form-group">
-      <div class="endpoint-toggle" role="group" :aria-label="t('addModels')">
+      <div class="endpoint-toggle mode-tabs" role="group" :aria-label="t('addModels')">
         <button
           type="button"
           data-testid="model-mode-provider"

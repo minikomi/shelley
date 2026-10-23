@@ -164,9 +164,16 @@ test("shared add dialog, endpoint presets, and provider failure recovery", async
   await expect(page.getByTestId("provider-connection").first()).toContainText("custom");
   await expect(page.locator(".models-cell-name")).toHaveText("Work model");
   await page.getByRole("button", { name: "+ Add Models", exact: true }).click();
+  await expect(page.getByTestId("model-mode-provider")).toHaveText("Connect a provider");
+  await expect(page.getByTestId("model-mode-single")).toHaveText("Add a single model");
   await expect(page.getByTestId("model-mode-provider")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("model-mode-provider")).toHaveCSS("font-weight", "700");
+  await expect(page.getByTestId("model-mode-single")).toHaveCSS("font-weight", "500");
   await expect(page.getByTestId("provider-endpoint")).toHaveValue("https://api.anthropic.com/v1");
   await page.getByTestId("model-mode-single").click();
+  await expect(page.getByTestId("model-mode-single")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("model-mode-single")).toHaveCSS("font-weight", "700");
+  await expect(page.getByTestId("model-mode-provider")).toHaveCSS("font-weight", "500");
   const singleForm = page.getByRole("dialog").last().locator(".model-form:visible");
   await expect(singleForm.getByTestId("model-endpoint")).toHaveValue("https://api.anthropic.com/v1/messages");
   await singleForm.getByRole("button", { name: "OpenAI (Chat API)", exact: true }).click();
