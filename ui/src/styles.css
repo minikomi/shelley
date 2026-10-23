@@ -11305,6 +11305,7 @@ kbd {
 }
 
 .terminal-panel-resize-handle {
+  touch-action: none;
   height: 6px;
   cursor: ns-resize;
   display: var(--terminal-chrome-display);
@@ -11591,6 +11592,10 @@ kbd {
 }
 
 @media (pointer: coarse) {
+  .terminal-panel-resize-handle {
+    min-height: 24px;
+  }
+
   /* xterm.js positions its helper textarea off-screen with zero dimensions
      (left: -9999em; width/height: 0), so on iOS/Android focus() doesn't open
      the soft keyboard. Pull it back on-screen and give it real dimensions so

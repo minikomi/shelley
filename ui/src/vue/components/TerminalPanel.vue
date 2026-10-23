@@ -24,7 +24,15 @@
     :style="minimized ? undefined : { height: `${height}px` }"
   >
     <!-- Resize handle at top — hidden when minimized -->
-    <div v-if="!minimized" class="terminal-panel-resize-handle" @mousedown="handleResizeMouseDown">
+    <div
+      v-if="!minimized"
+      class="terminal-panel-resize-handle"
+      @pointerdown="startResize"
+      @pointermove="resize"
+      @pointerup="stopResize"
+      @pointercancel="stopResize"
+      @lostpointercapture="stopResize"
+    >
       <div class="terminal-panel-resize-grip" />
     </div>
 
@@ -352,9 +360,7 @@ async function toggleScope(t: EphemeralTerminal) {
   }
 }
 
-const isResizingRef = { current: false };
-const startYRef = { current: 0 };
-const startHeightRef = { current: 0 };
+let resizeDrag: { pointerId: number; y: number; height: number } | null = null;
 
 // Detect dark mode
 const isDark = ref(isDarkModeActive());
@@ -422,28 +428,29 @@ function handleStatusChange(id: string, status: TermStatus, exitCode: number | n
   }
 }
 
-// Resize drag
-function handleResizeMouseDown(e: MouseEvent) {
+// Pointer capture keeps mouse, touch, and pen drags on the handle.
+function startResize(e: PointerEvent) {
+  if (!e.isPrimary || e.button !== 0) return;
   e.preventDefault();
-  isResizingRef.current = true;
-  startYRef.current = e.clientY;
-  startHeightRef.current = height.value;
-
-  const handleMouseMove = (ev: MouseEvent) => {
-    if (!isResizingRef.current) return;
-    // Dragging up increases height
-    const delta = startYRef.current - ev.clientY;
-    height.value = Math.max(80, Math.min(800, startHeightRef.current + delta));
+  const handle = e.currentTarget as HTMLElement;
+  // A resize must not revive a dismissed soft keyboard.
+  const active = handle.ownerDocument.activeElement;
+  if (e.pointerType === "touch" && active instanceof HTMLElement) active.blur();
+  resizeDrag = {
+    pointerId: e.pointerId,
+    y: e.clientY,
+    height: handle.parentElement!.getBoundingClientRect().height,
   };
+  handle.setPointerCapture(e.pointerId);
+}
 
-  const handleMouseUp = () => {
-    isResizingRef.current = false;
-    document.removeEventListener("mousemove", handleMouseMove);
-    document.removeEventListener("mouseup", handleMouseUp);
-  };
+function resize(e: PointerEvent) {
+  if (resizeDrag?.pointerId !== e.pointerId) return;
+  height.value = Math.max(80, Math.min(800, resizeDrag.height + resizeDrag.y - e.clientY));
+}
 
-  document.addEventListener("mousemove", handleMouseMove);
-  document.addEventListener("mouseup", handleMouseUp);
+function stopResize(e: PointerEvent) {
+  if (resizeDrag?.pointerId === e.pointerId) resizeDrag = null;
 }
 
 const { terminalRenderer, setTerminalRenderer } = useTerminalRendererPreference();
