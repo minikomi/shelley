@@ -2,11 +2,9 @@ package oai
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/sashabaranov/go-openai"
@@ -58,11 +56,12 @@ func TestResolveReasoningReplay(t *testing.T) {
 	}
 }
 
-func TestServiceDoAutoReasoningReplayPlaceholder(t *testing.T) {
+func TestServiceDoAutoReasoningReplayEmptyField(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		endpoint string
 		model    string
+		provider string
 		want     bool
 	}{
 		{
@@ -73,11 +72,39 @@ func TestServiceDoAutoReasoningReplayPlaceholder(t *testing.T) {
 			name: "OpenRouter exact slug does not inherit native metadata", endpoint: "https://openrouter.ai/api/v1",
 			model: "moonshotai/kimi-k3",
 		},
+		{
+			name: "Fireworks provider through gateway", endpoint: "https://llm.int.exe.xyz/v1",
+			model: "glm-5p3", provider: "fireworks",
+		},
+		{
+			name: "custom Fireworks endpoint", endpoint: FireworksURL,
+			model: "glm-5p3", provider: "openai",
+		},
+		{
+			name: "native Fireworks ID through gateway", endpoint: "https://llm.int.exe.xyz/v1",
+			model: "accounts/fireworks/models/glm-5p3", provider: "openai",
+		},
+		{
+			name: "public Fireworks slug through gateway", endpoint: "https://llm.int.exe.xyz/v1",
+			model: "fireworks/kimi-k3", provider: "openai",
+		},
+		{
+			name: "bare name does not identify Fireworks", endpoint: "https://proxy.example/v1",
+			model: "glm-5p3", want: true,
+		},
+		{
+			name: "lookalike hostname is not Fireworks", endpoint: "https://api.fireworks.ai.example/v1",
+			model: "glm-5p3", want: true,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var gotBody []byte
+			var request struct {
+				Messages []map[string]json.RawMessage `json:"messages"`
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotBody, _ = io.ReadAll(r.Body)
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(openai.ChatCompletionResponse{ID: "x", Choices: []openai.ChatCompletionChoice{{
 					Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
@@ -91,7 +118,7 @@ func TestServiceDoAutoReasoningReplayPlaceholder(t *testing.T) {
 			}
 			svc := &Service{
 				APIKey: "k", Model: modelForTest(tt.model), ModelURL: tt.endpoint,
-				HTTPC: &http.Client{Transport: rewriteHostTransport{addr: u.Host}},
+				HTTPC: &http.Client{Transport: rewriteHostTransport{addr: u.Host}}, ProviderName: tt.provider,
 			}
 			_, err = svc.Do(t.Context(), &llm.Request{Messages: []llm.Message{{
 				Role:    llm.MessageRoleAssistant,
@@ -100,9 +127,12 @@ func TestServiceDoAutoReasoningReplayPlaceholder(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := strings.Contains(string(gotBody), `"reasoning_content":" "`)
-			if got != tt.want {
-				t.Fatalf("placeholder present = %v, want %v: %s", got, tt.want, gotBody)
+			if len(request.Messages) != 1 {
+				t.Fatalf("messages = %+v", request.Messages)
+			}
+			field, present := request.Messages[0]["reasoning_content"]
+			if present != tt.want || present && string(field) != `""` {
+				t.Fatalf("reasoning_content = %s (present %v), want empty field %v", field, present, tt.want)
 			}
 		})
 	}

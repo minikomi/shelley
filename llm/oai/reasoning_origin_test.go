@@ -74,7 +74,7 @@ func TestFilterReasoningForOrigin(t *testing.T) {
 func TestChatServiceEnforcesReasoningOrigin(t *testing.T) {
 	var request struct {
 		Messages []struct {
-			ReasoningContent string            `json:"reasoning_content"`
+			ReasoningContent *string           `json:"reasoning_content"`
 			ToolCalls        []openai.ToolCall `json:"tool_calls"`
 		} `json:"messages"`
 	}
@@ -109,7 +109,7 @@ func TestChatServiceEnforcesReasoningOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.Messages) != 1 || request.Messages[0].ReasoningContent != " " || len(request.Messages[0].ToolCalls) != 1 {
+	if len(request.Messages) != 1 || request.Messages[0].ReasoningContent != nil || len(request.Messages[0].ToolCalls) != 1 {
 		t.Fatalf("chat messages = %+v", request.Messages)
 	}
 	if response.Origin == nil || !response.Origin.Matches(service.messageOrigin(service.Model)) {

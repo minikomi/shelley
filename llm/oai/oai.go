@@ -815,14 +815,6 @@ func endpointHostMatches(baseURL string, domains ...string) bool {
 	return false
 }
 
-// isDeepSeekBaseURL reports whether the given base URL points at DeepSeek's
-// chat completions API. DeepSeek extends the OpenAI chat completions schema
-// with a reasoning_content field that must round-trip on assistant messages
-// with tool_calls when thinking mode is on (the default for deepseek-v4-pro).
-func isDeepSeekBaseURL(baseURL string) bool {
-	return endpointHostMatches(baseURL, "deepseek.com")
-}
-
 // usesLegacyMaxTokensField identifies OpenAI-compatible endpoints that accept
 // max_tokens but not max_completion_tokens. This mirrors Pi's URL-based
 // compatibility detection without adding another custom-model setting.
@@ -1468,10 +1460,6 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 	if s.Org != "" {
 		config.OrgID = s.Org
 	}
-	config.HTTPClient = httpc
-
-	client := openai.NewClientWithConfig(config)
-
 	// Start with system messages if provided
 	var allMessages []openai.ChatCompletionMessage
 	if len(ir.System) > 0 {
@@ -1489,22 +1477,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		allMessages = append(allMessages, msgs...)
 	}
 
-	// Resolve auto lazily so built-in services stay zero-value configured while
-	// custom endpoints and model switches use the current endpoint/model pair.
-	// Direct DeepSeek keeps its legacy replay behavior for catalog-unknown models;
-	// explicit none remains a sentinel that suppresses real reasoning.
-	deepSeek := isDeepSeekBaseURL(baseURL)
-	resolvedReasoningReplay := ResolveReasoningReplay(baseURL, model.ModelName, s.ReasoningReplay)
-	replayReasoningContent := resolvedReasoningReplay == ReasoningReplayContent || deepSeek && resolvedReasoningReplay == ""
-	for i := range allMessages {
-		m := &allMessages[i]
-		if !replayReasoningContent {
-			m.ReasoningContent = ""
-		}
-		if (replayReasoningContent || deepSeek) && m.Role == "assistant" && len(m.ToolCalls) > 0 && m.ReasoningContent == "" {
-			m.ReasoningContent = " "
-		}
-	}
+	policy := resolveReasoningPolicy(s.ProviderName, baseURL, model.ModelName, s.ReasoningReplay)
 
 	// Convert tools, skipping provider-specific server-side tools
 	var tools []openai.Tool
@@ -1529,6 +1502,7 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 		req.MaxCompletionTokens = maxTokens
 	}
 	streaming := ir.OnStream != nil
+	req.Stream = streaming
 	if streaming && (s.ProviderName == "fireworks" || s.ProviderName == "openai") {
 		req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 	}
@@ -1577,6 +1551,16 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 			}
 		}
 	}
+	body, err := prepareChatRequest(&req, policy)
+	if err != nil {
+		return nil, fmt.Errorf("serialize chat request: %w", err)
+	}
+	config.HTTPClient = httpc
+	if body != nil {
+		config.HTTPClient = chatRequestClient{client: httpc, body: body}
+	}
+	client := openai.NewClientWithConfig(config)
+
 	// Construct the full URL for logging and debugging
 	fullURL := baseURL + "/chat/completions"
 
