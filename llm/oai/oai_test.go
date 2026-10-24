@@ -1946,13 +1946,13 @@ func TestServiceDoDeepSeekReasoningReplay(t *testing.T) {
 		{name: "legacy chat model auto", model: "deepseek-chat", want: "stored reasoning"},
 		{name: "legacy reasoner model auto", model: "deepseek-reasoner", want: "stored reasoning"},
 		{name: "known snapshot model auto", model: "deepseek-v4-pro", want: "stored reasoning"},
-		{name: "explicit none uses schema placeholder", model: "deepseek-chat", replay: ReasoningReplayNone, want: " "},
+		{name: "explicit none uses empty schema field", model: "deepseek-chat", replay: ReasoningReplayNone, want: ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var got struct {
 				Messages []struct {
 					Role             string            `json:"role"`
-					ReasoningContent string            `json:"reasoning_content"`
+					ReasoningContent *string           `json:"reasoning_content"`
 					ToolCalls        []openai.ToolCall `json:"tool_calls"`
 				} `json:"messages"`
 			}
@@ -1985,14 +1985,14 @@ func TestServiceDoDeepSeekReasoningReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got.Messages) != 1 || len(got.Messages[0].ToolCalls) != 1 || got.Messages[0].ReasoningContent != tt.want {
+			if len(got.Messages) != 1 || len(got.Messages[0].ToolCalls) != 1 || got.Messages[0].ReasoningContent == nil || *got.Messages[0].ReasoningContent != tt.want {
 				t.Fatalf("messages = %+v, want reasoning_content %q", got.Messages, tt.want)
 			}
 		})
 	}
 }
 
-func TestServiceDoDeepSeekPlaceholderWhenNoThinking(t *testing.T) {
+func TestServiceDoDeepSeekEmptyReasoningWhenNoThinking(t *testing.T) {
 	// Legacy/replayed assistant messages without a thinking block still need
 	// a reasoning_content field on tool_calls or DeepSeek returns 400.
 	var gotBody []byte
@@ -2029,8 +2029,8 @@ func TestServiceDoDeepSeekPlaceholderWhenNoThinking(t *testing.T) {
 	if _, err := svc.Do(t.Context(), req); err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
-	if !strings.Contains(string(gotBody), `"reasoning_content"`) {
-		t.Errorf("expected reasoning_content placeholder in body, got: %s", gotBody)
+	if !strings.Contains(string(gotBody), `"reasoning_content":""`) {
+		t.Errorf("expected empty reasoning_content in body, got: %s", gotBody)
 	}
 }
 
@@ -2118,7 +2118,7 @@ func TestServiceDoReplaysReasoningContent(t *testing.T) {
 	}
 }
 
-func TestServiceDoReasoningContentReplayAddsToolCallPlaceholder(t *testing.T) {
+func TestServiceDoReasoningContentReplayAddsEmptyToolField(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
@@ -2145,12 +2145,12 @@ func TestServiceDoReasoningContentReplayAddsToolCallPlaceholder(t *testing.T) {
 	if _, err := svc.Do(t.Context(), req); err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
-	if !strings.Contains(string(gotBody), `"reasoning_content":" "`) {
-		t.Fatalf("reasoning replay placeholder missing: %s", gotBody)
+	if !strings.Contains(string(gotBody), `"reasoning_content":""`) {
+		t.Fatalf("empty reasoning field missing: %s", gotBody)
 	}
 }
 
-func TestServiceDoDisabledReasoningReplayDoesNotAddPlaceholder(t *testing.T) {
+func TestServiceDoDisabledReasoningReplayOmitsEmptyField(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
@@ -2178,7 +2178,7 @@ func TestServiceDoDisabledReasoningReplayDoesNotAddPlaceholder(t *testing.T) {
 		t.Fatalf("Do() error = %v", err)
 	}
 	if strings.Contains(string(gotBody), `"reasoning_content"`) {
-		t.Fatalf("disabled replay added placeholder: %s", gotBody)
+		t.Fatalf("disabled replay added empty field: %s", gotBody)
 	}
 }
 
