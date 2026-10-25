@@ -48,19 +48,83 @@
       <button
         v-for="entry in entries"
         :key="entry.id"
-        :class="`toc-entry toc-entry-${entry.kind}${entry.thumbnails?.length ? ' toc-entry-with-thumbnail' : ''}${activeId === entry.id ? ' toc-entry-active' : ''}`"
+        :class="`toc-entry toc-entry-${entry.kind}${entry.category ? ' toc-category-' + entry.category : ''}${activeId === entry.id ? ' toc-entry-active' : ''}`"
         @click="handleGoto(entry)"
       >
-        <span
-          v-if="entry.kind !== 'gen' && entry.kind !== 'image'"
-          class="toc-entry-icon"
-          aria-hidden="true"
-        >
+        <span v-if="entry.kind !== 'gen'" class="toc-entry-icon" aria-hidden="true">
           <template v-if="entry.kind === 'top'">↑</template>
-          <template v-if="entry.kind === 'bottom'">↓</template>
-          <template v-if="entry.kind === 'user'">•</template>
-          <template v-if="entry.kind === 'eot'">✓</template>
-          <template v-if="entry.kind === 'compaction'">🗜️</template>
+          <template v-else-if="entry.kind === 'bottom'">↓</template>
+          <svg
+            v-else-if="entry.kind === 'eot'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M5 12.5l4.5 4.5L19 7.5" />
+          </svg>
+          <svg
+            v-else-if="entry.kind === 'image'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M4 8h3l2-3h6l2 3h3v11H4z" />
+            <circle cx="12" cy="13" r="3.5" />
+          </svg>
+          <svg
+            v-else-if="entry.kind === 'compaction'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 3v6M9 6l3 3 3-3M12 21v-6M9 18l3-3 3 3M5 12h14" />
+          </svg>
+          <svg
+            v-else-if="entry.category === 'subagent'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M13 3L5 13.5h6L10 21l8-10.5h-6z" />
+          </svg>
+          <svg
+            v-else-if="entry.category === 'background'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="7.5" />
+            <path d="M12 8v4l2.5 2" />
+          </svg>
+          <svg
+            v-else-if="entry.category === 'notice'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="7.5" />
+            <path d="M12 11v4.5" />
+            <path d="M12 8h.01" stroke-width="3" />
+          </svg>
+          <template v-else>•</template>
         </span>
         <span v-if="entry.thumbnails?.length" class="toc-entry-thumbnail-wrap" aria-hidden="true">
           <img
@@ -93,6 +157,8 @@ import {
 import { perfCount, perfWrap } from "../../utils/perf";
 import { replaceLocationFragment } from "../../utils/locationFragment";
 import { chunkMountKey } from "./chunkMount";
+import { messageTOCCategory, type TOCCategory } from "../../utils/conversationTOCCategory";
+import { messageSource, parseLegacyBackgroundJobNotice } from "../../utils/messageSource";
 
 interface TOCThumbnail {
   src: string;
@@ -103,6 +169,7 @@ interface TOCEntry {
   id: string;
   kind: "top" | "user" | "eot" | "image" | "gen" | "compaction" | "bottom";
   label: string;
+  category?: TOCCategory;
   messageId?: string;
   toolUseId?: string;
   sourceMessageId?: string;
@@ -146,7 +213,7 @@ function extractMessageLabel(message: Message, maxLen = 70): string {
     if (c.Type === 2 && c.Text) parts.push(c.Text);
   }
   let s = parts.join(" ").replace(/\s+/g, " ").trim();
-  s = s.replace(/^[#>*\-`\s]+/, "").trim();
+  s = tidyLabel(s).replace(/^[#>*\-`\s]+/, "");
   if (s.length > maxLen) s = s.slice(0, maxLen - 1) + "…";
   return s;
 }
@@ -200,9 +267,39 @@ function refreshRenderedThumbnails() {
     : new Map();
 }
 
+// Strip markdown and upload paths so labels read as plain text.
+function tidyLabel(s: string): string {
+  return s
+    .replace(/(?<!!)\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*(\S.*?)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(
+      /\[?\/tmp\/shelley-uploads\/([^\]]+?)(?:_[0-9a-f]{16})?\.(?:png|jpe?g|gif|webp)\]?/gi,
+      "$1",
+    )
+    .replace(
+      /Screenshot \d{4}-\d\d-\d\d at (\d+)\.(\d+)\.\d+[_\s]?(AM|PM)/g,
+      (_m, h, m, ap) => `Screenshot ${h === "0" ? "12" : h}:${m} ${ap}`,
+    )
+    .replace(/^Image: /, "")
+    .trim();
+}
+
+// A finished background job reads as its command; failures and losses say so.
+function backgroundJobLabel(message: Message, content: LLMContent[]): string | null {
+  const source = messageSource(message.user_data);
+  if (!source || !("backgroundJobId" in source)) return null;
+  const text = content.map((c) => (c.Type === 2 && c.Text) || "").join("\n");
+  const outcome = source.outcome ?? parseLegacyBackgroundJobNotice(text, source.backgroundJobId);
+  if (!outcome) return null;
+  const command = outcome.command.trim().split("\n")[0];
+  if (outcome.exitCode === null) return `${command} · lost`;
+  return outcome.exitCode === 0 ? command : `${command} · exit ${outcome.exitCode}`;
+}
+
 function imageLabel(thumbnails: TOCThumbnail[], fallback: string): string {
   const alt = thumbnails.find((thumbnail) => thumbnail.alt)?.alt;
-  return alt || fallback;
+  return tidyLabel(alt || fallback);
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -328,7 +425,8 @@ function buildEntries(
       entries.push({
         id: fragmentForMessage(m.message_id),
         kind: "user",
-        label: text,
+        category: messageTOCCategory(m),
+        label: backgroundJobLabel(m, content) ?? text,
         messageId: m.message_id,
         sourceMessageId: m.message_id,
         thumbnails: messageThumbnails,

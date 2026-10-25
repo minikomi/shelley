@@ -1,6 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { Message } from "../src/types";
 import {
   createConversationViaAPI,
   createConversationViaAPIWithDetails,
@@ -20,6 +22,127 @@ const e2eDir = dirname(fileURLToPath(import.meta.url));
 // across the hand-rolled and PrimeVue implementations.
 
 test.describe("Conversation TOC popover", () => {
+  for (const width of [390, 1280]) {
+    test(`marks message sources with quiet icons on one text edge at ${width}px`, async ({
+      page,
+      request,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const { conversationId, slug } = await createConversationViaAPIWithDetails(
+        request,
+        "echo TOC source styling",
+      );
+      const response = await request.get(`/api/conversation/${conversationId}`);
+      expect(response.ok()).toBeTruthy();
+      const body = await response.json();
+      const base = body.messages.at(-1) as Message;
+      let sequence = base.sequence_id;
+      const message = (text: string, overrides: Partial<Message> = {}): Message => ({
+        ...base,
+        message_id: randomUUID(),
+        sequence_id: ++sequence,
+        type: "user",
+        user_data: null,
+        end_of_turn: false,
+        llm_data: JSON.stringify({
+          Role: overrides.type === "agent" ? 1 : 0,
+          Content: [{ ID: "", Type: 2, Text: text }],
+        }),
+        ...overrides,
+      });
+      body.conversation.agent_working = false;
+      body.messages.push(
+        message("**Keep** the current `TOC`"),
+        message("See [the preview](https://example.com) **now**", {
+          type: "agent",
+          end_of_turn: true,
+        }),
+        ...(["parent", "subagent"] as const).map((relationship) =>
+          message(`${relationship} follow-up`, {
+            user_data: JSON.stringify({
+              sender_conversation_id: "other-conversation",
+              sender_slug: "reviewer",
+              sender_relationship: relationship,
+            }),
+          }),
+        ),
+        message("Background job abc123 finished: exit 2, 2m28s. Log: /tmp/job.log", {
+          user_data: JSON.stringify({
+            background_job_id: "abc123",
+            command: "make build\necho done",
+            exit_code: 2,
+            duration: "2m28s",
+            log_path: "/tmp/job.log",
+            tail: "",
+          }),
+        }),
+        message("Working directory changed", {
+          user_data: JSON.stringify({ cwd_change: true, from: "/old", to: "/new" }),
+        }),
+        message("Continue with the approved design", { generation: base.generation + 1 }),
+      );
+      await page.route("**/api/stream2*", (route) => route.abort());
+      await page.route(`**/api/conversation/${conversationId}`, (route) =>
+        route.fulfill({ json: body }),
+      );
+      await page.goto(`/c/${slug}`);
+      await page.locator(".toc-button").click();
+      const toc = page.locator(".toc-popover");
+      const row = (text: string) => toc.locator(".toc-entry").filter({ hasText: text });
+      const human = row("Keep the current TOC");
+      const reply = row("See the preview now");
+      const reports = toc.locator(".toc-category-subagent");
+      const job = toc.locator(".toc-category-background");
+      const notice = toc.locator(".toc-entry-user.toc-category-notice");
+
+      await expect(human.locator(".toc-entry-icon")).toHaveText("•");
+      await expect(human.locator(".toc-entry-label")).toHaveCSS("font-weight", "500");
+      for (const quiet of [reply, reports.first(), job, notice]) {
+        await expect(quiet.locator(".toc-entry-icon svg")).toHaveCount(1);
+        await expect(quiet.locator(".toc-entry-label")).toHaveCSS("font-weight", "400");
+      }
+      await expect(reports).toHaveCount(2);
+      await expect(toc.locator(".toc-entry-gen")).toHaveCount(1);
+      expect((await toc.locator(".toc-entry-label").allTextContents()).slice(-9)).toEqual([
+        "Keep the current TOC",
+        "See the preview now",
+        "parent follow-up",
+        "subagent follow-up",
+        "make build · exit 2",
+        "Working directory changed",
+        `New generation (${base.generation + 1})`,
+        "Continue with the approved design",
+        "End of conversation",
+      ]);
+      const textEdges = await toc
+        .locator(".toc-entry:not(.toc-entry-gen) .toc-entry-label")
+        .evaluateAll((labels) => [...new Set(labels.map((l) => l.getBoundingClientRect().left))]);
+      expect(textEdges).toHaveLength(1);
+
+      const color = (locator: typeof human) =>
+        locator.evaluate((element) => getComputedStyle(element).color);
+      for (const dark of [false, true]) {
+        await page.evaluate((enabled) => {
+          document.documentElement.classList.toggle("dark", enabled);
+        }, dark);
+        await expect.poll(async () => (await color(human)) === (await color(reply))).toBe(true);
+        expect(await color(reports.first())).not.toBe(await color(reply));
+        expect(await color(job)).not.toBe(await color(reports.first()));
+        expect(await color(human.locator(".toc-entry-icon"))).not.toBe(
+          await color(reply.locator(".toc-entry-icon svg")),
+        );
+        expect(await human.evaluate((element) => element.getBoundingClientRect().height)).toBe(30);
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        ).toBeTruthy();
+      }
+      await expect(toc.locator(".toc-entry-active")).toHaveCSS(
+        "background-color",
+        "rgba(0, 0, 0, 0)",
+      );
+    });
+  }
+
   test("opens from the nav button, lists entries, and dismisses", async ({ page, request }) => {
     test.setTimeout(60000);
     const slug = await createConversationViaAPI(request, "echo table of contents");
