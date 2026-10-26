@@ -29,7 +29,7 @@
        use the `:on-send` / `:on-queue` function props. -->
 <template>
   <div
-    :class="`message-input-container ${isDraggingOver ? 'drag-over' : ''} ${isShellMode ? 'shell-mode' : ''} ${showSlashMenu || showFileMenu ? 'slash-menu-open' : ''}`"
+    :class="`message-input-container ${isDraggingOver ? 'drag-over' : ''} ${isShellMode ? 'shell-mode' : ''} ${showSlashMenu || showFileMenu || showSkillMenu ? 'slash-menu-open' : ''}`"
     @dragover="handleDragOver"
     @dragenter="handleDragEnter"
     @dragleave="handleDragLeave"
@@ -87,10 +87,26 @@
         @change="handleFileSelect"
       />
       <div
-        v-if="attachments.length > 0"
+        v-if="attachments.length > 0 || selectedSkills.length > 0"
         class="message-attachments"
         data-testid="message-attachments"
       >
+        <span
+          v-for="skill in selectedSkills"
+          :key="skill.name"
+          class="skill-chip"
+          data-testid="skill-chip"
+        >
+          <span class="skill-chip-label truncate" :title="skill.description">{{ skill.name }}</span>
+          <button
+            type="button"
+            class="skill-chip-x"
+            :aria-label="`Remove skill ${skill.name}`"
+            @click="removeSelectedSkill(skill.name)"
+          >
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </span>
         <div
           v-for="a in attachments"
           :key="a.id"
@@ -138,6 +154,101 @@
         </div>
       </div>
       <div class="textarea-wrapper">
+        <Teleport to="body" :disabled="!mobileSkillPicker">
+          <div
+            v-if="showSkillMenu && mobileSkillPicker"
+            class="skill-picker-backdrop"
+            @click="dismissSkills()"
+          ></div>
+          <div
+            v-if="showSkillMenu"
+            ref="skillMenuRef"
+            class="slash-command-menu skill-picker"
+            :class="{ 'skill-picker-mobile': mobileSkillPicker }"
+            :style="mobileSkillPicker ? {
+              top: `${skillViewport.top + 12}px`,
+              height: `${skillViewport.height - 12}px`,
+            } : undefined"
+            :role="mobileSkillPicker ? 'dialog' : undefined"
+            :aria-modal="mobileSkillPicker ? true : undefined"
+            :aria-label="mobileSkillPicker ? 'Choose a skill' : undefined"
+            data-testid="skill-picker"
+          >
+            <div class="skill-picker-head">
+              <b class="font-medium">Skills</b>
+              <button
+                v-if="mobileSkillPicker"
+                type="button"
+                class="skill-picker-close"
+                aria-label="Close skills"
+                @click="closeSkillPicker"
+              >
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+              <span v-else>↑↓ choose · Enter add · Esc close</span>
+            </div>
+            <input
+              v-if="mobileSkillPicker"
+              :value="skillSearchQuery"
+              class="skill-picker-search"
+              type="search"
+              placeholder="Find a skill"
+              aria-label="Find a skill"
+              autocomplete="off"
+              @input="setSkillSearch"
+              @keydown.enter.prevent="chooseSkill(skillSelected)"
+              @keydown.esc="closeSkillPicker"
+            />
+            <div v-if="skillLoading || skillError" class="file-completion-status" role="status">
+              {{ skillError || "Loading skills…" }}
+            </div>
+            <div
+              v-else-if="!skillMatches.length"
+              class="file-completion-status"
+              role="status"
+            >
+              No matching skills
+            </div>
+            <div v-else class="skill-picker-split">
+              <div :id="skillMenuId" role="listbox" aria-label="Skills" class="skill-picker-names">
+                <button
+                  v-for="(item, index) in skillMatches"
+                  :id="`${skillMenuId}-${index}`"
+                  :key="item.name"
+                  type="button"
+                  tabindex="-1"
+                  :class="['slash-command-item', { selected: index === skillSelected }]"
+                  role="option"
+                  :aria-selected="index === skillSelected"
+                  :aria-label="`${item.name}: ${item.description}`"
+                  @mousedown.prevent
+                  @mouseenter="skillSelected = index"
+                  @click="chooseSkill(index)"
+                >
+                  <span class="slash-command-name">{{ item.name }}</span>
+                  <span v-if="mobileSkillPicker" class="skill-picker-description">{{ item.description }}</span>
+                  <span v-if="mobileSkillPicker" class="skill-picker-add" aria-hidden="true">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M12 5v14M5 12h14" /></svg>
+                  </span>
+                </button>
+              </div>
+              <div
+                v-if="!mobileSkillPicker && skillMatches[skillSelected]"
+                class="skill-picker-detail" aria-hidden="true">
+                <div class="skill-picker-detail-name">{{ skillMatches[skillSelected].name }}</div>
+                <p>{{ skillMatches[skillSelected].description }}</p>
+                <div class="skill-picker-source">
+                  {{
+                    [skillMatches[skillSelected].origin, skillMatches[skillSelected].source_path]
+                      .filter(Boolean)
+                      .join(" · ")
+                  }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Teleport>
+
         <div
           v-if="showFileMenu"
           ref="fileMenuRef"
@@ -291,16 +402,20 @@
           :rows="initialRows ?? 1"
           aria-label="Message input"
           data-testid="message-input"
-          :aria-autocomplete="showFileMenu ? 'list' : undefined"
-          :aria-controls="showFileMenu ? fileMenuId : undefined"
+          :aria-autocomplete="showSkillMenu || showFileMenu ? 'list' : undefined"
+          :aria-controls="showSkillMenu ? skillMenuId : showFileMenu ? fileMenuId : undefined"
           :aria-activedescendant="
-            showFileMenu && fileMatches.length ? `${fileMenuId}-${fileSelected}` : undefined
+            showSkillMenu && skillMatches.length
+              ? `${skillMenuId}-${skillSelected}`
+              : showFileMenu && fileMatches.length
+                ? `${fileMenuId}-${fileSelected}`
+                : undefined
           "
           @input="onTextareaInput"
           @select="syncFileSelection"
           @click="syncFileSelection"
           @keyup="syncFileSelection"
-          @blur="fileFocused = false"
+          @blur="onTextareaBlur"
           @keydown="handleKeyDown"
           @paste="handlePaste"
           @focus="onTextareaFocus"
@@ -416,6 +531,8 @@
 import PathText from "./PathText.vue";
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowReactive, shallowRef, useId, watch } from "vue";
 import { useFileCompletion } from "../composables/fileCompletion";
+import { useSkillCompletion } from "../composables/skillCompletion";
+import type { SkillDescriptor } from "../../services/api";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
 import HighlightedText from "./HighlightedText.vue";
@@ -452,7 +569,7 @@ interface AttachmentSession {
 const props = withDefaults(
   defineProps<{
     /** Async send handler (awaited). Mirrors React's onSend prop. */
-    onSend: (message: string) => Promise<void> | void;
+    onSend: (message: string, skills?: string[]) => Promise<void> | void;
     voiceActive?: boolean;
     /** Leave the persistent call slot available when browsing an archive. */
     composerHidden?: boolean;
@@ -461,7 +578,7 @@ const props = withDefaults(
     /** Archived conversations hide the composer, but not an active recording. */
     recordingInlineAvailable?: boolean;
     /** Async queue handler (awaited). Mirrors React's onQueue prop. */
-    onQueue?: (message: string) => Promise<void> | void;
+    onQueue?: (message: string, skills?: string[]) => Promise<void> | void;
     /** Show the split send button with queue chevron (e.g. when in a conversation) */
     showQueueOption?: boolean;
     /** Whether queuing is available right now (agent is working) */
@@ -579,6 +696,11 @@ const readyAttachments = computed(() =>
 );
 const dragCounter = ref(0);
 const isSmallScreen = ref(typeof window !== "undefined" ? window.innerWidth < 480 : false);
+const mobileSkillPicker = ref(window.innerWidth <= 767);
+const skillViewport = ref({
+  top: window.visualViewport?.offsetTop ?? 0,
+  height: window.visualViewport?.height ?? window.innerHeight,
+});
 const showQueueMenu = ref(false);
 const slashMenuSelectedIndex = ref(0);
 const slashMenuDismissed = ref(false);
@@ -614,6 +736,8 @@ const placeholderText = computed(() => {
 
 function handleResize() {
   isSmallScreen.value = window.innerWidth < 480;
+  mobileSkillPicker.value = window.innerWidth <= 767;
+  handleViewportResize();
 }
 
 const canRecordAudio = computed(
@@ -978,6 +1102,115 @@ const completionSession = ref(composerSession());
 watch(composerSession, (session) => {
   completionSession.value = session;
 });
+const skillMenuId = useId();
+
+const skillMenuRef = ref<HTMLDivElement | null>(null);
+
+const {
+  active: activeSkillCommand,
+  visible: showSkillMenu,
+  matches: skillMatches,
+  selected: skillSelected,
+  loading: skillLoading,
+  error: skillError,
+  focused: skillFocused,
+  updateSelection: updateSkillSelection,
+  dismiss: dismissSkills,
+  reopen: reopenSkills,
+  choose: completeSkill,
+  invalidate: invalidateSkills,
+} = useSkillCompletion({
+  message,
+  cwd: () => props.cwd ?? "",
+  session: () => completionSession.value,
+  conversationId: () => props.conversationId ?? null,
+  enabled: () => !isDisabled.value && !isShellMode.value,
+});
+
+// Chosen skills are chips, not draft text. They live in memory for the
+// current composer session; on send the server prefixes skill mentions.
+const selectedSkills = ref<SkillDescriptor[]>([]);
+const selectedSkillNames = () => selectedSkills.value.map((s) => s.name);
+watch([completionSession, () => props.cwd], () => {
+  selectedSkills.value = [];
+});
+function removeSelectedSkill(name: string) {
+  selectedSkills.value = selectedSkills.value.filter((s) => s.name !== name);
+  textareaRef.value?.focus();
+}
+
+async function chooseSkill(index: number) {
+  const replacement = completeSkill(index);
+  if (!replacement) return;
+  if (!selectedSkills.value.some((s) => s.name === replacement.skill.name)) {
+    selectedSkills.value = [...selectedSkills.value, replacement.skill];
+  }
+  setMessage(replacement.text);
+  await nextTick();
+  textareaRef.value?.focus();
+  textareaRef.value?.setSelectionRange(replacement.cursor, replacement.cursor);
+  syncFileSelection();
+}
+
+// All send paths (buttons, Enter, queue, send-now) consume the picker
+// instead of dispatching /skills as a command.
+function interceptSkillSubmission() {
+  if (!activeSkillCommand.value) {
+    // A restored draft or selected text may put the caret outside the token.
+    // A standalone /skills command still opens the picker, never dispatches.
+    if (isDisabled.value || !/^\/skills(?:[ \t]+[^\r\n]*)?$/.test(message.value.trim())) return false;
+    const cursor = message.value.trimEnd().length;
+    textareaRef.value?.setSelectionRange(cursor, cursor);
+    updateSkillSelection(cursor, cursor);
+    reopenSkills();
+    textareaRef.value?.focus();
+    return true;
+  }
+  if (showSkillMenu.value) void chooseSkill(skillSelected.value);
+  else {
+    reopenSkills();
+    textareaRef.value?.focus();
+  }
+  return true;
+}
+
+function onSkillMenuOutside(e: MouseEvent) {
+  if (skillMenuRef.value?.contains(e.target as Node) || e.target === textareaRef.value) return;
+  dismissSkills();
+}
+const skillSearchQuery = computed(() =>
+  message.value.split("\n", 1)[0].replace(/^\/skills[ \t]*/, ""),
+);
+function setSkillSearch(e: Event) {
+  const query = (e.target as HTMLInputElement).value;
+  const newline = message.value.indexOf("\n");
+  const rest = newline < 0 ? "" : message.value.slice(newline);
+  const command = `/skills ${query}`;
+  setMessage(command + rest);
+  updateSkillSelection(command.length, command.length);
+}
+function closeSkillPicker() {
+  dismissSkills();
+  textareaRef.value?.focus({ preventScroll: true });
+}
+function onTextareaBlur(e: FocusEvent) {
+  fileFocused.value = false;
+  if (mobileSkillPicker.value && showSkillMenu.value) return;
+  if (!skillMenuRef.value?.contains(e.relatedTarget as Node)) skillFocused.value = false;
+}
+watch(showSkillMenu, async (open) => {
+  if (open) document.addEventListener("mousedown", onSkillMenuOutside);
+  else document.removeEventListener("mousedown", onSkillMenuOutside);
+  if (open && mobileSkillPicker.value) {
+    await nextTick();
+    if (showSkillMenu.value && mobileSkillPicker.value) textareaRef.value?.blur();
+  }
+});
+watch(skillSelected, async () => {
+  await nextTick();
+  skillMenuRef.value?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+});
+
 const {
   visible: showFileMenu,
   matches: fileMatches,
@@ -993,12 +1226,15 @@ const {
   message,
   cwd: () => props.cwd ?? "",
   session: () => completionSession.value,
-  enabled: () => !isDisabled.value && !isShellMode.value,
+  enabled: () => !isDisabled.value && !isShellMode.value && !showSkillMenu.value,
 });
 
 function syncFileSelection() {
   const textarea = textareaRef.value;
-  if (textarea) updateFileSelection(textarea.selectionStart, textarea.selectionEnd);
+  if (textarea) {
+    updateFileSelection(textarea.selectionStart, textarea.selectionEnd);
+    updateSkillSelection(textarea.selectionStart, textarea.selectionEnd);
+  }
 }
 
 async function chooseFile(index: number) {
@@ -1118,6 +1354,7 @@ const modelArgSuggestions = computed<ModelArgOption[]>(() => {
 const showModelArgMenu = computed(
   () =>
     modelArgContext.value !== null &&
+    !showSkillMenu.value &&
     !slashMenuDismissed.value &&
     modelArgSuggestions.value.length > 0 &&
     !isDisabled.value,
@@ -1168,6 +1405,15 @@ watch(message, (value) => {
 async function chooseSlashCommand(index: number) {
   const item = slashSuggestions.value[index];
   if (!item) return;
+  if (item.command === SLASH_COMMANDS.SKILLS.command) {
+    setMessage(`${item.command} `);
+    await nextTick();
+    textareaRef.value?.focus();
+    textareaRef.value?.setSelectionRange(message.value.length, message.value.length);
+    syncFileSelection();
+    reopenSkills();
+    return;
+  }
   if (!item.takesArgs) {
     const origin = composerOrigin();
     setMessage("");
@@ -1215,6 +1461,7 @@ watch(composerSession, () => {
 
 async function handleSubmit(e: Event) {
   e.preventDefault();
+  if (interceptSkillSubmission()) return;
   if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
     if (openTerminalIfRequested(composerDispatch(message.value))) return;
 
@@ -1227,9 +1474,11 @@ async function handleSubmit(e: Event) {
     const origin = composerOrigin();
     submitting.value = true;
     try {
-      await props.onSend(messageToSend);
+      await props.onSend(messageToSend, selectedSkillNames());
       clearAttachments(attachmentSession);
       guardComposerClear(origin, composerOrigin, () => {
+        selectedSkills.value = [];
+        invalidateSkills();
         setMessage("");
         emit("draft-cleared");
       });
@@ -1242,6 +1491,7 @@ async function handleSubmit(e: Event) {
 }
 
 async function handleQueueMessage() {
+  if (interceptSkillSubmission()) return;
   const dispatch = composerDispatch(message.value, { intent: "queue" });
   if (openTerminalIfRequested(dispatch)) return;
   if (dispatch.route === "btw") {
@@ -1250,37 +1500,56 @@ async function handleQueueMessage() {
   }
   if (hasContent.value && props.onQueue) {
     const messageToQueue = composeMessageWithAttachments(message.value).trim();
+    const skillsToQueue = selectedSkills.value;
     const origin = composerOrigin();
     setMessage("");
     clearAttachments();
+    selectedSkills.value = [];
+    invalidateSkills();
     emit("draft-cleared");
     showQueueMenu.value = false;
     try {
-      await props.onQueue(messageToQueue);
+      await props.onQueue(
+        messageToQueue,
+        skillsToQueue.map((s) => s.name),
+      );
     } catch {
-      guardComposerClear(origin, composerOrigin, () => setMessage(messageToQueue));
+      guardComposerClear(origin, composerOrigin, () => {
+        selectedSkills.value = skillsToQueue;
+        setMessage(messageToQueue);
+      });
     }
   }
 }
 
 /** Send immediately — used when a /btw is picked from the queue option. */
 async function handleSendNow() {
+  if (interceptSkillSubmission()) return;
   if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
     const dispatch = composerDispatch(message.value, { intent: "send-now" });
     if (openTerminalIfRequested(dispatch)) return;
     const composed = composeMessageWithAttachments(message.value);
     const messageToSend = dispatch.route === "btw" ? composed : composed.trim();
+    const skillsToSend = selectedSkills.value;
     setMessage("");
     clearAttachments();
+    selectedSkills.value = [];
+    invalidateSkills();
     emit("draft-cleared");
     showQueueMenu.value = false;
     const submission = ++submissionGeneration;
     const origin = composerOrigin();
     submitting.value = true;
     try {
-      await props.onSend(messageToSend);
+      await props.onSend(
+        messageToSend,
+        skillsToSend.map((s) => s.name),
+      );
     } catch {
-      guardComposerClear(origin, composerOrigin, () => setMessage(messageToSend));
+      guardComposerClear(origin, composerOrigin, () => {
+        selectedSkills.value = skillsToSend;
+        setMessage(messageToSend);
+      });
     } finally {
       if (submission === submissionGeneration) submitting.value = false;
     }
@@ -1303,6 +1572,7 @@ function onTextareaInput(e: Event) {
 
 function onTextareaFocus() {
   fileFocused.value = true;
+  skillFocused.value = true;
   syncFileSelection();
   // Scroll to bottom after keyboard animation settles
   requestAnimationFrame(() => requestAnimationFrame(() => emit("focus")));
@@ -1311,6 +1581,30 @@ function onTextareaFocus() {
 function handleKeyDown(e: KeyboardEvent) {
   // Don't submit while IME is composing.
   if (isImeComposing(e)) return;
+  syncFileSelection();
+  if (showSkillMenu.value) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissSkills();
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (skillMatches.value.length) {
+        skillSelected.value =
+          (skillSelected.value + (e.key === "ArrowDown" ? 1 : -1) + skillMatches.value.length) %
+          skillMatches.value.length;
+      }
+      return;
+    }
+    if ((e.key === "Enter" && !e.shiftKey) || (e.key === "Tab" && !e.shiftKey)) {
+      // Loading, empty, and error states must never fall through to sending.
+      e.preventDefault();
+      void chooseSkill(skillSelected.value);
+      return;
+    }
+  }
   if (showFileMenu.value) {
     if (e.key === "Escape") {
       e.preventDefault();
@@ -1431,6 +1725,10 @@ watch(
 
 // Handle virtual keyboard appearance on mobile via visualViewport.
 function handleViewportResize() {
+  skillViewport.value = {
+    top: window.visualViewport?.offsetTop ?? 0,
+    height: window.visualViewport?.height ?? window.innerHeight,
+  };
   if (document.activeElement === textareaRef.value) {
     requestAnimationFrame(() => {
       textareaRef.value?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1458,6 +1756,7 @@ onUnmounted(() => {
   document.removeEventListener("mousedown", onQueueMenuOutside);
   document.removeEventListener("mousedown", onSlashMenuOutside);
   document.removeEventListener("mousedown", onFileMenuOutside);
+  document.removeEventListener("mousedown", onSkillMenuOutside);
   for (const session of sessions) clearAttachments(session);
 });
 </script>

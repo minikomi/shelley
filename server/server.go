@@ -569,6 +569,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	api.HandleFunc("POST /api/conversations/distill-new-generation", s.handleCompactRequest) // Small response
 	s.registerConversationRoutes(api)
 	api.Handle("GET /api/conversation-by-slug/", compressionHandler(http.HandlerFunc(s.handleConversationBySlug)))
+	api.Handle("GET /api/skills", compressionHandler(http.HandlerFunc(s.handleSkills)))
 	api.HandleFunc("GET /api/validate-cwd", s.handleValidateCwd) // Small response
 	api.HandleFunc("POST /api/model-costs", s.handleModelCosts)
 	api.Handle("GET /api/list-directory", compressionHandler(http.HandlerFunc(s.handleListDirectory)))

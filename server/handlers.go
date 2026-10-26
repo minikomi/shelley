@@ -1015,6 +1015,8 @@ type ChatRequest struct {
 	ConversationOptions  *ChatOptions `json:"conversation_options,omitempty"`
 	Queue                bool         `json:"queue,omitempty"`
 	SenderConversationID string       `json:"sender_conversation_id,omitempty"`
+	// Skills names composer-selected skills mentioned before the message.
+	Skills []string `json:"skills,omitempty"`
 }
 
 // handleChatConversation handles POST /conversation/<id>/chat
@@ -1051,6 +1053,16 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	senderUserData, err := s.senderUserData(ctx, *existing, req.SenderConversationID)
 	if err != nil {
 		s.internalError(w, "Failed to resolve chat sender", err, "conversationID", conversationID)
+		return
+	}
+
+	skillCwd := derefString(existing.Cwd)
+	if existing.IsDraft && req.Cwd != "" {
+		skillCwd = req.Cwd
+	}
+	skillNames, status, err := s.validateSelectedSkills(ctx, req.Message, skillCwd, conversationID, req.Skills)
+	if err != nil {
+		http.Error(w, err.Error(), status)
 		return
 	}
 
@@ -1413,6 +1425,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 			{Type: llm.ContentTypeText, Text: req.Message},
 		},
 	}
+	userMessage.Content = withSkillMentions(userMessage.Content, skillNames)
 
 	// Queue mode: record the message to DB but don't interrupt the agent.
 	// The message will be sent when the agent finishes its current turn.
@@ -1512,6 +1525,12 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
 		http.Error(w, unsupportedModelMessage(modelID, modelList), http.StatusBadRequest)
+		return
+	}
+
+	skillNames, status, err := s.validateSelectedSkills(ctx, req.Message, req.Cwd, "", req.Skills)
+	if err != nil {
+		http.Error(w, err.Error(), status)
 		return
 	}
 
@@ -1633,6 +1652,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 			{Type: llm.ContentTypeText, Text: req.Message},
 		},
 	}
+	userMessage.Content = withSkillMentions(userMessage.Content, skillNames)
 
 	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
 	if errors.Is(err, errConversationModelMismatch) {

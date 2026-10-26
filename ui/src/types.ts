@@ -143,6 +143,8 @@ export interface ChatRequest {
     disable_notifications?: boolean;
   };
   queue?: boolean;
+  /** Composer-selected skill names; the server prefixes mentions to the message. */
+  skills?: string[];
 }
 
 /** A conversation's adjustable settings; see Settings in server/settings.go. */

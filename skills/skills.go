@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -534,7 +535,9 @@ func DiscoverInTree(workingDir, gitRoot string) ([]Skill, map[string]bool) {
 		searchRoot = workingDir
 	}
 
-	filepath.Walk(searchRoot, func(path string, info os.FileInfo, err error) error {
+	// WalkDir reads directory entries without stat'ing every file; only
+	// SKILL.md candidates are opened (by Parse).
+	filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return filepath.SkipAll
 		}
@@ -542,9 +545,9 @@ func DiscoverInTree(workingDir, gitRoot string) ([]Skill, map[string]bool) {
 			return nil // Continue on errors
 		}
 
-		if info.IsDir() {
+		if d.IsDir() {
 			// Skip hidden directories and common ignore patterns
-			name := info.Name()
+			name := d.Name()
 			if name != "." && (strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor") {
 				return filepath.SkipDir
 			}
@@ -552,7 +555,7 @@ func DiscoverInTree(workingDir, gitRoot string) ([]Skill, map[string]bool) {
 		}
 
 		// Check if this is a SKILL.md file
-		lowerName := strings.ToLower(info.Name())
+		lowerName := strings.ToLower(d.Name())
 		if lowerName != "skill.md" {
 			return nil
 		}

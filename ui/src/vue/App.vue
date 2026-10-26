@@ -998,6 +998,7 @@ async function handleFirstMessage(
   model: string,
   cwd?: string,
   conversationOptions?: ChatRequest["conversation_options"],
+  skills?: string[],
 ) {
   // The composer row stands in for the new conversation until the response
   // names it.
@@ -1012,6 +1013,7 @@ async function handleFirstMessage(
       model,
       cwd,
       conversation_options: conversationOptions,
+      skills,
     });
     const newConversationId = response.conversation_id;
     messageStore.setAgentWorking(newConversationId, true);

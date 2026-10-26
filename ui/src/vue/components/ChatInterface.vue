@@ -816,6 +816,7 @@ const props = withDefaults(
       model: string,
       cwd?: string,
       conversationOptions?: ChatRequest["conversation_options"],
+      skills?: string[],
     ) => Promise<void>;
     mostRecentCwd?: string | null;
     isDrawerCollapsed?: boolean;
@@ -3269,13 +3270,28 @@ const pendingQueuedMessages: {
   controller: AbortController;
 }[] = [];
 
-async function queueMessage(message: string) {
-  if (!props.conversationId) return;
-  await queueMessageTo(props.conversationId, selectedModel.value, message);
+// Commands would silently drop skill chips.
+function rejectSkillsOnCommand(message: string, skills: string[]) {
+  const t = message.trim();
+  if (skills.length === 0 || !(t.startsWith("/") || t.startsWith("!"))) return;
+  const err = new Error("Skills can only be attached to a plain message.");
+  error.value = err.message;
+  throw err;
 }
 
-async function queueMessageTo(conversationId: string, model: string, message: string) {
+async function queueMessage(message: string, skills: string[] = []) {
+  if (!props.conversationId) return;
+  await queueMessageTo(props.conversationId, selectedModel.value, message, skills);
+}
+
+async function queueMessageTo(
+  conversationId: string,
+  model: string,
+  message: string,
+  skills: string[] = [],
+) {
   if (!message.trim()) return;
+  rejectSkillsOnCommand(message, skills);
   // Same guard as sendMessage: a queued turn runs the LLM later, so an
   // unavailable model just defers the confusing "Unsupported model" error.
   // Throws (not returns) so MessageInput's catch restores the composer text.
@@ -3297,6 +3313,7 @@ async function queueMessageTo(conversationId: string, model: string, message: st
         message: message.trim(),
         model,
         queue: true,
+        skills,
       },
       pending.controller.signal,
     );
@@ -3468,7 +3485,7 @@ function followReviewConversation() {
   };
 }
 
-async function sendFirstMessage(prompt: string) {
+async function sendFirstMessage(prompt: string, skills: string[] = []) {
   if (!props.onFirstMessage) return;
   if (!canSendWithModel(selectedModel.value, readyModelIds.value, providerIds.value)) {
     throw new Error(noModelErrorMessage());
@@ -3484,6 +3501,7 @@ async function sendFirstMessage(prompt: string) {
     selectedModel.value,
     selectedCwd.value || undefined,
     buildConversationOptions(),
+    skills,
   );
 }
 
@@ -3629,7 +3647,7 @@ function clearSubmittedDraft(conversationId: string, text: string) {
   }
 }
 
-async function sendMessage(message: string) {
+async function sendMessage(message: string, skills: string[] = []) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
   const transcriptionCommand =
@@ -3641,8 +3659,9 @@ async function sendMessage(message: string) {
   const dispatch = composerDispatch(message, {
     isChildConversation: !!props.currentConversation?.parent_conversation_id,
   });
+  rejectSkillsOnCommand(trimmedMessage, skills);
   if (dispatch.route === "queue" && !transcriptionCommand && !tourCommand) {
-    await queueMessage(trimmedMessage);
+    await queueMessage(trimmedMessage, skills);
     return;
   }
   if (dispatch.route === "btw-blocked") {
@@ -3906,12 +3925,13 @@ async function sendMessage(message: string) {
       model: selectedModel.value,
       cwd: isDraft ? selectedCwd.value || undefined : undefined,
       conversation_options: isDraft ? buildConversationOptions() : undefined,
+      skills,
     };
     if (isDraft) undoSubmit = props.onComposerSubmit?.(request.message, selectedCwd.value || null);
     let effectiveId = props.conversationId || draftConvId;
     if (!effectiveId && inflightCreate) effectiveId = await inflightCreate;
     if (!effectiveId && props.onFirstMessage) {
-      await sendFirstMessage(message.trim());
+      await sendFirstMessage(message.trim(), skills);
     } else if (effectiveId) {
       const id = effectiveId;
       const accepted = await postSubmittedDraft(id, submittedDraft, () =>
