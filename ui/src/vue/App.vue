@@ -296,7 +296,7 @@ import { computed, onMounted, onUnmounted, provide, ref, watch, shallowRef } fro
 import ChatInterface from "./components/ChatInterface.vue";
 import type { RecordingMode } from "./components/recordingDestination";
 import { isImeComposing } from "../utils/imeComposing";
-import { comboMatches, MENU_COMBOS } from "../utils/menuShortcuts";
+import { comboMatches, hasOpenDialog, MENU_COMBOS, terminalOwnsKey } from "../utils/menuShortcuts";
 import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import ModelsModal from "./components/ModelsModal.vue";
@@ -1051,13 +1051,19 @@ function clearChord() {
 const isMac = navigator.platform.toUpperCase().includes("MAC");
 
 function handleKeyDown(e: KeyboardEvent) {
+  if (e.defaultPrevented || isImeComposing(e) || terminalOwnsKey(e)) {
+    clearChord();
+    return;
+  }
+  if (!chordPending && !e.ctrlKey && !e.metaKey && !e.altKey) return;
+  const dialogOpen = hasOpenDialog();
+  if (dialogOpen) clearChord();
   const recordingMode = comboMatches(e, MENU_COMBOS.recordAudio)
     ? "microphone"
     : comboMatches(e, MENU_COMBOS.recordScreen)
       ? "screen"
       : null;
   if (recordingMode) {
-    if (e.defaultPrevented || isImeComposing(e)) return;
     e.preventDefault();
     clearChord();
     if (!e.repeat) beginRecording(recordingMode);
@@ -1079,7 +1085,7 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "m" || e.key === "M")) {
+  if (!dialogOpen && e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "m" || e.key === "M")) {
     e.preventDefault();
     chordPending = true;
     chordTimer = window.setTimeout(clearChord, 1500);
@@ -1102,6 +1108,8 @@ function handleKeyDown(e: KeyboardEvent) {
     fileFinderOpen.value = true;
     return;
   }
+
+  if (dialogOpen) return;
 
   if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key === "ArrowDown") {
     e.preventDefault();

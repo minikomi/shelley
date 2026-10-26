@@ -591,6 +591,13 @@ function toggleMinimized() {
   minimized.value = !minimized.value;
 }
 
+defineExpose({
+  getSelectedTerminalId: () => activeTabId.value,
+  minimize: () => {
+    minimized.value = true;
+  },
+});
+
 function onTabClick(id: string) {
   activeTabId.value = id;
   if (minimized.value) minimized.value = false;

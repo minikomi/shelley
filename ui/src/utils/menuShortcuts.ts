@@ -16,8 +16,8 @@
 //     Cmd/Ctrl+Shift+P for "New Private Window" and never delivers it (so
 //     Edit File uses Cmd/Ctrl+P instead), and Chrome's Cmd/Ctrl+Shift+A is
 //     tab search that users rely on (so Archive uses X).
-//   - We match on KeyboardEvent.code (physical key) so Shift-produced glyphs
-//     ("D", "<") and keyboard layouts don't matter.
+//   - Primary combos match KeyboardEvent.code (physical key), independent of
+//     Shift-produced glyphs. The terminal also accepts Shift+@ on Mac JIS.
 //
 // Edit File uses Cmd/Ctrl+P (the browser's print shortcut, which is
 // overridable via preventDefault in all major browsers, including Firefox).
@@ -81,7 +81,8 @@ export function menuShortcutLabel(id: MenuActionId): string {
     const cmd = c.mod === "mod" ? "\u2318" : ""; // ⌘
     const shift = c.shift ? "\u21e7" : ""; // ⇧
     const alt = c.alt ? "\u2325" : ""; // ⌥
-    return `${ctrl}${cmd}${alt}${shift}${c.label}`;
+    const label = `${ctrl}${cmd}${alt}${shift}${c.label}`;
+    return id === "terminal" ? `${label} / \u2303\u21e7@ (JIS)` : label;
   }
   const parts = ["Ctrl"]; // both "mod" and "ctrl" are Ctrl off-mac
   if (c.alt) parts.push("Alt");
@@ -102,8 +103,28 @@ export function comboMatches(e: KeyboardEvent, c: Combo): boolean {
 
 /** Which ChatInterface-owned menu action (if any) does this event trigger? */
 export function matchChatInterfaceAction(e: KeyboardEvent): MenuActionId | null {
+  // Mac JIS types backtick with Shift+@, not a dedicated Backquote key.
+  if (isMac && e.key === "`" && e.shiftKey && e.ctrlKey && !e.metaKey && !e.altKey) {
+    return "terminal";
+  }
   for (const id of CHAT_INTERFACE_ACTIONS) {
     if (comboMatches(e, MENU_COMBOS[id])) return id;
   }
   return null;
+}
+
+export function isInsideTerminal(e: KeyboardEvent): boolean {
+  return e.target instanceof Element && e.target.closest("[data-terminal-id]") !== null;
+}
+
+export function terminalOwnsKey(e: KeyboardEvent): boolean {
+  return isInsideTerminal(e) && !(isMac && e.metaKey);
+}
+
+export function hasOpenDialog(): boolean {
+  return (
+    document.querySelector(
+      '[role="dialog"]:not(.p-popover), [role="alertdialog"], .command-palette-overlay, .diff-viewer-overlay',
+    ) !== null
+  );
 }

@@ -149,6 +149,11 @@ assert(
   "matches terminal",
 );
 assert(
+  matchChatInterfaceAction(ev({ code: "BracketLeft", key: "`", ctrlKey: true, shiftKey: true })) ===
+    null,
+  "Mac JIS terminal alias is not enabled off-mac",
+);
+assert(
   matchChatInterfaceAction(ev({ code: "KeyK", ctrlKey: true })) === null,
   "palette is NOT ChatInterface-owned",
 );

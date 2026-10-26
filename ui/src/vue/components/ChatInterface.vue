@@ -385,6 +385,7 @@
 
     <!-- Terminal Panel -->
     <TerminalPanel
+      ref="terminalPanelRef"
       :terminals="ephemeralTerminals"
       :conversation-id="conversationId"
       :model="selectedModel"
@@ -681,7 +682,7 @@ import { provideToolProgress } from "../composables/toolProgress";
 import { closeImageComment, useImageCommentTarget } from "../composables/imageComment";
 import { closeMarkdownDoc, useMarkdownDoc } from "../composables/markdownDoc";
 import { isImeComposing } from "../../utils/imeComposing";
-import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
+import { focusMessageInput, focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
 import { buildMessageQuote } from "../../utils/messageQuote";
 import { hasMultipleUsers } from "../../utils/messageAuthors";
 import { tildifyPath } from "../../utils/tildify";
@@ -772,7 +773,12 @@ import ChatOverflowMenu from "./ChatOverflowMenu.vue";
 import LiveVoice from "./LiveVoice.vue";
 import LiveExchange from "./LiveExchange.vue";
 import type { LiveCallDestination } from "../composables/liveCallConversation";
-import { matchChatInterfaceAction } from "../../utils/menuShortcuts";
+import {
+  hasOpenDialog,
+  isInsideTerminal,
+  matchChatInterfaceAction,
+  terminalOwnsKey,
+} from "../../utils/menuShortcuts";
 import ChunkHost from "./ChunkHost.vue";
 import { chunkMountKey } from "./chunkMount";
 import { collectReactions, messageUserContextKey, targetResolver } from "./messageUserContext";
@@ -1336,6 +1342,7 @@ const scrollToBottomTooltip = computed(() =>
 const lastKnownMessageCount = ref<number | null>(null);
 const terminalInjectedText = ref<string | null>(null);
 const terminalAutoFocusId = ref<string | null>(null);
+const terminalPanelRef = ref<InstanceType<typeof TerminalPanel> | null>(null);
 
 // ---- refs to DOM ----
 const chatRootRef = ref<HTMLDivElement | null>(null);
@@ -4098,15 +4105,14 @@ function openInAppTerminal() {
 // Focus an already-open terminal if there is one, otherwise open a new one.
 // Used by the Ctrl+` shortcut: a repeat press should bring you back to the
 // existing shell rather than spawning another. Setting terminalAutoFocusId lets
-// TerminalPanel un-minimize, activate that tab, and focus its xterm.
+// TerminalPanel un-minimize, activate that tab, and focus its view.
 function focusOrOpenTerminal() {
-  const existing = props.ephemeralTerminals;
-  if (existing.length > 0) {
+  const id = terminalPanelRef.value?.getSelectedTerminalId();
+  if (id) {
     // Reset to null first so re-focusing the terminal that's already in
     // autoFocusId still fires TerminalPanel's watcher (it watches the value,
     // not a trigger). nextTick re-assigns the id to run the focus effect.
     terminalAutoFocusId.value = null;
-    const id = existing[existing.length - 1].id;
     nextTick(() => {
       terminalAutoFocusId.value = id;
     });
@@ -4126,6 +4132,17 @@ async function archiveFromMenu() {
   }
 }
 
+// Reserve only the terminal chord before either renderer encodes it for the shell.
+function handleTerminalShortcut(e: KeyboardEvent) {
+  if (!isInsideTerminal(e)) return;
+  if (e.defaultPrevented || isImeComposing(e) || matchChatInterfaceAction(e) !== "terminal") return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.repeat || hasOpenDialog()) return;
+  terminalPanelRef.value?.minimize();
+  focusMessageInput();
+}
+
 // Keyboard shortcuts for the overflow-menu actions this component owns. Each
 // case invokes the same handler as the corresponding menu click (Terminal is
 // the one deliberate exception: the shortcut re-focuses an existing terminal
@@ -4135,16 +4152,9 @@ async function archiveFromMenu() {
 // finder (Cmd/Ctrl+P) are handled in App.vue, which owns those modals.
 // See utils/menuShortcuts.ts for the combos.
 function handleMenuShortcut(e: KeyboardEvent) {
-  // Don't hijack keystrokes while typing in a field.
-  const target = e.target as HTMLElement | null;
-  if (
-    target &&
-    (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
-  ) {
-    return;
-  }
   const action = matchChatInterfaceAction(e);
   if (!action) return;
+  if (e.defaultPrevented || isImeComposing(e) || terminalOwnsKey(e) || hasOpenDialog()) return;
   switch (action) {
     case "diffs":
       if (!hasCwd.value) return;
@@ -4155,7 +4165,7 @@ function handleMenuShortcut(e: KeyboardEvent) {
       showGitGraph.value = true;
       break;
     case "terminal":
-      focusOrOpenTerminal();
+      if (!e.repeat) focusOrOpenTerminal();
       break;
     case "archive":
       if (
@@ -5661,6 +5671,7 @@ onMounted(() => {
   window.addEventListener("beforeunload", saveScrollNow);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   document.addEventListener("keydown", handleScrollKeyDown);
+  document.addEventListener("keydown", handleTerminalShortcut, true);
   document.addEventListener("keydown", handleMenuShortcut);
   unsubscribeTourRequests = subscribeCommitTourRequests(watchRequestedTour);
 });
@@ -5689,6 +5700,7 @@ onUnmounted(() => {
   window.removeEventListener("beforeunload", saveScrollNow);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   document.removeEventListener("keydown", handleScrollKeyDown);
+  document.removeEventListener("keydown", handleTerminalShortcut, true);
   document.removeEventListener("keydown", handleMenuShortcut);
   mobileMq.removeEventListener("change", onMobileChange);
   if (loadingProgressDelay) clearTimeout(loadingProgressDelay);
