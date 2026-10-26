@@ -6460,6 +6460,107 @@ svg {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .directory-picker-new-btn {
+    gap: 0.25rem;
+    padding-inline: 0.5rem;
+    font-size: var(--font-size-12);
+  }
+}
+
+.directory-picker-input-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.directory-picker-input-row .directory-picker-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.directory-picker-recent-tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.directory-picker-recent-tab:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.directory-picker-recent-tab.active {
+  background: var(--blue-bg);
+  border-color: var(--blue-border);
+  color: var(--blue-text);
+}
+
+.directory-picker-recent-tab svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.directory-picker-recent-group {
+  overflow: hidden;
+  padding: 0.5rem 0.75rem 0.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--font-size-12);
+  font-weight: 500;
+}
+
+.directory-picker-recent-group:not(:first-child) {
+  border-top: 1px solid var(--border);
+}
+
+.directory-picker-recent-entry {
+  position: relative;
+  align-items: flex-start;
+}
+
+.directory-picker-recent-entry .directory-picker-icon {
+  margin-top: 0.125rem;
+}
+
+.directory-picker-recent-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.directory-picker-recent-main .directory-picker-entry-name,
+.directory-picker-recent-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-picker-recent-path {
+  padding-right: 4.5rem;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-12);
+}
+
+.directory-picker-recent-time {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.5rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-12);
+  white-space: nowrap;
 }
 
 .directory-picker-new-icon {

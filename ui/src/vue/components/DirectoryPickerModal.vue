@@ -11,8 +11,9 @@
     @close="emit('close')"
   >
     <div class="directory-picker-body">
-      <div class="directory-picker-input-container">
+      <div class="directory-picker-input-container directory-picker-input-row">
         <input
+          v-if="!recentMode"
           ref="inputRef"
           type="text"
           v-model="inputPath"
@@ -20,197 +21,280 @@
           placeholder="/path/to/directory"
           @keydown="handleInputKeyDown"
         />
-      </div>
-
-      <div
-        v-if="displayDir"
-        :class="`directory-picker-current${displayDir.git_head_subject ? ' directory-picker-current-git' : ''}`"
-      >
-        <span class="directory-picker-current-path">
-          {{ displayDir.path }}
-          <span v-if="filterPrefix" class="directory-picker-filter">/{{ filterPrefix }}*</span>
-        </span>
-        <span
-          v-if="displayDir.git_head_subject"
-          class="directory-picker-current-subject"
-          :title="displayDir.git_head_subject"
-        >
-          {{ displayDir.git_head_subject }}
-        </span>
-      </div>
-
-      <div v-if="directoryShortcuts.length" class="directory-picker-shortcuts">
+        <input
+          v-else
+          ref="recentSearchRef"
+          type="text"
+          v-model="recentQuery"
+          class="directory-picker-input"
+          placeholder="Search recent directories"
+          aria-label="Search recent directories"
+        />
         <button
-          v-for="shortcut in directoryShortcuts"
-          :key="shortcut.path"
-          class="directory-picker-shortcut"
-          :title="shortcut.path"
-          @click="goToDirectory(shortcut.path)"
+          v-if="recentProjectGroups.length && !isCreating"
+          :class="['directory-picker-recent-tab', { active: recentMode }]"
+          data-testid="recent-toggle"
+          aria-label="Recent directories"
+          :aria-pressed="recentMode"
+          v-tooltip.top="{ value: 'Recent directories', disabled: coarsePointer }"
+          @click="toggleRecent"
         >
-          <svg
-            v-if="shortcut.isHome"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            class="directory-picker-icon"
-          >
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path
               stroke-linecap="round"
               stroke-linejoin="round"
               :stroke-width="2"
-              d="M3 12l2-2m0 0l7-7 7 7m-14 0v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
+              d="M12 8v4l3 2m6-2a9 9 0 11-3-6.7M21 3v6h-6"
             />
           </svg>
-          <svg
-            v-else
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            class="directory-picker-icon"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :stroke-width="2"
-              d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
-            />
-          </svg>
-          <span>{{ shortcut.label }}</span>
-          <PathText class="directory-picker-shortcut-path" :text="shortcut.path" />
         </button>
       </div>
-
-      <div v-if="error" class="directory-picker-error">{{ error }}</div>
-
-      <div v-if="loading" class="directory-picker-loading">
-        <div class="spinner spinner-small"></div>
-        <span>Loading...</span>
-      </div>
-
-      <div v-if="!loading && !error" class="directory-picker-list">
-        <button
-          v-if="showParent"
-          class="directory-picker-entry directory-picker-entry-parent"
-          @click="handleParentClick"
+      <template v-if="!recentMode">
+        <div
+          v-if="displayDir"
+          :class="`directory-picker-current${displayDir.git_head_subject ? ' directory-picker-current-git' : ''}`"
         >
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="directory-picker-icon">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :stroke-width="2"
-              d="M11 17l-5-5m0 0l5-5m-5 5h12"
-            />
-          </svg>
-          <span>..</span>
-        </button>
-
-        <button
-          v-for="entry in visibleEntries"
-          :key="entry.name"
-          :class="`directory-picker-entry${entry.git_head_subject ? ' directory-picker-entry-git' : ''}`"
-          @click="handleEntryClick(entry)"
-        >
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="directory-picker-icon">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :stroke-width="2"
-              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-            />
-          </svg>
-          <span class="directory-picker-entry-name">
-            <template
-              v-if="filterPrefix && entry.name.toLowerCase().startsWith(filterPrefix.toLowerCase())"
-            >
-              <strong>{{ entry.name.slice(0, filterPrefix.length) }}</strong
-              >{{ entry.name.slice(filterPrefix.length) }}
-            </template>
-            <template v-else>{{ entry.name }}</template>
+          <span class="directory-picker-current-path">
+            {{ displayDir.path }}
+            <span v-if="filterPrefix" class="directory-picker-filter">/{{ filterPrefix }}*</span>
           </span>
           <span
-            v-if="entry.git_head_subject"
-            class="directory-picker-git-subject"
-            :title="entry.git_head_subject"
+            v-if="displayDir.git_head_subject"
+            class="directory-picker-current-subject"
+            :title="displayDir.git_head_subject"
           >
-            {{ entry.git_head_subject }}
+            {{ displayDir.git_head_subject }}
           </span>
-        </button>
+        </div>
 
-        <!-- Create new directory inline form -->
-        <div v-if="isCreating" class="directory-picker-create-form">
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="directory-picker-icon">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :stroke-width="2"
-              d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"
+        <div v-if="directoryShortcuts.length" class="directory-picker-shortcuts">
+          <button
+            v-for="shortcut in directoryShortcuts"
+            :key="shortcut.path"
+            class="directory-picker-shortcut"
+            :title="shortcut.path"
+            @click="goToDirectory(shortcut.path)"
+          >
+            <svg
+              v-if="shortcut.isHome"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              class="directory-picker-icon"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke-width="2"
+                d="M3 12l2-2m0 0l7-7 7 7m-14 0v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
+              />
+            </svg>
+            <svg
+              v-else
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              class="directory-picker-icon"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke-width="2"
+                d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+              />
+            </svg>
+            <span>{{ shortcut.label }}</span>
+            <PathText class="directory-picker-shortcut-path" :text="shortcut.path" />
+          </button>
+        </div>
+
+        <div v-if="error" class="directory-picker-error">{{ error }}</div>
+
+        <div v-if="loading" class="directory-picker-loading">
+          <div class="spinner spinner-small"></div>
+          <span>Loading...</span>
+        </div>
+
+        <div v-if="!loading && !error" class="directory-picker-list">
+          <button
+            v-if="showParent"
+            class="directory-picker-entry directory-picker-entry-parent"
+            @click="handleParentClick"
+          >
+            <svg
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              class="directory-picker-icon"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke-width="2"
+                d="M11 17l-5-5m0 0l5-5m-5 5h12"
+              />
+            </svg>
+            <span>..</span>
+          </button>
+
+          <button
+            v-for="entry in visibleEntries"
+            :key="entry.name"
+            :class="`directory-picker-entry${entry.git_head_subject ? ' directory-picker-entry-git' : ''}`"
+            @click="handleEntryClick(entry)"
+          >
+            <svg
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              class="directory-picker-icon"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke-width="2"
+                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+              />
+            </svg>
+            <span class="directory-picker-entry-name">
+              <template
+                v-if="
+                  filterPrefix && entry.name.toLowerCase().startsWith(filterPrefix.toLowerCase())
+                "
+              >
+                <strong>{{ entry.name.slice(0, filterPrefix.length) }}</strong
+                >{{ entry.name.slice(filterPrefix.length) }}
+              </template>
+              <template v-else>{{ entry.name }}</template>
+            </span>
+            <span
+              v-if="entry.git_head_subject"
+              class="directory-picker-git-subject"
+              :title="entry.git_head_subject"
+            >
+              {{ entry.git_head_subject }}
+            </span>
+          </button>
+
+          <!-- Create new directory inline form -->
+          <div v-if="isCreating" class="directory-picker-create-form">
+            <svg
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              class="directory-picker-icon"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke-width="2"
+                d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"
+              />
+            </svg>
+            <label :for="createInputId" class="sr-only">New folder name</label>
+            <input
+              :id="createInputId"
+              ref="newDirInputRef"
+              type="text"
+              v-model="newDirName"
+              placeholder="New folder name"
+              class="directory-picker-create-input"
+              :disabled="createLoading"
+              @keydown="handleCreateKeyDown"
             />
-          </svg>
-          <label :for="createInputId" class="sr-only">New folder name</label>
-          <input
-            :id="createInputId"
-            ref="newDirInputRef"
-            type="text"
-            v-model="newDirName"
-            placeholder="New folder name"
-            class="directory-picker-create-input"
-            :disabled="createLoading"
-            @keydown="handleCreateKeyDown"
-          />
-          <button
-            class="directory-picker-create-btn"
-            :disabled="createLoading || !newDirName.trim()"
-            v-tooltip.top="'Create'"
-            aria-label="Create"
-            @click="handleCreateDirectory"
+            <button
+              class="directory-picker-create-btn"
+              :disabled="createLoading || !newDirName.trim()"
+              v-tooltip.top="'Create'"
+              aria-label="Create"
+              @click="handleCreateDirectory"
+            >
+              <div v-if="createLoading" class="spinner spinner-small"></div>
+              <svg v-else fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  :stroke-width="2"
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+            </button>
+            <button
+              class="directory-picker-create-btn directory-picker-cancel-btn"
+              :disabled="createLoading"
+              v-tooltip.top="'Cancel'"
+              aria-label="Cancel"
+              @click="handleCancelCreate"
+            >
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  :stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+          </div>
+
+          <div v-if="createError" class="directory-picker-create-error">{{ createError }}</div>
+
+          <div v-if="hiddenEntryCount > 0" class="directory-picker-truncated">
+            {{ hiddenEntryCount.toLocaleString() }} more — type to filter
+          </div>
+
+          <div
+            v-if="filteredEntries.length === 0 && !showParent && !isCreating"
+            class="directory-picker-empty"
           >
-            <div v-if="createLoading" class="spinner spinner-small"></div>
-            <svg v-else fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                :stroke-width="2"
-                d="M5 13l4 4L19 7"
-              />
-            </svg>
-          </button>
-          <button
-            class="directory-picker-create-btn directory-picker-cancel-btn"
-            :disabled="createLoading"
-            v-tooltip.top="'Cancel'"
-            aria-label="Cancel"
-            @click="handleCancelCreate"
-          >
-            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                :stroke-width="2"
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
+            {{ filterPrefix ? "No matching directories" : "No subdirectories" }}
+          </div>
         </div>
-
-        <div v-if="createError" class="directory-picker-create-error">{{ createError }}</div>
-
-        <div v-if="hiddenEntryCount > 0" class="directory-picker-truncated">
-          {{ hiddenEntryCount.toLocaleString() }} more — type to filter
+      </template>
+      <template v-else>
+        <div class="directory-picker-list" data-testid="recent-list">
+          <template v-for="group in filteredRecentGroups" :key="group.root">
+            <div class="directory-picker-recent-group">{{ group.name }}</div>
+            <button
+              v-for="directory in group.directories"
+              :key="directory.path"
+              class="directory-picker-entry directory-picker-recent-entry"
+              :title="directory.path"
+              @click="selectRecentDirectory(directory.path)"
+            >
+              <svg
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                class="directory-picker-icon"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  :stroke-width="2"
+                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                />
+              </svg>
+              <span class="directory-picker-recent-main">
+                <span class="directory-picker-entry-name">{{ recentLabel(group, directory) }}</span>
+                <span class="directory-picker-recent-path">{{ homeRelative(directory.path) }}</span>
+              </span>
+              <span class="directory-picker-recent-time">{{
+                relativeTime(directory.updatedAt)
+              }}</span>
+            </button>
+          </template>
+          <div v-if="!filteredRecentGroups.length" class="directory-picker-empty">
+            No matching directories
+          </div>
         </div>
-
-        <div
-          v-if="filteredEntries.length === 0 && !showParent && !isCreating"
-          class="directory-picker-empty"
-        >
-          {{ filterPrefix ? "No matching directories" : "No subdirectories" }}
-        </div>
-      </div>
+      </template>
     </div>
 
     <!-- Footer -->
     <template #footer>
       <button
-        v-if="!isCreating && !loading && !error"
+        v-if="!isCreating && !loading && !error && !recentMode"
         class="btn directory-picker-new-btn"
         v-tooltip.top="'Create new folder'"
         @click="handleStartCreate"
@@ -232,18 +316,25 @@
       </button>
       <div class="directory-picker-footer-spacer"></div>
       <Button label="Cancel" text severity="secondary" @click="emit('close')" />
-      <Button label="Select" :disabled="loading || !!error" @click="handleSelect" />
+      <Button label="Select" :disabled="loading || !!error || recentMode" @click="handleSelect" />
     </template>
   </Modal>
 </template>
 
 <script setup lang="ts">
 import PathText from "./PathText.vue";
-import { computed, nextTick, ref, useId, watch } from "vue";
+import { computed, inject, nextTick, ref, useId, watch } from "vue";
 import { api } from "../../services/api";
 import Button from "primevue/button";
 import Modal from "./Modal.vue";
 import { isImeComposing } from "../../utils/imeComposing";
+import {
+  recentProjectGroups as groupRecentProjects,
+  type RecentProjectDirectory,
+  type RecentProjectGroup,
+} from "../../utils/recentProjectDirectories";
+import { ConversationsListKey } from "../composables/subagentLive";
+import { formatRelative } from "../../utils/messageTime";
 
 interface DirectoryEntry {
   name: string;
@@ -327,6 +418,24 @@ async function loadDirectory(path: string): Promise<CachedDirectory> {
 }
 
 const homeDir = window.__SHELLEY_INIT__?.home_dir || "";
+const conversations = inject(ConversationsListKey, null);
+const recentProjectGroups = computed(() => groupRecentProjects(conversations?.value || []));
+const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+const recentMode = ref(false);
+const recentQuery = ref("");
+const recentSearchRef = ref<HTMLInputElement | null>(null);
+const filteredRecentGroups = computed(() => {
+  const q = recentQuery.value.trim().toLowerCase();
+  if (!q) return recentProjectGroups.value;
+  return recentProjectGroups.value
+    .map((g) => ({
+      ...g,
+      directories: g.directories.filter((d) =>
+        [g.name, recentLabel(g, d), d.path].some((text) => text.toLowerCase().includes(q)),
+      ),
+    }))
+    .filter((g) => g.directories.length);
+});
 const directoryShortcuts = computed<DirectoryShortcut[]>(() => {
   const shortcuts: DirectoryShortcut[] = [];
   const addShortcut = (shortcut: DirectoryShortcut) => {
@@ -377,6 +486,35 @@ function handleEntryClick(entry: DirectoryEntry) {
 
 function goToDirectory(path: string) {
   inputPath.value = path === "/" ? "/" : `${path}/`;
+}
+
+function homeRelative(path: string): string {
+  if (!homeDir) return path;
+  if (path === homeDir) return "~";
+  return path.startsWith(`${homeDir}/`) ? `~${path.slice(homeDir.length)}` : path;
+}
+
+function recentLabel(group: RecentProjectGroup, directory: RecentProjectDirectory): string {
+  return group.root && group.directories.length > 1 && directory.path === group.root
+    ? "main"
+    : directory.name;
+}
+
+function relativeTime(updatedAt: string): string {
+  return formatRelative(Date.now() - Date.parse(updatedAt));
+}
+
+function toggleRecent() {
+  recentMode.value = !recentMode.value;
+  recentQuery.value = "";
+  if (recentMode.value && window.matchMedia("(pointer: fine)").matches) {
+    nextTick(() => recentSearchRef.value?.focus());
+  }
+}
+
+function selectRecentDirectory(path: string) {
+  recentMode.value = false;
+  goToDirectory(path);
 }
 
 function handleParentClick() {
@@ -463,6 +601,7 @@ watch(
   ([open]) => {
     const requestSequence = ++loadSequence;
     if (!open) {
+      recentMode.value = false;
       loading.value = false;
       return;
     }

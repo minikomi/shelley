@@ -152,6 +152,37 @@ test.describe("Command palette home-directory action", () => {
 // create form whose local Escape must cancel create mode without closing the
 // dialog (it stopPropagation()s before the shared modal Escape stack sees it).
 test.describe("Directory picker modal (shared Modal consumer)", () => {
+  test("switches to recent directories and navigates to one", async ({ page, request }) => {
+    const recentDir = mkdtempSync(path.join(tmpdir(), "dirpicker-recent-"));
+    try {
+      await createConversationViaAPI(request, "Recent directory picker test", { cwd: recentDir });
+
+      await page.goto("/new");
+      await page.locator(".status-field-cwd .status-chip").click();
+
+      const panel = page.locator(".modal.directory-picker-modal");
+      const toggle = panel.getByTestId("recent-toggle");
+      await expect(toggle).toHaveAttribute("aria-pressed", "false");
+      await toggle.click();
+
+      await expect(toggle).toHaveAttribute("aria-pressed", "true");
+      const list = panel.getByTestId("recent-list");
+      await expect(list.getByText("Other", { exact: true })).toBeVisible();
+      await list.getByTitle(recentDir).click();
+
+      await expect(toggle).toHaveAttribute("aria-pressed", "false");
+      await expect(panel.locator(".directory-picker-input")).toHaveValue(`${recentDir}/`);
+
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-pressed", "true");
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-pressed", "false");
+      await expect(panel.getByTestId("recent-list")).toBeHidden();
+    } finally {
+      rmSync(recentDir, { recursive: true, force: true });
+    }
+  });
+
   test("uses a home-relative path in the new-conversation cwd chip", async ({ page }) => {
     await page.goto("/new");
     const homeDir = await page.evaluate(() => window.__SHELLEY_INIT__?.home_dir || "");
