@@ -625,6 +625,7 @@
 </template>
 
 <script setup lang="ts">
+import { provideIframeVersions } from "../composables/iframeVersions";
 import {
   computed,
   inject,
@@ -1447,6 +1448,7 @@ const toolProgress = ref<Record<string, ToolProgress>>({});
 // only the running tool's component instead of re-rendering every message
 // via a changed prop identity (see composables/toolProgress.ts).
 provideToolProgress(toolProgress);
+provideIframeVersions(messages);
 const streamingText = ref("");
 const streamingThinking = ref("");
 const showToolsModal = ref(false);
