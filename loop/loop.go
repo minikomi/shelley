@@ -96,6 +96,8 @@ type Config struct {
 	// RewriteFinalReply, if set, may turn a reply that would end the turn
 	// into tool calls, at most once per turn. See Hooks.RewriteFinalReply.
 	RewriteFinalReply func(context.Context, llm.Message) (llm.Message, bool)
+
+	RecordRoutingWarning RoutingNoticeRecordFunc
 }
 
 // Injection is what Config.InjectMessages splices into a running turn.
@@ -137,6 +139,9 @@ type Loop struct {
 	promptCacheKey   string
 	notify           chan struct{} // signaled when a message is queued or retry requested
 	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
+
+	modelRouting         modelRouting
+	recordRoutingWarning RoutingNoticeRecordFunc
 }
 
 // NewLoop creates a new Loop instance with the provided configuration
@@ -168,6 +173,8 @@ func NewLoop(config Config) *Loop {
 		thinkingLevel:    config.ThinkingLevel,
 		promptCacheKey:   config.PromptCacheKey,
 		notify:           make(chan struct{}, 1),
+
+		recordRoutingWarning: config.RecordRoutingWarning,
 	}
 }
 
@@ -385,6 +392,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		Pending:        l.pending,
 		Hooks:          l.hooks(),
 		Logger:         l.logger,
+		modelRouting:   &l.modelRouting,
 	})
 	if err != nil {
 		return err
@@ -478,7 +486,8 @@ func (l *Loop) hooks() Hooks {
 			l.appendContext(r.Message)
 			return nil
 		},
-		OnWarning: l.recordWarning,
+		OnWarning:        l.recordWarning,
+		OnRoutingWarning: l.recordRoutingWarning,
 	}
 	if l.onStreamDelta != nil {
 		h.OnStreamingResponse = func(_ context.Context, d llm.StreamDelta) { l.onStreamDelta(d) }

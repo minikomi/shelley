@@ -45,6 +45,7 @@ type Hooks struct {
 	OnSuccessfulRequest func(*llm.Request)
 	OnToolResponse      func(context.Context, ToolResponse) error
 	OnWarning           func(context.Context, string) error
+	OnRoutingWarning    RoutingNoticeRecordFunc
 	// RewriteFinalReply may turn a reply that would end the turn into tool
 	// calls, which then run as if the model had made them. It is consulted
 	// at most once per turn. A turn that ends with an error offers the
@@ -74,6 +75,7 @@ type RunConfig struct {
 	CurrentSystem func() []llm.SystemContent
 	Hooks         Hooks
 	Logger        *slog.Logger
+	modelRouting  *modelRouting
 }
 
 // Run executes one agent turn. It checks RunConfig.Pending before every model
@@ -116,6 +118,9 @@ func cloneContents(contents []llm.Content) []llm.Content {
 // without requesting another client-side tool call.
 func (l *RunConfig) run(ctx context.Context) error {
 	messages := cloneMessages(l.Messages)
+	if l.modelRouting == nil {
+		l.modelRouting = &modelRouting{}
+	}
 	iterations := 0
 	rewritten := false
 	for {
@@ -235,6 +240,12 @@ func (l *RunConfig) run(ctx context.Context) error {
 		}
 
 		l.Logger.Debug("received LLM response", "content_count", len(resp.Content), "stop_reason", resp.StopReason.String(), "usage", resp.Usage.String())
+
+		if ctx.Err() == nil {
+			if err := l.modelRouting.observe(ctx, resp, l.Hooks.OnRoutingWarning); err != nil {
+				l.Logger.Error("failed to record model routing notice", "error", err)
+			}
+		}
 
 		// Handle max tokens truncation BEFORE adding to history - truncated responses
 		// should not be added to history normally (they get special handling)
