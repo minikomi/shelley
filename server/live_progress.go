@@ -15,6 +15,16 @@ import (
 const liveProgressCoalesce = time.Second
 const liveCheckDelay = 5 * time.Second
 
+func (c *liveCall) progressDelegation() *string {
+	var delegation *string
+	for _, s := range c.submitted {
+		if !s.finished && s.userSeq != 0 {
+			delegation = &s.id
+		}
+	}
+	return delegation
+}
+
 // progressTick offers new evidence to Live. The caller holds mu.
 func (c *liveCall) progressTick(timer *time.Timer) {
 	if !c.active || c.tick == nil || c.tick != timer {
@@ -22,12 +32,6 @@ func (c *liveCall) progressTick(timer *time.Timer) {
 	}
 	c.tick.Stop()
 	c.tick = nil
-	var delegation *string
-	for _, s := range c.submitted {
-		if !s.finished && s.userSeq != 0 {
-			delegation = &s.id
-		}
-	}
 	if len(c.progressNotes) == 0 && len(c.progressActivity) == 0 {
 		return
 	}
@@ -75,7 +79,7 @@ func (c *liveCall) progressTick(timer *time.Timer) {
 		content += activity.text
 	}
 	if content != "" {
-		c.commentary(heading+content, delegation)
+		c.commentary(heading+content, c.progressDelegation())
 		c.lastProgress = time.Now()
 	}
 	c.progressNotes = nil
@@ -141,6 +145,13 @@ func (c *liveCall) noteActivity(activities []liveActivity) {
 	for _, activity := range activities {
 		activity.text = truncateRunes(activity.text, 299)
 		if activity.text != "" && c.rememberProgress("activity:"+activity.key()) {
+			// A fast compaction can start and finish in the same batch.
+			// Offer the start before its result can replace it.
+			if activity.kind == liveCompactionStart {
+				c.commentary(liveProgressHeading+activity.text, c.progressDelegation())
+				c.lastProgress = time.Now()
+				continue
+			}
 			fresh = append(fresh, activity)
 		}
 	}
@@ -239,8 +250,15 @@ func liveProgress(row generated.Message, tools map[string][]liveActivity) (notes
 		return nil, nil, false
 	}
 	if row.Type == "user" && row.UserData != nil {
-		var job backgroundJobUserData
-		if json.Unmarshal([]byte(*row.UserData), &job) == nil && job.BackgroundJobID != "" {
+		var job struct {
+			backgroundJobUserData
+			ContextNudge bool `json:"context_nudge"`
+		}
+		decoded := json.Unmarshal([]byte(*row.UserData), &job) == nil
+		if decoded && job.ContextNudge {
+			return nil, []liveActivity{{text: "Starting a compaction review of older messages.", kind: liveCompactionStart, toolID: row.MessageID}}, false
+		}
+		if decoded && job.BackgroundJobID != "" {
 			fact := liveActivity{toolID: job.BackgroundJobID, done: true, kind: liveCheck}
 			if started := tools[job.BackgroundJobID]; len(started) > 0 {
 				fact.toolID = started[0].toolID
@@ -284,6 +302,9 @@ func liveProgress(row generated.Message, tools map[string][]liveActivity) (notes
 			if facts := liveToolProgress(c); len(facts) > 0 {
 				if tools == nil { // Worker results are not observed by this call.
 					for i := range facts {
+						if facts[i].kind == liveCompactionStart {
+							facts[i].text = "Starting: a worker is compacting its own conversation history."
+						}
 						facts[i].directCheck = false
 					}
 				}

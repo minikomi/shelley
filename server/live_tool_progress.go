@@ -22,6 +22,7 @@ const (
 	liveCheck
 	liveEdit
 	liveFailure
+	liveCompactionStart
 )
 
 type liveActivity struct {
@@ -58,7 +59,7 @@ func liveToolProgress(tool llm.Content) []liveActivity {
 	case "compact_in_place":
 		var input struct{ Action string }
 		if json.Unmarshal(tool.ToolInput, &input) == nil && input.Action == "compact" {
-			add(liveCompacting, liveCheck)
+			add(liveCompacting, liveCompactionStart)
 		}
 	case "subagent":
 		add("Starting: delegating a task to a worker", liveInspect)
@@ -385,7 +386,7 @@ func liveToolStatus(tool llm.Content) liveResultStatus {
 	return status
 }
 
-const liveCompacting = "Starting: shortening this conversation’s history"
+const liveCompacting = "Starting compaction of this conversation’s older messages."
 
 var oversizedHistoryRange = regexp.MustCompile(`(?m)^(?:- )?collapse [s0-9.]+-[s0-9.]+: covers ~[0-9]+ tokens; at most ~[0-9]+ per collapse unless it is a single row, so split it(?:\.|$)`)
 
@@ -418,8 +419,8 @@ func liveToolResult(tool llm.Content, started []liveActivity) []liveActivity {
 	for _, activity := range started {
 		description := strings.TrimPrefix(strings.TrimPrefix(activity.text, "Starting: "), "Starting in background: ")
 		switch {
-		case activity.text == liveCompacting:
-			activity.text = liveCompactionOutcome(tool)
+		case activity.kind == liveCompactionStart:
+			activity.text, activity.kind = liveCompactionOutcome(tool), liveCheck
 			if tool.ToolError {
 				activity.kind = liveFailure
 			}

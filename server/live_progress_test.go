@@ -719,3 +719,28 @@ func TestLiveSlowCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestLiveCompactionStartPrecedesFastResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newLiveProgressHarness(t, time.Minute)
+		startLiveProgressTask(h)
+		tools := map[string][]liveActivity{}
+		row := func(seq int64, typ string, block llm.Content) liveRow {
+			_, facts, _ := liveProgress(progressMessage(t, typ, llm.Message{Content: []llm.Content{block}}), tools)
+			return liveRow{seq: seq, activity: facts}
+		}
+		nudge := dialogueRow("user", "PRIVATE context index", false, `{"context_nudge":true}`)
+		_, facts, _ := liveProgress(nudge, tools)
+		h.call.observe([]liveRow{{seq: 12, activity: facts}})
+		got := h.context()
+		expectEqual(t, "immediate review", got[len(got)-1], "commentary [d1]: "+liveProgressHeading+"Starting a compaction review of older messages.")
+		start := row(13, "agent", llm.Content{Type: llm.ContentTypeToolUse, ID: "compact", ToolName: "compact_in_place", ToolInput: json.RawMessage(`{"action":"compact"}`)})
+		end := row(14, "user", llm.Content{Type: llm.ContentTypeToolResult, ToolUseID: "compact"})
+		h.call.observe([]liveRow{start, end})
+		got = h.context()
+		expectEqual(t, "immediate start", got[len(got)-1], "commentary [d1]: "+liveProgressHeading+liveCompacting)
+		h.advance(5 * time.Second)
+		got = h.context()
+		expectEqual(t, "separate outcome", got[len(got)-1], "commentary [d1]: "+liveProgressHeading+"Shortened this conversation’s history.")
+	})
+}
