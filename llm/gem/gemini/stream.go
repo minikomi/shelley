@@ -70,11 +70,25 @@ func parseStreamResponse(ctx context.Context, r io.Reader, onStream func(llm.Str
 			if candidate.FinishMessage != "" {
 				dst.FinishMessage = candidate.FinishMessage
 			}
+			if candidate.CitationMetadata != nil {
+				dst.CitationMetadata = candidate.CitationMetadata
+			}
+			if candidate.GroundingMetadata != nil {
+				if dst.GroundingMetadata == nil {
+					dst.GroundingMetadata = &GroundingMetadata{}
+				}
+				dst.GroundingMetadata.GroundingChunks = append(dst.GroundingMetadata.GroundingChunks, candidate.GroundingMetadata.GroundingChunks...)
+				dst.GroundingMetadata.GroundingSupports = append(dst.GroundingMetadata.GroundingSupports, candidate.GroundingMetadata.GroundingSupports...)
+				dst.GroundingMetadata.WebSearchQueries = append(dst.GroundingMetadata.WebSearchQueries, candidate.GroundingMetadata.WebSearchQueries...)
+				if candidate.GroundingMetadata.SearchEntryPoint != nil {
+					dst.GroundingMetadata.SearchEntryPoint = candidate.GroundingMetadata.SearchEntryPoint
+				}
+			}
 			for _, part := range candidate.Content.Parts {
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				if !part.IsText() && part.FunctionCall == nil {
+				if !part.IsText() && part.FunctionCall == nil && part.ToolCall == nil && part.ToolResponse == nil {
 					return fmt.Errorf("unsupported Gemini stream part")
 				}
 				if part.IsText() && part.Text == "" && part.ThoughtSignature == "" {

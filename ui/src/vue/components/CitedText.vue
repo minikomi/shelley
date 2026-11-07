@@ -31,6 +31,15 @@
       </li>
     </ol>
   </template>
+  <iframe
+    v-for="(suggestion, index) in googleSearchSuggestions"
+    :key="index"
+    class="google-search-suggestions"
+    :srcdoc="'<base target=&quot;_blank&quot;>' + suggestion"
+    sandbox="allow-popups allow-popups-to-escape-sandbox"
+    referrerpolicy="no-referrer"
+    title="Google Search suggestions"
+  />
 </template>
 
 <script setup lang="ts">
@@ -49,5 +58,16 @@ defineProps<{
   cacheOwner?: object;
   runKey?: string;
   rewriteLocalhostLinks?: boolean;
+  googleSearchSuggestions?: string[];
 }>();
 </script>
+
+<style scoped>
+.google-search-suggestions {
+  display: block;
+  width: 100%;
+  height: 5rem;
+  border: 0;
+  margin-top: 0.5rem;
+}
+</style>

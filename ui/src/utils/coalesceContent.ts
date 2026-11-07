@@ -37,6 +37,8 @@ export interface CoalescedItem {
   // For "text": the de-duplicated, numbered list of cited sources, in the
   // order they were first referenced. Empty when there are no citations.
   citations: Citation[];
+  // Provider-supplied Search Suggestions HTML, kept in order across blocks.
+  googleSearchSuggestions: string[];
   // For "other": the original block to dispatch on.
   content?: LLMContent;
 }
@@ -137,6 +139,7 @@ export function coalesceContent(blocks: LLMContent[]): CoalescedItem[] {
   let runRaw: string[] = [];
   let runMd: string[] = [];
   let runCites: Citation[] = [];
+  let runSuggestions: string[] = [];
 
   const flush = () => {
     if (runRaw.length === 0) return;
@@ -145,10 +148,12 @@ export function coalesceContent(blocks: LLMContent[]): CoalescedItem[] {
       text: runRaw.join(""),
       markdownText: runMd.join(""),
       citations: runCites,
+      googleSearchSuggestions: runSuggestions,
     });
     runRaw = [];
     runMd = [];
     runCites = [];
+    runSuggestions = [];
   };
 
   for (const block of blocks) {
@@ -156,6 +161,7 @@ export function coalesceContent(blocks: LLMContent[]): CoalescedItem[] {
       const text = block.Text || "";
       runRaw.push(text);
       runMd.push(text);
+      if (block.GoogleSearchSuggestions) runSuggestions.push(block.GoogleSearchSuggestions);
       const cites = parseCitations(block.Citations);
       const refs: Citation[] = [];
       for (const rc of cites) {
@@ -183,7 +189,14 @@ export function coalesceContent(blocks: LLMContent[]): CoalescedItem[] {
       runMd.push(markerHTML(refs));
     } else {
       flush();
-      items.push({ kind: "other", text: "", markdownText: "", citations: [], content: block });
+      items.push({
+        kind: "other",
+        text: "",
+        markdownText: "",
+        citations: [],
+        googleSearchSuggestions: [],
+        content: block,
+      });
     }
   }
   flush();
