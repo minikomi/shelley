@@ -175,6 +175,7 @@ const emit = defineEmits<{
   (e: "open-mcp-servers-modal"): void;
   (e: "open-integrations-modal"): void;
   (e: "open-notifications-modal"): void;
+  (e: "open-live-settings"): void;
   (e: "open-feature-flags-modal"): void;
   (e: "open-favicon-emoji-picker"): void;
   (e: "next-conversation"): void;
@@ -513,6 +514,19 @@ const actionItems = computed<CommandItem[]>(() => {
       keywords: ["integration", "attach", "credential", "permission", "exe.dev", "vm"],
     });
   }
+
+  items.push({
+    id: "live-settings",
+    type: "action",
+    title: "Live settings",
+    subtitle: "Voice, speaking pace and background updates",
+    icon: ICON_MICROPHONE,
+    action: () => {
+      emit("open-live-settings");
+      emit("close");
+    },
+    keywords: ["live", "voice", "call", "speech", "pace", "speed", "heartbeat", "updates", "settings"],
+  });
 
   items.push({
     id: "notification-settings",

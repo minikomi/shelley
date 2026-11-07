@@ -53,10 +53,44 @@ func (l *liveCalls) get(conversationID, sessionID string) *liveCall {
 	return nil
 }
 
+// Surface only a direct worker's filtered tool activity during an active parent
+// turn. Its text, replies, and idle/end transitions belong to its own chat.
+func (l *liveCalls) workerActivity(worker generated.Conversation, rows []generated.Message) {
+	if !isDelegatedSubagent(worker) {
+		return
+	}
+	l.withActiveProgress(*worker.ParentConversationID, func(c *liveCall) {
+		for _, row := range rows {
+			if row.Type == "agent" {
+				_, facts, _ := liveProgress(row, nil)
+				c.noteActivity(facts)
+			}
+		}
+	})
+}
+
+func (l *liveCalls) withActiveProgress(conversationID string, f func(*liveCall)) {
+	l.mu.Lock()
+	var calls []*liveCall
+	for _, c := range l.calls {
+		if c.conversationID == conversationID && c.progressEvery > 0 {
+			calls = append(calls, c)
+		}
+	}
+	l.mu.Unlock()
+	for _, c := range calls {
+		c.locked(func() {
+			if c.active && c.progressSeen != nil {
+				f(c)
+			}
+		})
+	}
+}
+
 // startLiveCall begins delegation for a Live session that holds the
 // conversation up to initialSeq. Its tasks go through chat as r's user,
 // with a draft's settings until the draft is promoted.
-func (s *Server) startLiveCall(r *http.Request, conversationID, sessionID string, initialSeq int64, settings liveSettings) error {
+func (s *Server) startLiveCall(r *http.Request, conversationID, sessionID string, initialSeq int64, settings liveSettings, progressEvery time.Duration) error {
 	var call int64
 	err := s.db.QueriesTx(r.Context(), func(q *generated.Queries) error {
 		var err error
@@ -108,6 +142,7 @@ func (s *Server) startLiveCall(r *http.Request, conversationID, sessionID string
 	}
 	c := newLiveCall(sessionID, conversationID, initialSeq, deliver, save, s.logger)
 	c.call = call
+	c.progressEvery = progressEvery
 	s.liveCalls.add(c)
 	go s.watchLiveCall(c, initialSeq)
 	return nil
@@ -118,13 +153,26 @@ func (s *Server) startLiveCall(r *http.Request, conversationID, sessionID string
 func (s *Server) watchLiveCall(c *liveCall, seq int64) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	defer c.observeWorking(false)
 	go func() {
 		<-c.done
 		cancel()
 	}()
+	var tools map[string][]liveActivity
+	if c.progressEvery > 0 {
+		tools = map[string][]liveActivity{}
+	}
 	catchUp := func() bool {
 		var rows []generated.Message
+		var working bool
 		err := s.db.Queries(ctx, func(q *generated.Queries) error {
+			if c.progressEvery > 0 {
+				conversation, err := q.GetConversation(ctx, c.conversationID)
+				if err != nil {
+					return err
+				}
+				working = conversation.AgentWorking
+			}
 			var err error
 			rows, err = q.ListMessagesSince(ctx, generated.ListMessagesSinceParams{ConversationID: c.conversationID, SequenceID: seq})
 			return err
@@ -142,12 +190,21 @@ func (s *Server) watchLiveCall(c *liveCall, seq int64) {
 			if err != nil {
 				c.logger.Warn("Live call skipped a message", "error", err)
 			}
+			var progress []string
+			var activity []liveActivity
+			var endOfTurn bool
+			if c.progressEvery > 0 {
+				progress, activity, endOfTurn = liveProgress(row, tools)
+			}
 			heard = append(heard, liveRow{
-				seq: row.SequenceID, user: user, text: text, full: full,
+				seq: row.SequenceID, user: user, text: text, full: full, progress: progress, activity: activity, endOfTurn: endOfTurn,
 				liveDeliveryID: liveDeliveryIDFromUserData([]byte(derefString(row.UserData))),
 			})
 		}
 		c.observe(heard)
+		if c.progressEvery > 0 {
+			c.observeWorking(working)
+		}
 		return true
 	}
 	for ctx.Err() == nil {
@@ -162,7 +219,10 @@ func (s *Server) watchLiveCall(c *liveCall, seq int64) {
 			if !ok {
 				break
 			}
-			if event.ConversationID == c.conversationID && len(event.Messages) > 0 && !catchUp() {
+			if event.ConversationID != c.conversationID {
+				continue
+			}
+			if (len(event.Messages) > 0 || c.progressEvery > 0 && event.ConversationState != nil) && !catchUp() {
 				return
 			}
 		}

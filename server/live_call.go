@@ -22,6 +22,9 @@ import (
 const (
 	// User capture has a deadline; Live's response settles on output quiet.
 	liveQuiet            = 1200 * time.Millisecond
+	liveReportHeading    = "Speak the finding. Name each example:\n"
+	liveProgressHeading  = "Progress update on your own work in flight.\n"
+	liveProgressChars    = 600
 	liveDeadline         = 5 * time.Second
 	liveMaxPerMinute     = 12
 	liveFeedbackLoop     = "Voice delegation paused to prevent a feedback loop. Start voice again to continue."
@@ -147,6 +150,14 @@ type liveCall struct {
 	saveTimer   *time.Timer
 	saveMu      sync.Mutex // orders saves
 
+	progressNotes    []string       // bounded newest notes since the last update
+	progressActivity []liveActivity // bounded unreported concrete activity
+	progressSeen     []string       // bounded dedup window; nil when work is idle
+	progressEvery    time.Duration  // 0 is no spoken updates
+	tick             *time.Timer    // one pending batch, armed by new evidence
+	progressDue      time.Time      // deadline of tick
+	lastProgress     time.Time      // last spoken-context offer
+
 	out    []liveInstruction
 	nextID int64
 	wake   chan struct{} // closed and replaced on each instruction
@@ -162,6 +173,9 @@ type liveRow struct {
 	seq            int64
 	user           bool
 	text, full     string
+	progress       []string       // mid-turn notes, see liveProgress
+	activity       []liveActivity // concrete tool facts
+	endOfTurn      bool           // an agent finished, with or without text
 	liveDeliveryID string
 }
 
@@ -463,6 +477,7 @@ func (c *liveCall) deliverTask(t *liveTail, heading, speech, voiceContext string
 			} else {
 				c.thinking("The backend accepted this task: "+speech, &t.id)
 			}
+			c.startProgress()
 		}
 		if !continued {
 			t.delivered = true
@@ -508,10 +523,22 @@ func (c *liveCall) sync() {
 			continue
 		}
 		c.lastSeen = row.seq
+		if c.progressEvery > 0 {
+			for _, note := range row.progress {
+				c.noteProgress(note)
+			}
+			if len(row.activity) > 0 {
+				c.noteActivity(row.activity)
+			}
+			if row.endOfTurn {
+				c.stopProgress()
+			}
+		}
 		if row.text == "" {
 			continue
 		}
 		if row.user {
+			c.startProgress()
 			i := slices.IndexFunc(c.submitted, func(s *liveSubmitted) bool {
 				return s.userSeq == 0 && row.seq > s.afterSeq && s.deliveryID == row.liveDeliveryID
 			})
@@ -537,7 +564,15 @@ func (c *liveCall) sync() {
 				}
 			}
 		}
-		c.commentary("Backend reply: "+row.text, delegation)
+		reply := "Backend reply: " + row.text
+		// Cancellation can close the old turn between acceptance of a spoken
+		// correction and insertion of that correction's user row.
+		if c.progressEvery > 0 && row.endOfTurn && row.text == operationCancelledText && slices.ContainsFunc(c.submitted, func(s *liveSubmitted) bool {
+			return !s.finished && s.userSeq == 0 && row.seq > s.afterSeq
+		}) {
+			reply = "The preceding turn was cancelled. This status belongs to the work before the newer spoken request."
+		}
+		c.commentary(reply, delegation)
 	}
 }
 
@@ -632,6 +667,7 @@ func (c *liveCall) endLocked(reason string) {
 	if !c.active {
 		return
 	}
+	c.stopProgress()
 	c.logger.Info("Live call ended", "reason", reason)
 	c.idle.Stop()
 	for _, p := range c.pending {

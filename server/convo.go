@@ -2576,13 +2576,18 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 			})
 		},
 		OnStreamDelta: sf.Push,
-		OnStreamDone:  sf.Flush,
+		OnCommentary: func(text string) {
+			if cm.server != nil && cm.isCurrentLoopGeneration(generation) {
+				cm.server.liveCalls.withActiveProgress(cm.conversationID, func(c *liveCall) { c.noteProgress(livePublicNote(text)) })
+			}
+		},
+		OnStreamDone: sf.Flush,
 		OnSuccessfulRequest: func(req *llm.Request) {
 			if !cm.isCurrentLoopGeneration(generation) {
 				return
 			}
 			warm := *req
-			warm.OnStream, warm.OnRetry = nil, nil
+			warm.OnStream, warm.OnCommentary, warm.OnRetry = nil, nil, nil
 			cm.mu.Lock()
 			cm.cacheWarmRequest, cm.cacheWarmService, cm.cacheWarmTail = &warm, service, []llm.Message{}
 			cm.cacheWarmModelID, cm.cacheWarmRevision = modelID, sourceRevision
@@ -2784,6 +2789,8 @@ func (cm *ConversationManager) StartNewGeneration(ctx context.Context, bump func
 	return nil
 }
 
+const operationCancelledText = "[Operation cancelled]"
+
 // CancelConversation cancels the active loop, clears queued user work, and
 // synchronously ends its turn.
 func (cm *ConversationManager) CancelConversation(ctx context.Context) error {
@@ -2899,7 +2906,7 @@ func (cm *ConversationManager) cancelConversation(ctx context.Context, clearQueu
 
 	endTurnMessage := llm.Message{
 		Role:      llm.MessageRoleAssistant,
-		Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "[Operation cancelled]"}},
+		Content:   []llm.Content{{Type: llm.ContentTypeText, Text: operationCancelledText}},
 		EndOfTurn: true,
 	}
 	if err := cm.recordMessage(persistCtx, endTurnMessage, llm.Usage{}, nil); err != nil {

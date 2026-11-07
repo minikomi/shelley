@@ -207,6 +207,7 @@ type responsesResponse struct {
 }
 
 type responsesOutputItem struct {
+	Phase            string             `json:"phase,omitempty"`
 	ID               string             `json:"id"`
 	Type             string             `json:"type"`           // "message", "reasoning", "function_call", "web_search_call"
 	Role             string             `json:"role,omitempty"` // for messages: "assistant"
@@ -1008,7 +1009,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 
 		var resp responsesResponse
 		if responsesShouldParseStream(req, httpResp.Header) {
-			streamResp, err := parseResponsesSSEStream(ctx, httpResp.Body, ir.OnStream)
+			streamResp, err := parseResponsesSSEStream(ctx, httpResp.Body, ir.OnCommentary, ir.OnStream)
 			httpResp.Body.Close()
 			if err != nil {
 				now := time.Now().Format(time.DateTime)
@@ -1275,7 +1276,7 @@ func iterResponsesSSEEvents(r io.Reader, yield func(responsesSSEEvent) error) er
 	return dispatch()
 }
 
-func parseResponsesSSEStream(ctx context.Context, r io.Reader, onStream func(llm.StreamDelta)) (*responsesResponse, error) {
+func parseResponsesSSEStream(ctx context.Context, r io.Reader, onCommentary func(string), onStream func(llm.StreamDelta)) (*responsesResponse, error) {
 	var completed *responsesResponse
 	// Responses streams finalize message/tool output in output_item.done.
 	// response.completed may only carry completion metadata and usage.
@@ -1317,6 +1318,14 @@ func parseResponsesSSEStream(ctx context.Context, r io.Reader, onStream func(llm
 			}
 		case "response.output_item.done":
 			if event.Item != nil {
+				item := event.Item
+				if onCommentary != nil && item.Type == "message" && item.Role == "assistant" && item.Phase == "commentary" && item.Status == "completed" {
+					for _, part := range item.Content {
+						if part.Type == "output_text" && part.Text != "" {
+							onCommentary(part.Text)
+						}
+					}
+				}
 				outputItems[event.OutputIndex] = *event.Item
 			}
 		case "response.completed", "response.incomplete":

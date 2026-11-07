@@ -39,6 +39,7 @@ type ToolResponse struct {
 // persistence aborts the run; streaming and tool-progress hooks cannot fail.
 type Hooks struct {
 	OnStreamingResponse func(context.Context, llm.StreamDelta)
+	OnCommentary        func(string)
 	OnStreamDone        func()
 	OnToolProgress      func(context.Context, llm.ToolProgress)
 	OnResponse          func(context.Context, Response) error
@@ -176,6 +177,7 @@ func (l *RunConfig) run(ctx context.Context) error {
 			System:        system,
 			ThinkingLevel: l.ThinkingLevel,
 			OnRetry:       onRetry,
+			OnCommentary:  l.Hooks.OnCommentary,
 		}
 		if l.Hooks.OnStreamingResponse != nil {
 			req.OnStream = func(delta llm.StreamDelta) {

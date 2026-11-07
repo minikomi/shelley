@@ -203,6 +203,12 @@
             commandPaletteOpen = false;
           }
         "
+        @open-live-settings="
+          () => {
+            liveSettingsOpen = true;
+            commandPaletteOpen = false;
+          }
+        "
         @open-feature-flags-modal="
           () => {
             featureFlagsModalOpen = true;
@@ -255,6 +261,16 @@
         @close="
           () => {
             integrationsModalOpen = false;
+            focusMessageInputIfUnfocused();
+          }
+        "
+      />
+
+      <LiveSettingsModal
+        :is-open="liveSettingsOpen"
+        @close="
+          () => {
+            liveSettingsOpen = false;
             focusMessageInputIfUnfocused();
           }
         "
@@ -333,6 +349,7 @@ import ModelsModal from "./components/ModelsModal.vue";
 import McpServersModal from "./components/McpServersModal.vue";
 import IntegrationsModal from "./components/IntegrationsModal.vue";
 import NotificationsModal from "./components/NotificationsModal.vue";
+import LiveSettingsModal from "./components/LiveSettingsModal.vue";
 import FeatureFlagsModal from "./components/FeatureFlagsModal.vue";
 import FaviconEmojiPicker from "./components/FaviconEmojiPicker.vue";
 import FileFinderModal from "./components/FileFinderModal.vue";
@@ -548,6 +565,7 @@ function takeMcpLoginResult() {
 }
 const integrationsModalOpen = ref(false);
 const notificationsModalOpen = ref(false);
+const liveSettingsOpen = ref(false);
 const featureFlagsModalOpen = ref(false);
 const faviconEmojiPickerOpen = ref(false);
 // Fuzzy file finder (Cmd/Ctrl+P) + the generic editor it opens.
