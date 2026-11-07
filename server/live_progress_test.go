@@ -592,28 +592,26 @@ func TestLiveProgressFollowsEvidence(t *testing.T) {
 		h.advance(10 * time.Second)
 		expectEqual(t, "first concrete activity", len(h.context()), 1)
 		read("server/second.go")
-		h.advance(time.Minute)
-		expectEqual(t, "more files in same area stay quiet", len(h.context()), 1)
-		if h.call.tick != nil {
-			t.Fatal("timer running without new evidence")
+		h.advance(19 * time.Second)
+		expectEqual(t, "spacing respected", len(h.context()), 1)
+		h.advance(time.Second)
+		if got := h.context(); len(got) != 2 || !strings.Contains(got[1], "server/second.go") {
+			t.Fatalf("fresh same-directory read lost: %v", got)
 		}
+		read("server/second.go")
+		h.advance(time.Minute)
+		expectEqual(t, "exact repeat stays quiet", len(h.context()), 2)
+
 		read("ui/menu.ts")
 		h.advance(2 * time.Second)
 		seq++
 		h.call.observe([]liveRow{{seq: seq, progress: []string{"Found two notification listeners."}}})
 		h.advance(liveProgressCoalesce)
-		if got := h.context(); len(got) != 2 || !strings.Contains(got[1], "two notification listeners") || !strings.Contains(got[1], "ui/menu.ts") {
+		if got := h.context(); len(got) != 3 || !strings.Contains(got[2], "two notification listeners") || !strings.Contains(got[2], "ui/menu.ts") {
 			t.Fatalf("finding did not advance pending evidence: %v", got)
 		}
-		read("db/query.sql")
-		h.advance(time.Minute)
-		expectEqual(t, "no queued routine recap", len(h.context()), 2)
-		read("client/adapter.go")
-		h.advance(10 * time.Second)
-		expectEqual(t, "new area after quiet period", len(h.context()), 3)
 		h.advance(time.Minute)
 		expectEqual(t, "no periodic speech", len(h.context()), 3)
-
 	})
 }
 

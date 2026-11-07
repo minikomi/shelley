@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"path"
 	"slices"
 	"strings"
 	"time"
@@ -74,9 +73,6 @@ func (c *liveCall) progressTick(timer *time.Timer) {
 			content += "\n"
 		}
 		content += activity.text
-		if area := inspectionArea(activity); area != "" {
-			c.rememberProgress(area)
-		}
 	}
 	if content != "" {
 		c.commentary(heading+content, delegation)
@@ -116,17 +112,6 @@ func (c *liveCall) scheduleProgress(delay time.Duration) {
 	c.tick, c.progressDue = timer, due
 }
 
-// After a directory has featured in speech context, another file read there
-// alone adds little. A public report can still carry specifics from that area.
-func inspectionArea(a liveActivity) string {
-	if a.kind == liveInspect {
-		if target, ok := strings.CutPrefix(a.key(), "inspect:"); ok && path.Ext(target) != "" {
-			return "area:" + path.Dir(target)
-		}
-	}
-	return ""
-}
-
 func (c *liveCall) stopProgress() {
 	c.progressNotes = nil
 	c.progressActivity = nil
@@ -155,9 +140,6 @@ func (c *liveCall) noteActivity(activities []liveActivity) {
 	var fresh []liveActivity
 	for _, activity := range activities {
 		activity.text = truncateRunes(activity.text, 299)
-		if area := inspectionArea(activity); area != "" && len(c.progressNotes) == 0 && slices.Contains(c.progressSeen, area) {
-			continue
-		}
 		if activity.text != "" && c.rememberProgress("activity:"+activity.key()) {
 			fresh = append(fresh, activity)
 		}
@@ -181,14 +163,13 @@ func (c *liveCall) noteActivity(activities []liveActivity) {
 	if len(c.progressActivity) > 32 {
 		c.progressActivity = c.progressActivity[:32]
 	}
-	// During the quiet period, retain concrete context for the next change.
-	// The passage of time alone must not turn it into an announcement.
+	// Fresh routine activity can wait for the next slot without another event.
 	if important {
 		c.scheduleProgress(liveProgressCoalesce)
 	} else if slices.ContainsFunc(fresh, func(a liveActivity) bool { return a.directCheck && !a.done }) {
 		c.scheduleProgress(liveCheckDelay)
-	} else if len(fresh) > 0 && time.Since(c.lastProgress) >= c.progressEvery {
-		c.scheduleProgress(c.progressEvery / 2)
+	} else if len(fresh) > 0 {
+		c.scheduleProgress(max(c.progressEvery/2, time.Until(c.lastProgress.Add(c.progressEvery))))
 	} else if len(c.progressNotes) == 0 && len(c.progressActivity) == 0 && c.tick != nil {
 		c.tick.Stop()
 		c.tick = nil

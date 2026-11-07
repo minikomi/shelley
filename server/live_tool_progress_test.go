@@ -105,3 +105,24 @@ func TestLiveReadSuccessIsSilentButFailuresAreNot(t *testing.T) {
 	expectEqual(t, "success", len(liveToolResult(llm.Content{Display: map[string]any{"exitCode": 0}}, started)), 0)
 	expectEqual(t, "nonzero", activityText(liveToolResult(llm.Content{Display: map[string]any{"exitCode": 1}}, started)), "Shell exited with status 1; submitted step: Reading server/live_call.go")
 }
+
+func TestLiveCompactionReceipt(t *testing.T) {
+	started := liveToolProgress(llm.Content{ToolName: "compact_in_place", ID: "c", ToolInput: json.RawMessage(`{"action":"compact"}`)})
+	problem := "collapse s457.4-610: covers ~28524 tokens; at most ~20000 per collapse unless it is a single row, so split it"
+	for _, tt := range []struct {
+		receipt string
+		failed  bool
+		want    string
+	}{
+		{"3 problems:\n- " + strings.Join([]string{problem, problem, problem}, "\n- ") + "\n\n" + compactRetryGuidance, true, "This conversation’s history was not shortened. 3 history ranges were too large."},
+		{problem + ". " + compactRetryGuidance, true, "This conversation’s history was not shortened. One history range was too large."},
+		{"PRIVATE", true, "The attempt to shorten this conversation’s history failed."},
+		{"Compacted: 8 collapsed, 0 trimmed; context ~150209 -> ~36617 tokens.", false, "Shortened this conversation’s history."},
+	} {
+		facts := liveToolResult(llm.Content{ToolError: tt.failed, ToolResult: llm.TextContent(tt.receipt)}, started)
+		expectEqual(t, "public receipt", activityText(facts), tt.want)
+		if len(facts) != 1 || !facts[0].isOutcome() {
+			t.Fatal("compaction result must advance progress")
+		}
+	}
+}

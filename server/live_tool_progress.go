@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -54,6 +55,11 @@ func liveToolProgress(tool llm.Content) []liveActivity {
 		facts = append(facts, liveActivity{text: text, kind: kind, toolID: tool.ID})
 	}
 	switch tool.ToolName {
+	case "compact_in_place":
+		var input struct{ Action string }
+		if json.Unmarshal(tool.ToolInput, &input) == nil && input.Action == "compact" {
+			add(liveCompacting, liveCheck)
+		}
 	case "subagent":
 		add("Starting: delegating a task to a worker", liveInspect)
 	case "apply_patch":
@@ -379,6 +385,31 @@ func liveToolStatus(tool llm.Content) liveResultStatus {
 	return status
 }
 
+const liveCompacting = "Starting: shortening this conversation’s history"
+
+var oversizedHistoryRange = regexp.MustCompile(`(?m)^(?:- )?collapse [s0-9.]+-[s0-9.]+: covers ~[0-9]+ tokens; at most ~[0-9]+ per collapse unless it is a single row, so split it(?:\.|$)`)
+
+// Only the compactor's own validation receipt can supply this reason. Never
+// forward the range IDs, note contents, or arbitrary tool output.
+func liveCompactionOutcome(tool llm.Content) string {
+	if !tool.ToolError {
+		return "Shortened this conversation’s history."
+	}
+	if len(tool.ToolResult) == 1 {
+		receipt := tool.ToolResult[0].Text
+		if strings.HasSuffix(receipt, compactRetryGuidance) {
+			switch n := len(oversizedHistoryRange.FindAllStringIndex(receipt, -1)); n {
+			case 0:
+			case 1:
+				return "This conversation’s history was not shortened. One history range was too large."
+			default:
+				return fmt.Sprintf("This conversation’s history was not shortened. %d history ranges were too large.", n)
+			}
+		}
+	}
+	return "The attempt to shorten this conversation’s history failed."
+}
+
 // Only structured status establishes completion. Ignore successful inspections:
 // their exit status adds no useful development to the submitted activity.
 func liveToolResult(tool llm.Content, started []liveActivity) []liveActivity {
@@ -387,6 +418,11 @@ func liveToolResult(tool llm.Content, started []liveActivity) []liveActivity {
 	for _, activity := range started {
 		description := strings.TrimPrefix(strings.TrimPrefix(activity.text, "Starting: "), "Starting in background: ")
 		switch {
+		case activity.text == liveCompacting:
+			activity.text = liveCompactionOutcome(tool)
+			if tool.ToolError {
+				activity.kind = liveFailure
+			}
 		case tool.ToolError:
 			activity.text, activity.kind = "Tool failed: "+description, liveFailure
 		case strings.HasPrefix(activity.text, "Applying patch: "):
