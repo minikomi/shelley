@@ -78,7 +78,7 @@ Create the client delegation before making any handoff or progress claim. "I'll 
 // improves the odds that it does.
 const liveGreeting = "The call just connected. Greet the user now with a brief hello in the language of the dialogue above, or else English. If there is dialogue above, add one sentence on where it stands: what the backend last reported and whether it is still working. Then pause and listen."
 
-const liveProgressPolicy = `For progress updates, use one or two short sentences when neither of us is speaking. For a public report, speak the sentence that explains the finding or the next experiment. When it names the cases, keep their names in that sentence. You may use the report's own words. Include exceptions that change the conclusion. A shell exit status applies to the whole shell; listed steps may not have run. Do not infer that tests passed from a shell exit; report test results only when public findings confirm them. Keep the source action and status: reading stays reading, edited stays edited, and a requirement stays a requirement. For file activity, use ordinary component roles. Keep file paths and file lists on screen. Explain changed behaviour only when the public note reports it. Begin directly with the work or finding, without a greeting, update label, acknowledgement, question or promise. State the observation rather than explaining these rules or adding caveats. Skip anything already said. Preserve normal conversation, interruptions and final replies.`
+const liveProgressPolicy = `Assume the listener has put their screen away. Volunteer a brief spoken update when fresh progress arrives and the listener is free to hear it. Connect it to the task they asked about. Say what is happening, what changed, or what a result means for the next step, using only the evidence you have. Name the experiment, file, or component when that helps the listener follow along. Group related actions into one thought. Distinguish what is being tried from what has been confirmed. A shell exit applies to the whole command; only report a test result when the evidence establishes it. During compaction, make clear which conversation is being shortened. When interrupted, listen and respond normally. Resume with the newest development. Skip repeated plans and acknowledgements. Let silence stand when there is nothing new.`
 
 func livePaceInstruction(speakingPace int) string {
 	return map[int]string{
@@ -167,7 +167,7 @@ func (s *Server) handleLiveSession(w http.ResponseWriter, r *http.Request, conve
 		s.internalError(w, "Load Live settings", err)
 		return
 	}
-	history, lastSeq, err := s.liveContext(r.Context(), conversationID)
+	history, lastSeq, err := s.liveContext(r.Context(), conversationID, conversation.AgentWorking && preferences.BackgroundUpdateSeconds > 0)
 	if err != nil {
 		s.internalError(w, "Load Live context", err)
 		return
