@@ -576,10 +576,12 @@ func TestLiveEarlyPublicCommentaryWhileRequestIsRunning(t *testing.T) {
 	turn := e.held.waitCall(t, "compare the schemas")
 	defer turn.Release()
 	call.expect("thinking [-]: New typed message")
-	if turn.request.OnCommentary == nil {
+	if turn.request.OnPublicProgress == nil {
 		t.Fatal("missing commentary callback")
 	}
-	turn.request.OnCommentary("Both versions passed the same four tool calls.")
+	turn.request.OnPublicProgress(llm.PublicProgress{WebLookupID: "lookup-1", WebAction: "open_page"})
+	call.expect("commentary [-]: " + liveProgressHeading + "Opened a web page for this investigation.")
+	turn.request.OnPublicProgress(llm.PublicProgress{Commentary: "Both versions passed the same four tool calls."})
 	call.expect("commentary [-]: " + liveReportHeading + "notes: Both versions passed the same four tool calls.")
 	e.finish(conv.ConversationID, turn)
 	call.expect("commentary [-]: Backend reply:")

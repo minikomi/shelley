@@ -1009,7 +1009,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 
 		var resp responsesResponse
 		if responsesShouldParseStream(req, httpResp.Header) {
-			streamResp, err := parseResponsesSSEStream(ctx, httpResp.Body, ir.OnCommentary, ir.OnStream)
+			streamResp, err := parseResponsesSSEStream(ctx, httpResp.Body, ir.OnPublicProgress, ir.OnStream)
 			httpResp.Body.Close()
 			if err != nil {
 				now := time.Now().Format(time.DateTime)
@@ -1276,7 +1276,7 @@ func iterResponsesSSEEvents(r io.Reader, yield func(responsesSSEEvent) error) er
 	return dispatch()
 }
 
-func parseResponsesSSEStream(ctx context.Context, r io.Reader, onCommentary func(string), onStream func(llm.StreamDelta)) (*responsesResponse, error) {
+func parseResponsesSSEStream(ctx context.Context, r io.Reader, onPublicProgress func(llm.PublicProgress), onStream func(llm.StreamDelta)) (*responsesResponse, error) {
 	var completed *responsesResponse
 	// Responses streams finalize message/tool output in output_item.done.
 	// response.completed may only carry completion metadata and usage.
@@ -1319,12 +1319,19 @@ func parseResponsesSSEStream(ctx context.Context, r io.Reader, onCommentary func
 		case "response.output_item.done":
 			if event.Item != nil {
 				item := event.Item
-				if onCommentary != nil && item.Type == "message" && item.Role == "assistant" && item.Phase == "commentary" && item.Status == "completed" {
+				if onPublicProgress != nil && item.Type == "message" && item.Role == "assistant" && item.Phase == "commentary" && item.Status == "completed" {
 					for _, part := range item.Content {
 						if part.Type == "output_text" && part.Text != "" {
-							onCommentary(part.Text)
+							onPublicProgress(llm.PublicProgress{Commentary: part.Text})
 						}
 					}
+				}
+				if onPublicProgress != nil && item.Type == "web_search_call" && item.Status == "completed" && item.ID != "" {
+					progress := llm.PublicProgress{WebLookupID: item.ID}
+					if item.Action != nil {
+						progress.WebAction = item.Action.Type
+					}
+					onPublicProgress(progress)
 				}
 				outputItems[event.OutputIndex] = *event.Item
 			}

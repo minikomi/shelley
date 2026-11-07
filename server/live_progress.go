@@ -58,7 +58,12 @@ func (c *liveCall) progressTick(timer *time.Timer) {
 		}
 	}
 	var pending []liveActivity
+	seenLookup := map[string]bool{}
 	for _, activity := range c.progressActivity {
+		if activity.webLookup && seenLookup[activity.text] {
+			continue
+		}
+
 		// Reads are expendable context once this batch has a concrete change.
 		if activity.kind == liveInspect && c.progressActivity[0].kind > liveInspect {
 			continue
@@ -77,6 +82,9 @@ func (c *liveCall) progressTick(timer *time.Timer) {
 			content += "\n"
 		}
 		content += activity.text
+		if activity.webLookup {
+			seenLookup[activity.text] = true
+		}
 	}
 	if content != "" {
 		c.commentary(heading+content, c.progressDelegation())
@@ -185,6 +193,25 @@ func (c *liveCall) noteActivity(activities []liveActivity) {
 		c.tick.Stop()
 		c.tick = nil
 	}
+}
+
+// Stream completed hosted actions while the model is still working. Only the
+// action and its identity are needed, never the query or page contents.
+func (c *liveCall) notePublicProgress(p llm.PublicProgress) {
+	if p.WebLookupID == "" {
+		c.noteProgress(livePublicNote(p.Commentary))
+		return
+	}
+	text := "Completed a web lookup."
+	switch p.WebAction {
+	case "open_page":
+		text = "Opened a web page for this investigation."
+	case "find_in_page":
+		text = "Searched within a web page for this investigation."
+	case "search":
+		text = "Ran a web search for this investigation."
+	}
+	c.noteActivity([]liveActivity{{text: text, kind: liveInspect, toolID: p.WebLookupID, webLookup: true}})
 }
 
 func (c *liveCall) noteProgress(note string) {
@@ -297,7 +324,7 @@ func liveProgress(row generated.Message, tools map[string][]liveActivity) (notes
 				notes = append(notes, note)
 			}
 		case row.Type == "agent" && c.Type == llm.ContentTypeServerToolUse && c.ToolName == "web_search":
-			activities = append(activities, liveActivity{text: "Starting: searching the web", kind: liveInspect, toolID: c.ID})
+			activities = append(activities, liveActivity{text: "Starting: searching the web", kind: liveInspect, toolID: c.ID, webLookup: true})
 		case row.Type == "agent" && c.Type == llm.ContentTypeToolUse:
 			if facts := liveToolProgress(c); len(facts) > 0 {
 				if tools == nil { // Worker results are not observed by this call.

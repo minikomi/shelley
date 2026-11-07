@@ -2576,9 +2576,9 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 			})
 		},
 		OnStreamDelta: sf.Push,
-		OnCommentary: func(text string) {
+		OnPublicProgress: func(progress llm.PublicProgress) {
 			if cm.server != nil && cm.isCurrentLoopGeneration(generation) {
-				cm.server.liveCalls.withActiveProgress(cm.conversationID, func(c *liveCall) { c.noteProgress(livePublicNote(text)) })
+				cm.server.liveCalls.withActiveProgress(cm.conversationID, func(c *liveCall) { c.notePublicProgress(progress) })
 			}
 		},
 		OnStreamDone: sf.Flush,
@@ -2587,7 +2587,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 				return
 			}
 			warm := *req
-			warm.OnStream, warm.OnCommentary, warm.OnRetry = nil, nil, nil
+			warm.OnStream, warm.OnPublicProgress, warm.OnRetry = nil, nil, nil
 			cm.mu.Lock()
 			cm.cacheWarmRequest, cm.cacheWarmService, cm.cacheWarmTail = &warm, service, []llm.Message{}
 			cm.cacheWarmModelID, cm.cacheWarmRevision = modelID, sourceRevision

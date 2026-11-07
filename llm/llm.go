@@ -227,6 +227,13 @@ type StreamDelta struct {
 	Seq int64 `json:"seq"`
 }
 
+// PublicProgress is a completed public comment or hosted web lookup.
+type PublicProgress struct {
+	Commentary  string
+	WebLookupID string
+	WebAction   string
+}
+
 type Request struct {
 	Messages   []Message
 	ToolChoice *ToolChoice
@@ -242,8 +249,8 @@ type Request struct {
 	// OnStream is called with each streaming delta as the LLM generates content.
 	// If nil, no streaming callbacks are made. The full response is still returned from Do.
 	OnStream func(StreamDelta) `json:"-"`
-	// OnCommentary receives a completed public, intermediate assistant text block.
-	OnCommentary func(string) `json:"-"`
+	// OnPublicProgress receives public activity before the response finishes.
+	OnPublicProgress func(PublicProgress) `json:"-"`
 	// OnRetry is called before sleeping for a retryable LLM request failure.
 	OnRetry func(RetryEvent) `json:"-"`
 }

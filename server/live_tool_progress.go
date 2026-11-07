@@ -30,6 +30,7 @@ type liveActivity struct {
 	kind        liveActivityKind
 	toolID      string
 	done        bool
+	webLookup   bool
 	directCheck bool
 }
 
@@ -38,6 +39,9 @@ func (a liveActivity) isOutcome() bool {
 }
 
 func (a liveActivity) key() string {
+	if a.webLookup && a.toolID != "" {
+		return "web:" + a.toolID
+	}
 	if a.kind == liveInspect {
 		for _, prefix := range []string{"Starting: Reading ", "Starting: Searching "} {
 			if target, ok := strings.CutPrefix(a.text, prefix); ok {

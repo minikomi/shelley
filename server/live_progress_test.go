@@ -744,3 +744,25 @@ func TestLiveCompactionStartPrecedesFastResult(t *testing.T) {
 		expectEqual(t, "separate outcome", got[len(got)-1], "commentary [d1]: "+liveProgressHeading+"Shortened this conversation’s history.")
 	})
 }
+
+func TestLiveLookupsKeepTheirDeadlineThroughThinking(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newLiveProgressHarness(t, 10*time.Second)
+		lookup := func(id string) {
+			h.call.locked(func() { h.call.notePublicProgress(llm.PublicProgress{WebLookupID: id, WebAction: "search"}) })
+		}
+		lookup("first")
+		h.advance(4 * time.Second)
+		row := progressMessage(t, "agent", llm.Message{Content: []llm.Content{{Type: llm.ContentTypeThinking, Thinking: "PRIVATE"}}})
+		notes, activities, end := liveProgress(row, nil)
+		h.call.observe([]liveRow{{seq: 11, progress: notes, activity: activities, endOfTurn: end}})
+		lookup("second")
+		h.advance(time.Second)
+		expectEqual(t, "pending searches arrive on original deadline", h.context(), []string{"commentary [-]: " + liveProgressHeading + "Ran a web search for this investigation."})
+		saved := progressMessage(t, "agent", llm.Message{Content: []llm.Content{{Type: llm.ContentTypeServerToolUse, ToolName: "web_search", ID: "second"}}})
+		_, activities, _ = liveProgress(saved, nil)
+		h.call.observe([]liveRow{{seq: 12, activity: activities}})
+		h.advance(time.Minute)
+		expectEqual(t, "saved lookup stays quiet", len(h.context()), 1)
+	})
+}

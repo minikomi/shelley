@@ -2053,10 +2053,10 @@ func TestResponsesFinishedPublicCommentaryBeforeResponse(t *testing.T) {
 	r, w := io.Pipe()
 	defer r.Close()
 	defer w.Close()
-	comments := make(chan string, 16)
+	comments := make(chan llm.PublicProgress, 16)
 	done := make(chan error, 1)
 	go func() {
-		_, err := parseResponsesSSEStream(t.Context(), r, func(s string) { comments <- s }, nil)
+		_, err := parseResponsesSSEStream(t.Context(), r, func(p llm.PublicProgress) { comments <- p }, nil)
 		done <- err
 	}()
 	write := func(body string) {
@@ -2079,11 +2079,21 @@ func TestResponsesFinishedPublicCommentaryBeforeResponse(t *testing.T) {
 	// terminal response. A parser waiting for response.completed fails here.
 	select {
 	case got := <-comments:
-		if got != "Try integer enums, nullable types, and anyOf unions." {
-			t.Fatalf("unexpected commentary %q", got)
+		if got.Commentary != "Try integer enums, nullable types, and anyOf unions." {
+			t.Fatalf("unexpected commentary %+v", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("commentary waited for the whole response")
+	}
+	write(`{"type":"response.output_item.done","item":{"type":"web_search_call","id":"unfinished","status":"incomplete"}}`)
+	write(`{"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws1","status":"completed","action":{"type":"open_page","url":"https://example.org/private"}}}`)
+	select {
+	case got := <-comments:
+		if got != (llm.PublicProgress{WebLookupID: "ws1", WebAction: "open_page"}) {
+			t.Fatalf("unexpected lookup %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("web lookup waited for the final response")
 	}
 	write(`{"type":"response.completed","response":{"status":"completed","output":[]}}`)
 	w.Close()
