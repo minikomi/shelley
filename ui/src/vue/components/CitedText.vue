@@ -31,18 +31,15 @@
       </li>
     </ol>
   </template>
-  <iframe
-    v-for="(suggestion, index) in googleSearchSuggestions"
+  <GoogleSearchSuggestions
+    v-for="(html, index) in googleSearchSuggestions"
     :key="index"
-    class="google-search-suggestions"
-    :srcdoc="'<base target=&quot;_blank&quot;>' + suggestion"
-    sandbox="allow-popups allow-popups-to-escape-sandbox"
-    referrerpolicy="no-referrer"
-    title="Google Search suggestions"
+    :html="html"
   />
 </template>
 
 <script setup lang="ts">
+import GoogleSearchSuggestions from "./GoogleSearchSuggestions.vue";
 import InlineText from "./InlineText.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import type { Citation } from "../../utils/coalesceContent";
@@ -61,13 +58,3 @@ defineProps<{
   googleSearchSuggestions?: string[];
 }>();
 </script>
-
-<style scoped>
-.google-search-suggestions {
-  display: block;
-  width: 100%;
-  height: 5rem;
-  border: 0;
-  margin-top: 0.5rem;
-}
-</style>

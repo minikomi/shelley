@@ -152,9 +152,11 @@ type ToolCall struct {
 }
 
 type ToolResponse struct {
-	ToolType string          `json:"toolType,omitempty"`
-	ID       string          `json:"id,omitempty"`
-	Response json.RawMessage `json:"response,omitempty"`
+	ToolType string `json:"toolType,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Response struct {
+		SearchSuggestions string `json:"search_suggestions,omitempty"`
+	} `json:"response"`
 }
 
 type ToolConfig struct {

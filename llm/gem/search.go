@@ -3,12 +3,15 @@ package gem
 import (
 	"encoding/json"
 	"fmt"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/gem/gemini"
 )
 
 type groundingCitation struct {
+	EndUTF16  int    `json:"end_utf16"`
 	Type      string `json:"type"`
 	URL       string `json:"url"`
 	Title     string `json:"title"`
@@ -21,8 +24,14 @@ func convertSearchResponse(res *gemini.Response) ([]llm.Content, error) {
 	}
 	candidate := res.Candidates[0]
 	var content []llm.Content
+	// Gemini indexes answer text separately from thoughts and tool invocations.
+	var answerParts []int
+	toolSuggestions := map[string]bool{}
 	for _, part := range candidate.Content.Parts {
 		if part.ToolCall == nil && part.ToolResponse == nil {
+			if part.IsText() && !part.Thought && part.Text != "" {
+				answerParts = append(answerParts, len(content))
+			}
 			one := &gemini.Response{Candidates: []gemini.Candidate{{Content: gemini.Content{Parts: []gemini.Part{part}}}}}
 			content = append(content, convertGeminiResponseToContent(one)...)
 			continue
@@ -45,6 +54,10 @@ func convertSearchResponse(res *gemini.Response) ([]llm.Content, error) {
 			}
 			c.Type = llm.ContentTypeWebSearchToolResult
 			c.ToolUseID = part.ToolResponse.ID
+			if html := part.ToolResponse.Response.SearchSuggestions; html != "" {
+				c.ToolResult = []llm.Content{{Type: llm.ContentTypeText, GoogleSearchSuggestions: html}}
+				toolSuggestions[html] = true
+			}
 		}
 		content = append(content, c)
 	}
@@ -52,11 +65,22 @@ func convertSearchResponse(res *gemini.Response) ([]llm.Content, error) {
 	if metadata == nil {
 		return content, nil
 	}
-	var citations []groundingCitation
+	citations := make(map[int][]groundingCitation)
 	for _, support := range metadata.GroundingSupports {
 		if support.Segment == nil {
 			return nil, fmt.Errorf("Gemini grounding support has no segment")
 		}
+		segment := support.Segment
+		if segment.PartIndex < 0 || segment.PartIndex >= len(answerParts) {
+			return nil, fmt.Errorf("Gemini grounding text part %d out of range", segment.PartIndex)
+		}
+		target := answerParts[segment.PartIndex]
+		text := content[target].Text
+		if segment.StartIndex < 0 || segment.EndIndex <= segment.StartIndex || segment.EndIndex > len(text) || !utf8.ValidString(text[segment.StartIndex:segment.EndIndex]) {
+			return nil, fmt.Errorf("invalid Gemini grounding byte range [%d,%d) for text part %d", segment.StartIndex, segment.EndIndex, segment.PartIndex)
+		}
+		// JavaScript string offsets count UTF-16 code units.
+		end := len(utf16.Encode([]rune(text[:segment.EndIndex])))
 		for _, index := range support.GroundingChunkIndices {
 			if index < 0 || index >= len(metadata.GroundingChunks) {
 				return nil, fmt.Errorf("Gemini grounding chunk index %d out of range", index)
@@ -65,32 +89,21 @@ func convertSearchResponse(res *gemini.Response) ([]llm.Content, error) {
 			if web == nil || web.URI == "" {
 				return nil, fmt.Errorf("Gemini grounding chunk %d has no web source URI", index)
 			}
-			citations = append(citations, groundingCitation{
-				Type: "google_grounding", URL: web.URI, Title: web.Title, CitedText: support.Segment.Text,
+			citations[target] = append(citations[target], groundingCitation{
+				EndUTF16: end,
+				Type:     "google_grounding", URL: web.URI, Title: web.Title, CitedText: support.Segment.Text,
 			})
 		}
 	}
-	target := -1
-	for i := range content {
-		if content[i].Type == llm.ContentTypeText && content[i].Text != "" {
-			target = i
-		}
-	}
-	if target == -1 {
-		if len(citations) > 0 {
-			return nil, fmt.Errorf("Gemini grounding citations have no answer text")
-		}
-		return content, nil
-	}
-	if len(citations) > 0 {
-		raw, err := json.Marshal(citations)
+	for target, refs := range citations {
+		raw, err := json.Marshal(refs)
 		if err != nil {
 			return nil, fmt.Errorf("marshal Gemini grounding citations: %w", err)
 		}
 		content[target].Citations = raw
 	}
-	if metadata.SearchEntryPoint != nil {
-		content[target].GoogleSearchSuggestions = metadata.SearchEntryPoint.RenderedContent
+	if entry := metadata.SearchEntryPoint; entry != nil && len(answerParts) > 0 && !toolSuggestions[entry.RenderedContent] {
+		content[answerParts[len(answerParts)-1]].GoogleSearchSuggestions = entry.RenderedContent
 	}
 	return content, nil
 }
