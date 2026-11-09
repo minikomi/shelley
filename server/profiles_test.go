@@ -375,7 +375,7 @@ func TestConversationSwitchesProfiles(t *testing.T) {
 		t.Fatalf("new conversation: model %s, options %+v", *conv.Model, opts)
 	}
 	req := e.lastTurnRequest()
-	if got := strings.TrimSpace(systemText(req)); got != "Be terse in "+cwd+"." || hasTool(req, "bash") {
+	if got := strings.TrimSpace(req.System[0].Text); got != "Be terse in "+cwd+"." || hasTool(req, "bash") {
 		t.Fatalf("first turn: system %q, bash %v", got, hasTool(req, "bash"))
 	}
 
@@ -758,14 +758,14 @@ func TestConversationFollowsProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(systemText(req)); got != "Version two." || hasTool(req, "bash") || *conv.Model != "model-b" {
+	if got := strings.TrimSpace(req.System[0].Text); got != "Version two." || hasTool(req, "bash") || *conv.Model != "model-b" {
 		t.Fatalf("shared conversation didn't follow: system %q, bash %v, model %s", got, hasTool(req, "bash"), *conv.Model)
 	}
 	marker := lastModelChange(listMessages(t, e.database, shared))
 	if marker == nil || !strings.Contains(*marker.UserData, "system prompt changed") {
 		t.Fatal("following recorded no marker")
 	}
-	if got := strings.TrimSpace(systemText(turn(own))); got != "Version one." {
+	if got := strings.TrimSpace(turn(own).System[0].Text); got != "Version one." {
 		t.Fatalf("changed conversation followed: %q", got)
 	}
 	if req := turn(button); !hasTool(req, claudetool.CompactInPlaceName) {
@@ -776,14 +776,14 @@ func TestConversationFollowsProfile(t *testing.T) {
 	e.want(200, "POST", "/api/conversation/"+own+"/settings", `{"profile":"P"}`)
 	e.want(200, "POST", "/api/conversation/"+own+"/settings", `{"tool_overrides":{"bash":"off"}}`)
 	edit("Version three.")
-	if got := strings.TrimSpace(systemText(turn(own))); got != "Version three." {
+	if got := strings.TrimSpace(turn(own).System[0].Text); got != "Version three." {
 		t.Fatalf("reverted conversation didn't follow: %q", got)
 	}
 	// Changing a setting and changing it back is still an edit.
 	e.want(200, "POST", "/api/conversation/"+own+"/settings", `{"tool_overrides":{}}`)
 	e.want(200, "POST", "/api/conversation/"+own+"/settings", `{"tool_overrides":{"bash":"off"}}`)
 	edit("Version four.")
-	if got := strings.TrimSpace(systemText(turn(own))); got != "Version three." {
+	if got := strings.TrimSpace(turn(own).System[0].Text); got != "Version three." {
 		t.Fatalf("edited conversation followed: %q", got)
 	}
 
@@ -793,12 +793,12 @@ func TestConversationFollowsProfile(t *testing.T) {
 	e.want(200, "POST", "/api/conversation/"+own+"/settings", `{"thinking_level":"high"}`)
 	fork := forkAt(t, e.srv, own, cutoff)
 	edit("Version five.")
-	if got := strings.TrimSpace(systemText(turn(fork))); got != "Version three." {
+	if got := strings.TrimSpace(turn(fork).System[0].Text); got != "Version three." {
 		t.Fatalf("fork of an edited conversation followed: %q", got)
 	}
 
 	e.want(204, "DELETE", "/api/profiles/P", "")
-	if got := strings.TrimSpace(systemText(turn(shared))); got != "Version two." {
+	if got := strings.TrimSpace(turn(shared).System[0].Text); got != "Version two." {
 		t.Fatalf("deleting the profile changed the conversation: %q", got)
 	}
 }

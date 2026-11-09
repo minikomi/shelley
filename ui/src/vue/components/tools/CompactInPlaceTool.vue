@@ -5,6 +5,12 @@
     <template #summary>
       <span class="tool-command">{{ summary }}</span>
     </template>
+    <template #always>
+      <div v-if="input.brief" class="tool-command">Brief: {{ input.brief }}</div>
+      <div v-if="isRunning && (input.collapse?.length ?? 0) > 0" class="tool-command">
+        Summarizing with up to 4 workers
+      </div>
+    </template>
     <ToolSection
       v-if="complete"
       label="Result"
@@ -24,7 +30,9 @@ import { inputFields, resultText, toolComplete, type ToolProps } from "./toolPro
 const props = defineProps<ToolProps>();
 
 const input = computed(() =>
-  inputFields<{ action: string; trim: unknown[]; collapse: unknown[] }>(props.toolInput),
+  inputFields<{ action: string; trim: unknown[]; collapse: unknown[]; brief: string }>(
+    props.toolInput,
+  ),
 );
 const result = computed(() => resultText(props.toolResult));
 const complete = computed(() => toolComplete(props));

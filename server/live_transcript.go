@@ -59,8 +59,7 @@ func liveSpeech(fragments []liveFragment) string {
 // The user's latest continuous speech counts when the delegation follows it
 // within 2.5 s, or follows Live's reply to it: Live often acknowledges first
 // ("Got it, handing that off") and delegates as it finishes, seconds after
-// the user stopped. A reply that starts more than 2.5 s after the user
-// stopped doesn't bridge, so an old greeting never becomes a task.
+// the user stopped. Allow a longer first acknowledgement when Live just asked the caller a question.
 func liveUtterance(user []liveFragment, offsetMs float64, all []liveFragment) (text string, startMs float64, ok bool) {
 	if len(user) == 0 {
 		return "", 0, false
@@ -86,18 +85,31 @@ func liveUtterance(user []liveFragment, offsetMs float64, all []liveFragment) (t
 // pause of more than 2.5 s.
 func liveTurnEnd(userEnd float64, all []liveFragment) float64 {
 	var live []liveFragment
+	var prior liveFragment
 	for _, f := range all {
-		if !f.user && f.endMs > userEnd {
+		if f.user {
+			continue
+		}
+		if f.endMs > userEnd {
 			live = append(live, f)
+		} else if f.endMs >= prior.endMs && strings.TrimSpace(f.text) != "" {
+			prior = f
 		}
 	}
 	slices.SortStableFunc(live, func(a, b liveFragment) int { return cmp.Compare(a.startMs, b.startMs) })
 	end := userEnd
+	gap := float64(liveUserLeadMs)
+	// Allow a caller's answer to bridge a delayed acknowledgement, without
+	// widening the direct delegation window for stale or unrelated speech.
+	if userEnd-prior.endMs <= liveUtteranceMaxSpanMs && strings.HasSuffix(strings.TrimSpace(prior.text), "?") {
+		gap = liveUtteranceGapMs
+	}
 	for _, f := range live {
-		if f.startMs-end > liveUserLeadMs {
+		if f.startMs-end > gap {
 			break
 		}
 		end = max(end, f.endMs)
+		gap = liveUserLeadMs
 	}
 	return end
 }

@@ -72,16 +72,35 @@ func (c inPlaceCompactor) Compact(ctx context.Context, in claudetool.CompactInPl
 // compactMidTurn validates in against the current context and records it.
 // The running loop picks up the compacted history before its next request.
 func (cm *ConversationManager) compactMidTurn(ctx context.Context, generation uint64, in claudetool.CompactInPlaceInput) (string, error) {
+	if len(in.Collapse) > 0 {
+		if n := len(strings.Fields(in.Brief)); n == 0 || n > 150 {
+			return "", fmt.Errorf("collapse needs a brief of 1–150 words about the current goal and what must survive")
+		}
+		cm.loopLifecycleMu.Lock()
+		if err := cm.checkCompactionGeneration(ctx, generation); err != nil {
+			cm.loopLifecycleMu.Unlock()
+			return "", err
+		}
+		items, _, err := cm.loadContext(ctx)
+		if err == nil {
+			_, err = compactionPlan(items, cm.keepRecentTokens, cm.tokenCounter(), in, false)
+		}
+		cm.loopLifecycleMu.Unlock()
+		if err != nil {
+			return "", err
+		}
+		in, err = summarizeCompaction(ctx, items, in)
+		if err != nil {
+			return "", fmt.Errorf("nothing was compacted: %w", err)
+		}
+	}
 	// Like takeInjectable, this runs in the loop goroutine: hold the lifecycle
 	// lock only to validate and record, so a concurrent teardown either sees
 	// the record or the record is never made.
 	cm.loopLifecycleMu.Lock()
-	cm.mu.Lock()
-	stale := cm.loopTearingDown || cm.loop == nil || cm.loopGeneration != generation || cm.cancelling
-	cm.mu.Unlock()
-	if stale {
+	if err := cm.checkCompactionGeneration(ctx, generation); err != nil {
 		cm.loopLifecycleMu.Unlock()
-		return "", fmt.Errorf("the conversation is being stopped or rewritten; not compacted")
+		return "", err
 	}
 	items, system, err := cm.loadContext(ctx)
 	var c db.InPlaceCompaction
@@ -116,6 +135,9 @@ func (cm *ConversationManager) compactMidTurn(ctx context.Context, generation ui
 	}
 	var created []generated.Message
 	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil {
 		created, err = cm.createInPlaceCompaction(context.WithoutCancel(ctx), c, system)
 	}
 	if err == nil {
@@ -138,6 +160,19 @@ func (cm *ConversationManager) compactMidTurn(ctx context.Context, generation ui
 	}
 	return fmt.Sprintf("Compacted: %d collapsed, %d trimmed; context ~%d -> ~%d tokens.",
 		len(c.Squishes), len(c.Trims), overhead+tc.items(items), overhead+tc.items(after)), nil
+}
+
+// Caller holds loopLifecycleMu.
+func (cm *ConversationManager) checkCompactionGeneration(ctx context.Context, generation uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.loopTearingDown || cm.loop == nil || cm.loopGeneration != generation || cm.cancelling {
+		return fmt.Errorf("the conversation is being stopped or rewritten; not compacted")
+	}
+	return nil
 }
 
 var errCompactInPlaceUnavailable = errors.New("compact_in_place is not available in this conversation")
@@ -298,6 +333,10 @@ func compactionEvidence(items []contextItem) (seqs []int64, toolUseIDs []string)
 // against the compaction view of history and its recent part. It reports
 // every problem at once.
 func buildCompaction(history []contextItem, keepRecentTokens int, tc tokenCounter, in claudetool.CompactInPlaceInput) (db.InPlaceCompaction, error) {
+	return compactionPlan(history, keepRecentTokens, tc, in, true)
+}
+
+func compactionPlan(history []contextItem, keepRecentTokens int, tc tokenCounter, in claudetool.CompactInPlaceInput, withNotes bool) (db.InPlaceCompaction, error) {
 	var c db.InPlaceCompaction
 	if in.Action == "skip" {
 		// Compacting nothing still drops the evidence (see compactMidTurn).
@@ -373,13 +412,13 @@ func buildCompaction(history []contextItem, keepRecentTokens int, tc tokenCounte
 			tokens += tc.items(row)
 		}
 		switch {
-		case strings.TrimSpace(col.Note) == "":
+		case withNotes && strings.TrimSpace(col.Note) == "":
 			problem("note is empty")
 			continue
 		case tokens > maxCollapseTokens && j > i:
 			problem("covers ~%d tokens; at most ~%d per collapse unless it is a single row, so split it", tokens, maxCollapseTokens)
 			continue
-		case (len(col.Note)+3)/4 >= tokens:
+		case withNotes && (len(col.Note)+3)/4 >= tokens:
 			problem("note is not shorter than the ~%d tokens it replaces", tokens)
 			continue
 		}
@@ -549,26 +588,26 @@ func itemID(it contextItem) string {
 	return strconv.FormatInt(it.from, 10)
 }
 
-const compactRetryGuidance = `Nothing was compacted; fix only the reported problems and send the whole request again. Preserve existing notes verbatim unless a note itself is invalid or a corrected range changes what it must summarize. Do not shorten notes to fix IDs or ranges.`
+const compactRetryGuidance = `Nothing was compacted; fix the reported problems and send the whole request again. Keep the brief unless the goal or constraints changed. Do not write per-range notes: workers generate them from the selected source.`
 
 const compactIndexGuidance = `Look for dead ends, out-of-date tool outputs (superseded file reads, old
-build and test logs), side quests and finished subprojects. Collapse each into
-a short note that keeps what still matters: decisions, findings, paths,
-commands, ids. Write readable sentences or bullets with normal whitespace.
-Keep words, numbers, and units clearly separated. Shorten by dropping obsolete
-details, not by removing spaces or joining words.
+build and test logs), side quests and finished subprojects. Select ranges for
+up to four same-model workers to summarize in parallel. They read only their
+assigned source ranges and your brief, not the rest of the conversation.
 Trim tool outputs you no longer need. Big tool inputs and
 outputs are most of the context, so focus there. Compacting only a little is
 fine; when unsure, leave it. Originals stay retrievable by conversation_id and
 sequence_id (see the previous-conversations skill).
 
 Then call compact_in_place with action "compact": trim lists ids of rows whose
-tool outputs you no longer need; collapse lists {from, to, note} ranges of ids
-from the table. A range may not cover more than ~%dk tokens unless it is a
+tool outputs you no longer need; collapse lists {from, to} ranges of ids
+from the table. Supply brief: at most 150 words about the current goal,
+constraints, user corrections and next action. Do not write per-range notes.
+A range may not cover more than ~%dk tokens unless it is a
 single row. Rows marked * are messages from the user or the parent and notes
 and summaries from earlier compactions: they carry the task and its rules. A
-range may cover them, but its note must keep what of them still matters:
-requests, preferences, corrections, open questions.`
+range may cover them; workers must preserve what still matters. Use the brief
+to highlight requests, preferences, corrections and open questions.`
 
 // compactIndex renders the index the agent compacts from. While an earlier
 // index is still in context (nothing was compacted since, so its ids and rows

@@ -40,16 +40,17 @@ func (id *IndexID) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// CompactCollapse replaces the index rows From..To (inclusive) with Note.
+// CompactCollapse selects the index rows From..To (inclusive).
 type CompactCollapse struct {
 	From IndexID `json:"from"`
 	To   IndexID `json:"to"`
-	Note string  `json:"note"`
+	Note string  `json:"-"`
 }
 
 // CompactInPlaceInput is the compact_in_place tool's input.
 type CompactInPlaceInput struct {
 	Action   string            `json:"action"`
+	Brief    string            `json:"brief"`
 	Trim     []IndexID         `json:"trim"`
 	Collapse []CompactCollapse `json:"collapse"`
 }
@@ -57,8 +58,10 @@ type CompactInPlaceInput struct {
 const compactInPlaceDescription = `Compact this conversation's context in place.
 Call with action "index" first: it lists the older messages and explains what to do.
 (Right after a nudge that carries the index, go straight to "compact".)
-Then call with action "compact" to collapse message ranges into short notes
-and trim tool outputs. Originals stay in the database.
+Then call with action "compact", ranges and a brief of at most 150 words about
+the current goal and what must survive. Up to four same-model workers write
+the notes in parallel; do not write per-range notes yourself.
+You can also trim tool outputs. Originals stay in the database.
 If nothing is worth compacting, call with action "skip": it compacts nothing,
 but drops the context nudges and earlier compact_in_place calls from your context.`
 
@@ -67,6 +70,7 @@ const compactInPlaceSchema = `{
   "required": ["action"],
   "properties": {
     "action": {"type": "string", "enum": ["index", "compact", "skip"]},
+    "brief": {"type": "string", "description": "Required with collapse: at most 150 words on the current goal, constraints, corrections and next action. Workers also read their assigned source ranges."},
     "trim": {
       "type": "array",
       "description": "compact: ids of index rows whose tool outputs to trim",
@@ -77,11 +81,11 @@ const compactInPlaceSchema = `{
       "description": "compact: ranges of index ids (inclusive) to replace with a note",
       "items": {
         "type": "object",
-        "required": ["from", "to", "note"],
+        "required": ["from", "to"],
+        "additionalProperties": false,
         "properties": {
           "from": {"type": "string"},
-          "to": {"type": "string"},
-          "note": {"type": "string", "description": "what still matters from the range"}
+          "to": {"type": "string"}
         }
       }
     }

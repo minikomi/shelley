@@ -69,7 +69,8 @@ async function replayCompaction(
           ToolName: "compact_in_place",
           ToolInput: {
             action: "compact",
-            collapse: [{ from: "4", to: "12", note: fullSummary }],
+            brief: "Keep the decisions and current work.",
+            collapse: [{ from: "4", to: "12" }],
             trim: ["7"],
           },
         },
@@ -144,6 +145,7 @@ test("compaction notices open their index and audit table directly", async ({ pa
 
   const tool = page.locator(".tool").filter({ hasText: "Compacted: 2 collapsed, 2 trimmed" });
   await expect(tool).toBeVisible();
+  await expect(tool).toContainText("Brief: Keep the decisions and current work.");
   await expect(tool.locator(".tool-details")).toBeHidden();
 
   const result = page.getByTestId("message-inplacecompaction");

@@ -21,6 +21,25 @@ type runTestService struct {
 	failure  error
 }
 
+func TestRunToolInheritsActiveModelAndThinkingLevel(t *testing.T) {
+	service := &runTestService{}
+	called := false
+	err := Run(t.Context(), RunConfig{
+		LLM: service, ThinkingLevel: llm.ThinkingLevelHigh,
+		Messages: []llm.Message{llm.UserStringMessage("start")},
+		Tools: []*llm.Tool{{Name: "work", Run: func(ctx context.Context, _ json.RawMessage) llm.ToolOut {
+			called = true
+			if llm.ServiceFromContext(ctx) != service || llm.ThinkingLevelFromContext(ctx) != llm.ThinkingLevelHigh {
+				t.Error("tool did not inherit the active service and effort")
+			}
+			return llm.ToolOut{EndTurn: true}
+		}}},
+	})
+	if err != nil || !called {
+		t.Fatalf("tool called=%v, error=%v", called, err)
+	}
+}
+
 func TestRunDynamicToolEndTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

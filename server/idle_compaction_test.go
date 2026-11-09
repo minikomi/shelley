@@ -102,11 +102,16 @@ func TestIdleCompactionCompactsInPlaceOnce(t *testing.T) {
 		synctest.Wait()
 		requireIdleCompactions(t, h, 1)
 
-		// The request that compacted was the turn's last.
+		// The parent nudge is followed by a worker, not another parent round.
 		request := h.llm.GetLastRequest()
-		nudge := request.Messages[len(request.Messages)-1]
+		requests := h.llm.GetRecentRequests()
+		parent := requests[len(requests)-2]
+		nudge := parent.Messages[len(parent.Messages)-1]
 		if nudge.Content[0].Text != fmt.Sprintf(idleNudgePrompt, 3)+"\n\nKeep the garden plan." || !strings.Contains(nudge.Content[1].Text, "## Index") {
-			t.Fatalf("idle turn did not end with the request that has the nudge and index: %+v", nudge)
+			t.Fatalf("idle compaction parent lacks the nudge and index: %+v", nudge)
+		}
+		if len(request.Tools) != 0 || len(request.System) != 1 || request.System[0].Text != compactionWorkerPrompt {
+			t.Fatalf("idle turn did not end with the summary worker: %+v", request)
 		}
 
 		<-time.After(15 * time.Minute)
@@ -501,7 +506,7 @@ func TestCacheWarmRefreshesLastRequestBeforeIdleCompaction(t *testing.T) {
 			t.Fatalf("warms = %d, want 1", len(warms))
 		}
 		if !reflect.DeepEqual(warms[0].Messages, turn.Messages) || !reflect.DeepEqual(warms[0].System, turn.System) ||
-			!reflect.DeepEqual(warms[0].Tools, turn.Tools) || warms[0].OnStream != nil {
+			!reflect.DeepEqual(warms[0].Tools, turn.Tools) || warms[0].OnStream != nil || warms[0].OnPublicProgress != nil {
 			t.Fatal("warm did not replay the last turn's provider prefix")
 		}
 		if usage := cacheWarmUsage(t, h); len(usage) != 1 || usage[0].CacheReadInputTokens != 1024 {

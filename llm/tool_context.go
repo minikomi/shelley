@@ -45,3 +45,15 @@ func ServiceFromContext(ctx context.Context) Service {
 	svc, _ := ctx.Value(llmServiceCtxKey).(Service)
 	return svc
 }
+
+type thinkingLevelCtxKey struct{}
+
+// WithThinkingLevel attaches the active turn's reasoning effort for tool calls.
+func WithThinkingLevel(ctx context.Context, level ThinkingLevel) context.Context {
+	return context.WithValue(ctx, thinkingLevelCtxKey{}, level)
+}
+
+func ThinkingLevelFromContext(ctx context.Context) ThinkingLevel {
+	level, _ := ctx.Value(thinkingLevelCtxKey{}).(ThinkingLevel)
+	return level
+}

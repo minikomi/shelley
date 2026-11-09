@@ -254,7 +254,11 @@ func TestCompactInPlaceEndToEnd(t *testing.T) {
 
 	compact := func(trim []claudetool.IndexID, collapse ...claudetool.CompactCollapse) {
 		t.Helper()
-		in, _ := json.Marshal(claudetool.CompactInPlaceInput{Action: "compact", Trim: trim, Collapse: collapse})
+		brief := ""
+		if len(collapse) > 0 {
+			brief = collapse[0].Note
+		}
+		in, _ := json.Marshal(claudetool.CompactInPlaceInput{Action: "compact", Brief: brief, Trim: trim, Collapse: collapse})
 		c.turn("compact_in_place: " + string(in))
 	}
 	seq := func(n int64) claudetool.IndexID { return claudetool.IndexID(fmt.Sprint(n)) }
@@ -387,7 +391,7 @@ func TestCompactInPlaceNudge(t *testing.T) {
 			id = strings.Fields(line)[0]
 		}
 	}
-	c.turn(`compact_in_place: {"action":"compact","collapse":[{"from":"` + id + `","to":"` + id + `","note":"hi"}]}`)
+	c.turn(`compact_in_place: {"action":"compact","brief":"hi","collapse":[{"from":"` + id + `","to":"` + id + `"}]}`)
 	if out, isErr := c.lastToolOutput(); isErr {
 		t.Fatalf("compact: %s", out)
 	}
@@ -627,7 +631,7 @@ func TestBuildCompactionOrphans(t *testing.T) {
 	}
 }
 
-func TestCompactIndexReadabilityGuidance(t *testing.T) {
+func TestCompactIndexDelegationGuidance(t *testing.T) {
 	index, err := compactIndex([]contextItem{
 		textItem(1, llm.MessageRoleAssistant, "Finished the benchmark."),
 		textItem(2, llm.MessageRoleAssistant, "Next task."),
@@ -636,9 +640,10 @@ func TestCompactIndexReadabilityGuidance(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"readable sentences or bullets with normal whitespace",
-		"words, numbers, and units clearly separated",
-		"not by removing spaces or joining words",
+		"four same-model workers",
+		"only their\nassigned source ranges and your brief",
+		"at most 150 words",
+		"Do not write per-range notes",
 	} {
 		if !strings.Contains(index, want) {
 			t.Errorf("index missing %q", want)
@@ -646,7 +651,7 @@ func TestCompactIndexReadabilityGuidance(t *testing.T) {
 	}
 }
 
-func TestBuildCompactionRetryPreservesNotes(t *testing.T) {
+func TestBuildCompactionRetryKeepsBrief(t *testing.T) {
 	const note = "Repeated push: everything up to date.\nIndex size 256: 12,906 ns → 6,237 ns."
 	items := []contextItem{
 		textItem(1, llm.MessageRoleAssistant, strings.Repeat(note+"\n", 20)),
@@ -655,7 +660,8 @@ func TestBuildCompactionRetryPreservesNotes(t *testing.T) {
 	for _, trim := range [][]claudetool.IndexID{nil, {"missing"}} {
 		t.Run(fmt.Sprintf("trim=%v", trim), func(t *testing.T) {
 			in := claudetool.CompactInPlaceInput{
-				Trim: trim,
+				Brief: "Keep the benchmark results.",
+				Trim:  trim,
 				Collapse: []claudetool.CompactCollapse{
 					{From: "missing", To: "1", Note: note},
 				},
@@ -665,10 +671,9 @@ func TestBuildCompactionRetryPreservesNotes(t *testing.T) {
 				t.Fatal("invalid IDs accepted")
 			}
 			for _, want := range []string{
-				"fix only the reported problems",
-				"Preserve existing notes verbatim",
-				"unless a note itself is invalid",
-				"Do not shorten notes to fix IDs or ranges",
+				"fix the reported problems",
+				"Keep the brief",
+				"Do not write per-range notes",
 			} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("retry error missing %q: %v", want, err)
@@ -1221,7 +1226,8 @@ func TestCompactionRefreshesSystemPrompt(t *testing.T) {
 	system := func() string {
 		t.Helper()
 		req := c.ps.GetLastRequest()
-		if len(req.System) != 1 {
+		// Chapters append their own block after the base system prompt.
+		if len(req.System) == 0 {
 			t.Fatalf("system = %+v", req.System)
 		}
 		return req.System[0].Text
@@ -1242,7 +1248,7 @@ func TestCompactionRefreshesSystemPrompt(t *testing.T) {
 
 	compact := func(seq int64) {
 		t.Helper()
-		in, _ := json.Marshal(claudetool.CompactInPlaceInput{Action: "compact", Collapse: []claudetool.CompactCollapse{
+		in, _ := json.Marshal(claudetool.CompactInPlaceInput{Action: "compact", Brief: "N", Collapse: []claudetool.CompactCollapse{
 			{From: claudetool.IndexID(fmt.Sprint(seq)), To: claudetool.IndexID(fmt.Sprint(seq)), Note: "N"},
 		}})
 		c.turn("compact_in_place: " + string(in))

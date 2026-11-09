@@ -159,6 +159,29 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 
 	// Calculate input token count based on the request content
 	inputTokens := s.countRequestTokens(req)
+	if llm.PurposeFromContext(ctx) == "compaction" {
+		var workerRequest struct {
+			Brief  string `json:"brief"`
+			Chunks []struct {
+				ID int `json:"id"`
+			} `json:"chunks"`
+		}
+		if len(req.Messages) == 0 || len(req.Messages[0].Content) == 0 {
+			return nil, fmt.Errorf("compaction fixture request has no JSON content")
+		}
+		if err := json.Unmarshal([]byte(req.Messages[0].Content[0].Text), &workerRequest); err != nil {
+			return nil, fmt.Errorf("decode compaction fixture request: %w", err)
+		}
+		summaries := make([]map[string]any, 0, len(workerRequest.Chunks))
+		for _, chunk := range workerRequest.Chunks {
+			summaries = append(summaries, map[string]any{"id": chunk.ID, "note": workerRequest.Brief})
+		}
+		text, err := json.Marshal(map[string]any{"summaries": summaries})
+		if err != nil {
+			return nil, fmt.Errorf("encode compaction fixture response: %w", err)
+		}
+		return s.makeResponse(string(text), inputTokens), nil
+	}
 
 	// Extract the text content from the last user message
 	var inputText string
@@ -205,7 +228,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		if strings.Contains(req.Messages[len(req.Messages)-1].Content[0].Text, "Keep everything.") {
 			return s.makeToolResponse("compact_in_place", json.RawMessage(`{"action":"skip"}`), inputTokens), nil
 		}
-		input, _ := json.Marshal(map[string]any{"action": "compact", "collapse": []map[string]string{{"from": id, "to": id, "note": "IDLE NOTE"}}})
+		input, _ := json.Marshal(map[string]any{"action": "compact", "brief": "IDLE NOTE", "collapse": []map[string]string{{"from": id, "to": id}}})
 		return s.makeToolResponse("compact_in_place", input, inputTokens), nil
 	}
 
@@ -1275,7 +1298,7 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 		ID:        fmt.Sprintf("tool_compact_%d", (baseNano+15)%1000),
 		Type:      llm.ContentTypeToolUse,
 		ToolName:  "compact_in_place",
-		ToolInput: json.RawMessage(`{"action":"index"}`),
+		ToolInput: json.RawMessage(`{"action":"index","brief":"Keep the current goal, decisions, and next action.","collapse":[{"from":"1","to":"3"}]}`),
 	})
 
 	// message_user tool (a reply to the smorgasbord request, with a reaction)
