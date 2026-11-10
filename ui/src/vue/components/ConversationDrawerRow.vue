@@ -19,6 +19,15 @@
   >
     <div class="drawer-conversation-item-flex-container">
       <div class="drawer-conversation-header-row">
+        <button
+          v-if="themesRef?.hasChapters"
+          type="button"
+          class="conversation-themes-toggle"
+          :aria-expanded="themesRef.expanded"
+          aria-label="Toggle conversation chapters"
+          @click.stop="themesRef.toggle()"
+          @keydown.stop
+        >{{ themesRef.expanded ? "⌄" : "›" }}</button>
         <div class="drawer-conversation-item-flex-container">
           <input
             v-if="ctx.editingId.value === conversation.conversation_id"
@@ -91,6 +100,13 @@
           />
         </div>
       </div>
+
+      <ConversationThemes
+        ref="themesRef"
+        v-if="!isDraft && !isPlaceholder"
+        :conversation-id="conversation.conversation_id"
+        :conversation-slug="conversation.slug"
+      />
 
       <!-- Tags / tag editor -->
       <div
@@ -494,6 +510,7 @@ import { perfCount } from "../../utils/perf";
 import { COMPOSER_ROW_ID, ComposerPreviewKey } from "../../utils/composerRow";
 import { compactNav, workspaceMode } from "../../utils/workspaceMode";
 import GearIcon from "./GearIcon.vue";
+import ConversationThemes from "./ConversationThemes.vue";
 
 const props = defineProps<{
   conversation: Conversation | ConversationWithState;
@@ -502,6 +519,7 @@ const props = defineProps<{
 const ctx = inject(DrawerCtxKey)!;
 const composerPreview = inject(ComposerPreviewKey, null);
 
+const themesRef = ref<InstanceType<typeof ConversationThemes> | null>(null);
 const renameInput = ref<HTMLInputElement | null>(null);
 const tagInput = ref<HTMLInputElement | null>(null);
 const actionsMenuRef = ref<InstanceType<typeof NavActionsMenu> | null>(null);

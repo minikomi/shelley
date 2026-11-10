@@ -2122,6 +2122,7 @@ func (cm *ConversationManager) systemPromptDisplayData(opts db.ConversationOptio
 	cfg.DisableAllTools = opts.DisableAllTools
 	cfg.InPlaceCompactor = inPlaceCompactor{cm: cm}
 	cfg.UserMessageFinder = cm.userMessageFinder()
+	cfg.RecordChapter = cm.chapterRecorder()
 	cfg.UserChat = cm.userChat
 	cfg.Slack = cm.slack
 	return systemPromptDisplayData(cfg, promptSkills)
@@ -2482,6 +2483,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	}
 	toolSetConfig.InPlaceCompactor = inPlaceCompactor{cm: cm, generation: generation}
 	toolSetConfig.UserMessageFinder = cm.userMessageFinder()
+	toolSetConfig.RecordChapter = cm.chapterRecorder()
 	toolSetConfig.UserChat = cm.userChat
 	toolSetConfig.Slack = cm.slack
 	toolSet := claudetool.NewToolSet(processCtx, toolSetConfig)
@@ -2537,6 +2539,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	if slices.ContainsFunc(toolSet.Tools(), func(t *llm.Tool) bool { return t.Name == messageParentTool.Name }) {
 		rewriteFinalReply = cm.rewriteFinalReply
 	}
+	chapterEnabled := slices.ContainsFunc(toolSet.Tools(), func(t *llm.Tool) bool { return t.Name == "chapter" })
 	loopInstance := loop.NewLoop(loop.Config{
 		LLM:            service,
 		ModelID:        modelID,
@@ -2588,7 +2591,19 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 			cm.mu.Unlock()
 		},
 		InjectMessages: func(ctx context.Context) (loop.Injection, error) {
-			return cm.takeInjectable(ctx, generation, nudger)
+			inj, err := cm.takeInjectable(ctx, generation, nudger)
+			if err != nil || !chapterEnabled {
+				return inj, err
+			}
+			if inj.System != nil {
+				system = inj.System
+			}
+			note, err := cm.chapterContext(ctx)
+			if err != nil {
+				return inj, err
+			}
+			inj.System = append(slices.Clone(system), llm.SystemContent{Type: "text", Text: note})
+			return inj, nil
 		},
 		RewriteFinalReply: rewriteFinalReply,
 		// A message can arrive too late to join the turn before, which

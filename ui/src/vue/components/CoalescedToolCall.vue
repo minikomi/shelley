@@ -145,6 +145,7 @@ import WriteSecretTool from "./tools/WriteSecretTool.vue";
 import CompactInPlaceTool from "./tools/CompactInPlaceTool.vue";
 import MessageParentTool from "./tools/MessageParentTool.vue";
 import MessageUserTool from "./tools/MessageUserTool.vue";
+import ChapterTool from "./tools/ChapterTool.vue";
 import SlackSendTool from "./tools/SlackSendTool.vue";
 import SubagentTool from "./tools/SubagentTool.vue";
 import LLMOneShotTool from "./tools/LLMOneShotTool.vue";
@@ -180,6 +181,7 @@ const startedEager = !props.hasResult;
 // posts are the Slack Assistant's side of its conversation; a placeholder would
 // make every bubble pop in while scrolling.
 const CHAT_TOOLS = new Set([
+  "chapter",
   MESSAGE_USER_TOOL,
   "send_to_thread",
   "send_to_channel",
@@ -218,6 +220,7 @@ const TOOL_COMPONENTS: Record<string, any> = {
   subagent: SubagentTool,
   message_parent: MessageParentTool,
   message_user: MessageUserTool,
+  chapter: ChapterTool,
   send_to_thread: SlackSendTool,
   send_to_channel: SlackSendTool,
   add_reaction: SlackSendTool,

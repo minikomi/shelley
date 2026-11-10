@@ -45,6 +45,25 @@
       <span class="toc-popover-title">Jump to…</span>
     </div>
     <div ref="listRef" class="toc-popover-list">
+      <p v-if="chaptersError" role="alert">{{ chaptersError }}</p>
+      <template v-if="chapters.length">
+        <div class="toc-popover-header"><span class="toc-popover-title">Chapters</span></div>
+        <button
+          v-for="chapter in chapters"
+          :key="`chapter-${chapter.message_id}`"
+          class="toc-entry toc-entry-chapter"
+          @click="handleGoto({
+            id: fragmentForMessage(chapter.message_id),
+            kind: 'user',
+            label: chapter.title,
+            messageId: chapter.message_id,
+          })"
+        >
+          <span class="toc-entry-icon" aria-hidden="true">§</span>
+          <span class="toc-entry-label">{{ chapter.title }}</span>
+        </button>
+        <div class="toc-popover-header"><span class="toc-popover-title">Messages</span></div>
+      </template>
       <button
         v-for="entry in entries"
         :key="entry.id"
@@ -163,6 +182,7 @@ import { replaceLocationFragment } from "../../utils/locationFragment";
 import { chunkMountKey } from "./chunkMount";
 import { messageTOCCategory, type TOCCategory } from "../../utils/conversationTOCCategory";
 import { messageSource, parseLegacyBackgroundJobNotice } from "../../utils/messageSource";
+import { apiFetch } from "../../services/api";
 
 interface TOCThumbnail {
   src: string;
@@ -197,6 +217,32 @@ const activeId = ref<string | null>(null);
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null);
 const listRef = ref<HTMLElement | null>(null);
 const renderedThumbnails = ref<Map<string, TOCThumbnail[]>>(new Map());
+const chapters = ref<{ title: string; message_id: string }[]>([]);
+const chaptersError = ref("");
+
+async function loadChapters() {
+  const id = props.conversationId;
+  try {
+    const response = await apiFetch(`/api/conversation/${encodeURIComponent(id)}/themes`, "Failed to load chapters");
+    const themes = await response.json();
+    if (id !== props.conversationId) return;
+    chapters.value = themes.chapters;
+    chaptersError.value = "";
+  } catch (error) {
+    if (id !== props.conversationId) return;
+    chaptersError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function onChaptersUpdated(event: Event) {
+  if (open.value && (event as CustomEvent<string>).detail === props.conversationId) void loadChapters();
+}
+
+watch(() => props.conversationId, () => {
+  chapters.value = [];
+  chaptersError.value = "";
+  if (open.value) void loadChapters();
+});
 
 function extractMessageLabel(message: Message, maxLen = 70): string {
   const slack = slackEventOf(message);
@@ -595,6 +641,7 @@ const activeEntryByToolUseId = computed(() => {
 function handleShow() {
   refreshRenderedThumbnails();
   open.value = true;
+  void loadChapters();
   nextTick(() => {
     const list = listRef.value;
     if (!list) return;
@@ -603,7 +650,7 @@ function handleShow() {
       list.scrollTop = 0;
       return;
     }
-    const el = list.children[index] as HTMLElement | undefined;
+    const el = list.querySelector<HTMLElement>(".toc-entry-active");
     // Center the active entry (block: "center" without scrolling ancestors).
     if (el) list.scrollTop = el.offsetTop - (list.clientHeight - el.offsetHeight) / 2;
   });
@@ -833,10 +880,12 @@ watch(
 );
 
 window.addEventListener("hashchange", resolveFragmentWithRetry);
+window.addEventListener("shelley-chapters-updated", onChaptersUpdated);
 
 onUnmounted(() => {
   cancelFragmentNavigation();
   detachScroll();
   window.removeEventListener("hashchange", resolveFragmentWithRetry);
+  window.removeEventListener("shelley-chapters-updated", onChaptersUpdated);
 });
 </script>
