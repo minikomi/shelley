@@ -3793,7 +3793,7 @@ async function submitTranscriptionCommand(path: string, transcriptionContext: st
     sending.value = true;
     error.value = null;
     const destination = await preparation.resolve();
-    await destination.complete(path, transcriptionContext);
+    await destination.complete({ kind: "file", path }, transcriptionContext);
   } finally {
     preparation.release();
     sending.value = false;
@@ -3838,20 +3838,23 @@ function prepareRecording(text: string): RecordingPreparation {
               if (stillWanted()) error.value = err instanceof Error ? err.message : String(err);
             }
           },
-          async complete(path, context) {
+          async complete(result, context) {
             error.value = null;
             const suffix = context.trim();
             try {
               await postSubmittedDraft(conversationId, text, () =>
                 api.sendMessage(conversationId, {
-                  message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
+                  message: result.kind === "file"
+                    ? `${SLASH_COMMANDS.TRANSCRIPTION.command} ${result.path}${suffix ? `\n${suffix}` : ""}`
+                    : [suffix, result.text].filter(Boolean).join("\n\n"),
                   ...options,
                 }),
               );
               accepted = true;
             } catch (err) {
               const detail = err instanceof Error ? err.message : String(err);
-              error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
+              error.value = `Failed to submit recording to ${conversationId}: ${detail}` +
+                (result.kind === "file" ? `. Retry in that conversation with /transcription ${result.path}` : "");
               throw err;
             }
           },

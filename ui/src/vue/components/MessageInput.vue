@@ -61,6 +61,7 @@
         </button>
         <RecordingPanel
           :initial-mode="recordingSubmission!.mode"
+          :conversation-id="conversationFor(recordingSubmission!)"
           :initial-microphone="recordingSubmission?.microphone"
           :initial-screen="recordingSubmission?.screen"
           :preserved-text="recordingSubmission?.message"
@@ -636,7 +637,7 @@ import { composerDispatch, composerSessionID, guardComposerClear } from "./compo
 import { isImeComposing } from "../../utils/imeComposing";
 import RecordButton from "./RecordButton.vue";
 import RecordingPanel from "./RecordingPanel.vue";
-import type { RecordingDestination, RecordingMode, RecordingPreparation } from "./recordingDestination";
+import type { RecordingDestination, RecordingMode, RecordingPreparation, RecordingResult } from "./recordingDestination";
 import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
 import { useFeatureFlag } from "../composables/featureFlags";
 import { useSecretSealing } from "../composables/secretSealing";
@@ -913,7 +914,7 @@ function beginRecording(mode: RecordingMode) {
   if (!(mode === "screen" ? canRecordScreen.value : canRecordAudio.value)) return;
   // Explain the missing transcription route instead of recording something
   // the server cannot transcribe.
-  if (!window.__SHELLEY_INIT__?.transcription_available) {
+  if (!(mode === "microphone" && window.__SHELLEY_INIT__?.streaming_transcription) && !window.__SHELLEY_INIT__?.transcription_available) {
     emit("recording-unavailable");
     return;
   }
@@ -984,21 +985,31 @@ function returnToRecording() {
   );
 }
 
-function completionFor(submission: RecordingSubmission) {
-  return (path: string, retry: boolean) => handleRecordingComplete(submission, path, retry);
+function retryRecordingDestination(submission: RecordingSubmission) {
+  if (!submission.destinationError) return;
+  submission.destinationError = undefined;
+  submission.destination = submission.preparation.resolve();
+  watchRecordingDestination(submission);
 }
 
-async function handleRecordingComplete(submission: RecordingSubmission, path: string, retry: boolean) {
-  if (retry && submission.destinationError) {
-    submission.destinationError = undefined;
-    submission.destination = submission.preparation.resolve();
-    watchRecordingDestination(submission);
-  }
+function conversationFor(submission: RecordingSubmission) {
+  return async (retry: boolean) => {
+    if (retry) retryRecordingDestination(submission);
+    return (await submission.destination).conversationId;
+  };
+}
+
+function completionFor(submission: RecordingSubmission) {
+  return (result: RecordingResult, retry: boolean) => handleRecordingComplete(submission, result, retry);
+}
+
+async function handleRecordingComplete(submission: RecordingSubmission, result: RecordingResult, retry: boolean) {
+  if (retry) retryRecordingDestination(submission);
   let destination: RecordingDestination;
   try {
     destination = await submission.destination;
   } catch (error) {
-    if (recordingSubmission.value === submission) reportUnsentRecording(path, error);
+    if (recordingSubmission.value === submission && result.kind === "file") reportUnsentRecording(result.path, error);
     throw error;
   }
   if (recordingSubmission.value !== submission) {
@@ -1006,7 +1017,7 @@ async function handleRecordingComplete(submission: RecordingSubmission, path: st
   }
   submission.submitting = true;
   try {
-    await destination.complete(path, submission.context);
+    await destination.complete(result, submission.context);
   } finally {
     submission.submitting = false;
   }

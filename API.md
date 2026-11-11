@@ -139,6 +139,22 @@ These timestamps are private to the requesting identity.
     - `?tail=<n>` — first frame contains only the last `n` messages.
   A `{"snapshot_complete": true}` frame follows the initial replay
   and precedes live updates.
+- `GET /api/conversation/<id>/transcription/stream` — WebSocket microphone
+  transcription. Enabled by `SHELLEY_TRANSCRIPTION_REALTIME_URL`, e.g.
+  `wss://openai.int.exe.xyz/v1/realtime?intent=transcription` for an attached
+  OpenAI integration, or `wss://api.openai.com/v1/realtime?intent=transcription`
+  with `SHELLEY_TRANSCRIPTION_REALTIME_KEY` for direct API access. The key
+  stays on the server. The provider must support `gpt-live-transcribe`.
+  The server sends `{"type":"ready"}` after configuring the upstream session.
+  Send binary mono PCM16 little-endian at 24 kHz, then `{"type":"commit"}`
+  after flushing the last audio samples. Server events are `delta` and
+  `completed` with `text`, or `error` with `message`. Closing cancels the
+  session. The browser displays partial text and sends the final transcript
+  through the ordinary chat endpoint, preserving the original conversation,
+  composer text, and attachments. Failed sends retain the final text for retry.
+  Audio is not saved. Screen and review recordings still use file transcription
+  for their timing data. Without the endpoint setting, microphone recordings
+  also use file transcription; a configured stream never falls back on errors.
 - `POST /api/conversation/<id>/chat` — send a user message. A message of
   `/transcription <absolute uploaded-media path>` creates a durable specialized
   queued message and returns `202 {"status":"queued"}`. The path must name a

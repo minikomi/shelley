@@ -291,6 +291,7 @@ export interface InitData {
   // transcription_available says whether recordings can be transcribed
   // (a gpt-transcribe route exists, e.g. from OPENAI_API_KEY).
   transcription_available?: boolean;
+  streaming_transcription?: boolean;
   user_email?: string;
   // workspace mode: see utils/workspaceMode.ts.
   workspace?: boolean;

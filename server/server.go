@@ -466,16 +466,18 @@ type Server struct {
 	exitProcess  func(int)
 
 	// lastUserActivity is the UnixNano of the UI's last activity heartbeat.
-	lastUserActivity  atomic.Int64
-	restartPendingNow func() bool
-	mediaRun          mediaCommandRunner
-	transcriber       recordingTranscriber
-	transcriptionMu   sync.Mutex
-	transcriptionJobs map[string]transcriptionJob
-	liveSessionURL    string
-	liveSessionKey    string
-	liveSessionClient *http.Client
-	liveCalls         liveCalls
+	lastUserActivity          atomic.Int64
+	restartPendingNow         func() bool
+	mediaRun                  mediaCommandRunner
+	transcriber               recordingTranscriber
+	transcriptionMu           sync.Mutex
+	transcriptionJobs         map[string]transcriptionJob
+	streamingTranscriptionURL string
+	streamingTranscriptionKey string
+	liveSessionURL            string
+	liveSessionKey            string
+	liveSessionClient         *http.Client
+	liveCalls                 liveCalls
 	// reflectionEmoji fetches the VM emoji for the favicon. Tests replace it to
 	// cover reflection-present and standalone behavior without ambient metadata.
 	reflectionEmoji func(context.Context) string
@@ -532,36 +534,38 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	}
 	liveURL := liveSessionEndpoint()
 	s := &Server{
-		db:                    database,
-		llmManager:            llmManager,
-		toolSetConfig:         toolSetConfig,
-		activeConversations:   make(map[string]*ConversationManager),
-		stoppedParents:        make(map[string]bool),
-		stoppingParents:       make(map[string]bool),
-		owedTurnEnds:          make(map[string]owedTurnEnd),
-		deletingConversations: make(map[string]bool),
-		logger:                logger,
-		predictableOnly:       predictableOnly,
-		defaultModel:          defaultModel,
-		requireHeader:         requireHeader,
-		versionChecker:        NewVersionChecker(),
-		notifDispatcher:       notifications.NewDispatcher(logger),
-		shutdownCh:            make(chan struct{}),
-		conversationVMs:       conversationVMState{cleanup: make(chan struct{}, 1), active: make(chan struct{})},
-		workspace:             workspaceState{reports: make(chan struct{}, 1)},
-		hooksDir:              defaultHooksDir(),
-		exitDelay:             500 * time.Millisecond,
-		exitProcess:           os.Exit,
-		restartPendingNow:     defaultRestartPending,
-		mediaRun:              runMediaCommand,
-		transcriber:           newOpenAIRecordingTranscriber(llmManager, predictableOnly),
-		transcriptionJobs:     make(map[string]transcriptionJob),
-		liveSessionURL:        liveURL,
-		liveSessionKey:        liveSessionAPIKey(liveURL),
-		liveSessionClient:     &http.Client{Timeout: 25 * time.Second},
-		channelClient:         &http.Client{Timeout: 30 * time.Second},
-		channelChatLocks:      make(map[string]*channelChatLock),
-		reflectionEmoji:       cachedReflectionEmoji,
+		db:                        database,
+		llmManager:                llmManager,
+		toolSetConfig:             toolSetConfig,
+		activeConversations:       make(map[string]*ConversationManager),
+		stoppedParents:            make(map[string]bool),
+		stoppingParents:           make(map[string]bool),
+		owedTurnEnds:              make(map[string]owedTurnEnd),
+		deletingConversations:     make(map[string]bool),
+		logger:                    logger,
+		predictableOnly:           predictableOnly,
+		defaultModel:              defaultModel,
+		requireHeader:             requireHeader,
+		versionChecker:            NewVersionChecker(),
+		notifDispatcher:           notifications.NewDispatcher(logger),
+		shutdownCh:                make(chan struct{}),
+		conversationVMs:           conversationVMState{cleanup: make(chan struct{}, 1), active: make(chan struct{})},
+		workspace:                 workspaceState{reports: make(chan struct{}, 1)},
+		hooksDir:                  defaultHooksDir(),
+		exitDelay:                 500 * time.Millisecond,
+		exitProcess:               os.Exit,
+		restartPendingNow:         defaultRestartPending,
+		mediaRun:                  runMediaCommand,
+		transcriber:               newOpenAIRecordingTranscriber(llmManager, predictableOnly),
+		transcriptionJobs:         make(map[string]transcriptionJob),
+		streamingTranscriptionURL: os.Getenv("SHELLEY_TRANSCRIPTION_REALTIME_URL"),
+		streamingTranscriptionKey: os.Getenv("SHELLEY_TRANSCRIPTION_REALTIME_KEY"),
+		liveSessionURL:            liveURL,
+		liveSessionKey:            liveSessionAPIKey(liveURL),
+		liveSessionClient:         &http.Client{Timeout: 25 * time.Second},
+		channelClient:             &http.Client{Timeout: 30 * time.Second},
+		channelChatLocks:          make(map[string]*channelChatLock),
+		reflectionEmoji:           cachedReflectionEmoji,
 	}
 
 	s.mcp = mcp.NewManager(database, s.mcpLoginURL)

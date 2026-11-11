@@ -660,6 +660,7 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 		// Recording is pointless without a transcription route; the UI
 		// explains how to get one instead of recording.
 		"transcription_available": transcriptionErr == nil,
+		"streaming_transcription": s.streamingTranscriptionURL != "",
 	}
 	// With no models the UI cannot send anything, so tell it WHY. On exe.dev
 	// the usual cause is a missing reflection or llm integration, and each has
@@ -951,6 +952,7 @@ func (s *Server) registerConversationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/conversation/{id}/live-session/{session}/events", s.handleLiveEvents)
 	mux.HandleFunc("DELETE /api/conversation/{id}/live-session/{session}", s.handleLiveHangUp)
 	mux.HandleFunc("GET /api/conversation/{id}/call/{call}/transcript", s.handleLiveTranscript)
+	mux.HandleFunc("GET /api/conversation/{id}/transcription/stream", s.handleStreamingTranscription)
 	mux.HandleFunc("POST /api/conversation/{id}/hooks", func(w http.ResponseWriter, r *http.Request) {
 		s.handleRegisterConversationHook(w, r, r.PathValue("id"))
 	})
