@@ -213,7 +213,13 @@ func (s *Server) deliverBackgroundJobNotice(ctx context.Context, job claudetool.
 		ctx = contextWithTemporary(ctx)
 	}
 	ctx = contextWithTurnUserData(ctx, data)
-	return cm.InjectMessage(ctx, modelID, llm.UserStringMessage(text))
+	if err := cm.InjectMessage(ctx, modelID, llm.UserStringMessage(text)); err != nil {
+		return err
+	}
+	s.liveCalls.withActiveProgress(job.ConversationID, func(c *liveCall) {
+		c.noteActivity(liveBackgroundProgress(data, job.ToolUseID))
+	})
+	return nil
 }
 
 // BackgroundJobInfo describes a running background job to the UI.
