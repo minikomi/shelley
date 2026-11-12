@@ -11,13 +11,14 @@ import (
 func TestLiveToolProgress(t *testing.T) {
 	for _, tt := range []struct{ command, want string }{
 		{"go test ./server -run Live", "go test server"},
-		{"pnpm run lint", "pnpm run lint"},
+		{"scripts/with-node pnpm --dir ui run type-check:vue", "pnpm run type-check:vue"},
+		{"make ui", "make ui"},
 		{"make build", "make build"},
-		{"npm test", "npm test"},
+		{"npm test", "npm run test"},
 		{"go test ./payments/...", "go test payments/..."},
 		{"python3 /tmp/work/task.py --key PRIVATE", "Running a Python script"},
 		{"/usr/bin/git -C \"$PRIVATE\" -C /another/repo diff -- server/live_call.go", "git diff (comparing changes) server/live_call.go"},
-		{"rg -- PRIVATE server/live_call.go", "Searching files with rg"},
+		{"rg -- PRIVATE server/live_call.go", "Searching server/live_call.go"},
 		{"cat .env /home/user/private.go secrets.go ../private.go token.ts", "Reading private.go"},
 		{"echo $(git diff)", ""},
 		{"curl -H 'Authorization: PRIVATE' https://example.com", ""},

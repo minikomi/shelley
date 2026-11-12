@@ -288,6 +288,9 @@ func liveShellCall(call *syntax.CallExpr) liveActivity {
 	for _, word := range call.Args {
 		args = append(args, word.Lit())
 	}
+	if len(args) > 0 && path.Base(args[0]) == "with-node" {
+		args = args[1:]
+	}
 	if len(args) == 0 || args[0] == "" {
 		return liveActivity{}
 	}
@@ -340,10 +343,45 @@ func liveShellCall(call *syntax.CallExpr) liveActivity {
 			}
 		}
 	case "rg":
-		if args[1] == "--files" {
-			return liveActivity{text: "Listing files with rg"}
+		operands := args[1:]
+		files := false
+	flags:
+		for len(operands) > 0 && strings.HasPrefix(operands[0], "-") {
+			flag := operands[0]
+			operands = operands[1:]
+			switch flag {
+			case "--":
+				break flags
+			case "--files":
+				files = true
+			case "-n", "-l", "-i", "-S", "--hidden", "--no-heading":
+			case "--glob", "-g", "--type", "-t":
+				if len(operands) == 0 {
+					return liveActivity{}
+				}
+				operands = operands[1:]
+			default:
+				return liveActivity{}
+			}
 		}
-		return liveActivity{text: "Searching files with rg"}
+		if !files {
+			if len(operands) == 0 {
+				return liveActivity{}
+			}
+			operands = operands[1:] // omit the search pattern, including quoted patterns
+		}
+		// A trailing flag's value is not a path.
+		end := 0
+		for end < len(operands) && !strings.HasPrefix(operands[end], "-") {
+			end++
+		}
+		names := livePaths(operands[:end])
+		if files {
+			return liveActivity{text: "Listing repository files" + names}
+		}
+		if names != "" {
+			return liveActivity{text: "Searching" + names, dedupKey: "inspect:" + strings.TrimSpace(names)}
+		}
 	case "go":
 		if args[1] == "test" || args[1] == "build" || args[1] == "vet" {
 			// Stop at the first flag: its value may look like a path.
@@ -353,13 +391,20 @@ func liveShellCall(call *syntax.CallExpr) liveActivity {
 			}
 			return liveActivity{text: "go " + args[1] + livePaths(args[2:end]), kind: liveCheck}
 		}
-	case "make", "pnpm", "npm":
+	case "make":
+		if len(args) == 2 && slices.Contains([]string{"build", "ui", "test", "lint", "check", "templates", "exe-scroll"}, args[1]) {
+			return liveActivity{text: "make " + args[1], kind: liveCheck}
+		}
+	case "pnpm", "npm":
 		rest := args[1:]
-		if args[0] != "make" && len(rest) > 0 && rest[0] == "run" {
+		if len(rest) >= 2 && rest[0] == "--dir" {
+			rest = rest[2:] // The directory is not part of the spoken command.
+		}
+		if len(rest) > 0 && rest[0] == "run" {
 			rest = rest[1:]
 		}
-		if len(rest) == 1 && slices.Contains([]string{"build", "test", "lint", "check", "type-check"}, rest[0]) {
-			return liveActivity{text: args[0] + " " + strings.Join(args[1:], " "), kind: liveCheck}
+		if len(rest) == 1 && slices.Contains([]string{"test", "build", "lint", "check", "type-check", "type-check:vue"}, rest[0]) {
+			return liveActivity{text: args[0] + " run " + rest[0], kind: liveCheck}
 		}
 	}
 	return liveActivity{}
