@@ -593,7 +593,7 @@ func TestLiveProgressDirectWorker(t *testing.T) {
 	}
 	notify()
 	notify()
-	if got := activityText(call.progressActivity); got != "Action: Searching llm/gem/gem.go\nState: submitted; result pending; success is not yet known" {
+	if got := activityText(call.progressActivity); got != "Action: Searching llm/gem/gem.go\nState: requested" {
 		t.Fatalf("unexpected worker progress: %q, %v", got, call.progressActivity)
 	}
 	call.observeWorking(false)

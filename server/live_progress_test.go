@@ -178,7 +178,7 @@ func TestLiveProgressRoutineActivityIsCoalescedAndSpaced(t *testing.T) {
 		}})
 		h.advance(liveProgressCoalesce)
 		expectEqual(t, "finding retains its supporting activity", h.context()[len(before):], []string{
-			"commentary [-]: " + liveReportHeading + "Found the duplicate listener.\nAction: Reading server/another.go\nState: submitted; result pending; success is not yet known",
+			"commentary [-]: " + liveReportHeading + "Found the duplicate listener.\nAction: Reading server/another.go\nState: requested",
 		})
 	})
 }
@@ -219,7 +219,7 @@ func TestLiveProgressWebSearchAndDelegationHideInputs(t *testing.T) {
 		{Type: llm.ContentTypeToolUse, ToolName: "subagent", ToolInput: json.RawMessage(`{"slug":"PRIVATE","prompt":"PRIVATE"}`)},
 	}})
 	_, facts, _ := liveProgress(row, nil)
-	expectEqual(t, "public activity", activityText(facts), "Action: searching the web\nState: submitted; result pending; success is not yet known\nAction: delegating a task to a worker\nState: submitted; result pending; success is not yet known")
+	expectEqual(t, "public activity", activityText(facts), "Action: searching the web\nState: requested\nAction: delegating a task to a worker\nState: requested")
 }
 
 func TestLiveProgressStreamedAndSavedBlocks(t *testing.T) {

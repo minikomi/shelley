@@ -78,7 +78,10 @@ func (a liveActivity) report() string {
 	if a.kind == livePatch {
 		action = "patch: " + action
 	}
-	state := "submitted; result pending; success is not yet known"
+	state := "requested"
+	if a.kind != liveInspect {
+		state = "submitted; result pending; success is not yet known"
+	}
 	switch a.phase {
 	case liveBackground:
 		state = "running; result pending; success is not yet known"

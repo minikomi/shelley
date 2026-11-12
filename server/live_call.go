@@ -24,7 +24,7 @@ const (
 	liveQuiet            = 1200 * time.Millisecond
 	liveResultHeading    = "Report the result and any unreported validation limit, blocker or decision. Skip repeated steps and spoken paths or branch names. Result:\n"
 	liveReportHeading    = "Say only the new finding or change; omit file lists and old caveats:\n"
-	liveProgressHeading  = "Describe this activity’s role in the known task; omit file lists:\n"
+	liveProgressHeading  = "Describe the supplied action and state in the known task. Tool names and paths are not findings; do not infer file contents:\n"
 	liveProgressChars    = 600
 	liveDeadline         = 5 * time.Second
 	liveMaxPerMinute     = 12

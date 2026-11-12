@@ -46,8 +46,8 @@ func TestLiveToolProgress(t *testing.T) {
 		{"patch", `{"path":"/home/person/app.py","patches":[{"newText":"PRIVATE"}]}`, "Action: patch: app.py\nState: submitted; result pending; success is not yet known"},
 		{"patch", `{"path":".env","patches":[{"newText":"PRIVATE"}]}`, ""},
 		{"browser", `{"url":"PRIVATE"}`, ""},
-		{"browser", `{"action":"navigate","url":"http://localhost:8000/index.html?token=PRIVATE"}`, "Action: opening a browser page\nState: submitted; result pending; success is not yet known"},
-		{"browser", `{"action":"eval","expression":"PRIVATE"}`, "Action: running browser JavaScript\nState: submitted; result pending; success is not yet known"},
+		{"browser", `{"action":"navigate","url":"http://localhost:8000/index.html?token=PRIVATE"}`, "Action: opening a browser page\nState: requested"},
+		{"browser", `{"action":"eval","expression":"PRIVATE"}`, "Action: running browser JavaScript\nState: requested"},
 		{"PRIVATE", `{"value":"PRIVATE"}`, ""},
 	} {
 		expectEqual(t, "tool", activityText(liveToolProgress(llm.Content{ToolName: tt.name, ToolInput: json.RawMessage(tt.input)})), tt.want)
