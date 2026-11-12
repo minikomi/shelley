@@ -187,6 +187,7 @@ let timerID: ReturnType<typeof setInterval> | null = null;
 
 // What Shelley reads of Live's events; it decides what speech becomes a task.
 const RELAYED = new Set([
+  "shelley.playback",
   "session.input_transcript.delta",
   "session.output_transcript.delta",
   "session.delegation.created",

@@ -56,6 +56,7 @@ const liveSaveDelay = time.Second
 // liveEvent is the part of a Live data-channel event a call reads.
 type liveEvent struct {
 	typ                            string
+	playbackActive                 bool
 	delta                          string
 	startMs, endMs                 float64
 	offsetMs                       json.RawMessage
@@ -70,6 +71,9 @@ func parseLiveEvent(raw json.RawMessage) (e liveEvent, ok bool) {
 		return e, false
 	}
 	json.Unmarshal(fields["type"], &e.typ)
+	if e.typ == "shelley.playback" && json.Unmarshal(fields["active"], &e.playbackActive) != nil {
+		return e, false
+	}
 	var delta any
 	if json.Unmarshal(fields["delta"], &delta) == nil {
 		switch d := delta.(type) {
@@ -150,6 +154,14 @@ type liveCall struct {
 	saveTimer   *time.Timer
 	saveMu      sync.Mutex // orders saves
 
+	playbackActive bool
+	lastSpeech     time.Time
+	spokenQueue    []liveSpokenUpdate
+	spokenTimer    *time.Timer
+	progressPulse  *time.Timer
+	progressLast   string                  // latest confirmed tool outcome
+	progressTools  map[string]liveActivity // submitted checks and edits awaiting a result
+
 	progressNotes    []string       // bounded public reports waiting for delivery
 	progressDue      time.Time      // pending timer deadline
 	lastProgress     time.Time      // last offered batch
@@ -212,6 +224,9 @@ func (c *liveCall) handle(events []liveEvent) {
 		switch e.typ {
 		case "session.input_transcript.delta", "session.output_transcript.delta":
 			user := e.typ == "session.input_transcript.delta"
+			if c.progressEnabled {
+				c.lastSpeech = time.Now()
+			}
 			c.transcriptN++
 			f := liveFragment{n: c.transcriptN, user: user, text: e.delta, startMs: e.startMs, endMs: e.endMs}
 			c.fragments = append(c.fragments, f)
@@ -233,6 +248,10 @@ func (c *liveCall) handle(events []liveEvent) {
 				if !user || !p.output {
 					c.settle(id)
 				}
+			}
+		case "shelley.playback":
+			if c.progressEnabled {
+				c.playbackActive = e.playbackActive
 			}
 		case "session.delegation.created":
 			c.delegation(e)
@@ -587,6 +606,11 @@ func (c *liveCall) sync() {
 // commentary can be spoken; thinking keeps Live current without
 // interrupting.
 func (c *liveCall) commentary(content string, delegation *string) {
+	if c.progressEnabled && (c.speechBusy() || len(c.spokenQueue) > 0) {
+		c.spokenQueue = append(c.spokenQueue, liveSpokenUpdate{content, delegation})
+		c.scheduleSpeech()
+		return
+	}
 	c.appendContext("session.commentary.append", content, delegation)
 }
 
@@ -691,6 +715,11 @@ func (c *liveCall) endLocked(reason string) {
 		return
 	}
 	c.stopProgress()
+	if c.spokenTimer != nil {
+		c.spokenTimer.Stop()
+		c.spokenTimer = nil
+	}
+	c.spokenQueue = nil
 	c.logger.Info("Live call ended", "reason", reason)
 	c.idle.Stop()
 	for _, p := range c.pending {

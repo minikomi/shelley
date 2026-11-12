@@ -2,6 +2,7 @@
 // JSON events on the "oai-events" data channel. The server brokers the SDP
 // exchange (api.createLiveSession); media and events go straight to OpenAI.
 import { api, type LiveConversationSettings } from "./api";
+import { watchLivePlayback } from "./livePlayback";
 
 export interface LiveEvent {
   type: string;
@@ -13,6 +14,8 @@ const CLOSE_TIMEOUT_MS = 15_000;
 
 export class LiveSession {
   private closed = false;
+  private progressUpdates = false;
+  private stopPlayback: (() => void) | null = null;
   /** Live's session id, which also names Shelley's side of the call. */
   id = "";
 
@@ -42,7 +45,20 @@ export class LiveSession {
     const audio = new Audio();
     audio.autoplay = true;
     pc.ontrack = (e) => {
-      audio.srcObject = e.streams[0] ?? new MediaStream([e.track]);
+      const stream = e.streams[0] ?? new MediaStream([e.track]);
+      audio.srcObject = stream;
+      if (session.progressUpdates) {
+        try {
+          session.stopPlayback?.();
+          session.stopPlayback = watchLivePlayback(
+            stream,
+            (active) => onEvent({ type: "shelley.playback", active }),
+            finish,
+          );
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
     };
     for (const track of mic.getAudioTracks()) pc.addTrack(track, mic);
     const events = pc.createDataChannel("oai-events");
@@ -98,6 +114,7 @@ export class LiveSession {
             settings?.(),
           );
           session.id = answer.session.id;
+          session.progressUpdates = answer.progress_updates;
           await pc.setRemoteDescription({ type: "answer", sdp: answer.transport.sdp });
           await started;
         })(),
@@ -137,6 +154,8 @@ export class LiveSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.stopPlayback?.();
+    this.stopPlayback = null;
     for (const t of this.mic.getTracks()) t.stop();
     this.audio.muted = true;
     this.pc.onconnectionstatechange = null;
@@ -151,6 +170,8 @@ export class LiveSession {
 
   private release(): void {
     this.closed = true;
+    this.stopPlayback?.();
+    this.stopPlayback = null;
     this.events.onmessage = null;
     this.events.onclose = null;
     this.pc.onconnectionstatechange = null;

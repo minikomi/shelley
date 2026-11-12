@@ -507,7 +507,7 @@ class ApiService {
     sdp: string,
     signal: AbortSignal,
     settings?: LiveConversationSettings,
-  ): Promise<{ session: { id: string }; transport: { sdp: string } }> {
+  ): Promise<{ session: { id: string }; transport: { sdp: string }; progress_updates: boolean }> {
     return (
       await apiFetch(
         `/api/conversation/${conversationId}/live-session`,

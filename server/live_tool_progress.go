@@ -307,14 +307,14 @@ func liveShellCall(call *syntax.CallExpr) liveActivity {
 	switch args[0] {
 	case "python", "python3":
 		if len(args) >= 3 && args[1] == "-m" && slices.Contains([]string{"unittest", "py_compile"}, args[2]) {
-			return liveActivity{text: "Checking Python code with " + args[2]}
+			return liveActivity{text: "Checking Python code with " + args[2], kind: liveCheck}
 		}
 		if args[1] == "-" || !strings.HasPrefix(args[1], "-") && strings.HasSuffix(args[1], ".py") {
 			return liveActivity{text: "Running a Python script", kind: liveCheck}
 		}
 	case "nginx":
 		if slices.Contains(args[1:], "-t") {
-			return liveActivity{text: "Checking Nginx configuration"}
+			return liveActivity{text: "Checking Nginx configuration", kind: liveCheck}
 		}
 	case "git":
 		switch args[1] {

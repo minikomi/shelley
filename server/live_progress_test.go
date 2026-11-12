@@ -783,7 +783,7 @@ func TestLiveProgressStreamedAndSavedBlocks(t *testing.T) {
 		row := progressMessage(t, "agent", llm.Message{Content: []llm.Content{llm.StringContent("First result."), llm.StringContent("Second result.")}})
 		notes, _, _ := liveProgress(row, nil)
 		c.observe([]liveRow{{seq: 11, progress: notes}})
-		h.advance(time.Minute)
+		h.advance(5 * time.Second)
 		c.observeWorking(false)
 		stream(c.conversationID, "stale")
 		h.advance(time.Minute)
@@ -845,6 +845,7 @@ func TestLiveCompactionReportsStartAndCompletion(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newLiveProgressHarness(t, true)
 		startLiveProgressTask(h)
+		h.advance(2 * time.Second)
 		tools := map[string][]liveActivity{}
 		row := func(seq int64, typ string, block llm.Content) liveRow {
 			_, facts, _ := liveProgress(progressMessage(t, typ, llm.Message{Content: []llm.Content{block}}), tools)

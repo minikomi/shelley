@@ -38,6 +38,10 @@ func (c *liveCall) progressTick(timer *time.Timer) {
 	if len(c.progressNotes) == 0 && len(c.progressActivity) == 0 {
 		return
 	}
+	if c.speechBusy() || len(c.spokenQueue) > 0 {
+		c.scheduleProgress(time.Second)
+		return
+	}
 	// Consequential facts survive later inspections. Findings lead, but cannot
 	// consume the entire payload and hide the concrete work.
 	slices.SortStableFunc(c.progressActivity, func(a, b liveActivity) int { return int(b.kind - a.kind) })
@@ -129,6 +133,12 @@ func (c *liveCall) scheduleProgress(delay time.Duration) {
 }
 
 func (c *liveCall) stopProgress() {
+	if c.progressPulse != nil {
+		c.progressPulse.Stop()
+		c.progressPulse = nil
+	}
+	c.progressLast = ""
+	c.progressTools = nil
 	c.progressNotes = nil
 	c.progressActivity = nil
 	c.progressSeen = nil
@@ -147,6 +157,7 @@ func (c *liveCall) observeWorking(working bool) {
 	}
 	if working {
 		c.startProgress()
+		c.scheduleProgressPulse()
 	} else {
 		c.stopProgress()
 	}
@@ -169,6 +180,20 @@ func (c *liveCall) noteActivity(activities []liveActivity) {
 				c.rememberProgress(closed)
 			} else if slices.Contains(c.progressSeen, closed) {
 				continue
+			}
+			if activity.phase >= liveFinished {
+				delete(c.progressTools, activity.toolID)
+				if activity.kind >= liveCheck {
+					c.progressLast = activity.report()
+					if activity.direct && activity.quietShellExit() {
+						c.progressLast = "Command finished successfully: " + activity.text
+					}
+				}
+			} else if activity.kind >= liveCheck {
+				if c.progressTools == nil {
+					c.progressTools = map[string]liveActivity{}
+				}
+				c.progressTools[activity.toolID] = activity
 			}
 		}
 		paths, inspection := strings.CutPrefix(activity.dedupKey, "inspect:")
