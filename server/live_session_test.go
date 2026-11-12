@@ -204,6 +204,17 @@ func TestLiveInstructionsOptIn(t *testing.T) {
 	if !strings.Contains(enabled, liveProgressPolicy) {
 		t.Fatal("opt-in instructions lack progress policy")
 	}
+	for _, instruction := range []string{
+		"Never talk over the listener to deliver an update.",
+		"A hesitation, breath, throat-clear, or brief pause does not mean they have finished.",
+		"If they start speaking, stop immediately and listen",
+		"finish your current sentence before incorporating it",
+		"Combine pending updates and share only the newest relevant development, not a backlog.",
+	} {
+		if !strings.Contains(enabled, instruction) {
+			t.Errorf("opt-in instructions lack %q", instruction)
+		}
+	}
 	paced := liveInstructions("Speak warmly.", "Backend state: idle.", 1, false)
 	if !strings.Contains(paced, livePaceInstruction(1)) || strings.Contains(paced, liveProgressPolicy) {
 		t.Fatal("pace setting unexpectedly changes progress policy")
