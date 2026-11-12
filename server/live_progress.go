@@ -13,7 +13,7 @@ import (
 
 const liveProgressCoalesce = time.Second
 const liveCheckDelay = 5 * time.Second
-const liveProgressSpacing = 20 * time.Second
+const liveProgressSpacing = 12 * time.Second
 
 const liveBackendWorking = "Backend state: working. A backend turn is running."
 const liveBackendIdle = "Backend state: idle. No backend turn is running; do not imply work is continuing."

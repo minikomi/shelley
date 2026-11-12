@@ -60,7 +60,7 @@ func TestLiveWorkingStatusDuringLongBackendStep(t *testing.T) {
 		h.call.noteActivity(liveToolProgress(llm.Content{ID: "check", ToolName: "bash", ToolInput: json.RawMessage(`{"command":"python3 -m unittest test_app"}`)}))
 		h.advance(time.Second)
 		before := len(h.context())
-		h.advance(19 * time.Second)
+		h.advance(11 * time.Second)
 		expectEqual(t, "no early heartbeat", len(h.context()), before)
 		h.advance(time.Second)
 		got := h.context()
@@ -72,7 +72,7 @@ func TestLiveWorkingStatusDuringLongBackendStep(t *testing.T) {
 			t.Fatalf("pending check confused with earlier completed edit: %s", status)
 		}
 		h.call.handle([]liveEvent{{typ: "shelley.playback", playbackActive: true}})
-		h.advance(20 * time.Second)
+		h.advance(12 * time.Second)
 		expectEqual(t, "status waits for ongoing speech", h.context(), got)
 		h.call.handle([]liveEvent{{typ: "shelley.playback", playbackActive: false}})
 		h.advance(time.Second)

@@ -59,7 +59,7 @@ func TestLiveProgressFiltersRows(t *testing.T) {
 	}
 }
 
-const testLiveProgressEvery = 20 * time.Second
+const testLiveProgressEvery = 12 * time.Second
 
 func newLiveProgressHarness(t *testing.T, enabled bool) *liveHarness {
 	t.Helper()
@@ -162,7 +162,7 @@ func TestLiveProgressRoutineActivityIsCoalescedAndSpaced(t *testing.T) {
 			t.Fatal("routine activity never reached the spoken update channel")
 		}
 		inspect("cat server/live_session.go")
-		h.advance(19 * time.Second)
+		h.advance(11 * time.Second)
 		expectEqual(t, "no rapid repeat", len(h.context()), 1)
 		h.advance(time.Second)
 		expectEqual(t, "fresh focus update after spacing", len(h.context()), 2)
