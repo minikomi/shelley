@@ -56,7 +56,8 @@ func TestLiveWorkingStatusDuringLongBackendStep(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newLiveProgressHarness(t, true)
 		h.call.observeWorking(true)
-		h.call.noteProgress("The config edit is applied. Next, checking its callers.")
+		h.call.noteActivity([]liveActivity{{text: "config.json", kind: livePatch, phase: liveFinished, toolID: "edit"}})
+		h.call.noteActivity(liveToolProgress(llm.Content{ID: "check", ToolName: "bash", ToolInput: json.RawMessage(`{"command":"python3 -m unittest test_app"}`)}))
 		h.advance(time.Second)
 		before := len(h.context())
 		h.advance(19 * time.Second)
@@ -65,6 +66,10 @@ func TestLiveWorkingStatusDuringLongBackendStep(t *testing.T) {
 		got := h.context()
 		if len(got) != before+1 || !strings.Contains(got[len(got)-1], "overall task is still active") {
 			t.Fatal(got)
+		}
+		status := got[len(got)-1]
+		if !strings.Contains(status, "Submitted tools awaiting a confirmed result") || !strings.Contains(status, "unittest") || strings.Contains(status, "Applied patch") {
+			t.Fatalf("pending check confused with earlier completed edit: %s", status)
 		}
 		h.call.handle([]liveEvent{{typ: "shelley.playback", playbackActive: true}})
 		h.advance(20 * time.Second)

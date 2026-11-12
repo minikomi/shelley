@@ -135,6 +135,9 @@ func (a liveActivity) report() string {
 		if a.compound {
 			return fmt.Sprintf("Submitted combined shell.\nRequested steps: %q", description)
 		}
+		if a.kind == liveCheck {
+			return "Starting: " + description + ". Result pending; success is not yet known."
+		}
 		return "Starting: " + description
 	}
 }

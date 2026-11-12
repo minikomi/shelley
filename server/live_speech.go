@@ -64,16 +64,15 @@ func (c *liveCall) scheduleProgressPulse() {
 			}
 			if !c.speechBusy() && len(c.spokenQueue) == 0 && c.tick == nil && time.Since(c.lastProgress) >= liveProgressSpacing {
 				content := "Working status: this is a snapshot of existing state, not a new tool event or another completion. The overall task is still active, with no final answer. Report the confirmed tool state below, then explain that work on the overall task continues."
-				if c.progressLast != "" {
-					content += "\nMost recent completed tool outcome (report this completion, not an earlier running-tool plan):\n" + c.progressLast
-				}
 				var pending []string
 				for _, tool := range c.progressTools {
 					pending = append(pending, tool.report())
 				}
 				slices.Sort(pending)
 				if len(pending) > 0 {
-					content += "\nSubmitted tools awaiting a confirmed result:\n" + strings.Join(pending[:min(3, len(pending))], "\n")
+					content += "\nSubmitted tools awaiting a confirmed result. No completion or success has been reported for these tools; say that their result is still pending:\n" + strings.Join(pending[:min(3, len(pending))], "\n")
+				} else if c.progressLast != "" {
+					content += "\nMost recent completed tool outcome (the tool finished; the overall task continues):\n" + c.progressLast
 				}
 				c.commentary(content, c.progressDelegation())
 				c.lastProgress = time.Now()

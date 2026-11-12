@@ -261,7 +261,7 @@ func TestLiveCallToolProgressBeforeReply(t *testing.T) {
 	}
 	select {
 	case got := <-call.instructions:
-		expectEqual(t, "tool activity before public reply", got, "commentary [-]: "+liveProgressHeading+"Starting: go test server")
+		expectEqual(t, "tool activity before public reply", got, "commentary [-]: "+liveProgressHeading+"Starting: go test server. Result pending; success is not yet known.")
 	case <-time.After(10 * time.Second):
 		t.Fatal("tool activity never reached Live while the model was held")
 	}

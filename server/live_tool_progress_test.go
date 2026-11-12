@@ -39,7 +39,7 @@ func TestLiveToolProgress(t *testing.T) {
 	}
 	for _, tt := range []struct{ name, input, want string }{
 		{"bash", `{"command":"make build","background":true}`, "Submitted background shell; requested step: make build"},
-		{"bash", `{"command":"go test ./server"}`, "Starting: go test server"},
+		{"bash", `{"command":"go test ./server"}`, "Starting: go test server. Result pending; success is not yet known."},
 		{"bash", `{`, ""},
 		{"apply_patch", `{"patch":"PRIVATE"}`, ""},
 		{"patch", `{"path":"nginx.conf","patches":[{"newText":"PRIVATE"}]}`, "Applying patch: nginx.conf"},
@@ -147,7 +147,7 @@ func TestLivePythonScriptMetadata(t *testing.T) {
 		}
 		tool := llm.Content{ID: "first", ToolName: "bash", ToolInput: input}
 		facts := liveToolProgress(tool)
-		expectEqual(t, "script activity", activityText(facts), "Starting: Running a Python script")
+		expectEqual(t, "script activity", activityText(facts), "Starting: Running a Python script. Result pending; success is not yet known.")
 		tool.ID = "second"
 		next := liveToolProgress(tool)
 		if facts[0].key() == next[0].key() {
