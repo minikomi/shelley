@@ -185,9 +185,6 @@ func (c *liveCall) noteActivity(activities []liveActivity) {
 				delete(c.progressTools, activity.toolID)
 				if activity.kind >= liveCheck {
 					c.progressLast = activity.report()
-					if activity.direct && activity.quietShellExit() {
-						c.progressLast = "Command finished successfully: " + activity.text
-					}
 				}
 			} else if activity.kind >= liveCheck {
 				if c.progressTools == nil {

@@ -38,16 +38,16 @@ func TestLiveToolProgress(t *testing.T) {
 		})
 	}
 	for _, tt := range []struct{ name, input, want string }{
-		{"bash", `{"command":"make build","background":true}`, "Submitted background shell; requested step: make build"},
-		{"bash", `{"command":"go test ./server"}`, "Starting: go test server. Result pending; success is not yet known."},
+		{"bash", `{"command":"make build","background":true}`, "Action: make build\nState: submitted; result pending; success is not yet known\nExecution: background"},
+		{"bash", `{"command":"go test ./server"}`, "Action: go test server\nState: submitted; result pending; success is not yet known"},
 		{"bash", `{`, ""},
 		{"apply_patch", `{"patch":"PRIVATE"}`, ""},
-		{"patch", `{"path":"nginx.conf","patches":[{"newText":"PRIVATE"}]}`, "Applying patch: nginx.conf"},
-		{"patch", `{"path":"/home/person/app.py","patches":[{"newText":"PRIVATE"}]}`, "Applying patch: app.py"},
+		{"patch", `{"path":"nginx.conf","patches":[{"newText":"PRIVATE"}]}`, "Action: patch: nginx.conf\nState: submitted; result pending; success is not yet known"},
+		{"patch", `{"path":"/home/person/app.py","patches":[{"newText":"PRIVATE"}]}`, "Action: patch: app.py\nState: submitted; result pending; success is not yet known"},
 		{"patch", `{"path":".env","patches":[{"newText":"PRIVATE"}]}`, ""},
 		{"browser", `{"url":"PRIVATE"}`, ""},
-		{"browser", `{"action":"navigate","url":"http://localhost:8000/index.html?token=PRIVATE"}`, "Starting: opening a browser page"},
-		{"browser", `{"action":"eval","expression":"PRIVATE"}`, "Starting: running browser JavaScript"},
+		{"browser", `{"action":"navigate","url":"http://localhost:8000/index.html?token=PRIVATE"}`, "Action: opening a browser page\nState: submitted; result pending; success is not yet known"},
+		{"browser", `{"action":"eval","expression":"PRIVATE"}`, "Action: running browser JavaScript\nState: submitted; result pending; success is not yet known"},
 		{"PRIVATE", `{"value":"PRIVATE"}`, ""},
 	} {
 		expectEqual(t, "tool", activityText(liveToolProgress(llm.Content{ToolName: tt.name, ToolInput: json.RawMessage(tt.input)})), tt.want)
@@ -61,12 +61,12 @@ func TestLiveToolResultsUseMetadataOnly(t *testing.T) {
 		want    string
 		phase   livePhase
 	}{
-		{`{"exitCode":0}`, false, "Shell exited with status 0; submitted step: go test server", liveShellExited},
-		{`{"exitCode":2}`, false, "Shell exited with status 2; submitted step: go test server", liveFailed},
-		{`{"exitCode":1}`, true, "Shell exited with status 1; submitted step: go test server", liveFailed},
-		{`{"background":{"jobId":"j","logPath":"PRIVATE"}}`, false, "Running in background; submitted step: go test server", liveBackground},
+		{`{"exitCode":0}`, false, "Action: go test server\nState: shell exited with status 0", liveShellExited},
+		{`{"exitCode":2}`, false, "Action: go test server\nState: shell exited with status 2", liveFailed},
+		{`{"exitCode":1}`, true, "Action: go test server\nState: shell exited with status 1", liveFailed},
+		{`{"background":{"jobId":"j","logPath":"PRIVATE"}}`, false, "Action: go test server\nState: running; result pending; success is not yet known\nExecution: background", liveBackground},
 		{`{}`, false, "", liveRequested},
-		{`{}`, true, "Tool failed: go test server", liveFailed},
+		{`{}`, true, "Action: go test server\nState: failed", liveFailed},
 	} {
 		var display any
 		if err := json.Unmarshal([]byte(tt.display), &display); err != nil {
@@ -92,7 +92,7 @@ func TestLiveForegroundCompoundCommandsReportShellLifecycle(t *testing.T) {
 			for _, code := range []int{0, 1} {
 				finished := liveToolResult(llm.Content{Display: map[string]any{"exitCode": code}, ToolResult: llm.TextContent("PRIVATE")}, started)
 				got := activityText(finished)
-				if !strings.Contains(got, "Combined shell exited with status") || !strings.Contains(got, `Requested steps: "go test server"`) || strings.Contains(got, "successfully") || strings.Contains(got, "PRIVATE") {
+				if !strings.Contains(got, "State: shell exited with status") || !strings.Contains(got, "Action: go test server") || !strings.Contains(got, "not proof each step ran") || strings.Contains(got, "successfully") || strings.Contains(got, "PRIVATE") {
 					t.Fatal(got)
 				}
 			}
@@ -112,23 +112,23 @@ func TestLivePatchFactsUseOnlySafeHeaders(t *testing.T) {
 		})
 	}
 	start := []liveActivity{{text: "update server/a.go", kind: livePatch, toolID: "p"}}
-	expectEqual(t, "success", activityText(liveToolResult(llm.Content{ToolUseID: "p"}, start)), "Applied patch: update server/a.go")
+	expectEqual(t, "success", activityText(liveToolResult(llm.Content{ToolUseID: "p"}, start)), "Action: patch: update server/a.go\nState: completed")
 	failed := activityText(liveToolResult(llm.Content{ToolUseID: "p", ToolError: true, ToolResult: llm.TextContent("PRIVATE")}, start))
-	expectEqual(t, "failure", failed, "Tool failed: Applying patch: update server/a.go")
+	expectEqual(t, "failure", failed, "Action: patch: update server/a.go\nState: failed")
 }
 
 func TestLiveReadSuccessIsSilentButFailuresAreNot(t *testing.T) {
 	started := liveToolProgress(llm.Content{ID: "read", ToolName: "bash", ToolInput: json.RawMessage(`{"command":"cat server/live_call.go"}`)})
 	expectEqual(t, "success", len(liveToolResult(llm.Content{Display: map[string]any{"exitCode": 0}}, started)), 0)
-	expectEqual(t, "nonzero", activityText(liveToolResult(llm.Content{Display: map[string]any{"exitCode": 1}}, started)), "Shell exited with status 1; submitted step: Reading server/live_call.go")
+	expectEqual(t, "nonzero", activityText(liveToolResult(llm.Content{Display: map[string]any{"exitCode": 1}}, started)), "Action: Reading server/live_call.go\nState: shell exited with status 1")
 }
 
 func TestLiveCompactionResultIgnoresOutput(t *testing.T) {
 	started := liveToolProgress(llm.Content{ToolName: "compact_in_place", ToolInput: json.RawMessage(`{"action":"compact"}`)})
 	for _, failed := range []bool{false, true} {
-		want := "Shortened this conversation’s history."
+		want := "Action: " + liveCompacting + "\nState: completed"
 		if failed {
-			want = "The attempt to shorten this conversation’s history failed."
+			want = "Action: " + liveCompacting + "\nState: failed"
 		}
 		expectEqual(t, "outcome", activityText(liveToolResult(llm.Content{ToolError: failed, ToolResult: llm.TextContent("PRIVATE")}, started)), want)
 	}
@@ -136,7 +136,7 @@ func TestLiveCompactionResultIgnoresOutput(t *testing.T) {
 
 func TestLiveBackgroundCompletionUsesWholeShellEvidence(t *testing.T) {
 	finished := liveBackgroundProgress(backgroundJobUserData{BackgroundJobID: "job", Command: "false && go test ./server; true", ExitCode: new(int)}, "shell")
-	expectEqual(t, "shell success does not prove the tests ran", activityText(finished), "Combined background shell exited with status 0.\nRequested steps: \"go test server\"")
+	expectEqual(t, "shell success does not prove the tests ran", activityText(finished), "Action: go test server\nState: shell exited with status 0\nScope: combined shell; listed actions are requested steps, not proof each step ran.\nExecution: background")
 }
 
 func TestLivePythonScriptMetadata(t *testing.T) {
@@ -147,7 +147,7 @@ func TestLivePythonScriptMetadata(t *testing.T) {
 		}
 		tool := llm.Content{ID: "first", ToolName: "bash", ToolInput: input}
 		facts := liveToolProgress(tool)
-		expectEqual(t, "script activity", activityText(facts), "Starting: Running a Python script. Result pending; success is not yet known.")
+		expectEqual(t, "script activity", activityText(facts), "Action: Running a Python script\nState: submitted; result pending; success is not yet known")
 		tool.ID = "second"
 		next := liveToolProgress(tool)
 		if facts[0].key() == next[0].key() {

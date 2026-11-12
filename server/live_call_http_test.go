@@ -261,7 +261,7 @@ func TestLiveCallToolProgressBeforeReply(t *testing.T) {
 	}
 	select {
 	case got := <-call.instructions:
-		expectEqual(t, "tool activity before public reply", got, "commentary [-]: "+liveProgressHeading+"Starting: go test server. Result pending; success is not yet known.")
+		expectEqual(t, "tool activity before public reply", got, "commentary [-]: "+liveProgressHeading+"Action: go test server\nState: submitted; result pending; success is not yet known")
 	case <-time.After(10 * time.Second):
 		t.Fatal("tool activity never reached Live while the model was held")
 	}
@@ -593,7 +593,7 @@ func TestLiveProgressDirectWorker(t *testing.T) {
 	}
 	notify()
 	notify()
-	if got := activityText(call.progressActivity); got != "Starting: Searching llm/gem/gem.go" {
+	if got := activityText(call.progressActivity); got != "Action: Searching llm/gem/gem.go\nState: submitted; result pending; success is not yet known" {
 		t.Fatalf("unexpected worker progress: %q, %v", got, call.progressActivity)
 	}
 	call.observeWorking(false)
@@ -626,7 +626,7 @@ func TestLiveEarlyPublicCommentaryWhileRequestIsRunning(t *testing.T) {
 		t.Fatal("missing commentary callback")
 	}
 	turn.request.OnPublicProgress(llm.PublicProgress{WebLookupID: "lookup-1", WebAction: "open_page"})
-	call.expect("commentary [-]: " + liveProgressHeading + "Opened a web page for this investigation.")
+	call.expect("commentary [-]: " + liveProgressHeading + "Action: Opened a web page for this investigation.\nState: completed")
 	turn.request.OnPublicProgress(llm.PublicProgress{Commentary: "Both versions passed the same four tool calls."})
 	call.expect("commentary [-]: " + liveReportHeading + "notes: Both versions passed the same four tool calls.")
 	e.finish(conv.ConversationID, turn)

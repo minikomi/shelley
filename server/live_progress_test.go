@@ -43,7 +43,7 @@ func TestLiveProgressFiltersRows(t *testing.T) {
 		{"subagent report", dialogueRow("user", "helper report", false, `{"sender_conversation_id":"child","sender_relationship":"subagent"}`), "", "", false},
 		{"agent notes", dialogueRow("agent", " Found the stale cache. ", false, ""), "notes: Found the stale cache.", "", false},
 		{"successful result omitted", message("user", result(false, "private successful output")), "", "", false},
-		{"failed result output omitted", message("user", llm.StringContent("not a finding"), result(true, "PRIVATE OUTPUT")), "", "A tool reported failure; that step has not succeeded.", false},
+		{"failed result output omitted", message("user", llm.StringContent("not a finding"), result(true, "PRIVATE OUTPUT")), "", "Action: tool invocation\nState: failed", false},
 		{"private thinking omitted", message("agent", llm.Content{Type: llm.ContentTypeThinking, Text: "PRIVATE REASONING"}), "", "", false},
 		{"final reply", dialogueRow("agent", "Done", true, ""), "", "", true},
 		{"excluded row", excluded, "", "", false},
@@ -178,7 +178,7 @@ func TestLiveProgressRoutineActivityIsCoalescedAndSpaced(t *testing.T) {
 		}})
 		h.advance(liveProgressCoalesce)
 		expectEqual(t, "finding retains its supporting activity", h.context()[len(before):], []string{
-			"commentary [-]: " + liveReportHeading + "Found the duplicate listener.\nStarting: Reading server/another.go",
+			"commentary [-]: " + liveReportHeading + "Found the duplicate listener.\nAction: Reading server/another.go\nState: submitted; result pending; success is not yet known",
 		})
 	})
 }
@@ -194,7 +194,7 @@ func TestLiveProgressMatchesConcurrentToolResults(t *testing.T) {
 		Type: llm.ContentTypeToolResult, ToolUseID: "go test ./server", Display: map[string]any{"exitCode": 0}, ToolResult: llm.TextContent("PRIVATE OUTPUT"),
 	}}}), tools)
 	expectEqual(t, "no output", len(notes), 0)
-	expectEqual(t, "matched result", activityText(activity), "Shell exited with status 0; submitted step: go test server")
+	expectEqual(t, "matched result", activityText(activity), "Action: go test server\nState: shell exited with status 0")
 	expectEqual(t, "remaining tool", len(tools), 1)
 }
 
@@ -219,7 +219,7 @@ func TestLiveProgressWebSearchAndDelegationHideInputs(t *testing.T) {
 		{Type: llm.ContentTypeToolUse, ToolName: "subagent", ToolInput: json.RawMessage(`{"slug":"PRIVATE","prompt":"PRIVATE"}`)},
 	}})
 	_, facts, _ := liveProgress(row, nil)
-	expectEqual(t, "public activity", activityText(facts), "Starting: searching the web\nStarting: delegating a task to a worker")
+	expectEqual(t, "public activity", activityText(facts), "Action: searching the web\nState: submitted; result pending; success is not yet known\nAction: delegating a task to a worker\nState: submitted; result pending; success is not yet known")
 }
 
 func TestLiveProgressStreamedAndSavedBlocks(t *testing.T) {

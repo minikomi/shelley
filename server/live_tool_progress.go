@@ -73,73 +73,36 @@ func (a liveActivity) key() string {
 
 // Format evidence once, when offering it to Live; no queue decisions parse prose.
 func (a liveActivity) report() string {
-	if a.kind == liveCompactionStart {
-		switch a.phase {
-		case liveFinished:
-			return "Shortened this conversation’s history."
-		case liveFailed:
-			return "The attempt to shorten this conversation’s history failed."
-		default:
-			return a.text
-		}
-	}
-	description := a.text
+	action := a.text
 	if a.kind == livePatch {
-		description = "Applying patch: " + a.text
-		if a.phase == liveFinished {
-			return "Applied patch: " + a.text
+		action = "patch: " + action
+	}
+	state := "submitted; result pending; success is not yet known"
+	switch a.phase {
+	case liveBackground:
+		state = "running; result pending; success is not yet known"
+	case liveFinished:
+		state = "completed"
+		if a.direct && a.kind == liveCheck {
+			state = "completed successfully"
+		}
+	case liveFailed:
+		state = "failed"
+		if a.background && a.exitCode == nil {
+			state = "completion unknown; background command was lost"
 		}
 	}
 	if a.exitCode != nil {
-		if !a.direct {
-			label := "Combined shell"
-			if a.background {
-				label = "Combined background shell"
-			}
-			return fmt.Sprintf("%s exited with status %d.\nRequested steps: %q", label, *a.exitCode, description)
-		}
-		if a.background {
-			return fmt.Sprintf("Background shell exited with status %d; submitted step: %s", *a.exitCode, description)
-		}
-		return fmt.Sprintf("Shell exited with status %d; submitted step: %s", *a.exitCode, description)
+		state = fmt.Sprintf("shell exited with status %d", *a.exitCode)
 	}
-	switch a.phase {
-	case liveBackground:
-		if !a.direct {
-			return fmt.Sprintf("Submitted combined background shell.\nRequested steps: %q", description)
-		}
-		return "Running in background; submitted step: " + description
-	case liveFailed:
-		if a.background {
-			return "A background command was lost; completion is unknown."
-		}
-		if a.compound {
-			return fmt.Sprintf("Combined shell failed before a shell status was available.\nRequested steps: %q", description)
-		}
-		if description == "" {
-			return "A tool reported failure; that step has not succeeded."
-		}
-		return "Tool failed: " + description
-	case liveFinished:
-		if a.direct && a.kind == liveCheck {
-			return "Command finished successfully: " + description
-		}
-		return description
-	default:
-		if a.kind == livePatch {
-			return description
-		}
-		if a.background {
-			return "Submitted background shell; requested step: " + description
-		}
-		if a.compound {
-			return fmt.Sprintf("Submitted combined shell.\nRequested steps: %q", description)
-		}
-		if a.kind == liveCheck {
-			return "Starting: " + description + ". Result pending; success is not yet known."
-		}
-		return "Starting: " + description
+	report := "Action: " + action + "\nState: " + state
+	if a.compound || a.exitCode != nil && !a.direct {
+		report += "\nScope: combined shell; listed actions are requested steps, not proof each step ran."
 	}
+	if a.background {
+		report += "\nExecution: background"
+	}
+	return report
 }
 
 // Describe supported inputs only; never copy scripts or arbitrary arguments.
@@ -452,7 +415,7 @@ func liveToolStatus(tool llm.Content) claudetool.BashDisplayData {
 	return status
 }
 
-const liveCompacting = "Starting compaction of this conversation’s older messages."
+const liveCompacting = "compacting this conversation’s older messages"
 
 // Only structured status establishes completion. Ignore successful inspections:
 // their exit status adds no useful development to the submitted activity.
@@ -469,7 +432,7 @@ func liveToolResult(tool llm.Content, started []liveActivity) []liveActivity {
 			}
 		case tool.ToolError && result.ExitCode == nil:
 			if activity.kind == livePatch {
-				activity.text = "Applying patch: " + activity.text
+				activity.text = "patch: " + activity.text
 			}
 			activity.phase, activity.kind, activity.background = liveFailed, liveFailure, false
 		case activity.kind == livePatch:
@@ -487,7 +450,7 @@ func liveToolResult(tool llm.Content, started []liveActivity) []liveActivity {
 		facts = append(facts, activity)
 	}
 	if tool.ToolError && len(facts) == 0 {
-		facts = append(facts, liveActivity{kind: liveFailure, toolID: tool.ToolUseID, phase: liveFailed})
+		facts = append(facts, liveActivity{text: "tool invocation", kind: liveFailure, toolID: tool.ToolUseID, phase: liveFailed})
 	}
 	return facts
 }
