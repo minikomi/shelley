@@ -11,18 +11,20 @@ import (
 func TestLiveToolProgress(t *testing.T) {
 	for _, tt := range []struct{ command, want string }{
 		{"go test ./server -run Live", "go test server"},
-		{"scripts/with-node pnpm --dir ui run type-check:vue", "pnpm run type-check:vue"},
+		{"pnpm run lint", "pnpm run lint"},
 		{"make build", "make build"},
-		{"python3 /tmp/replay/freeze.py --key PRIVATE", "Running a Python script"},
+		{"npm test", "npm test"},
+		{"go test ./payments/...", "go test payments/..."},
+		{"python3 /tmp/work/task.py --key PRIVATE", "Running a Python script"},
 		{"/usr/bin/git -C \"$PRIVATE\" -C /another/repo diff -- server/live_call.go", "git diff (comparing changes) server/live_call.go"},
-		{"rg -- PRIVATE server/live_call.go", "Searching server/live_call.go"},
+		{"rg -- PRIVATE server/live_call.go", "Searching files with rg"},
 		{"cat .env /home/user/private.go secrets.go ../private.go token.ts", "Reading private.go"},
 		{"echo $(git diff)", ""},
 		{"curl -H 'Authorization: PRIVATE' https://example.com", ""},
 		{"sed -n '1,50p' inject.conf.in", "Reading inject.conf.in"},
 		{"python3 -m unittest -v test_configure", "Checking Python code with unittest"},
 		{"nginx -t -c /private/nginx.conf", "Checking Nginx configuration"},
-		{"cat > /home/private/reports/image-generation.org <<'EOF'\nPRIVATE CONTENT\ngit fetch SECRET\nEOF", "Writing file image-generation.org"},
+		{"cat > /home/private/reports/report.md <<'EOF'\nPRIVATE CONTENT\ngit fetch SECRET\nEOF", "Writing file report.md"},
 		{"python3 - <<'PY'\nprint('git fetch PRIVATE')\nPY", "Running a Python script"},
 	} {
 		t.Run(tt.command, func(t *testing.T) {
@@ -43,7 +45,7 @@ func TestLiveToolProgress(t *testing.T) {
 		{"patch", `{"path":"/home/person/app.py","patches":[{"newText":"PRIVATE"}]}`, "Applying patch: app.py"},
 		{"patch", `{"path":".env","patches":[{"newText":"PRIVATE"}]}`, ""},
 		{"browser", `{"url":"PRIVATE"}`, ""},
-		{"browser", `{"action":"navigate","url":"http://localhost:8000/image-generation.html?token=PRIVATE"}`, "Starting: opening a browser page"},
+		{"browser", `{"action":"navigate","url":"http://localhost:8000/index.html?token=PRIVATE"}`, "Starting: opening a browser page"},
 		{"browser", `{"action":"eval","expression":"PRIVATE"}`, "Starting: running browser JavaScript"},
 		{"PRIVATE", `{"value":"PRIVATE"}`, ""},
 	} {

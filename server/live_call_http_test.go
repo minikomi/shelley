@@ -593,7 +593,7 @@ func TestLiveProgressDirectWorker(t *testing.T) {
 	}
 	notify()
 	notify()
-	if got := activityText(call.progressActivity); got != "Starting: Searching llm/gem/gem.go" {
+	if got := activityText(call.progressActivity); got != "Starting: Searching files with rg" {
 		t.Fatalf("unexpected worker progress: %q, %v", got, call.progressActivity)
 	}
 	call.observeWorking(false)

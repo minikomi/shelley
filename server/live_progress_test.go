@@ -123,7 +123,7 @@ func TestLiveProgressWorkingLifecycle(t *testing.T) {
 					t.Fatal("idle retained progress")
 				}
 				h.call.observeWorking(true)
-				h.call.observe([]liveRow{{seq: 12, activity: progressActivities("Starting: make ui")}})
+				h.call.observe([]liveRow{{seq: 12, activity: progressActivities("Starting: make build")}})
 				h.call.end("hangup")
 				before = h.context()
 				h.advance(3 * time.Minute)
@@ -185,7 +185,7 @@ func TestLiveProgressRoutineActivityIsCoalescedAndSpaced(t *testing.T) {
 
 func TestLiveProgressMatchesConcurrentToolResults(t *testing.T) {
 	tools := map[string][]liveActivity{}
-	for _, command := range []string{"go test ./server", "make ui"} {
+	for _, command := range []string{"go test ./server", "make build"} {
 		liveProgress(progressMessage(t, "agent", llm.Message{Content: []llm.Content{{
 			Type: llm.ContentTypeToolUse, ID: command, ToolName: "bash", ToolInput: json.RawMessage(fmt.Sprintf(`{"command":%q}`, command)),
 		}}}), tools)
