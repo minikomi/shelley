@@ -210,6 +210,10 @@ func TestLiveInstructionsOptIn(t *testing.T) {
 		"If they start speaking, stop immediately and listen",
 		"finish your current sentence before incorporating it",
 		"Combine pending updates and share only the newest relevant development, not a backlog.",
+		"A combined shell status does not prove that individual tests ran or passed.",
+		"Treat missing confirmation as a limit on your claims, not a development to announce.",
+		"Do not narrate missing execution results or routine uncertainty",
+		"Never invent ongoing work to fill silence.",
 	} {
 		if !strings.Contains(enabled, instruction) {
 			t.Errorf("opt-in instructions lack %q", instruction)
