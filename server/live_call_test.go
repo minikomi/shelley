@@ -493,7 +493,7 @@ func TestLiveCallTellsLiveTheReplyToItsTaskAndOtherTypedMessages(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newLiveHarness(t)
 		row := func(seq int64, user bool, text string) liveRow {
-			return liveRow{seq: seq, user: user, text: text, full: text}
+			return liveRow{seq: seq, user: user, text: text, full: text, endOfTurn: !user}
 		}
 		// History before the call is already in Live's session.
 		h.call.observe([]liveRow{row(9, true, "old"), row(10, false, "old reply")})
@@ -792,4 +792,34 @@ func TestLiveCallBackgroundReconnect(t *testing.T) {
 			t.Fatal("disconnected call never expired")
 		}
 	})
+}
+
+func TestLiveCancellationBeforeSpokenCorrection(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		prior   string
+	}{
+		{"progress enabled", true, "The preceding turn was cancelled. This status belongs to the work before the newer spoken request."},
+		{"progress disabled", false, "Backend reply: [Operation cancelled]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := newLiveHarness(t)
+				h.call.progressEnabled = tc.enabled
+				heading := "Backend reply: "
+				if h.call.progressEnabled {
+					heading = liveResultHeading
+				}
+				h.say("Use the integrations", 0, 500)
+				h.delegate("d1", 500)
+				h.advance(liveQuiet)
+				h.call.observe([]liveRow{{seq: 11, text: operationCancelledText, endOfTurn: true}, {seq: 12, user: true, text: "Use the integrations", liveDeliveryID: "delivery-1"}, {seq: 13, text: "Integration checks passed.", endOfTurn: true}})
+				expectEqual(t, "cancellation and subsequent final", h.context(), []string{"thinking [d1]: The backend accepted this task: Use the integrations", "commentary [-]: " + tc.prior, "commentary [d1]: " + heading + "Integration checks passed."})
+				h.call.observe([]liveRow{{seq: 14, text: operationCancelledText, endOfTurn: true}})
+				got := h.context()
+				expectEqual(t, "standalone cancellation", got[len(got)-1], "commentary [-]: "+heading+"[Operation cancelled]")
+			})
+		})
+	}
 }
