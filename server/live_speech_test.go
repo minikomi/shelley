@@ -64,19 +64,26 @@ func TestLiveWorkingStatusDuringLongBackendStep(t *testing.T) {
 		expectEqual(t, "no early heartbeat", len(h.context()), before)
 		h.advance(time.Second)
 		got := h.context()
-		if len(got) != before+1 || !strings.Contains(got[len(got)-1], "overall task is still active") {
+		if len(got) != before+1 || !strings.Contains(got[len(got)-1], "still awaiting a result") {
 			t.Fatal(got)
 		}
 		status := got[len(got)-1]
-		if !strings.Contains(status, "Submitted tools awaiting a confirmed result") || !strings.Contains(status, "unittest") || strings.Contains(status, "Applied patch") {
+		if !strings.Contains(status, "result pending") || !strings.Contains(status, "unittest") || strings.Contains(status, "Applied patch") {
 			t.Fatalf("pending check confused with earlier completed edit: %s", status)
 		}
-		h.call.handle([]liveEvent{{typ: "shelley.playback", playbackActive: true}})
+		h.advance(time.Minute)
+		expectEqual(t, "unchanged check stays quiet", h.context(), got)
+		h.call.noteActivity(liveToolProgress(llm.Content{ID: "check", ToolName: "bash", ToolInput: json.RawMessage(`{"command":"python3 -m unittest test_app"}`)}))
+		h.advance(time.Minute)
+		expectEqual(t, "duplicate tool start does not rearm reminder", h.context(), got)
+		h.call.noteActivity(liveToolProgress(llm.Content{ID: "next", ToolName: "bash", ToolInput: json.RawMessage(`{"command":"go vet ./server"}`)}))
+		h.advance(5 * time.Second)
+		before = len(h.context())
 		h.advance(12 * time.Second)
-		expectEqual(t, "status waits for ongoing speech", h.context(), got)
-		h.call.handle([]liveEvent{{typ: "shelley.playback", playbackActive: false}})
-		h.advance(time.Second)
-		expectEqual(t, "status resumes as playback finishes", len(h.context()), before+2)
+		got = h.context()
+		if len(got) != before+1 || !strings.Contains(got[len(got)-1], "go vet") || strings.Contains(got[len(got)-1], "unittest") {
+			t.Fatalf("new tool should get its own waiting update: %v", got)
+		}
 		h.call.observeWorking(false)
 		got = h.context()
 		h.advance(time.Minute)
@@ -110,11 +117,18 @@ func TestLiveWorkingStatusDoesNotResurrectFinishedCheck(t *testing.T) {
 		end := time.Now()
 		h.call.noteActivity(liveToolResult(llm.Content{ToolUseID: "check", ToolUseStartTime: &start, ToolUseEndTime: &end, Display: map[string]any{"exitCode": 0}}, started))
 		h.advance(5 * time.Second)
-		h.advance(liveProgressSpacing)
 		got := h.context()
-		status := got[len(got)-1]
-		if !strings.Contains(status, "Most recent completed tool outcome") || strings.Contains(status, "I am running the regression check") || strings.Contains(status, "Submitted tools awaiting") {
-			t.Fatal(status)
-		}
+		h.advance(time.Minute)
+		expectEqual(t, "no heartbeat after the check finishes", h.context(), got)
+	})
+}
+
+func TestLiveBackendWorkAloneDoesNotTriggerSpeech(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newLiveProgressHarness(t, true)
+		h.call.observeWorking(true)
+		before := h.context()
+		h.advance(time.Minute)
+		expectEqual(t, "no still-on-it filler", h.context(), before)
 	})
 }

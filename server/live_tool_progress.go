@@ -48,6 +48,7 @@ type liveActivity struct {
 	webLookup  bool
 	direct     bool
 	compound   bool
+	reminded   bool // a waiting update has been offered for this invocation
 }
 
 func (a liveActivity) quietShellExit() bool {

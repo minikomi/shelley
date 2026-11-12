@@ -41,8 +41,7 @@ func (c *liveCall) scheduleSpeech() {
 	})
 }
 
-// Backend work can take a minute between observable steps. Report that it is
-// still active without inventing another tool run or repeating a completed one.
+// Offer one waiting update per pending tool. Elapsed time alone is not news.
 func (c *liveCall) scheduleProgressPulse() {
 	if c.progressPulse != nil {
 		return
@@ -63,19 +62,27 @@ func (c *liveCall) scheduleProgressPulse() {
 				return
 			}
 			if !c.speechBusy() && len(c.spokenQueue) == 0 && c.tick == nil && time.Since(c.lastProgress) >= liveProgressSpacing {
-				content := "Working status: the overall task is still active. Describe the current state below; this is not a new tool event."
+				var ids []string
+				for id, tool := range c.progressTools {
+					if !tool.reminded {
+						ids = append(ids, id)
+					}
+				}
+				if len(ids) == 0 {
+					return
+				}
+				slices.Sort(ids)
 				var pending []string
-				for _, tool := range c.progressTools {
+				for _, id := range ids[:min(3, len(ids))] {
+					tool := c.progressTools[id]
 					pending = append(pending, tool.report())
+					tool.reminded = true
+					c.progressTools[id] = tool
 				}
-				slices.Sort(pending)
 				if len(pending) > 0 {
-					content += "\nSubmitted tools awaiting a confirmed result:\n" + strings.Join(pending[:min(3, len(pending))], "\n")
-				} else if c.progressLast != "" {
-					content += "\nMost recent completed tool outcome:\n" + c.progressLast
+					c.commentary("Working status: name the specific tool still awaiting a result.\n"+strings.Join(pending, "\n"), c.progressDelegation())
+					c.lastProgress = time.Now()
 				}
-				c.commentary(content, c.progressDelegation())
-				c.lastProgress = time.Now()
 			}
 			c.scheduleProgressPulse()
 		})

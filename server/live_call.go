@@ -159,7 +159,6 @@ type liveCall struct {
 	spokenQueue    []liveSpokenUpdate
 	spokenTimer    *time.Timer
 	progressPulse  *time.Timer
-	progressLast   string                  // latest confirmed tool outcome
 	progressTools  map[string]liveActivity // submitted checks and edits awaiting a result
 
 	progressNotes    []string       // bounded public reports waiting for delivery

@@ -137,7 +137,6 @@ func (c *liveCall) stopProgress() {
 		c.progressPulse.Stop()
 		c.progressPulse = nil
 	}
-	c.progressLast = ""
 	c.progressTools = nil
 	c.progressNotes = nil
 	c.progressActivity = nil
@@ -183,14 +182,13 @@ func (c *liveCall) noteActivity(activities []liveActivity) {
 			}
 			if activity.phase >= liveFinished {
 				delete(c.progressTools, activity.toolID)
-				if activity.kind >= liveCheck {
-					c.progressLast = activity.report()
-				}
 			} else if activity.kind >= liveCheck {
 				if c.progressTools == nil {
 					c.progressTools = map[string]liveActivity{}
 				}
+				activity.reminded = c.progressTools[activity.toolID].reminded
 				c.progressTools[activity.toolID] = activity
+				c.scheduleProgressPulse()
 			}
 		}
 		paths, inspection := strings.CutPrefix(activity.dedupKey, "inspect:")
