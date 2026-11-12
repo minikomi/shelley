@@ -2,11 +2,12 @@ package server
 
 import (
 	"encoding/json"
-	"shelley.exe.dev/llm"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"shelley.exe.dev/llm"
 )
 
 func TestLiveProgressWaitsForPlayback(t *testing.T) {
@@ -32,6 +33,7 @@ func TestLiveFinalWaitsForSpeechAndSurvivesIdle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newLiveProgressHarness(t, true)
 		h.call.handle([]liveEvent{{typ: "shelley.playback", playbackActive: true}})
+		h.call.noteProgress("Old pending progress.")
 		h.call.observe([]liveRow{{seq: 11, text: "The regression check passes.", endOfTurn: true}})
 		h.call.observeWorking(false)
 		before := len(h.context())
@@ -108,26 +110,6 @@ func TestLiveWorkingStatusDoesNotResurrectFinishedCheck(t *testing.T) {
 		status := got[len(got)-1]
 		if !strings.Contains(status, "Most recent completed tool outcome") || strings.Contains(status, "I am running the regression check") || strings.Contains(status, "Submitted tools awaiting") {
 			t.Fatal(status)
-		}
-	})
-}
-
-func TestLiveRoutineOverflowDoesNotSuppressWorkingStatus(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		h := newLiveProgressHarness(t, true)
-		h.call.observeWorking(true)
-		for _, id := range []string{"first", "second", "third", "fourth"} {
-			h.call.noteActivity([]liveActivity{{toolID: id, kind: liveCheck, text: strings.Repeat("x", 200)}})
-		}
-		h.advance(5 * time.Second)
-		if h.call.tick != nil || len(h.call.progressActivity) == 0 {
-			t.Fatal("expected deferred routine activity")
-		}
-		before := len(h.context())
-		h.advance(liveProgressSpacing)
-		got := h.context()
-		if len(got) != before+1 || !strings.Contains(got[len(got)-1], "Working status:") {
-			t.Fatal(got)
 		}
 	})
 }

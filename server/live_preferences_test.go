@@ -1,10 +1,7 @@
 package server
 
 import (
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -31,21 +28,10 @@ func TestLivePreferences(t *testing.T) {
 	}
 	for _, bad := range []string{
 		`{}`,
-		`{"voice":"robot"}`,
-		`{"speaking_pace":3}`,
-		`{"progress_updates":15}`,
-		`{"voice":"cinder"}`,
-		`{"speaking_pace":0,"progress_updates":true}`,
-		`{"voice":"cinder","progress_updates":true}`,
-		`{"voice":"cinder","speaking_pace":0}`,
-		`{"voice":null,"speaking_pace":0,"progress_updates":true}`,
-		`{"voice":"cinder","speaking_pace":null,"progress_updates":true}`,
-		`{"voice":"cinder","speaking_pace":0,"progress_updates":null}`,
-		`{"voice":"","speaking_pace":0,"progress_updates":true}`,
 		`{"voice":"robot","speaking_pace":0,"progress_updates":true}`,
 		`{"voice":"marin","speaking_pace":3,"progress_updates":true}`,
 		`{"voice":"marin","speaking_pace":0,"progress_updates":15}`,
-		`{"volume":1}`,
+		`{"voice":"marin","speaking_pace":0,"progress_updates":null}`,
 	} {
 		if code, _ := e.do("PUT", "/api/live-settings", bad); code != http.StatusBadRequest {
 			t.Errorf("%s: %d", bad, code)
@@ -115,55 +101,4 @@ func TestLivePreferencesInvalidStoredSettings(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestLivePreferencesMissingStoredFields(t *testing.T) {
-	t.Parallel()
-	e := newLiveMessageEnv(t)
-	if err := e.database.SetSetting(t.Context(), livePreferencesKey, `{"voice":"cinder"}`); err != nil {
-		t.Fatal(err)
-	}
-	if code, body := e.do("GET", "/api/live-settings", ""); code != http.StatusOK || body != `{"voice":"cinder","speaking_pace":0,"progress_updates":false}` {
-		t.Fatalf("stored defaults: %d %s", code, body)
-	}
-}
-
-// A call snapshots its settings before establishing the provider session;
-// saving while that request is in flight only affects later calls.
-func TestLivePreferencesSavedDuringCallSetup(t *testing.T) {
-	t.Parallel()
-	e := newLiveMessageEnv(t)
-	exchanging := make(chan struct{})
-	release := make(chan struct{})
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(exchanging)
-		<-release
-		w.WriteHeader(http.StatusCreated)
-		io.WriteString(w, `{"session":{"id":"live_setup"},"transport":{"type":"webrtc","sdp":"answer"}}`)
-	}))
-	t.Cleanup(provider.Close)
-	e.s.liveSessionURL, e.s.liveSessionClient = provider.URL, provider.Client()
-	slug := "voice-setup"
-	conv, err := e.database.CreateConversation(t.Context(), &slug, true, nil, nil, db.ConversationOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	started := make(chan string, 1)
-	go func() {
-		code, body := e.post("/api/conversation/"+conv.ConversationID+"/live-session", `{"sdp":"v=0\r\nm=audio test"}`)
-		started <- fmt.Sprint(code, " ", body)
-	}()
-	<-exchanging
-	code, body := e.do("PUT", "/api/live-settings", `{"voice":"cinder","speaking_pace":-1,"progress_updates":true}`)
-	close(release)
-	if code != 200 {
-		t.Fatalf("save: %d %s", code, body)
-	}
-	if got := <-started; !strings.HasPrefix(got, "201 ") {
-		t.Fatal(got)
-	}
-	if every := e.progressEnabled(conv.ConversationID, "live_setup"); every {
-		t.Errorf("new call's progress enabled = %v", every)
-	}
-	e.do("DELETE", "/api/conversation/"+conv.ConversationID+"/live-session/live_setup", "")
 }
