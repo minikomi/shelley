@@ -101,7 +101,14 @@ export function useMonacoComments(deps: MonacoCommentsDeps) {
     let mouseDownPos: { x: number; y: number } | null = null;
     // Mobile: tap-without-scroll tracking.
     let touchScrolled = false;
-    let touchStartPos: { x: number; y: number } | null = null;
+    let touchStartPos: {
+      x: number;
+      y: number;
+      id: number;
+      time: number;
+      scrollTop: number;
+      scrollLeft: number;
+    } | null = null;
     const disposables: Monaco.IDisposable[] = [];
 
     const openCommentDialog = (lineNumber: number) => {
@@ -129,16 +136,17 @@ export function useMonacoComments(deps: MonacoCommentsDeps) {
     // A click counts as a "comment on this line" gesture if it lands on the
     // line text/empty area OR on the gutter (line numbers, line decorations,
     // or the glyph-margin comment indicator).
-    const isCommentClickTarget = (e: Monaco.editor.IEditorMouseEvent) => {
+    const isCommentTarget = (target: Monaco.editor.IMouseTarget) => {
       const T = monaco.editor.MouseTargetType;
       return (
-        e.target.type === T.CONTENT_TEXT ||
-        e.target.type === T.CONTENT_EMPTY ||
-        e.target.type === T.GUTTER_GLYPH_MARGIN ||
-        e.target.type === T.GUTTER_LINE_NUMBERS ||
-        e.target.type === T.GUTTER_LINE_DECORATIONS
+        target.type === T.CONTENT_TEXT ||
+        target.type === T.CONTENT_EMPTY ||
+        target.type === T.GUTTER_GLYPH_MARGIN ||
+        target.type === T.GUTTER_LINE_NUMBERS ||
+        target.type === T.GUTTER_LINE_DECORATIONS
       );
     };
+    const isCommentClickTarget = (e: Monaco.editor.IEditorMouseEvent) => isCommentTarget(e.target);
 
     // Desktop: on mousedown in comment mode, dismiss any open selection prompt
     // and remember where the press started so we can tell a click from a drag.
@@ -200,29 +208,76 @@ export function useMonacoComments(deps: MonacoCommentsDeps) {
 
     // Mobile: track tap-without-scroll.
     const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) {
+        touchScrolled = true;
+        touchStartPos = null;
+        return;
+      }
       touchScrolled = false;
       const t = e.touches[0];
-      touchStartPos = { x: t.clientX, y: t.clientY };
+      touchStartPos = {
+        x: t.clientX,
+        y: t.clientY,
+        id: t.identifier,
+        time: Date.now(),
+        scrollTop: editor.getScrollTop(),
+        scrollLeft: editor.getScrollLeft(),
+      };
     };
     const onTouchMove = (e: TouchEvent) => {
       if (touchScrolled || !touchStartPos) return;
-      const t = e.touches[0];
+      const t = Array.from(e.touches).find((touch) => touch.identifier === touchStartPos?.id);
+      if (!t) {
+        touchScrolled = true;
+        return;
+      }
       const dx = t.clientX - touchStartPos.x;
       const dy = t.clientY - touchStartPos.y;
       if (dx * dx + dy * dy > 100) touchScrolled = true;
     };
-    const onTouchEnd = () => {
+    const onTouchEnd = (e: TouchEvent) => {
+      const start = touchStartPos;
       touchStartPos = null;
+      if (!start || touchScrolled || e.touches.length || !deps.isMobile()) return;
+      const t = Array.from(e.changedTouches).find((touch) => touch.identifier === start.id);
+      if (!t) return;
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      if (
+        dx * dx + dy * dy > 100 ||
+        Date.now() - start.time > 500 ||
+        editor.getScrollTop() !== start.scrollTop ||
+        editor.getScrollLeft() !== start.scrollLeft
+      ) {
+        touchScrolled = true;
+        return;
+      }
+      if (deps.mode() !== "comment") return;
+      const target = editor.getTargetAtClientPoint(t.clientX, t.clientY);
+      if (target && isCommentTarget(target) && target.position) {
+        // Suppress the compatibility mouse events, which would open it twice.
+        e.preventDefault();
+        commentPrompt.value = null;
+        openCommentDialog(target.position.lineNumber);
+      }
+    };
+    const onTouchCancel = () => {
+      touchStartPos = null;
+      touchScrolled = true;
     };
     editorDom.addEventListener("touchstart", onTouchStart, { passive: true });
     editorDom.addEventListener("touchmove", onTouchMove, { passive: true });
-    editorDom.addEventListener("touchend", onTouchEnd, { passive: true });
+    editorDom.addEventListener("touchend", onTouchEnd);
+    editorDom.addEventListener("touchcancel", onTouchCancel, { passive: true });
 
     disposables.push(
       editor.onMouseUp((e: Monaco.editor.IEditorMouseEvent) => {
         if (!deps.isMobile()) return;
         if (deps.mode() !== "comment") return;
-        if (touchScrolled) return;
+        const source = e.event.browserEvent as MouseEvent & {
+          sourceCapabilities?: { firesTouchEvents: boolean };
+        };
+        if (touchStartPos || (touchScrolled && source.sourceCapabilities?.firesTouchEvents)) return;
         if (isCommentClickTarget(e)) {
           const position = e.target.position;
           if (position) openCommentDialog(position.lineNumber);
@@ -273,6 +328,7 @@ export function useMonacoComments(deps: MonacoCommentsDeps) {
       editorDom.removeEventListener("touchstart", onTouchStart);
       editorDom.removeEventListener("touchmove", onTouchMove);
       editorDom.removeEventListener("touchend", onTouchEnd);
+      editorDom.removeEventListener("touchcancel", onTouchCancel);
       for (const d of disposables) d.dispose();
     };
   }
