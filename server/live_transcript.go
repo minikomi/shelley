@@ -31,7 +31,7 @@ const (
 	// liveUserLeadMs: a delegation counts the user's speech when it follows
 	// within this long, of the user or of Live's answer to them.
 	liveUserLeadMs = 2500
-	// Replies in an ongoing exchange can take longer to start.
+	// Allow Live time to answer, regardless of how long the user paused.
 	liveResponseGapMs = 5000
 	// liveEchoTailMs: echo starts while Live speaks or this soon after.
 	liveEchoTailMs         = 1500
@@ -61,8 +61,8 @@ func liveSpeech(fragments []liveFragment) string {
 // The user's latest continuous speech counts when the delegation follows it
 // within 2.5 s, or follows Live's reply to it: Live often acknowledges first
 // ("Got it, handing that off") and delegates as it finishes, seconds after
-// the user stopped. A reply that starts more than 2.5 s after the user
-// stopped only bridges in an ongoing exchange, not from an old greeting.
+// the user stopped. Allow up to 5 s for that reply to start; unrelated
+// later speech must not revive an old request.
 func liveUtterance(user []liveFragment, offsetMs float64, all []liveFragment) (text string, startMs float64, ok bool) {
 	user = liveRecentUser(user)
 	if len(user) == 0 {
@@ -91,26 +91,11 @@ func liveRecentUser(user []liveFragment) []liveFragment {
 	return user[first:]
 }
 
-// liveTurnEnd extends the user's speech through Live's answer. Allow a
-// longer response pause when the user was replying to Live, but don't
-// revive an isolated greeting with unrelated later output. The user's
+// liveTurnEnd extends the user's speech through Live's answer. The user's
 // speech can span an intervening clarification question.
 func liveTurnEnd(user, all []liveFragment) float64 {
 	end := user[len(user)-1].endMs
-	gap := float64(liveUserLeadMs)
-	for _, u := range user {
-		var preceding *liveFragment
-		for _, f := range all {
-			if f.startMs < u.startMs && f.endMs > f.startMs && strings.TrimSpace(f.text) != "" &&
-				(preceding == nil || f.endMs > preceding.endMs) {
-				preceding = &f
-			}
-		}
-		if preceding != nil && !preceding.user && u.startMs-preceding.endMs <= liveResponseGapMs {
-			gap = liveResponseGapMs
-			break
-		}
-	}
+	gap := float64(liveResponseGapMs)
 	var live []liveFragment
 	for _, f := range all {
 		if !f.user && f.endMs > end {

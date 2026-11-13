@@ -16,6 +16,7 @@ import {
   CommitInfo,
   ConversationSettings,
   Profile,
+  LiveSettings,
   Settings,
   SettingsChange,
   SystemPromptInfo,
@@ -1720,4 +1721,14 @@ export const chatgptApi = {
       "Failed to sign out",
     );
   },
+};
+
+export const liveSettingsApi = {
+  get: () => apiJSON<LiveSettings>("/api/live-settings", "Failed to load Live settings"),
+  options: () =>
+    apiJSON<{
+      voices: string[];
+    }>("/api/live-settings/options", "Failed to load voice options"),
+  save: (settings: LiveSettings) =>
+    apiJSON<LiveSettings>("/api/live-settings", "Failed to save Live settings", "PUT", settings),
 };
