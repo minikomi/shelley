@@ -47,9 +47,11 @@ func (s *foregroundSkipService) Do(ctx context.Context, req *llm.Request) (*llm.
 	}
 	return &llm.Response{Role: llm.MessageRoleAssistant, StopReason: llm.StopReasonEndTurn, Content: llm.TextContent("Done.")}, nil
 }
+
 func foregroundCall(id, action string) llm.Content {
 	return llm.Content{Type: llm.ContentTypeToolUse, ID: id, ToolName: claudetool.CompactInPlaceName, ToolInput: json.RawMessage(fmt.Sprintf(`{"action":%q}`, action))}
 }
+
 func foregroundCheck(t *testing.T, c *compactTestConversation, messages []llm.Message, expected ...llm.Content) {
 	t.Helper()
 	calls, results, stored := map[string]llm.Content{}, map[string]llm.Content{}, map[string]llm.Content{}
@@ -89,6 +91,7 @@ func foregroundCheck(t *testing.T, c *compactTestConversation, messages []llm.Me
 		t.Errorf("foreground skip wrote %d compaction records", n)
 	}
 }
+
 func foregroundReplay(t *testing.T, cm *ConversationManager) []llm.Message {
 	t.Helper()
 	items, _, err := cm.loadContext(t.Context())
@@ -101,6 +104,7 @@ func foregroundReplay(t *testing.T, cm *ConversationManager) []llm.Message {
 	}
 	return msgs
 }
+
 func TestForegroundSkipEvidence(t *testing.T) {
 	index, skip1, skip2 := foregroundCall("index", "index"), foregroundCall("skip1", "skip"), foregroundCall("skip2", "skip")
 	bash := llm.Content{Type: llm.ContentTypeToolUse, ID: "bash", ToolName: "bash", ToolInput: json.RawMessage(`{"command":"printf BATCH_SIBLING","background":false}`)}
@@ -130,6 +134,7 @@ func TestForegroundSkipEvidence(t *testing.T) {
 		})
 	}
 }
+
 func TestForegroundSkipResume(t *testing.T) {
 	for _, block := range []int{1, 2} {
 		t.Run(fmt.Sprint(block), func(t *testing.T) {
