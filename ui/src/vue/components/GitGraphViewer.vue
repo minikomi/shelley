@@ -15,18 +15,20 @@
       <header class="git-graph-header">
         <div
           v-if="checkoutTabs.length"
+          ref="checkoutStrip"
           class="git-graph-checkouts"
           role="group"
           aria-label="Checkouts"
         >
           <button
-            v-for="{ path, label } in checkoutTabs"
+            v-for="({ path, label }, index) in checkoutTabs"
             :key="path"
             type="button"
             class="git-graph-checkout"
+            :style="{ zIndex: checkoutTabs.length - index }"
             :aria-pressed="path === selectedCheckout"
             :title="path"
-            @click="cwdOverride = path"
+            @click="selectCheckout(path, $event)"
           >
             <i class="pi pi-folder" aria-hidden="true" />
             <span class="git-graph-checkout-name">{{ label }}</span>
@@ -387,8 +389,14 @@ const emit = defineEmits<{
 const cwdOverride = ref<string | null>(null);
 const cwd = computed(() => cwdOverride.value ?? props.cwd);
 const checkouts = ref<{ workspace: string; paths: string[] }>({ workspace: "", paths: [] });
-const checkoutTabs = computed(() =>
-  checkouts.value.paths.map((path, _, paths) => {
+const checkoutError = ref("");
+const checkoutStrip = ref<HTMLElement | null>(null);
+const selectedCheckout = computed(() => cwdOverride.value ?? checkouts.value.workspace);
+const checkoutTabs = computed(() => {
+  const active = selectedCheckout.value;
+  const recent = checkouts.value.paths;
+  const paths = active ? [active, ...recent.filter((path) => path !== active)] : recent;
+  return paths.map((path) => {
     const parts = path.split("/");
     let start = parts.length - 1;
     let label = parts[start] || "/";
@@ -396,10 +404,17 @@ const checkoutTabs = computed(() =>
       label = parts.slice(--start).join("/");
     }
     return { path, label };
-  }),
-);
-const checkoutError = ref("");
-const selectedCheckout = computed(() => cwdOverride.value ?? checkouts.value.workspace);
+  });
+});
+
+watch(selectedCheckout, () => checkoutStrip.value?.scrollTo({ left: 0 }), { flush: "post" });
+
+async function selectCheckout(path: string, event: MouseEvent) {
+  const button = event.currentTarget as HTMLButtonElement;
+  cwdOverride.value = path;
+  await nextTick();
+  button.focus({ preventScroll: true });
+}
 watch(
   [() => props.isOpen, () => props.conversationId, () => props.cwd, () => props.activityVersion],
   async (_, __, onCleanup) => {
