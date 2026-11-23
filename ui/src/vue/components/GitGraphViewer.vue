@@ -12,76 +12,81 @@
 <template>
   <div v-if="isOpen" class="diff-viewer-overlay" @click="emit('close')">
     <div class="diff-viewer-container git-graph-container" @click.stop>
-      <div class="git-graph-toolbar">
+      <header class="git-graph-header">
         <div
-          class="git-graph-scope"
+          v-if="checkoutTabs.length"
+          class="git-graph-checkouts"
           role="group"
-          aria-label="Branch scope"
-          title="Which refs to walk"
+          aria-label="Checkouts"
         >
           <button
-            v-tooltip.top="'Show commits from all branches'"
+            v-for="{ path, label } in checkoutTabs"
+            :key="path"
             type="button"
-            :class="`git-graph-scope-btn${scope === 'all' ? ' git-graph-scope-btn-active' : ''}`"
-            :aria-pressed="scope === 'all'"
-            @click="setScope('all')"
+            class="git-graph-checkout"
+            :aria-pressed="path === selectedCheckout"
+            :title="path"
+            @click="cwdOverride = path"
           >
-            All branches
-          </button>
-          <button
-            v-tooltip.top="'Show commits reachable from HEAD only'"
-            type="button"
-            :class="`git-graph-scope-btn${scope === 'current' ? ' git-graph-scope-btn-active' : ''}`"
-            :aria-pressed="scope === 'current'"
-            @click="setScope('current')"
-          >
-            Current branch
+            <i class="pi pi-folder" aria-hidden="true" />
+            <span class="git-graph-checkout-name">{{ label }}</span>
+            <span v-if="path === checkouts.workspace" class="git-graph-workspace-label"
+              >Workspace</span
+            >
           </button>
         </div>
-        <button
-          v-if="!onVm"
-          v-tooltip.top="`Pick repository (current: ${cwd})`"
-          class="git-graph-tool"
-          aria-label="Pick repository"
-          @click="showCwdPicker = true"
-        >
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :stroke-width="2"
-              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-            />
-          </svg>
-        </button>
-        <button
-          v-tooltip.top="'Close (Esc)'"
-          class="git-graph-tool"
-          aria-label="Close"
-          @click="emit('close')"
-        >
-          ×
-        </button>
-      </div>
-      <div
-        v-if="checkouts.paths.length"
-        class="git-graph-checkouts"
-        role="group"
-        aria-label="Checkouts"
-      >
-        <button
-          v-for="path in checkouts.paths"
-          :key="path"
-          type="button"
-          class="git-graph-scope-btn"
-          :class="{ 'git-graph-scope-btn-active': path === selectedCheckout }"
-          :aria-pressed="path === selectedCheckout"
-          :title="path"
-          @click="cwdOverride = path"
-        >
-          {{ path }}{{ path === checkouts.workspace ? " · workspace" : "" }}
-        </button>
-      </div>
+        <div class="git-graph-toolbar">
+          <div
+            class="git-graph-scope"
+            role="group"
+            aria-label="Branch scope"
+            title="Which refs to walk"
+          >
+            <button
+              v-tooltip.top="'Show commits from all branches'"
+              type="button"
+              :class="`git-graph-scope-btn${scope === 'all' ? ' git-graph-scope-btn-active' : ''}`"
+              :aria-pressed="scope === 'all'"
+              @click="setScope('all')"
+            >
+              All branches
+            </button>
+            <button
+              v-tooltip.top="'Show commits reachable from HEAD only'"
+              type="button"
+              :class="`git-graph-scope-btn${scope === 'current' ? ' git-graph-scope-btn-active' : ''}`"
+              :aria-pressed="scope === 'current'"
+              @click="setScope('current')"
+            >
+              Current branch
+            </button>
+          </div>
+          <button
+            v-if="!onVm"
+            v-tooltip.top="`Pick repository (current: ${cwd})`"
+            class="git-graph-tool"
+            aria-label="Pick repository"
+            @click="showCwdPicker = true"
+          >
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke-width="2"
+                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+              />
+            </svg>
+          </button>
+          <button
+            v-tooltip.top="'Close (Esc)'"
+            class="git-graph-tool"
+            aria-label="Close"
+            @click="emit('close')"
+          >
+            ×
+          </button>
+        </div>
+      </header>
       <div v-if="checkoutError" class="git-graph-status">{{ checkoutError }}</div>
       <GitRepoPicker
         :is-open="showCwdPicker"
@@ -382,6 +387,17 @@ const emit = defineEmits<{
 const cwdOverride = ref<string | null>(null);
 const cwd = computed(() => cwdOverride.value ?? props.cwd);
 const checkouts = ref<{ workspace: string; paths: string[] }>({ workspace: "", paths: [] });
+const checkoutTabs = computed(() =>
+  checkouts.value.paths.map((path, _, paths) => {
+    const parts = path.split("/");
+    let start = parts.length - 1;
+    let label = parts[start] || "/";
+    while (start > 0 && paths.some((other) => other !== path && other.endsWith("/" + label))) {
+      label = parts.slice(--start).join("/");
+    }
+    return { path, label };
+  }),
+);
 const checkoutError = ref("");
 const selectedCheckout = computed(() => cwdOverride.value ?? checkouts.value.workspace);
 watch(
