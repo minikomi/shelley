@@ -11,6 +11,8 @@ import (
 
 // GitState represents the current state of a git repository.
 type GitState struct {
+	// HeadChanged distinguishes an observed change from first seeing a checkout.
+	HeadChanged bool
 	// Worktree is the absolute path to the worktree root.
 	// For regular repos, this is the same as the git root.
 	// For worktrees, this is the worktree directory.
