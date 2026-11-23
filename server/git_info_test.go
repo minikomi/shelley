@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"shelley.exe.dev/db/generated"
+	"slices"
 	"testing"
 
 	"shelley.exe.dev/claudetool"
@@ -67,5 +69,35 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 	}
 	if conversation.Cwd == nil || *conversation.Cwd != home {
 		t.Errorf("cwd = %v, want %s", conversation.Cwd, home)
+	}
+}
+
+func TestRecentCheckoutsIncludeHelperEdits(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := t.Context()
+	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := database.CreateSubagentConversation(ctx, "helper", parent.ConversationID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := ConversationManager{db: database, conversationID: parent.ConversationID, logger: slog.Default()}
+	cm.recordCheckout(ctx, "", "/old-workspace", false)
+	cm.recordCheckout(ctx, "", "/A", false)
+	cm.conversationID = child.ConversationID
+	cm.recordCheckout(ctx, "", "/B", true)
+	cm.recordCheckout(ctx, "box", "/remote", true)
+	err = database.Queries(ctx, func(q *generated.Queries) error {
+		got, err := q.RecentCheckouts(ctx, generated.RecentCheckoutsParams{Chat: parent.ConversationID, Workspace: "/A"})
+		if !slices.Equal(got, []string{"/B", "/A"}) {
+			t.Errorf("tabs = %q", got)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
