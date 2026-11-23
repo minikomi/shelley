@@ -2550,6 +2550,16 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	toolSetConfig.ConversationID = conversationID
 	toolSetConfig.ParentConversationID = conversationID // For subagent tool
 	toolSetConfig.UserWaiting = cm.userMessageWaiting
+	toolSetConfig.OnJobCommit = func(ctx context.Context, vm claudetool.VM, state *gitstate.GitState) {
+		machine := ""
+		if vm != nil {
+			machine = vm.Name()
+		}
+		cm.recordCheckout(ctx, machine, state.Worktree, true)
+		if (vm == nil) == (toolSetConfig.VM == nil) {
+			cm.recordGitStateChange(ctx, state)
+		}
+	}
 	toolSetConfig.OnCheckoutEdit = func(ctx context.Context, vm claudetool.VM, dir string) { cm.noteCheckout(ctx, vm, dir, true) }
 	toolSetConfig.OnWorkingDirChange = func(newDir string) {
 		// Persist working directory change to database

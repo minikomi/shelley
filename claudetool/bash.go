@@ -48,7 +48,9 @@ type BashTool struct {
 	// WorkingDir is the shared mutable working directory.
 	WorkingDir *MutableWorkingDir
 	// GitTracker, if set, is told about the directories commands run git in.
-	GitTracker *gitstate.Tracker
+	GitTracker     *gitstate.Tracker
+	OnCheckoutEdit func(context.Context, VM, string)
+	OnJobCommit    func(context.Context, VM, *gitstate.GitState)
 	// LLMProvider provides access to LLM services for tool validation
 	LLMProvider LLMServiceProvider
 	// ModelID is the conversation's model, used to pick a workhorse model
@@ -413,6 +415,13 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, wd strin
 	if err != nil {
 		return bashResult{}, fmt.Errorf("create job log: %w", err)
 	}
+	observeEnv, finishObservation, err := b.observeJob(ctx, req.vm, wd)
+	if err != nil {
+		log.Close()
+		os.Remove(job.LogPath)
+		return bashResult{}, err
+	}
+	extraEnv = append(extraEnv, observeEnv...)
 	cmd := b.makeBashCommand(req.vm, req.Command, wd, extraEnv, log, job.ExitPath)
 	// The git tracker watches where the command runs git until it exits,
 	// even if that is after it moves to the background.
@@ -420,11 +429,12 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, wd strin
 	if req.vm == nil {
 		releaseGitDirs = b.touchGitDirs(req.Command, wd)
 	}
+	finishJob := func() { finishObservation(); releaseGitDirs() }
 	job.StartedAt = time.Now()
 	err = cmd.Start()
 	log.Close() // the job holds its own descriptor
 	if err != nil {
-		releaseGitDirs()
+		finishJob()
 		os.Remove(job.LogPath)
 		return bashResult{}, fmt.Errorf("command failed: %w", err)
 	}
@@ -435,7 +445,7 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, wd strin
 	if err != nil {
 		syscall.Kill(-job.PID, syscall.SIGKILL)
 		cmd.Wait()
-		releaseGitDirs()
+		finishJob()
 		return bashResult{}, fmt.Errorf("job %s (PGID %d): %w", job.ID, job.PID, err)
 	}
 	var watch *resourceWatch
@@ -443,7 +453,7 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, wd strin
 		watch = b.resourceNotes.watch(job.PID)
 	}
 	exited := make(chan struct{})
-	go waitBashJob(cmd, job, watch, releaseGitDirs, exited)
+	go waitBashJob(cmd, job, watch, finishJob, exited)
 	if req.Background {
 		return b.background(ctx, job, exited, "Started as")
 	}
