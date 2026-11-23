@@ -15,7 +15,6 @@
       <header class="git-graph-header">
         <div
           v-if="checkoutTabs.length"
-          ref="checkoutStrip"
           class="git-graph-checkouts"
           role="group"
           aria-label="Checkouts"
@@ -25,10 +24,13 @@
             :key="path"
             type="button"
             class="git-graph-checkout"
-            :style="{ zIndex: checkoutTabs.length - index }"
+            :style="{
+              zIndex:
+                path === selectedCheckout ? checkoutTabs.length + 1 : checkoutTabs.length - index,
+            }"
             :aria-pressed="path === selectedCheckout"
             :title="path"
-            @click="selectCheckout(path, $event)"
+            @click="cwdOverride = path"
           >
             <i class="pi pi-folder" aria-hidden="true" />
             <span class="git-graph-checkout-name">{{ label }}</span>
@@ -107,7 +109,7 @@
         :is-open="showCwdPicker"
         :current-path="cwd"
         @close="showCwdPicker = false"
-        @select="(p) => (cwdOverride = p)"
+        @select="pickCheckout"
       />
 
       <div class="git-graph-body" ref="bodyRef">
@@ -433,12 +435,11 @@ const cwdOverride = ref<string | null>(null);
 const cwd = computed(() => cwdOverride.value ?? props.cwd);
 const checkouts = ref<{ workspace: string; paths: string[] }>({ workspace: "", paths: [] });
 const checkoutError = ref("");
-const checkoutStrip = ref<HTMLElement | null>(null);
+const pickedCheckout = ref("");
 const selectedCheckout = computed(() => cwdOverride.value ?? checkouts.value.workspace);
 const checkoutTabs = computed(() => {
-  const active = selectedCheckout.value;
-  const recent = checkouts.value.paths;
-  const paths = active ? [active, ...recent.filter((path) => path !== active)] : recent;
+  const { workspace, paths: recent } = checkouts.value;
+  const paths = [...new Set([workspace, ...recent, pickedCheckout.value].filter(Boolean))];
   return paths.map((path) => {
     const parts = path.split("/");
     let start = parts.length - 1;
@@ -450,14 +451,11 @@ const checkoutTabs = computed(() => {
   });
 });
 
-watch(selectedCheckout, () => checkoutStrip.value?.scrollTo({ left: 0 }), { flush: "post" });
-
-async function selectCheckout(path: string, event: MouseEvent) {
-  const button = event.currentTarget as HTMLButtonElement;
+function pickCheckout(path: string) {
+  if (!checkoutTabs.value.some((tab) => tab.path === path)) pickedCheckout.value = path;
   cwdOverride.value = path;
-  await nextTick();
-  button.focus({ preventScroll: true });
 }
+
 watch(
   [() => props.isOpen, () => props.conversationId, () => props.cwd, () => props.activityVersion],
   async (_, __, onCleanup) => {
@@ -637,6 +635,7 @@ watch(
       detail.value = null;
       sheetOpen.value = false;
       cwdOverride.value = null;
+      pickedCheckout.value = "";
       showCwdPicker.value = false;
       detailCache.clear();
     }
