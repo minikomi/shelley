@@ -79,6 +79,7 @@ type ToolSetConfig struct {
 	// This can be used to persist the change to a database.
 	OnWorkingDirChange func(newDir string)
 	OnCheckoutEdit     func(context.Context, VM, string)
+	OnJobCommit        func(context.Context, VM, *gitstate.GitState)
 	// SubagentRunner is the runner for subagent conversations.
 	// If set, the subagent tool will be available.
 	SubagentRunner SubagentRunner
@@ -260,8 +261,9 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	env.ConversationID = cfg.ConversationID
 
 	bashTool := &BashTool{
-		WorkingDir:                 wd,
-		GitTracker:                 gitTracker,
+		WorkingDir:     wd,
+		GitTracker:     gitTracker,
+		OnCheckoutEdit: cfg.OnCheckoutEdit, OnJobCommit: cfg.OnJobCommit,
 		LLMProvider:                cfg.LLMProvider,
 		ModelID:                    cfg.ModelID,
 		EnableJITInstall:           cfg.EnableJITInstall,

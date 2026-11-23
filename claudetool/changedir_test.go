@@ -229,8 +229,8 @@ func TestChangeDirTool_Method(t *testing.T) {
 	if llmTool.Description != changeDirDescription {
 		t.Errorf("expected description %q, got %q", changeDirDescription, llmTool.Description)
 	}
-	if !contains(llmTool.Description, "Omit redundant cd") {
-		t.Error("change_dir should tell the model to omit a redundant cd")
+	if !contains(llmTool.Description, "Use bash wd for a single command") {
+		t.Error("change_dir should describe one-off Bash commands")
 	}
 
 	if llmTool.Run == nil {
