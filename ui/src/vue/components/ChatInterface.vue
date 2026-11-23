@@ -816,7 +816,8 @@
 
     <!-- Git Graph Viewer -->
     <GitGraphViewer
-      :cwd="(diffViewerCwd || currentConversation?.cwd || selectedCwd) as string"
+      :cwd="(currentConversation?.cwd || selectedCwd) as string"
+      :activity-version="messages.length"
       :conversation-id="conversationId ?? undefined"
       :on-vm="onVm"
       :is-open="showGitGraph"

@@ -75,6 +75,26 @@
           ×
         </button>
       </div>
+      <div
+        v-if="checkouts.paths.length"
+        class="git-graph-checkouts"
+        role="group"
+        aria-label="Checkouts"
+      >
+        <button
+          v-for="path in checkouts.paths"
+          :key="path"
+          type="button"
+          class="git-graph-scope-btn"
+          :class="{ 'git-graph-scope-btn-active': path === selectedCheckout }"
+          :aria-pressed="path === selectedCheckout"
+          :title="path"
+          @click="cwdOverride = path"
+        >
+          {{ path }}{{ path === checkouts.workspace ? " · workspace" : "" }}
+        </button>
+      </div>
+      <div v-if="checkoutError" class="git-graph-status">{{ checkoutError }}</div>
       <GitRepoPicker
         :is-open="showCwdPicker"
         :current-path="cwd"
@@ -376,6 +396,7 @@ const props = withDefaults(
     cwd: string;
     // The conversation whose machine (this host, or its VM) cwd is on.
     conversationId?: string;
+    activityVersion?: number;
     // cwd is on that conversation's VM, where the repository picker, which
     // lists this host's repositories, can't pick.
     onVm?: boolean;
@@ -402,6 +423,30 @@ const emit = defineEmits<{
 // Internal override so the user can switch directories without re-opening.
 const cwdOverride = ref<string | null>(null);
 const cwd = computed(() => cwdOverride.value ?? props.cwd);
+const checkouts = ref<{ workspace: string; paths: string[] }>({ workspace: "", paths: [] });
+const checkoutError = ref("");
+const selectedCheckout = computed(() => cwdOverride.value ?? checkouts.value.workspace);
+watch(
+  [() => props.isOpen, () => props.conversationId, () => props.cwd, () => props.activityVersion],
+  async (_, __, onCleanup) => {
+    let current = true;
+    onCleanup(() => {
+      current = false;
+    });
+    if (!props.isOpen || !props.conversationId) {
+      checkouts.value = { workspace: "", paths: [] };
+      return;
+    }
+    checkoutError.value = "";
+    try {
+      const result = await api.getRecentCheckouts(props.cwd, props.conversationId);
+      if (current) checkouts.value = result;
+    } catch (e) {
+      if (current) checkoutError.value = String(e);
+    }
+  },
+  { immediate: true },
+);
 const showCwdPicker = ref(false);
 const data = ref<GitGraphResponse | null>(null);
 const loading = ref(false);

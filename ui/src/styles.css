@@ -16092,6 +16092,15 @@ kbd {
 }
 
 /* Git graph mini-toolbar (top-right) */
+.git-graph-checkouts {
+  display: flex;
+  flex-shrink: 0;
+  overflow-x: auto;
+  gap: 4px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
 .git-graph-toolbar {
   position: absolute;
   top: 0.5rem;
