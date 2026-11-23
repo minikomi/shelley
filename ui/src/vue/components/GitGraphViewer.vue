@@ -20,19 +20,14 @@
           aria-label="Checkouts"
         >
           <button
-            v-for="({ path, label }, index) in checkoutTabs"
+            v-for="{ path, label } in checkoutTabs"
             :key="path"
             type="button"
             class="git-graph-checkout"
-            :style="{
-              zIndex:
-                path === selectedCheckout ? checkoutTabs.length + 1 : checkoutTabs.length - index,
-            }"
             :aria-pressed="path === selectedCheckout"
             :title="path"
             @click="cwdOverride = path"
           >
-            <i class="pi pi-folder" aria-hidden="true" />
             <span class="git-graph-checkout-name">{{ label }}</span>
             <span v-if="path === checkouts.workspace" class="git-graph-workspace-label"
               >Workspace</span

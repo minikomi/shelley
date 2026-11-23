@@ -12146,12 +12146,14 @@ kbd {
   display: none;
 }
 
-.terminal-panel-tab {
+.terminal-panel-tab,
+.git-graph-checkout {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
   border-radius: 4px;
+  background: transparent;
   cursor: pointer;
   font-size: var(--font-size-12);
   font-family: var(--font-mono);
@@ -12164,12 +12166,14 @@ kbd {
     color 0.1s;
 }
 
-.terminal-panel-tab:hover {
+.terminal-panel-tab:hover,
+.git-graph-checkout:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
 
-.terminal-panel-tab-active {
+.terminal-panel-tab-active,
+.git-graph-checkout[aria-pressed="true"] {
   background: var(--bg-base);
   color: var(--text-primary);
   border-color: var(--border);
@@ -12222,7 +12226,8 @@ kbd {
 }
 
 /* overflow: hidden lets the head shrink; the tail keeps its content width. */
-.terminal-panel-tab-label-head {
+.terminal-panel-tab-label-head,
+.git-graph-checkout-name {
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -16071,60 +16076,28 @@ kbd {
 .git-graph-checkouts {
   grid-area: checkouts;
   display: flex;
-  align-items: end;
-  isolation: isolate;
+  align-items: center;
+  gap: 2px;
   min-width: 0;
+  padding-block: 4px;
   overflow-x: auto;
   scrollbar-width: thin;
-  padding-top: 0.375rem;
 }
-
 .git-graph-checkout {
-  position: relative;
-  display: inline-flex;
   flex: none;
-  align-items: center;
-  gap: 0.45rem;
+  gap: 6px;
+  min-height: 25px;
   max-width: min(18rem, 75%);
-  min-height: 2rem;
-  padding: 0.375rem 0.875rem;
-  border: 1px solid var(--border-color);
-  border-bottom: 0;
-  border-radius: 0.5rem 0.625rem 0 0;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font: inherit;
-  cursor: pointer;
-}
-.git-graph-checkout + .git-graph-checkout {
-  margin-left: -0.5rem;
-  padding-left: 1.375rem;
-}
-.git-graph-checkout-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-.git-graph-checkout > i {
-  color: var(--checkout-icon, currentColor);
-  font-size: var(--font-size-12);
+  padding-inline: 10px;
+  font-weight: 500;
+  line-height: 1.2;
 }
 .git-graph-workspace-label {
   flex: none;
-  font-size: var(--font-size-12);
   color: var(--text-secondary);
-}
-.git-graph-checkout:hover {
-  color: var(--text-primary);
-  background: var(--bg-base);
-}
-.git-graph-checkout[aria-pressed="true"] {
-  --checkout-icon: var(--primary);
-  min-height: 2.25rem;
-  box-shadow: inset 0 2px var(--primary), 2px 0 3px rgb(0 0 0 / 8%);
-  background: var(--bg-base);
-  color: var(--text-primary);
+  font-family: var(--font-sans, system-ui);
+  font-size: var(--font-size-11);
+  font-weight: 400;
 }
 .git-graph-checkout:focus-visible {
   outline: 2px solid var(--primary);
