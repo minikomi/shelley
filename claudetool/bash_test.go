@@ -602,3 +602,21 @@ func TestShellHasCommand(t *testing.T) {
 		t.Error("expected cancelled context to return false")
 	}
 }
+
+func TestBashWDAppliesToOneCall(t *testing.T) {
+	base := t.TempDir()
+	child := filepath.Join(base, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	b := &BashTool{WorkingDir: NewMutableWorkingDir(base)}
+	for _, tc := range []struct{ wd, want string }{{"child", child}, {child, child}, {"", base}} {
+		out := b.run(t.Context(), bashInput{WD: tc.wd, Command: "pwd"})
+		if out.Error != nil || strings.TrimSpace(out.LLMContent[0].Text) != tc.want {
+			t.Fatalf("wd=%q: %+v", tc.wd, out)
+		}
+	}
+	if out := b.run(t.Context(), bashInput{WD: "missing", Command: "exit 0"}); out.Error == nil {
+		t.Fatal("missing wd succeeded")
+	}
+}
