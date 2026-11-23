@@ -2550,12 +2550,15 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	toolSetConfig.ConversationID = conversationID
 	toolSetConfig.ParentConversationID = conversationID // For subagent tool
 	toolSetConfig.UserWaiting = cm.userMessageWaiting
+	toolSetConfig.OnCheckoutEdit = func(ctx context.Context, vm claudetool.VM, dir string) { cm.noteCheckout(ctx, vm, dir, true) }
 	toolSetConfig.OnWorkingDirChange = func(newDir string) {
 		// Persist working directory change to database
 		if err := database.UpdateConversationCwd(context.Background(), conversationID, newDir); err != nil {
 			logger.Error("failed to persist working directory change", "error", err, "newDir", newDir)
 			return
 		}
+
+		cm.noteCheckout(context.Background(), toolSetConfig.VM, newDir, false)
 
 		// Update local cwd
 		cm.mu.Lock()
@@ -3044,6 +3047,10 @@ func (cm *ConversationManager) recordGitStateChange(ctx context.Context, state *
 		return
 	}
 
+	if state.HeadChanged {
+		cm.recordCheckout(ctx, "", state.Worktree, true)
+	}
+
 	// Create a gitinfo message with the state description
 	message := llm.Message{
 		Role:    llm.MessageRoleAssistant,
@@ -3208,6 +3215,8 @@ func (cm *ConversationManager) SetCwd(ctx context.Context, dir string) error {
 	if toolSet != nil {
 		toolSet.WorkingDir().Set(dir)
 	}
+
+	cm.noteCheckout(ctx, cm.toolSetConfig.VM, dir, false)
 
 	// The move has happened by this point: the row and the tools are both in the
 	// new directory, and neither can be taken back (the tools may already have

@@ -81,6 +81,7 @@ func (t *Tracker) Changes() []*GitState {
 	var changes []*GitState
 	report := func(state *GitState) {
 		if last, ok := t.states[state.Worktree]; state.IsRepo && (!ok || !last.Equal(state)) {
+			state.HeadChanged = ok && last.Commit != state.Commit && last.Branch == state.Branch
 			t.states[state.Worktree] = state
 			changes = append(changes, state)
 		}
