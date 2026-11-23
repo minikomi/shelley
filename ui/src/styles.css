@@ -16102,31 +16102,40 @@ kbd {
   min-width: 0;
   padding: 0 0.5rem;
   border-bottom: 1px solid var(--border-color);
-  background: var(--bg-base);
+  background: var(--bg-secondary);
 }
 
 .git-graph-checkouts {
   grid-area: checkouts;
   display: flex;
-  gap: 0.125rem;
+  align-items: end;
+  isolation: isolate;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: thin;
+  padding-top: 0.375rem;
 }
 
 .git-graph-checkout {
+  position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: 0.45rem;
-  max-width: 18rem;
-  padding: 0.625rem 0.75rem;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
+  max-width: min(18rem, 75%);
+  min-height: 2rem;
+  padding: 0.375rem 0.875rem;
+  border: 1px solid var(--border-color);
+  border-bottom: 0;
+  border-radius: 0.5rem 0.625rem 0 0;
+  background: var(--bg-secondary);
   color: var(--text-secondary);
   font: inherit;
   cursor: pointer;
+}
+.git-graph-checkout + .git-graph-checkout {
+  margin-left: -0.5rem;
+  padding-left: 1.375rem;
 }
 .git-graph-checkout-name {
   overflow: hidden;
@@ -16145,11 +16154,13 @@ kbd {
 }
 .git-graph-checkout:hover {
   color: var(--text-primary);
-  background: var(--bg-secondary);
+  background: var(--bg-base);
 }
 .git-graph-checkout[aria-pressed="true"] {
   --checkout-icon: var(--primary);
-  border-bottom-color: var(--primary);
+  min-height: 2.25rem;
+  box-shadow: inset 0 2px var(--primary), 2px 0 3px rgb(0 0 0 / 8%);
+  background: var(--bg-base);
   color: var(--text-primary);
 }
 .git-graph-checkout:focus-visible {
