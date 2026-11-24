@@ -620,7 +620,8 @@
         diffCommentText = '';
         composerInjectedText = null;
       "
-      @draft-change="handleDraftChange"
+      @draft-change="handleComposerDraftChange"
+      @text-change="handleTextChange"
       @draft-send-started="handleDraftSendStarted"
       @draft-cleared="handleDraftCleared"
       @recording-unsent="handleRecordingUnsent"
@@ -770,18 +771,12 @@
       :is-open="showGitGraph"
       :covered="showDiffViewer"
       :can-open-diff="true"
-      @close="
-        showGitGraph = false;
-        focusMessageInputIfUnfocused();
-      "
-      @open-diff="
-        (commit, cwd, file) => {
-          diffViewerInitialCommit = commit;
-          diffViewerInitialFile = file;
-          diffViewerCwd = cwd;
-          showDiffViewer = true;
-        }
-      "
+      :mobile-diff="isMobile"
+      :selection-from="diffViewerTransfer?.diff ?? diffViewerInitialCommit"
+      :selection-to="diffViewerTransfer?.to ?? diffViewerInitialTo"
+      @close="onGitGraphClose"
+      @clear-selection="clearDiffViewerSelection"
+      @open-diff="onGitGraphOpenDiff"
     />
 
     <!-- Image annotation view. Opened by clicking any image in the
@@ -803,13 +798,16 @@
     />
 
     <!-- Diff Viewer -->
-    <DiffViewer
+    <component
+      ref="diffViewerRef"
+      :is="isMobile ? MobileDiffViewer : DiffViewer"
       :cwd="(diffViewerCwd || currentConversation?.cwd || selectedCwd) as string"
       :conversation-id="conversationId ?? undefined"
       :on-vm="onVm"
       :is-open="showDiffViewer"
-      :initial-commit="diffViewerInitialCommit"
-      :initial-file="diffViewerInitialFile"
+      :initial-commit="diffViewerTransfer?.diff ?? diffViewerInitialCommit"
+      :initial-file="diffViewerTransfer?.file ?? diffViewerInitialFile"
+      :initial-to="diffViewerTransfer?.to ?? diffViewerInitialTo"
       :recording-conversation-id="
         currentConversation && !currentConversation.archived && !currentConversation.is_draft
           ? (conversationId ?? undefined)
@@ -818,8 +816,9 @@
       :start-review-conversation="startReviewConversation"
       :follow-review-conversation="followReviewConversation"
       @close="onDiffViewerClose"
-      @comment-text-change="(text) => (diffCommentText = text)"
-      @cwd-change="(cwd) => (diffViewerCwd = cwd)"
+      @open-git-graph="onOpenGitGraphFromDiff"
+      @comment-text-change="(text: string) => (diffCommentText = text)"
+      @cwd-change="(cwd: string) => (diffViewerCwd = cwd)"
     />
 
     <!-- AGENTS.md Editor Modal -->
@@ -1011,6 +1010,7 @@ import ProfilesModal from "./ProfilesModal.vue";
 import ToolsModal from "./ToolsModal.vue";
 import MessageSelectionToolbar from "./MessageSelectionToolbar.vue";
 import DiffViewer from "./DiffViewer.vue";
+import MobileDiffViewer from "./MobileDiffViewer.vue";
 import type { ReviewConversationStart } from "./useReviewRecording";
 import ImageCommentModal from "./ImageCommentModal.vue";
 import MarkdownDocModal from "./MarkdownDocModal.vue";
@@ -1083,6 +1083,7 @@ const props = withDefaults(
       cwd?: string,
       conversationOptions?: ChatRequest["conversation_options"],
       skills?: string[],
+      keepFoundSecrets?: boolean,
     ) => Promise<void>;
     mostRecentCwd?: string | null;
     isDrawerCollapsed?: boolean;
@@ -1785,9 +1786,14 @@ async function applyPickedCwd(path: string) {
 }
 const isMobile = ref(window.innerWidth < 768);
 const showDiffViewer = ref(false);
+type DiffViewerSelection = { diff: string | null; to: string; file: string | null };
+const diffViewerRef = ref<{ getSelection: () => DiffViewerSelection } | null>(null);
+const diffViewerTransfer = ref<DiffViewerSelection | null>(null);
 const showGitGraph = ref(false);
+const returnToDiffFromGraph = ref(false);
 const showAgentsMdEditor = ref(false);
 const diffViewerInitialCommit = ref<string | undefined>(undefined);
+const diffViewerInitialTo = ref<string | undefined>(undefined);
 const diffViewerCwd = ref<string | undefined>(undefined);
 const diffViewerInitialFile = ref<string | undefined>(undefined);
 const diffCommentText = ref("");
@@ -3781,9 +3787,9 @@ function rejectSkillsOnCommand(message: string, skills: string[]) {
   throw err;
 }
 
-async function queueMessage(message: string, skills: string[] = []) {
+async function queueMessage(message: string, skills: string[] = [], keepFoundSecrets = false) {
   if (!props.conversationId) return;
-  await queueMessageTo(props.conversationId, selectedModel.value, message, skills);
+  await queueMessageTo(props.conversationId, selectedModel.value, message, skills, keepFoundSecrets);
 }
 
 async function queueMessageTo(
@@ -3791,6 +3797,7 @@ async function queueMessageTo(
   model: string,
   message: string,
   skills: string[] = [],
+  keepFoundSecrets = false,
 ) {
   if (!message.trim()) return;
   rejectSkillsOnCommand(message, skills);
@@ -3816,6 +3823,7 @@ async function queueMessageTo(
         model,
         queue: true,
         skills,
+        keep_found_secrets: keepFoundSecrets || undefined,
       },
       pending.controller.signal,
     );
@@ -3892,7 +3900,7 @@ async function cancelQueuedMessage(queuedId: string) {
   const text = queued ? queuedMessageRestoreText(queued) : "";
   try {
     await api.cancelQueuedMessage(props.conversationId, queuedId);
-    if (!draftText && text) seedComposer(text);
+    if (!composerText && text) seedComposer(text);
   } catch (err) {
     console.error("Failed to cancel queued message:", err);
   }
@@ -3995,13 +4003,13 @@ function followReviewConversation() {
 // The new conversation's view replaces the composer before MessageInput's
 // own clear, which then skips the changed session, so the sent text leaves
 // the new-conversation slot here, unless a newer composition took it over.
-async function sendFirstMessage(prompt: string, skills: string[] = []) {
+async function sendFirstMessage(prompt: string, skills: string[] = [], keepFoundSecrets = false) {
   const session = newDraftSessionVersion;
-  await startFirstMessage(prompt, skills);
+  await startFirstMessage(prompt, skills, keepFoundSecrets);
   if (session === newDraftSessionVersion) clearCachedDraft(null);
 }
 
-async function startFirstMessage(prompt: string, skills: string[]) {
+async function startFirstMessage(prompt: string, skills: string[], keepFoundSecrets: boolean) {
   if (!props.onFirstMessage) return;
   if (!canSendWithModel(selectedModel.value, readyModelIds.value, providerIds.value)) {
     throw new Error(noModelErrorMessage());
@@ -4016,6 +4024,7 @@ async function startFirstMessage(prompt: string, skills: string[]) {
       undefined,
       { profile: project, thinking_level: composerSettings.value.thinking_level },
       skills,
+      keepFoundSecrets,
     );
     return;
   }
@@ -4031,6 +4040,7 @@ async function startFirstMessage(prompt: string, skills: string[]) {
     selectedCwd.value || undefined,
     buildConversationOptions(),
     skills,
+    keepFoundSecrets,
   );
 }
 
@@ -4063,6 +4073,7 @@ async function submitTranscriptionCommand(path: string, transcriptionContext: st
 
 function prepareRecording(text: string): RecordingPreparation {
   const origin = props.conversationId;
+  const sent = composerText;
   const sessionVersion = draftSessionVersion;
   const draft = { text, newSessionVersion: newDraftSessionVersion };
   const isDraft = !props.conversationId || !!props.currentConversation?.is_draft;
@@ -4110,6 +4121,8 @@ function prepareRecording(text: string): RecordingPreparation {
                 }),
               );
               accepted = true;
+              forgetUnsaved(origin ?? null, sent);
+              forgetUnsaved(conversationId, sent);
             } catch (err) {
               const detail = err instanceof Error ? err.message : String(err);
               error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
@@ -4169,14 +4182,14 @@ function clearSubmittedDraft(conversationId: string, text: string) {
   // Acceptance belongs to the submitted composer even if it is now offscreen.
   // Leave subsequent edits, and the newly selected conversation, untouched.
   if (loadCachedDraft(conversationId)?.value === text) clearCachedDraft(conversationId);
-  if (props.conversationId === conversationId && draftText === text) {
+  if (props.conversationId === conversationId && draftText === text && composerText === text) {
     draftAutosave.cancel();
     seedComposer("");
     lastSeededValue = "";
   }
 }
 
-async function sendMessage(message: string, skills: string[] = []) {
+async function sendMessage(message: string, skills: string[] = [], keepFoundSecrets = false) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
   const transcriptionCommand =
@@ -4187,7 +4200,7 @@ async function sendMessage(message: string, skills: string[] = []) {
   });
   rejectSkillsOnCommand(trimmedMessage, skills);
   if (dispatch.route === "queue" && !transcriptionCommand) {
-    await queueMessage(trimmedMessage, skills);
+    await queueMessage(trimmedMessage, skills, keepFoundSecrets);
     return;
   }
   if (dispatch.route === "btw-blocked") {
@@ -4244,6 +4257,7 @@ async function sendMessage(message: string, skills: string[] = []) {
       const accepted = await api.sendMessage(originID, {
         message,
         model: selectedModel.value,
+        keep_found_secrets: keepFoundSecrets || undefined,
       });
       if (accepted.btw) {
         btwStore.upsert(accepted.btw);
@@ -4340,7 +4354,7 @@ async function sendMessage(message: string, skills: string[] = []) {
     trimmedMessage.startsWith(`${SLASH_COMMANDS.COMPACT.command} `)
   ) {
     const instructions = trimmedMessage.slice(SLASH_COMMANDS.COMPACT.command.length).trim();
-    await handleCompactInPlace(instructions || undefined);
+    await handleCompactInPlace(instructions || undefined, keepFoundSecrets);
     return;
   }
   if (
@@ -4357,7 +4371,7 @@ async function sendMessage(message: string, skills: string[] = []) {
       agentWorking.value = true;
       streamingText.value = "";
       streamingThinking.value = "";
-      await sendFirstMessage(prompt);
+      await sendFirstMessage(prompt, [], keepFoundSecrets);
     } catch (err) {
       console.error("Failed to send /new message:", err);
       error.value = err instanceof Error ? err.message : "Unknown error";
@@ -4405,6 +4419,8 @@ async function sendMessage(message: string, skills: string[] = []) {
     // A pending autosave now finishes without pulling navigation back to its
     // origin. Bind normal sends just like recordings before waiting for it.
     const submittedDraft = inflightDraft?.text ?? draftText;
+    const session = props.conversationId ?? null;
+    const sent = composerText;
     const isDraft = !props.conversationId || !!props.currentConversation?.is_draft;
     const request: ChatRequest = {
       message: message.trim(),
@@ -4412,6 +4428,7 @@ async function sendMessage(message: string, skills: string[] = []) {
       cwd: isDraft ? selectedCwd.value || undefined : undefined,
       conversation_options: isDraft ? buildConversationOptions() : undefined,
       skills,
+      keep_found_secrets: keepFoundSecrets || undefined,
     };
     if (isDraft) undoSubmit = props.onComposerSubmit?.(request.message, selectedCwd.value || null);
     let effectiveId = props.conversationId || draftConvId;
@@ -4419,7 +4436,7 @@ async function sendMessage(message: string, skills: string[] = []) {
     // A project's conversation starts on the server's project path, not
     // from a draft; the draft saved before the project was picked goes.
     if ((!effectiveId || (isDraft && composerProject.value)) && props.onFirstMessage) {
-      await sendFirstMessage(message.trim(), skills);
+      await sendFirstMessage(message.trim(), skills, keepFoundSecrets);
       if (effectiveId) {
         clearCachedDraft(effectiveId);
         void api.deleteConversation(effectiveId).catch(console.error);
@@ -4433,6 +4450,7 @@ async function sendMessage(message: string, skills: string[] = []) {
       // recording), so drop the optimistic indicator for the server's state.
       if (accepted.status === "queued") syncTransientFromStore(id);
     }
+    forgetUnsaved(session, sent);
   } catch (err) {
     console.error("Failed to send message:", err);
     error.value = err instanceof Error ? err.message : "Unknown error";
@@ -4475,12 +4493,12 @@ async function handleCancel() {
   try {
     cancelling.value = true;
     await api.cancelConversation(props.conversationId);
-    if (!draftText && queuedText) seedComposer(queuedText);
+    if (!composerText && queuedText) seedComposer(queuedText);
     agentWorking.value = false;
   } catch (err) {
     console.error("Failed to cancel conversation:", err);
     error.value = "Failed to cancel. Please try again.";
-    if (!draftText && pendingText) seedComposer(pendingText);
+    if (!composerText && pendingText) seedComposer(pendingText);
   } finally {
     cancelling.value = false;
   }
@@ -4491,7 +4509,7 @@ async function handleCancel() {
  * A conversation started without the compact_in_place tool gets it first;
  * the server refuses that mid-turn (compactInPlaceBusy keeps the button
  * disabled then). */
-async function handleCompactInPlace(instructions?: string) {
+async function handleCompactInPlace(instructions?: string, keepFoundSecrets = false) {
   const conversationId = props.conversationId;
   if (!conversationId) return;
   if (!compactInPlaceEnabled.value) {
@@ -4511,6 +4529,8 @@ async function handleCompactInPlace(instructions?: string) {
   }
   await sendMessage(
     instructions ? `${COMPACT_IN_PLACE_REQUEST}\n\n${instructions}` : COMPACT_IN_PLACE_REQUEST,
+    [],
+    keepFoundSecrets,
   );
 }
 
@@ -4669,31 +4689,54 @@ function onNewConversationClick(e: MouseEvent) {
 }
 
 // ---- draft autosave ----
-// The composer's live text. Deliberately NOT a ref: every keystroke flows
-// through handleDraftChange, and making it reactive would re-render
+// The composer's text as saved, which waits while it may hold a secret
+// (MessageInput's savableDraft), and composerText, the text as it is, for
+// deciding what the composer holds. Deliberately NOT refs: every keystroke
+// flows through them, and making them reactive would re-render
 // ChatInterface (and re-run every directive's `updated` hook, including
 // v-tooltip's PrimeVue style reload) per keystroke — which in a huge
 // conversation makes typing crawl in Safari. MessageInput owns the live text;
 // ChatInterface only pushes into the composer via draftSeed (below) when
 // reconciliation decides the text must change.
 let draftText = "";
+let composerText = "";
 // Programmatic seed for the composer. Wrapped in an object so re-seeding with
-// an identical string still triggers MessageInput's watch.
-const draftSeed = ref<{ value: string } | null>(null);
-function seedComposer(value: string) {
-  draftText = value;
-  draftSeed.value = { value };
-  reportComposer(value);
+// an identical string still triggers MessageInput's watch. saved is what the
+// draft keeps of value.
+const draftSeed = ref<{ value: string; saved: string } | null>(null);
+function seedComposer(value: string, saved = value) {
+  draftText = saved;
+  composerText = value;
+  draftSeed.value = { value, saved };
+  reportComposer(saved);
 }
 // App shows the new conversation or draft being composed in the drawer.
 function reportComposer(value: string) {
   if (props.conversationId && !props.currentConversation?.is_draft) return;
   props.onComposerInput?.(value, selectedCwd.value || null);
 }
-function appendToComposer(text: string) {
-  const value = draftText ? `${draftText}\n\n${text}` : text;
-  handleDraftChange(value);
-  draftSeed.value = { value };
+// autosave false: text the user hasn't touched makes no draft by itself (see
+// handleDraftChange). Such text comes from other pages, so MessageInput saves
+// it once the server has checked it for secrets. The rest (BTW summaries)
+// comes from the model, which never sees a secret.
+function appendToComposer(text: string, autosave = true) {
+  const value = composerText ? `${composerText}\n\n${text}` : text;
+  if (autosave && composerText === draftText) {
+    handleDraftChange(value);
+    composerText = value;
+    draftSeed.value = { value, saved: value };
+    return;
+  }
+  // Unsaved edits make the text the user's.
+  const untouched = composerText === draftText || composerText === untouchedAppend;
+  untouchedAppend = !autosave && untouched ? value : null;
+  seedComposer(value, draftText);
+}
+let untouchedAppend: string | null = null;
+function handleComposerDraftChange(value: string) {
+  const autosave = value !== untouchedAppend;
+  untouchedAppend = null;
+  handleDraftChange(value, autosave);
 }
 const lazyDraftId = ref<string | null>(null);
 let draftConvId: string | null = props.conversationId;
@@ -4783,7 +4826,7 @@ async function saveDraft(value: string) {
 }
 
 const draftAutosave = useDraftAutosave(saveDraft);
-function handleDraftChange(value: string) {
+function handleDraftChange(value: string, autosave = true) {
   perfCount("chat.draftChange");
   draftText = value;
   if (inflightDraft) inflightDraft.text = value;
@@ -4799,14 +4842,23 @@ function handleDraftChange(value: string) {
   // updated_at for draft/new sessions and "" for non-draft ones (nothing to
   // reconcile against; the cache is authoritative).
   saveCachedDraft(draftConvId, value, draftSyncedAt);
-  draftAutosave.schedule(value);
+  // Text that makes no draft by itself still joins a draft that exists, is
+  // being created, or has a save pending; else that save would carry the
+  // older text, and keep it.
+  if (autosave || draftConvId || inflightCreate || draftAutosave.pending()) {
+    draftAutosave.schedule(value);
+  }
   reportComposer(value);
+}
+function handleTextChange(value: string) {
+  composerText = value;
 }
 function handleDraftSendStarted() {
   draftAutosave.cancel();
 }
 function handleDraftCleared() {
   draftText = "";
+  composerText = "";
   lastSeededValue = "";
   draftAutosave.cancel();
   // Draft is gone (sent or deleted): drop the local mirror so a later visit
@@ -4885,12 +4937,53 @@ function onTerminalCloseHandler(id: string) {
   }
 }
 
+function clearDiffViewerSelection() {
+  diffViewerTransfer.value = null;
+  diffViewerInitialCommit.value = undefined;
+  diffViewerInitialTo.value = undefined;
+  diffViewerInitialFile.value = undefined;
+}
+
 function onDiffViewerClose() {
   showDiffViewer.value = false;
-  diffViewerInitialCommit.value = undefined;
-  diffViewerInitialFile.value = undefined;
+  if (isMobile.value && showGitGraph.value) {
+    const selection = diffViewerRef.value?.getSelection();
+    if (selection?.diff) diffViewerTransfer.value = selection;
+    return;
+  }
+  clearDiffViewerSelection();
   diffViewerCwd.value = undefined;
   if (!showGitGraph.value) focusMessageInputIfUnfocused();
+}
+
+function onOpenGitGraphFromDiff() {
+  showGitGraph.value = true;
+  returnToDiffFromGraph.value = true;
+  onDiffViewerClose();
+}
+
+function onGitGraphOpenDiff(commit: string, cwd: string, file?: string, to?: string) {
+  returnToDiffFromGraph.value = false;
+  clearDiffViewerSelection();
+  diffViewerInitialCommit.value = commit;
+  diffViewerInitialTo.value = to ?? (commit === "working" ? "working" : "self");
+  diffViewerInitialFile.value = file;
+  diffViewerCwd.value = cwd;
+  showDiffViewer.value = true;
+}
+
+function onGitGraphClose() {
+  showGitGraph.value = false;
+  if (returnToDiffFromGraph.value) {
+    returnToDiffFromGraph.value = false;
+    showDiffViewer.value = true;
+  } else {
+    if (isMobile.value) {
+      clearDiffViewerSelection();
+      diffViewerCwd.value = undefined;
+    }
+    focusMessageInputIfUnfocused();
+  }
 }
 
 // Loading bar fill class/style mirror the React conditional.
@@ -5167,7 +5260,13 @@ watch(
 
 // Mobile media query.
 const mobileMq = window.matchMedia("(max-width: 767px)");
-const onMobileChange = (e: MediaQueryListEvent) => (isMobile.value = e.matches);
+const onMobileChange = (e: MediaQueryListEvent) => {
+  if (showDiffViewer.value && diffViewerRef.value) {
+    const selection = diffViewerRef.value.getSelection();
+    if (selection.diff) diffViewerTransfer.value = selection;
+  }
+  isMobile.value = e.matches;
+};
 mobileMq.addEventListener("change", onMobileChange);
 
 // Favicon working indicator; workspace mode's (App.vue) covers every task.
@@ -5393,6 +5492,13 @@ let lastSeededSession: string | null | undefined = undefined;
 // reconcile watch tell an untouched seeded composer (safe to re-seed on a
 // server echo) from one the user has since edited (must not clobber).
 let lastSeededValue = "";
+// Composer text that may hold a secret, so isn't saved, by session: kept in
+// this tab only, for coming back to a conversation.
+const unsavedComposers = new Map<string | null, { value: string; saved: string }>();
+// Sent text isn't to come back.
+function forgetUnsaved(session: string | null, text: string) {
+  if (unsavedComposers.get(session)?.value.trim() === text.trim()) unsavedComposers.delete(session);
+}
 
 // Initialize the composer from the conversation row when switching
 // conversations. Drafts and the new-conversation view reconcile the server
@@ -5411,13 +5517,27 @@ watch(
     () => props.currentConversation?.draft,
     () => props.currentConversation?.updated_at,
     lazyDraftId,
+    // A new message or queued one may be text leaving another tab's composer,
+    // one this composer picked up from the shared mirror (see messagesOnly).
+    () => messages.value.at(-1)?.sequence_id,
+    () => props.currentConversation?.queued_messages,
   ],
-  ([id, isDraft], prev) => {
+  ([id, isDraft, draft, updatedAt, lazyId], prev) => {
     perfCount("chat.draftReconcileWatch");
     const sessionId = props.conversationId ?? null;
+    // Leaving a session (not just its draft being created) keeps its text
+    // that may hold a secret, for coming back to.
+    if (
+      lastSeededSession !== undefined &&
+      lastSeededSession !== sessionId &&
+      !(sessionId !== null && sessionId === lazyDraftId.value) &&
+      composerText !== draftText
+    ) {
+      unsavedComposers.set(lastSeededSession, { value: composerText, saved: draftText });
+    }
     const cached = loadCachedDraft(sessionId);
     // The row flipping is_draft true->false in place is the draft being sent.
-    const [prevId, prevIsDraft, prevDraft] = prev ?? [];
+    const [prevId, prevIsDraft, prevDraft, prevUpdatedAt, prevLazyId] = prev ?? [];
     const promotedFrom =
       prev && id === prevId && prevIsDraft === true && isDraft === false ? prevDraft || "" : null;
     const result = reconcileComposerDraft({
@@ -5429,7 +5549,14 @@ watch(
       cached,
       ownsPending: sessionId !== null && ownSends.has(sessionId),
       promotedFrom,
-      composerValue: draftText,
+      messagesOnly:
+        !!prev &&
+        id === prevId &&
+        isDraft === prevIsDraft &&
+        draft === prevDraft &&
+        updatedAt === prevUpdatedAt &&
+        lazyId === prevLazyId,
+      composerValue: composerText,
       lastSeededSession,
       lastSeededValue,
     });
@@ -5442,8 +5569,17 @@ watch(
       saveCachedDraft(sessionId, cached.value, cached.basedOn);
     }
     draftSyncedAt = result.draftSyncedAt;
-    seedComposer(result.value);
-    lastSeededValue = result.value;
+    // Keeping the composer's text keeps what isn't saved of it unsaved.
+    let seed = {
+      value: result.value,
+      saved: result.value === composerText ? draftText : result.value,
+    };
+    const kept = lastSeededSession !== sessionId ? unsavedComposers.get(sessionId) : undefined;
+    unsavedComposers.delete(sessionId);
+    if (kept?.saved === result.value) seed = kept;
+    seedComposer(seed.value, seed.saved);
+    // Text not saved counts as an edit, which echoes leave alone.
+    lastSeededValue = seed.saved;
     lastSeededSession = result.seededSession;
   },
   { immediate: true },
@@ -5465,7 +5601,6 @@ watch(
   },
 );
 
-// Text from the bookmarklet's page: the page itself, then picked elements.
 const bookmarkletStatusKey = computed(() =>
   bookmarkletTracing.value
     ? "bookmarkletTracking"
@@ -5476,12 +5611,16 @@ const bookmarkletStatusKey = computed(() =>
 const bookmarkletHost = computed(() =>
   bookmarkletPage.value ? new URL(bookmarkletPage.value.url).host : "",
 );
+// Text from the bookmarklet's page: the page itself, then picked elements.
+// Any page can send it, even by a link to Shelley, so it isn't saved as a
+// draft until the user edits it or starts a recording, here or by letting the
+// page's site start them.
 watch(
   bookmarkletInserts,
   (inserts) => {
     if (!inserts.length) return;
     bookmarkletInserts.value = [];
-    for (const text of inserts) appendToComposer(text);
+    for (const text of inserts) appendToComposer(text, false);
   },
   { immediate: true },
 );

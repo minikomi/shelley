@@ -17,6 +17,7 @@ type ToolInfo struct {
 // Keep in sync with NewToolSet / browse.RegisterBrowserTools.
 var ToolRegistry = []ToolInfo{
 	{Name: "bash", Summary: "Run shell commands.", DefaultOn: true, SourcePath: "claudetool/bash.go"},
+	{Name: readCodeName, Summary: "Search code and read file ranges in one batch.", DefaultOn: false, SourcePath: "claudetool/read_code.go"},
 	{Name: "patch", Summary: "Precise edits to files.", DefaultOn: true, SourcePath: "claudetool/patch.go"},
 	{Name: "change_dir", Summary: "Change the working directory.", DefaultOn: true, SourcePath: "claudetool/changedir.go"},
 	{Name: "output_html", Summary: "Show interactive HTML/visualizations to the user.", DefaultOn: true, SourcePath: "claudetool/output_iframe.go"},
@@ -26,7 +27,6 @@ var ToolRegistry = []ToolInfo{
 	{Name: "browser", Summary: "Browser automation (navigate, eval, screenshot, emulate, network, accessibility, profile).", DefaultOn: true, SourcePath: "claudetool/browse/browse.go"},
 	{Name: "read_image", Summary: "Read an image file for the model.", DefaultOn: true, SourcePath: "claudetool/browse/browse.go"},
 	{Name: "compact_in_place", Summary: "The agent compacts its own context.", DefaultOn: true, SourcePath: "claudetool/compact_in_place.go"},
-	{Name: "write_secret", Summary: "Write a secret the user stored to a file, unseen (secrets flag).", DefaultOn: true, SourcePath: "claudetool/secret.go"},
 	{Name: "message_user", Summary: "Chat with the user: messages, replies, emoji reactions, attachments.", DefaultOn: false, SourcePath: "claudetool/message_user.go"},
 	{Name: "send_to_thread", Summary: "Reply in a Slack thread (Assistant).", DefaultOn: true, SourcePath: "claudetool/slack.go"},
 	{Name: "send_to_channel", Summary: "Post to a Slack channel (Assistant).", DefaultOn: true, SourcePath: "claudetool/slack.go"},

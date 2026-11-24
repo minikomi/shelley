@@ -43,20 +43,27 @@ type GitFileInfo struct {
 	Additions   int    `json:"additions"`
 	Deletions   int    `json:"deletions"`
 	IsGenerated bool   `json:"isGenerated"`
+	// OldPath is where a renamed file came from. Its Status stays
+	// "modified", as clients before OldPath expect.
+	OldPath string `json:"oldPath,omitempty"`
 }
 
 // GitFileDiff represents the content of a file diff
 type GitFileDiff struct {
-	Path       string `json:"path"`
-	OldContent string `json:"oldContent"`
-	NewContent string `json:"newContent"`
-	Binary     bool   `json:"binary"`
-	OldExists  bool   `json:"oldExists"`
-	NewExists  bool   `json:"newExists"`
-	OldImage   bool   `json:"oldImage"`
-	NewImage   bool   `json:"newImage"`
-	OldAudio   bool   `json:"oldAudio"`
-	NewAudio   bool   `json:"newAudio"`
+	Path        string `json:"path"`
+	OldContent  string `json:"oldContent"`
+	NewContent  string `json:"newContent"`
+	Binary      bool   `json:"binary"`
+	OldExists   bool   `json:"oldExists"`
+	NewExists   bool   `json:"newExists"`
+	OldImage    bool   `json:"oldImage"`
+	NewImage    bool   `json:"newImage"`
+	OldAudio    bool   `json:"oldAudio"`
+	NewAudio    bool   `json:"newAudio"`
+	TooLarge    bool   `json:"tooLarge"`
+	OldBytes    int64  `json:"oldBytes"`
+	NewBytes    int64  `json:"newBytes"`
+	LimitReason string `json:"limitReason"`
 }
 
 // emptyTreeHash is the well-known hash for git's empty tree object.
@@ -706,12 +713,17 @@ func (s *Server) handleGitDiffFiles(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		var oldPath string
+		if e.code[0] == 'R' {
+			oldPath = e.from
+		}
 		files = append(files, GitFileInfo{
 			Path:        path,
 			Status:      status,
 			Additions:   stat.additions,
 			Deletions:   stat.deletions,
 			IsGenerated: isGenerated,
+			OldPath:     oldPath,
 		})
 	}
 
@@ -799,11 +811,15 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 		headRef = revs[1]
 	}
 
-	var oldContent string
-	var oldExists bool
+	oldPath := cleanPath
+	var oldSide gitDiffSide
 	if baseRef != emptyTreeHash {
-		oldOutput, err := m.git(gitRoot, "show", baseRef+":"+filePath).Output()
+		oldSide, err = m.gitDiffBlob(gitRoot, baseRef, oldPath)
 		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !oldSide.exists {
 			// A file the diff renamed has its left side under the old path.
 			entries, statusErr := m.nameStatus(gitRoot, revs)
 			if statusErr != nil {
@@ -812,26 +828,26 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 			}
 			for _, e := range entries {
 				if e.path == filePath && e.from != "" {
-					oldOutput, err = m.git(gitRoot, "show", baseRef+":"+e.from).Output()
+					oldPath = e.from
+					oldSide, err = m.gitDiffBlob(gitRoot, baseRef, oldPath)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 				}
 			}
 		}
-		oldExists = err == nil
-		oldContent = string(oldOutput)
 	}
 
-	var newContent string
-	var newExists bool
+	var newSide gitDiffSide
 	if headRef == "" {
-		if fileData, err := m.readFile(m.join(gitRoot, cleanPath)); err == nil {
-			newExists = true
-			newContent = string(fileData)
-		}
+		newSide, err = m.gitDiffWorkingFile(gitRoot, cleanPath)
 	} else {
-		newCmd := m.git(gitRoot, "show", headRef+":"+filePath)
-		newOutput, err := newCmd.Output()
-		newExists = err == nil
-		newContent = string(newOutput)
+		newSide, err = m.gitDiffBlob(gitRoot, headRef, cleanPath)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	side := r.URL.Query().Get("download")
@@ -839,6 +855,46 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 	if preview != "" {
 		side = preview
 	}
+	if side == "patch" && preview == "" {
+		m.serveGitPatch(w, r, gitRoot, revs, cleanPath, oldPath, oldSide, newSide)
+		return
+	}
+	if side != "" && side != "before" && side != "after" {
+		http.Error(w, "invalid download side", http.StatusBadRequest)
+		return
+	}
+	if (side == "before" && !oldSide.exists) || (side == "after" && !newSide.exists) {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	limitReason := ""
+	if oldSide.size+newSide.size > gitDiffMaxBytes {
+		limitReason = "Combined file size exceeds 2 MiB."
+	}
+	readLimit := int64(gitDiffMaxBytes + 1)
+	if side != "" {
+		readLimit = -1
+	} else if limitReason != "" {
+		// Keep media detection available without loading the whole file.
+		readLimit = 512
+	}
+	var oldData, newData []byte
+	if side != "after" {
+		oldData, err = m.readGitDiffSide(gitRoot, oldSide, readLimit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if side != "before" {
+		newData, err = m.readGitDiffSide(gitRoot, newSide, readLimit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	oldContent, newContent := string(oldData), string(newData)
+	oldExists, newExists := oldSide.exists, newSide.exists
 	if side != "" {
 		var content string
 		var exists bool
@@ -877,20 +933,30 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 	oldAudio := oldBinary && strings.HasPrefix(http.DetectContentType([]byte(oldContent)), "audio/")
 	newAudio := newBinary && strings.HasPrefix(http.DetectContentType([]byte(newContent)), "audio/")
 	binary := oldBinary || newBinary
-	if binary && r.URL.Query().Get("text") != "true" {
+	if limitReason == "" {
+		oldSide.size, newSide.size = int64(len(oldData)), int64(len(newData))
+		if len(oldData)+len(newData) > gitDiffMaxBytes || !binary || r.URL.Query().Get("text") == "true" {
+			limitReason = gitDiffLimitReason(oldData, newData)
+		}
+	}
+	if limitReason != "" || (binary && r.URL.Query().Get("text") != "true") {
 		oldContent, newContent = "", ""
 	}
 	fileDiff := GitFileDiff{
-		Binary:     binary,
-		OldAudio:   oldAudio,
-		NewAudio:   newAudio,
-		OldImage:   oldImage,
-		NewImage:   newImage,
-		OldExists:  oldExists,
-		NewExists:  newExists,
-		Path:       filePath,
-		OldContent: oldContent,
-		NewContent: newContent,
+		Binary:      binary,
+		OldAudio:    oldAudio,
+		NewAudio:    newAudio,
+		OldImage:    oldImage,
+		NewImage:    newImage,
+		OldExists:   oldExists,
+		NewExists:   newExists,
+		Path:        filePath,
+		OldContent:  oldContent,
+		NewContent:  newContent,
+		TooLarge:    limitReason != "",
+		OldBytes:    oldSide.size,
+		NewBytes:    newSide.size,
+		LimitReason: limitReason,
 	}
 
 	writeJSON(w, http.StatusOK, fileDiff)
@@ -898,11 +964,12 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 
 // CommitMessage represents a commit's full message for display in the diff viewer.
 type CommitMessage struct {
-	Hash    string `json:"hash"`
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
-	Author  string `json:"author"`
-	IsHead  bool   `json:"isHead"`
+	Hash      string `json:"hash"`
+	Subject   string `json:"subject"`
+	Body      string `json:"body"`
+	Author    string `json:"author"`
+	IsHead    bool   `json:"isHead"`
+	GitHubURL string `json:"githubUrl,omitempty"`
 }
 
 // handleGitCommitMessages returns the full commit messages for commits in a range.
@@ -1020,6 +1087,12 @@ func (s *Server) handleGitCommitMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	remoteOut, _ := m.git(gitRoot, "config", "--get", "remote.origin.url").Output()
+	if base := githubBaseURL(strings.TrimSpace(string(remoteOut))); base != "" {
+		for i := range messages {
+			messages[i].GitHubURL = base + "/commit/" + messages[i].Hash
+		}
+	}
 	writeJSON(w, http.StatusOK, messages)
 }
 

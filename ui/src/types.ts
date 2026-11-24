@@ -162,6 +162,9 @@ export interface ChatRequest {
   skills?: string[];
   /** What views asked the model to know (services/appContext.ts). */
   app_context?: { source: string; text: string }[];
+  /** Send what secret detection finds as typed: the user said it holds no
+   *  secret. Stored values and marks are still extracted (docs/secrets.md). */
+  keep_found_secrets?: boolean;
 }
 
 /** A conversation's adjustable settings; see Settings in server/settings.go. */
@@ -302,8 +305,6 @@ export interface InitData {
   workspace?: boolean;
   // workspace mode's sidebar dev/prod tabs: see services/exeVms.ts.
   dev_prod_tabs?: boolean;
-  // The bookmarklet feature flag: see vue/composables/bookmarklet.ts.
-  bookmarklet?: boolean;
   // True once the "upgrade your other conversations too?" offer has been
   // answered, so it is never made again.
   model_upgrade_prompt_done?: boolean;
@@ -356,9 +357,15 @@ export interface GitFileInfo {
   additions: number;
   deletions: number;
   isGenerated: boolean;
+  // Where a renamed file came from.
+  oldPath?: string;
 }
 
 export interface GitFileDiff {
+  tooLarge?: boolean;
+  oldBytes?: number;
+  newBytes?: number;
+  limitReason?: string;
   binary?: boolean;
   oldAudio?: boolean;
   newAudio?: boolean;
@@ -414,6 +421,7 @@ export interface GitCommitMessage {
   body: string;
   author: string;
   isHead: boolean;
+  githubUrl?: string;
 }
 
 // Conversation list patch stream payload.

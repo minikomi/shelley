@@ -382,6 +382,58 @@ func TestNewPageCrossTabSendStaysOutOfOtherComposer(t *testing.T) {
 15. In the first tab, eval: its composer is still empty. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[]".`)
 }
 
+// Tabs on one conversation share its composer mirror, so a server echo
+// while tab B types carries B's unsent text into this tab's idle composer.
+// When B then sent in the same second as that echo, the text stayed: the
+// composer reconciled only when the row's updated_at changed, and that has
+// one-second resolution. A renamed conversation stands in for the echo (a
+// late slug or title update did it in CI), timed just after a second turns so
+// the send lands in the same one.
+func TestNewPageCrossTabSendClearsTextPickedUpWhileTyping(t *testing.T) {
+	lazyTest(t, useful(0), `Checks that text this tab picked up from tab B while B was typing leaves this tab's composer once B sends it. Perform these steps in order, exactly as described; do not add extra steps.
+1. Navigate to /new.
+2. Wait for the message input (data-testid "message-input") to be visible.
+3. Fill the message input with the value "echo: pickup seed" and click the send button (data-testid "send-button").
+4. Wait for the URL to contain "/c/".
+5. Eval, polling until it matches: the agent's reply has rendered. Expression: "(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i<ms.length;i++){if(ms[i].innerText.indexOf('pickup seed')>=0)return 'replied';}return 'waiting';})()". Expect "replied".
+6. Open a second tab, "B", on the same page this tab is on (navigate in tab B with no URL).
+7. In tab B, wait for the message input (data-testid "message-input") to be visible.
+8. In tab B, eval: install a fetch shim that lets the chat POST reach the server but holds its response until released. Expression: "(function(){var o=window.fetch;window.fetch=function(u,opt){var s=(typeof u==='string')?u:u.url;if(/\/api\/conversation\/[^\/]+\/chat$/.test(s)&&opt&&opt.method==='POST'){return o(u,opt).then(function(r){return new Promise(function(res){window.__release=function(){res(r);};});});}return o(u,opt);};return 'held';})()". Expect "held".
+9. In tab B, fill the message input with the value "echo: picked-up-text". Do not send it yet.
+10. In tab B, eval: wait for the next second to begin. Expression: "(async function(){await new Promise(function(r){setTimeout(r,1010-Date.now()%1000);});return 'begun';})()". Expect "begun".
+11. In tab B, eval: rename the conversation through the API, so the server echoes an update to both tabs. Expression: "(async function(){var slug=decodeURIComponent(location.pathname.split('/c/')[1]);var c=await (await fetch('/api/conversation-by-slug/'+encodeURIComponent(slug))).json();var r=await fetch('/api/conversation/'+c.conversation_id+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slug:'picked-up-'+Date.now()})});return String(r.status);})()". Expect "200".
+12. In the first tab, eval, polling until it matches: the echo carried tab B's unsent text into this tab's idle composer. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[echo: picked-up-text]".
+13. In tab B, click the send button (data-testid "send-button").
+14. In the first tab, eval, polling until it matches: the agent's reply to the message sent from tab B has rendered. Expression: "(function(){var ms=document.querySelectorAll('.message-agent');for(var i=0;i<ms.length;i++){if(ms[i].innerText.indexOf('picked-up-text')>=0)return 'replied';}return 'waiting';})()". Expect "replied".
+15. In the first tab, eval, polling until it matches, for at most 5 seconds: the text tab B sent has left this tab's composer. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[]".
+16. In tab B, eval: release the held response. Expression: "(function(){window.__release();return 'released';})()". Expect "released".
+17. In tab B, eval, polling until it matches: its composer cleared once its send completed. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[]".
+18. In the first tab, eval: its composer is still empty. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[]".`)
+}
+
+// The same, with the agent at work: B's message is queued, so no message
+// arrives here; the queue changing must clear the text instead.
+func TestNewPageCrossTabQueuedSendClearsTextPickedUpWhileTyping(t *testing.T) {
+	lazyTest(t, useful(0), `Checks that text this tab picked up from tab B while B was typing leaves this tab's composer once B sends it to a working agent, which queues it. Perform these steps in order, exactly as described; do not add extra steps.
+1. Navigate to /new.
+2. Wait for the message input (data-testid "message-input") to be visible.
+3. Fill the message input with the value "delay: 30" and click the send button (data-testid "send-button").
+4. Wait for the URL to contain "/c/".
+5. Wait for the agent to be working ([data-testid="agent-thinking"] visible).
+6. Open a second tab, "B", on the same page this tab is on (navigate in tab B with no URL).
+7. In tab B, wait for the message input (data-testid "message-input") to be visible.
+8. In tab B, eval: install a fetch shim that lets the chat POST reach the server but holds its response until released. Expression: "(function(){var o=window.fetch;window.fetch=function(u,opt){var s=(typeof u==='string')?u:u.url;if(/\/api\/conversation\/[^\/]+\/chat$/.test(s)&&opt&&opt.method==='POST'){return o(u,opt).then(function(r){return new Promise(function(res){window.__release=function(){res(r);};});});}return o(u,opt);};return 'held';})()". Expect "held".
+9. In tab B, fill the message input with the value "echo: queued-pickup". Do not send it yet.
+10. In tab B, eval: wait for the next second to begin. Expression: "(async function(){await new Promise(function(r){setTimeout(r,1010-Date.now()%1000);});return 'begun';})()". Expect "begun".
+11. In tab B, eval: rename the conversation through the API, so the server echoes an update to both tabs. Expression: "(async function(){var slug=decodeURIComponent(location.pathname.split('/c/')[1]);var c=await (await fetch('/api/conversation-by-slug/'+encodeURIComponent(slug))).json();var r=await fetch('/api/conversation/'+c.conversation_id+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slug:'queued-pickup-'+Date.now()})});return String(r.status);})()". Expect "200".
+12. In the first tab, eval, polling until it matches: the echo carried tab B's unsent text into this tab's idle composer. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[echo: queued-pickup]".
+13. In tab B, click the send button (data-testid "send-button").
+14. In the first tab, eval, polling until it matches, for at most 5 seconds: the text tab B sent has left this tab's composer. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[]".
+15. In tab B, eval: release the held response. Expression: "(function(){window.__release();return 'released';})()". Expect "released".
+16. In tab B, eval, polling until it matches: its composer cleared once its send completed. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[]".
+17. In the first tab, eval: its composer is still empty. Expression: "(function(){return '['+document.querySelector('[data-testid=message-input]').value+']';})()". Expect "[]".`)
+}
+
 // Same race for a draft: this tab types the draft, tab B opens it and sends
 // it. The promotion echo must clear this tab's composer even though tab B's
 // POST has not returned yet (before the fix, the still-populated mirror kept
@@ -746,17 +798,12 @@ Step C — open the conversation drawer by clicking the button with aria-label "
 Step D — archive the active conversation from its actions menu: click the button with aria-label "Actions" in ".conversation-item.active", wait for the menu's "Archive" item, and trigger it with an eval step whose expression is "Array.from(document.querySelectorAll('.p-tieredmenu-item-link')).find(el => el.textContent.trim().startsWith('Archive')).click()". After archiving, the app asynchronously selects the conversation immediately below bravo, which is alpha, and the URL changes to alpha's path. The selection update is not instantaneous, so add a sleep of about 2 seconds to let it settle before asserting. Then run an eval step whose expression is "location.pathname === sessionStorage.getItem('alphaUrl') ? 'true' : 'false'" and expect the result "true". Then run an eval step whose expression is "location.pathname === sessionStorage.getItem('bravoUrl') ? 'true' : 'false'" and expect the result "false".`)
 }
 
-// --- Diff viewer file list (regression for untracked/added files missing from
-// the sidebar/picker). The test opens the viewer from a conversation in a
-// repository with working-tree changes. The file picker is a <select> with class
-// "diff-viewer-select" whose <option> labels are prefixed with a status symbol:
-// "+" for added, "~" for modified, "-" for deleted. `git diff --name-status
-// HEAD` omits untracked files, so brand-new files used to be missing from this
-// list; the handler now merges them in as "added". This is the same <select> on
-// mobile and desktop, so the assertion is viewport-independent. ---
+// git diff --name-status HEAD omits untracked files, which the handler
+// merges into the working changes as added files.
+const phoneWorkingDiffFiles = `Wait for the four file rows in ".diff-viewer-overlay .diff-rethink-mobile-files.is-overview .diff-tree-code-row". For each row, read ".diff-tree-status" aria-label and the trimmed ".diff-tree-label" text. In an eval with expect, join each status and filename with a space, sort the entries and join with "|"; expect exactly "Added untracked_added.txt|Deleted tracked_del.txt|Modified spaced name.txt|Modified tracked_mod.txt".`
 
 func TestE2EDiffViewerListsAddedModifiedDeleted(t *testing.T) {
-	e2e(t, useful(0), `Navigate to /c/diff-fixture, a conversation in a repository with working-tree changes. Open its diff viewer: phones keep the workspace tools in the overflow menu, so click the button with aria-label "More options", then the menu button whose text starts with "Diffs". The diff viewer (".diff-viewer-overlay") opens on the working-tree changes. Wait for the file picker (a <select> element with selector "select.diff-viewer-select") to be visible. The working tree has exactly four changed files, each appearing as an <option> in that select with a status-symbol prefix: a modified file shown as "~ tracked_mod.txt", a deleted file shown as "- tracked_del.txt", a brand-new untracked file shown as "+ untracked_added.txt", and a modified committed file whose name contains a space shown as "~ spaced name.txt". Verify all four options are present, with their full untruncated paths, by running an eval step whose expression is "(() => { const opts = Array.from(document.querySelectorAll('select.diff-viewer-select option')).map(o => o.textContent.trim()); const has = (sym, name) => opts.some(t => t.startsWith(sym) && t.includes(name)); return has('+','untracked_added.txt') && has('~','tracked_mod.txt') && has('-','tracked_del.txt') && has('~','spaced name.txt') ? 'true' : 'false'; })()" and expect the result "true". Two regression cases matter here: the untracked (added) file must be present with the "+" prefix, and the committed file with a space must appear as the full "spaced name.txt" (not truncated at the space to "spaced").`, func(s *shelley) {
+	e2e(t, useful(0), `On a phone, navigate to /c/diff-fixture, a conversation in a repository with working-tree changes. Open Diffs: `+fmt.Sprintf(openToolPhone, "Diffs")+`. Wait for the diff viewer (".diff-viewer-overlay"). `+mobileDiffWorking+phoneWorkingDiffFiles, func(s *shelley) {
 		repo := s.path("diff")
 		s.check(setupDiffFixtureRepo(repo))
 		s.conversationWith(map[string]any{"message": "Hello", "model": "predictable", "cwd": repo}, "diff-fixture")
@@ -766,7 +813,7 @@ func TestE2EDiffViewerListsAddedModifiedDeleted(t *testing.T) {
 // ?diff=working opens the diff viewer on the working changes, as ?diff=<hash>
 // opens it on a commit.
 func TestE2EDiffViewerOpensWorkingChangesFromURL(t *testing.T) {
-	e2e(t, useful(0), `A ?diff=working link opens the diff viewer on the working changes. The conversation at /c/diff-fixture works in a repository whose working tree has exactly four changed files: "tracked_mod.txt" (modified), "tracked_del.txt" (deleted), "untracked_added.txt" (new, untracked) and "spaced name.txt" (modified). "The overlay" is ".diff-viewer-overlay"; "the file picker" is "select.diff-viewer-select", whose options read like "~ tracked_mod.txt" ("~" modified, "-" deleted, "+" added). Perform the steps in order. 1. Navigate to /c/diff-fixture?diff=working. 2. The overlay should become visible (allow 30s), and so should the file picker (allow 30s). 3. The file picker's file options (all but its first option, the "Choose file..." placeholder), trimmed and with any trailing line counts such as " (+1)" or " (-1)" removed, must be exactly the four working changes: check with an eval with expect that returns them sorted and joined with "|", which must be "+ untracked_added.txt|- tracked_del.txt|~ spaced name.txt|~ tracked_mod.txt". 4. The overlay must show no error: there is no ".diff-viewer-error" element in it (count 0, checked once now that the files show). 5. The link's query is spent: the URL must be exactly /c/diff-fixture, with no query.`, func(s *shelley) {
+	e2e(t, useful(0), `On a phone, a ?diff=working link opens the diff viewer on the working changes. Perform the steps in order. 1. Navigate to /c/diff-fixture?diff=working. 2. The overlay (".diff-viewer-overlay") should become visible (allow 30s). 3. `+phoneWorkingDiffFiles+` 4. The overlay must show no error: there is no ".diff-viewer-error" element in it (count 0, checked once now that the files show). 5. The link's query is spent: the URL must be exactly /c/diff-fixture, with no query.`, func(s *shelley) {
 		repo := s.path("diff")
 		s.check(setupDiffFixtureRepo(repo))
 		s.conversationWith(map[string]any{"message": "Hello", "model": "predictable", "cwd": repo}, "diff-fixture")

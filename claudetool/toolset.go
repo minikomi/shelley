@@ -158,8 +158,8 @@ type ToolSetConfig struct {
 	// host: its scratch space, where tools that only work here (read_image,
 	// output_html, message_user, llm_one_shot) resolve relative paths.
 	HostDir string
-	// Secrets, if set, redacts stored secrets from every tool's output and,
-	// when enabled, provides the write_secret tool (docs/secrets.md).
+	// Secrets, if set, redacts stored secrets from every tool's output
+	// (docs/secrets.md).
 	Secrets Secrets
 }
 
@@ -304,6 +304,10 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		(&OutputIframeTool{WorkingDir: hostWD}).Tool(),
 	}
 
+	if cfg.VM == nil {
+		tools = append(tools, readCodeTool(wd))
+	}
+
 	// Build the available models list (shared by subagent and llm_one_shot tools).
 	// Resolved fresh on each ToolSet construction so new conversations see
 	// custom models added since server start.
@@ -396,11 +400,6 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		if svc, err := cfg.LLMProvider.GetService(cfg.ModelID); err == nil {
 			tools = append(tools, serverSideTools(svc)...)
 		}
-	}
-
-	if cfg.Secrets != nil && cfg.Secrets.ToolEnabled(ctx) {
-		writeSecret := &WriteSecretTool{Secrets: cfg.Secrets, ConversationID: cfg.ConversationID, WorkingDir: wd, VM: cfg.VM, HostDir: hostWD}
-		tools = append(tools, writeSecret.Tool())
 	}
 
 	tools = FilterTools(tools, cfg.ToolOverrides, cfg.DisableAllTools)

@@ -439,8 +439,8 @@ func TestCustomAnthropicModelsUseCatalogLimitsOnWire(t *testing.T) {
 		{
 			name:     "known provider endpoint uses its snapshot entry",
 			endpoint: "https://api.fireworks.ai/inference/v1",
-			model:    "accounts/fireworks/models/gpt-oss-120b",
-			wantMax:  32768,
+			model:    "accounts/fireworks/models/ember-1",
+			wantMax:  131072,
 			captured: true,
 		},
 		{
@@ -689,11 +689,11 @@ func TestGeminiFactoryUsesStreamingLimit(t *testing.T) {
 func TestGeminiUnconfigurableThinkingDefaults(t *testing.T) {
 	tests := []struct{ name, model, mapping, want string }{
 		{"unknown controls", "custom-unknown", "", ""},
-		{"known model without controls", "gemini-2.5-flash-image", "", ""},
+		{"known model without controls", "gemini-2.5-computer-use-preview-10-2025", "", ""},
 		{"explicit controls", "custom-unknown", `{"high":"future"}`, "future"},
 		{"explicit standard effort", "custom-unknown", `{"high":"high"}`, "high"},
-		{"known model explicit standard effort", "gemini-2.5-flash-image", `{"high":"high"}`, "high"},
-		{"known model explicit custom effort", "gemini-2.5-flash-image", `{"high":"future"}`, "future"},
+		{"known model explicit standard effort", "gemini-2.5-computer-use-preview-10-2025", `{"high":"high"}`, "high"},
+		{"known model explicit custom effort", "gemini-2.5-computer-use-preview-10-2025", `{"high":"future"}`, "future"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1099,3 +1099,52 @@ func TestReasoningServiceMapsServiceDefault(t *testing.T) {
 type defaultThinkingService struct{ captureThinkingService }
 
 func (s *defaultThinkingService) DefaultReasoningLevel() string { return "medium" }
+
+// An account's preferred reasoning level replaces only the model's default:
+// explicit levels pass through, and a level the model lacks is ignored.
+func TestManagerAppliesBuiltDefaultReasoningLevel(t *testing.T) {
+	levels := []llm.ThinkingLevel{llm.ThinkingLevelLow, llm.ThinkingLevelMedium, llm.ThinkingLevelHigh}
+	preferred := &advertisedReasoningService{levels: levels}
+	unsupported := &advertisedReasoningService{levels: levels}
+	mgr, err := NewManager(&Config{Models: []Built{
+		{ID: "preferred", Provider: ProviderAnthropic, Service: preferred, DefaultReasoningLevel: "high"},
+		{ID: "unsupported", Provider: ProviderAnthropic, Service: unsupported, DefaultReasoningLevel: "xhigh"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := mgr.GetService("preferred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := llm.ServiceDefaultReasoningLevel(svc); got != "high" {
+		t.Fatalf("default reasoning = %q, want high", got)
+	}
+	if _, err := svc.Do(t.Context(), &llm.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if preferred.got != llm.ThinkingLevelHigh {
+		t.Fatalf("default request sent %s, want high", preferred.got.Name())
+	}
+	if _, err := svc.Do(t.Context(), &llm.Request{ThinkingLevel: llm.ThinkingLevelLow}); err != nil {
+		t.Fatal(err)
+	}
+	if preferred.got != llm.ThinkingLevelLow {
+		t.Fatalf("explicit request sent %s, want low", preferred.got.Name())
+	}
+
+	svc, err = mgr.GetService("unsupported")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := llm.ServiceDefaultReasoningLevel(svc); got != "" {
+		t.Fatalf("unsupported default reasoning = %q, want the model's own", got)
+	}
+	if _, err := svc.Do(t.Context(), &llm.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	if unsupported.got != llm.ThinkingLevelDefault {
+		t.Fatalf("unsupported default request sent %s, want default", unsupported.got.Name())
+	}
+}

@@ -137,11 +137,11 @@ import BrowserEmulateTool from "./tools/BrowserEmulateTool.vue";
 import BrowserNetworkTool from "./tools/BrowserNetworkTool.vue";
 import BrowserAccessibilityTool from "./tools/BrowserAccessibilityTool.vue";
 import BrowserProfileTool from "./tools/BrowserProfileTool.vue";
+import ReadCodeTool from "./tools/ReadCodeTool.vue";
 import GenericToolWarning from "./tools/GenericToolWarning.vue";
 import RunningToolTime from "./tools/RunningToolTime.vue";
 import KeywordSearchTool from "./tools/KeywordSearchTool.vue";
 import ChangeDirTool from "./tools/ChangeDirTool.vue";
-import WriteSecretTool from "./tools/WriteSecretTool.vue";
 import CompactInPlaceTool from "./tools/CompactInPlaceTool.vue";
 import MessageParentTool from "./tools/MessageParentTool.vue";
 import MessageUserTool from "./tools/MessageUserTool.vue";
@@ -203,6 +203,7 @@ usePerfLifecycle("toolCall");
 const TOOL_COMPONENTS: Record<string, any> = {
   openai_audio_transcription: AudioTranscriptionTool,
   bash: BashTool,
+  read_code: ReadCodeTool,
   patch: PatchTool,
   apply_patch: PatchTool,
   browser: BrowserTool,
@@ -210,7 +211,6 @@ const TOOL_COMPONENTS: Record<string, any> = {
   read_image: ReadImageTool,
   keyword_search: KeywordSearchTool,
   change_dir: ChangeDirTool,
-  write_secret: WriteSecretTool,
   compact_in_place: CompactInPlaceTool,
   subagent: SubagentTool,
   message_parent: MessageParentTool,

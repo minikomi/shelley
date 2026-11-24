@@ -56,6 +56,7 @@
               :diffs="diffs"
               :selected-diff="selectedDiff"
               :selected-to="selectedTo"
+              :range-hashes="rangeHashes"
               :is-mobile="isMobile"
               @change="onCommitChange"
               @open="loadCommitStats"
@@ -163,6 +164,7 @@
                   :diffs="diffs"
                   :selected-diff="selectedDiff"
                   :selected-to="selectedTo"
+                  :range-hashes="rangeHashes"
                   :is-mobile="isMobile"
                   @change="onCommitChange"
                   @open="loadCommitStats"
@@ -220,7 +222,7 @@
               <button
                 v-tooltip.top="'Previous change (,)'"
                 class="diff-viewer-nav-btn"
-                :disabled="!fileDiff || binaryPanel"
+                :disabled="!fileDiff || editorBlocked"
                 aria-label="Previous change (,)"
                 @click="goToPreviousChange"
               >
@@ -229,7 +231,7 @@
               <button
                 v-tooltip.top="'Next change (.)'"
                 class="diff-viewer-nav-btn"
-                :disabled="!fileDiff || binaryPanel"
+                :disabled="!fileDiff || editorBlocked"
                 aria-label="Next change (.)"
                 @click="goToNextChange"
               >
@@ -413,7 +415,7 @@
               <span>Loading...</span>
             </div>
             <div
-              v-if="!loading && !binaryPanel && !monacoLoaded && !error"
+              v-if="!loading && !editorBlocked && !monacoLoaded && !error"
               class="diff-viewer-loading"
             >
               <div class="spinner"></div>
@@ -425,7 +427,23 @@
                 Click a line to comment, or select text and click Comment.
               </p>
             </div>
-            <div v-if="fileDiff?.binary" class="diff-viewer-binary-toolbar">
+            <div
+              v-if="fileDiff?.tooLarge"
+              class="diff-viewer-empty diff-viewer-large"
+              data-testid="large-file-panel"
+              role="status"
+            >
+              <h3>Too large to display</h3>
+              <p>{{ selectedFile }}</p>
+              <p>{{ fileDiff.limitReason }} This file has not been loaded into the editor.</p>
+              <p>
+                Before: {{ formatFileSize(fileDiff.oldBytes) }} ·
+                After: {{ formatFileSize(fileDiff.newBytes) }}
+              </p>
+              <p><a :href="binaryDownloadURL('patch')" download>Download patch</a></p>
+              <p class="diff-viewer-hint">Choose another file to continue reviewing.</p>
+            </div>
+            <div v-if="fileDiff?.binary && !fileDiff.tooLarge" class="diff-viewer-binary-toolbar">
               <button
                 v-if="showBinaryAsText"
                 type="button"
@@ -507,10 +525,12 @@
             <div
               ref="editorContainerRef"
               class="diff-viewer-editor"
-              :style="{ display: fileDiff && !binaryPanel && monacoLoaded ? 'block' : 'none' }"
+              :style="{ display: fileDiff && !editorBlocked && monacoLoaded ? 'block' : 'none' }"
             />
             <div
-              v-if="!isMobile && vimEnabled && fileDiff && !fileDiff.binary && monacoLoaded"
+              v-if="
+                !isMobile && vimEnabled && fileDiff && !fileDiff.binary && !editorBlocked && monacoLoaded
+              "
               ref="vimStatusRef"
               class="monaco-vim-status"
             />
@@ -555,7 +575,7 @@
         <button
           v-tooltip.top="'Previous change (,)'"
           class="diff-viewer-mobile-nav-btn"
-          :disabled="!fileDiff || binaryPanel"
+          :disabled="!fileDiff || editorBlocked"
           aria-label="Previous change (,)"
           @click="goToPreviousChange"
         >
@@ -564,7 +584,7 @@
         <button
           v-tooltip.top="'Next change (.)'"
           class="diff-viewer-mobile-nav-btn"
-          :disabled="!fileDiff || binaryPanel"
+          :disabled="!fileDiff || editorBlocked"
           aria-label="Next change (.)"
           @click="goToNextChange"
         >
@@ -662,6 +682,7 @@ const props = defineProps<{
   onVm?: boolean;
   isOpen: boolean;
   initialCommit?: string;
+  initialTo?: string;
   // File to select once initialCommit's file list loads (e.g. from the git
   // graph diffstat). Consumed on the first load only.
   initialFile?: string;
@@ -722,9 +743,16 @@ const diffs = ref<GitDiffInfo[]>([]);
 const gitRoot = ref<string | null>(null);
 const showDirPicker = ref(false);
 const selectedDiff = ref<string | null>(null);
-const selectedTo = ref<"working" | "self">("working");
+const selectedTo = ref("working");
 const files = ref<GitFileInfo[]>([]);
 const selectedFile = ref<string | null>(null);
+defineExpose({
+  getSelection: () => ({
+    diff: selectedDiff.value,
+    to: selectedTo.value,
+    file: selectedFile.value,
+  }),
+});
 // Highlights for the selected single commit, if it has any; they order
 // `files` and annotate lines in the editor.
 const highlights = ref<CommitHighlights | null>(null);
@@ -737,7 +765,14 @@ let loadFilesRequestId = 0;
 let loadFileDiffRequestId = 0;
 const fileDiff = ref<GitFileDiff | null>(null);
 const showBinaryAsText = ref(false);
-const binaryPanel = computed(() => !!fileDiff.value?.binary && !showBinaryAsText.value);
+const binaryPanel = computed(
+  () => !fileDiff.value?.tooLarge && !!fileDiff.value?.binary && !showBinaryAsText.value,
+);
+const editorBlocked = computed(() => !!fileDiff.value?.tooLarge || binaryPanel.value);
+function formatFileSize(bytes = 0): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} KiB`;
+}
 const binaryBeforeRatio = computed(() =>
   !fileDiff.value?.oldExists
     ? EMPTY_SIDE_SPLIT_RATIO
@@ -752,7 +787,7 @@ function showBinaryText() {
 function binaryMediaURL(side: "before" | "after"): string {
   return binaryDownloadURL(side).replace(`&download=${side}`, `&preview=${side}`);
 }
-function binaryDownloadURL(side: "before" | "after"): string {
+function binaryDownloadURL(side: "before" | "after" | "patch"): string {
   if (!selectedDiff.value || !selectedFile.value) return "";
   return (
     api.gitFileDiffURL(
@@ -814,6 +849,9 @@ const mainRef = ref<HTMLDivElement | null>(null);
 let diffEditor: Monaco.editor.IStandaloneDiffEditor | null = null;
 let saveTimeout: number | null = null;
 let amendTimeout: number | null = null;
+let pendingSave: { path: string; content: string; conversationId?: string } | null = null;
+let pendingAmend: { cwd: string; content: string; conversationId?: string } | null = null;
+let saveInFlight: Promise<void> = Promise.resolve();
 let hasShownKeyboardHint = false;
 let keyboardHintTimer: number | null = null;
 const navOrderRef = ref<string[]>([]);
@@ -888,7 +926,7 @@ function lineSpan(first: number, last: number): string {
 }
 
 function monacoEditors(): Array<[Monaco.editor.ICodeEditor, ReviewSide]> {
-  if (!diffEditor || loading.value || binaryPanel.value) return [];
+  if (!diffEditor || loading.value || editorBlocked.value) return [];
   return [
     [diffEditor.getModifiedEditor(), "new"],
     [diffEditor.getOriginalEditor(), "old"],
@@ -1101,6 +1139,8 @@ watch(
       pendingInitialFile = props.initialFile;
       loadDiffs();
     } else if (!props.isOpen) {
+      if (saveTimeout) saveImmediately();
+      if (amendTimeout) amendImmediately();
       loadDiffsRequestId++;
       loadFilesRequestId++;
       loadFileDiffRequestId++;
@@ -1116,10 +1156,6 @@ watch(
       resetComments();
       commitMessages.value = [];
       amendStatus.value = "idle";
-      if (amendTimeout) {
-        clearTimeout(amendTimeout);
-        amendTimeout = null;
-      }
     }
   },
   { immediate: true },
@@ -1173,6 +1209,7 @@ function createEditor() {
     minimap: { enabled: false },
     scrollBeyondLastLine: true,
     wordWrap: "on",
+    maxComputationTime: 1000,
     glyphMargin: !initMobile,
     lineDecorationsWidth: initMobile
       ? MOBILE_LINE_DECORATIONS_WIDTH
@@ -1205,20 +1242,14 @@ function createEditor() {
   // Single content change listener; branches on current file context.
   modEditor.onDidChangeModelContent(() => {
     if (currentFileIsHeadCommit) {
+      const model = modEditor.getModel();
+      if (!model) return;
+      if (pendingAmend && (pendingAmend.cwd !== cwdVal || pendingAmend.conversationId !== props.conversationId)) amendImmediately();
+      pendingAmend = { cwd: cwdVal, content: model.getValue(), conversationId: props.conversationId };
       if (amendTimeout) clearTimeout(amendTimeout);
       amendStatus.value = "saving";
-      amendTimeout = window.setTimeout(async () => {
-        const model = modEditor.getModel();
-        if (!model) return;
-        const newMessage = model.getValue();
-        try {
-          await api.amendGitMessage(cwdVal, props.conversationId, newMessage);
-          amendStatus.value = "saved";
-          setTimeout(() => (amendStatus.value = "idle"), 2000);
-        } catch {
-          amendStatus.value = "error";
-          setTimeout(() => (amendStatus.value = "idle"), 3000);
-        }
+      amendTimeout = window.setTimeout(() => {
+        amendImmediately();
       }, 1500);
     } else {
       scheduleSaveFn?.();
@@ -1227,6 +1258,25 @@ function createEditor() {
 }
 let commentsCleanup: (() => void) | null = null;
 let highlightsCleanup: (() => void) | null = null;
+
+function amendImmediately() {
+  if (amendTimeout) clearTimeout(amendTimeout);
+  amendTimeout = null;
+  const amend = pendingAmend;
+  pendingAmend = null;
+  if (amend) void amendCurrentMessage(amend);
+}
+
+async function amendCurrentMessage(amend: NonNullable<typeof pendingAmend>) {
+  try {
+    await api.amendGitMessage(amend.cwd, amend.conversationId, amend.content);
+    amendStatus.value = "saved";
+    setTimeout(() => (amendStatus.value = "idle"), 2000);
+  } catch {
+    amendStatus.value = "error";
+    setTimeout(() => (amendStatus.value = "idle"), 3000);
+  }
+}
 
 function disposeEditor() {
   if (!diffEditor) return;
@@ -1288,10 +1338,28 @@ let diffUpdateDisposable: Monaco.IDisposable | null = null;
 watch(
   [monacoLoaded, fileDiff, showBinaryAsText],
   () => {
-    if (!monacoLoaded.value || !fileDiff.value || binaryPanel.value || !diffEditor || !monacoMod)
+    if (!diffEditor) return;
+    if (editorBlocked.value) {
+      highlightsCleanup?.();
+      highlightsCleanup = null;
+      commentPrompt.value = null;
+      diffUpdateDisposable?.dispose();
+      diffUpdateDisposable = null;
+      const previous = diffEditor.getModel();
+      diffEditor.setModel(null);
+      previous?.original.dispose();
+      previous?.modified.dispose();
       return;
+    }
+    if (!monacoLoaded.value || !fileDiff.value || !monacoMod) return;
     const monaco = monacoMod;
     const fd = fileDiff.value;
+    diffEditor.updateOptions({
+      wordWrap:
+        (fd.oldBytes ?? fd.oldContent.length) + (fd.newBytes ?? fd.newContent.length) > 512 * 1024
+          ? "off"
+          : "on",
+    });
 
     const isCommitMsg = isCommitMessageFile(fd.path);
     const commitHash = isCommitMsg ? commitHashFromPath(fd.path) : null;
@@ -1426,7 +1494,7 @@ async function loadDiffs() {
     const selection = defaultDiffSelection(response.diffs, initialCommit);
     if (selection) {
       selectedDiff.value = selection.selectedDiff;
-      selectedTo.value = selection.selectedTo;
+      selectedTo.value = props.initialTo ?? selection.selectedTo;
     }
   } catch (err) {
     if (requestId !== loadDiffsRequestId) return;
@@ -1548,6 +1616,10 @@ async function loadFileDiff(diffId: string, filePath: string, asText = false) {
   try {
     loading.value = true;
     error.value = null;
+    if (saveTimeout) saveImmediately();
+    await saveInFlight;
+    if (requestId !== loadFileDiffRequestId) return;
+    fileDiff.value = null;
     if (isCommitMessageFile(filePath)) {
       const hash = commitHashFromPath(filePath);
       const msg = commitMessages.value.find((m) => m.hash === hash);
@@ -1604,7 +1676,7 @@ function goToPreviousFile(): boolean {
 }
 
 function goToNextChange() {
-  if (binaryPanel.value) return;
+  if (editorBlocked.value) return;
   if (!diffEditor) return;
   const changes = diffEditor.getLineChanges();
   if (!changes || changes.length === 0) {
@@ -1634,7 +1706,7 @@ function goToNextChange() {
 }
 
 function goToPreviousChange() {
-  if (binaryPanel.value) return;
+  if (editorBlocked.value) return;
   if (!diffEditor) return;
   const changes = diffEditor.getLineChanges();
   if (!changes || changes.length === 0) {
@@ -1660,7 +1732,7 @@ function goToPreviousChange() {
 }
 
 // --- Save (edit mode) ---
-async function saveCurrentFile() {
+function captureSave() {
   const isWorkingView = selectedDiff.value === "working" || selectedTo.value === "working";
   if (
     !diffEditor ||
@@ -1668,23 +1740,29 @@ async function saveCurrentFile() {
     isCommitMessageFile(selectedFile.value) ||
     !fileDiff.value ||
     fileDiff.value.binary ||
+    fileDiff.value.path !== selectedFile.value ||
     modeVal !== "edit" ||
     !gitRoot.value ||
     !isWorkingView
   ) {
-    return;
+    return null;
   }
-  const modEditor = diffEditor.getModifiedEditor();
-  const model = modEditor.getModel();
-  if (!model) return;
-  const content = model.getValue();
-  const fullPath = gitRoot.value + "/" + selectedFile.value;
+  const model = diffEditor.getModifiedEditor().getModel();
+  if (!model) return null;
+  return {
+    path: gitRoot.value + "/" + selectedFile.value,
+    content: model.getValue(),
+    conversationId: props.conversationId,
+  };
+}
+
+async function saveCurrentFile(save: NonNullable<typeof pendingSave>) {
   try {
     saveStatus.value = "saving";
-    const response = await fetch(onMachine("/api/write-file", props.conversationId), {
+    const response = await fetch(onMachine("/api/write-file", save.conversationId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: fullPath, content }),
+      body: JSON.stringify({ path: save.path, content: save.content }),
     });
     if (response.ok) {
       saveStatus.value = "saved";
@@ -1701,11 +1779,13 @@ async function saveCurrentFile() {
 }
 
 function scheduleSave() {
-  if (modeVal !== "edit") return;
+  const save = captureSave();
+  if (!save) return;
+  if (pendingSave && (pendingSave.path !== save.path || pendingSave.conversationId !== save.conversationId)) saveImmediately();
+  pendingSave = save;
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = window.setTimeout(() => {
-    saveCurrentFile();
-    saveTimeout = null;
+    saveImmediately();
   }, 1000);
 }
 scheduleSaveFn = scheduleSave;
@@ -1715,7 +1795,10 @@ function saveImmediately() {
     clearTimeout(saveTimeout);
     saveTimeout = null;
   }
-  saveCurrentFile();
+  const save = pendingSave ?? captureSave();
+  pendingSave = null;
+  if (save) saveInFlight = saveInFlight.then(() => saveCurrentFile(save));
+  return saveInFlight;
 }
 
 // --- Theme observer ---
@@ -1778,7 +1861,7 @@ function handleKeyDown(e: KeyboardEvent) {
   }
   // Route Ctrl/Cmd+F to Monaco's find widget instead of browser find.
   if ((e.ctrlKey || e.metaKey) && e.key === "f") {
-    if (diffEditor && !binaryPanel.value) {
+    if (diffEditor && !editorBlocked.value) {
       e.preventDefault();
       e.stopPropagation();
       const modEditor = diffEditor.getModifiedEditor();
@@ -1792,7 +1875,7 @@ function handleKeyDown(e: KeyboardEvent) {
   if (findWidget) return;
   // Intercept PageUp/PageDown to scroll the diff editor.
   if (e.key === "PageUp" || e.key === "PageDown") {
-    if (diffEditor && !binaryPanel.value) {
+    if (diffEditor && !editorBlocked.value) {
       e.preventDefault();
       e.stopPropagation();
       const modEditor = diffEditor.getModifiedEditor();
@@ -1969,9 +2052,15 @@ const sidebarCommits = computed<GitDiffInfo[]>(() => {
 const sidebarSelIdx = computed(() =>
   selectedDiff.value ? sidebarCommits.value.findIndex((d) => d.id === selectedDiff.value) : -1,
 );
+const rangeHashes = computed(() => new Set(commitMessages.value.map((message) => message.hash)));
 function inSidebarRange(idx: number): boolean {
-  if (sidebarSelIdx.value < 0) return false;
+  if (!selectedDiff.value) return false;
   if (selectedDiff.value === "working") return idx === sidebarSelIdx.value;
+  if (selectedTo.value !== "self" && selectedTo.value !== "working") {
+    const commit = sidebarCommits.value[idx];
+    return !!commit && rangeHashes.value.has(commit.id);
+  }
+  if (sidebarSelIdx.value < 0) return false;
   if (selectedTo.value === "self") return idx === sidebarSelIdx.value;
   return idx >= 0 && idx <= sidebarSelIdx.value;
 }
@@ -2006,7 +2095,7 @@ function selectSidebarFile(path: string) {
   selectedFile.value = path;
 }
 
-function onCommitChange(diff: string, to: "working" | "self") {
+function onCommitChange(diff: string, to: string) {
   selectedDiff.value = diff;
   selectedTo.value = to;
 }
@@ -2029,12 +2118,12 @@ onMounted(() => {
   window.addEventListener("resize", handleResize);
 });
 onUnmounted(() => {
+  if (saveTimeout) saveImmediately();
+  if (amendTimeout) amendImmediately();
   window.removeEventListener("resize", handleResize);
   window.removeEventListener("keydown", handleKeyDown, true);
   themeObserver?.disconnect();
   diffUpdateDisposable?.dispose();
-  if (saveTimeout) clearTimeout(saveTimeout);
-  if (amendTimeout) clearTimeout(amendTimeout);
   if (keyboardHintTimer) clearTimeout(keyboardHintTimer);
   disposeEditor();
 });

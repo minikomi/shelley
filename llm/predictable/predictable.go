@@ -78,7 +78,6 @@ func requestMentions(req *llm.Request, needle string) bool {
 //   - "think: <thoughts>" - returns response with extended thinking content
 //   - "subagent: <slug> <prompt>" - triggers subagent tool
 //   - "change_dir: <path>" - triggers change_dir tool
-//   - "write_secret: <json>" - calls write_secret with that input
 //   - "delay: <seconds>" - delays response by specified seconds
 //   - "cache: <read> <write>" - reports a prompt of that many cache read and
 //     cache write tokens, and no others
@@ -268,6 +267,9 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 	case "web search without results":
 		return s.makeWebSearchWithoutResultsResponse(inputTokens), nil
 
+	case "demo read_code":
+		return s.makeToolResponse("read_code", json.RawMessage(`{"searches":[{"query":"readCodeName","path":"claudetool/read_code.go","context":2}],"reads":[{"path":"go.mod","from":1,"to":5}]}`), inputTokens), nil
+
 	case "tool smorgasbord":
 		// Return a response with all tool types for testing
 		return s.makeToolSmorgasbordResponse(inputTokens), nil
@@ -444,7 +446,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 			return s.makeToolResponse("message_user", json.RawMessage(input), inputTokens), nil
 		}
 
-		for _, tool := range []string{"send_to_thread", "send_to_channel", "add_reaction", "write_secret"} {
+		for _, tool := range []string{"send_to_thread", "send_to_channel", "add_reaction"} {
 			if input, ok := strings.CutPrefix(inputText, tool+": "); ok {
 				return s.makeToolResponse(tool, json.RawMessage(input), inputTokens), nil
 			}
@@ -1192,6 +1194,8 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 		ToolInput: json.RawMessage(bashInput),
 	})
 
+	content = append(content, llm.Content{ID: "demo-read-code", Type: llm.ContentTypeToolUse, ToolName: "read_code", ToolInput: json.RawMessage(`{"searches":[{"query":"readCodeName","path":"claudetool/read_code.go","context":2}],"reads":[{"path":"go.mod","from":1,"to":5}]}`)})
+
 	// extended thinking content (not a tool)
 	content = append(content, llm.Content{
 		Type:     llm.ContentTypeThinking,
@@ -1210,14 +1214,6 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 		Type:      llm.ContentTypeToolUse,
 		ToolName:  "patch",
 		ToolInput: json.RawMessage(patchInput),
-	})
-
-	// write_secret tool (the secrets flag)
-	content = append(content, llm.Content{
-		ID:        fmt.Sprintf("tool_write_secret_%d", (baseNano+21)%1000),
-		Type:      llm.ContentTypeToolUse,
-		ToolName:  "write_secret",
-		ToolInput: json.RawMessage(`{"id":"openai-key-k3f9","path":"/tmp/openai-key"}`),
 	})
 
 	// browser: screenshot action

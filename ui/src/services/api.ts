@@ -13,6 +13,7 @@ import {
   GitDiffInfo,
   GitFileInfo,
   GitFileDiff,
+  GitCommitMessage,
   VersionInfo,
   CommitInfo,
   ConversationSettings,
@@ -235,8 +236,15 @@ class ApiService {
     return apiJSON("/api/models", "Failed to get models");
   }
 
+  // The integrations requests bypass the HTTP cache: the browser holds a GET
+  // behind a pending one for the same URL, for up to 20s, so a panel
+  // reopened while reflection is slow to answer would wait out the old
+  // request rather than ask again.
   async getIntegrations(): Promise<IntegrationsResponse> {
-    return apiJSON("/api/integrations", "Failed to load integrations");
+    const response = await apiFetch("/api/integrations", "Failed to load integrations", {
+      cache: "no-store",
+    });
+    return response.json();
   }
 
   async getIntegrationDetails(name: string, team: boolean): Promise<AttachedIntegration> {
@@ -244,6 +252,7 @@ class ApiService {
     const response = await apiFetch(
       `/api/integrations?${params}`,
       "Failed to load integration details",
+      { cache: "no-store" },
     );
     const body: IntegrationsResponse = await response.json();
     return body.integrations[0];
@@ -896,7 +905,7 @@ class ApiService {
     conversationId: string | undefined,
     from: string,
     to?: string,
-  ): Promise<{ hash: string; subject: string; body: string; author: string; isHead: boolean }[]> {
+  ): Promise<GitCommitMessage[]> {
     const params = machineParams(conversationId, { cwd, from });
     if (to) params.set("to", to);
     return apiJSON(`/api/git/commit-messages?${params}`, "Failed to get commit messages");
@@ -1665,37 +1674,34 @@ export const notificationChannelsApi = new NotificationChannelsApi();
 // A stored secret, without its value (server Secret, docs/secrets.md).
 export interface Secret {
   id: string;
-  name: string;
   kind: string;
   conversation_id: string | null;
   conversation_slug: string | null;
-  created_at: string;
-  injections: Array<{
-    conversation_id: string | null;
-    machine: string;
-    path: string;
-    created_at: string;
-  }>;
+  expires_at: string;
 }
 
-const secretsRequest = (method: string, path: string, body?: unknown) =>
-  apiFetch(`/api/secrets${path}`, "Secrets", sendJSON(method, body));
+/** A span of a draft the chat API would take out as a secret, in UTF-16
+ *  code units (server SecretSpan). */
+export interface SecretSpan {
+  start: number;
+  end: number;
+  kind: string;
+  label: string;
+  /** The user's own {{secret=...}} mark, and a value stored already:
+   *  keep_found_secrets keeps neither. */
+  manual?: boolean;
+  stored?: boolean;
+}
+
+const secretsRequest = (method: string, path: string, body?: unknown, signal?: AbortSignal) =>
+  apiFetch(`/api/secrets${path}`, "Secrets", { ...sendJSON(method, body), signal });
 
 export const secretsApi = {
   async list(): Promise<Secret[]> {
     return (await secretsRequest("GET", "")).json();
   },
-  async create(secret: {
-    id: string;
-    name: string;
-    kind: string;
-    value: string;
-    conversation_id: string | null;
-  }): Promise<void> {
-    await secretsRequest("POST", "", secret);
-  },
-  async rename(id: string, name: string): Promise<void> {
-    await secretsRequest("PATCH", `/${encodeURIComponent(id)}`, { name });
+  async detect(text: string, signal?: AbortSignal): Promise<SecretSpan[]> {
+    return (await secretsRequest("POST", "/detect", { text }, signal)).json();
   },
   async remove(id: string): Promise<void> {
     await secretsRequest("DELETE", `/${encodeURIComponent(id)}`);
