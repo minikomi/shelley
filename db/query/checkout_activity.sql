@@ -1,9 +1,9 @@
 -- name: RecordCheckoutActivity :exec
 INSERT INTO checkout_activity (conversation_id, machine, worktree, touched_at, edited)
-VALUES (?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, TRUE)
 ON CONFLICT (conversation_id, machine, worktree) DO UPDATE SET
-    touched_at = max(touched_at, excluded.touched_at),
-    edited = edited OR excluded.edited;
+    touched_at = CASE WHEN edited THEN max(touched_at, excluded.touched_at) ELSE excluded.touched_at END,
+    edited = TRUE;
 
 -- name: RecentCheckouts :many
 WITH RECURSIVE chats(id) AS (
@@ -12,6 +12,6 @@ WITH RECURSIVE chats(id) AS (
     SELECT c.conversation_id FROM conversations c JOIN chats ON c.parent_conversation_id = chats.id
 )
 SELECT a.worktree FROM checkout_activity a JOIN chats ON chats.id = a.conversation_id
-WHERE a.machine = sqlc.arg(machine) AND (a.edited OR (a.worktree = sqlc.arg(workspace) AND a.conversation_id = sqlc.arg(chat)))
+WHERE a.machine = sqlc.arg(machine) AND a.edited
 GROUP BY a.worktree
 ORDER BY max(a.touched_at) DESC, a.worktree;

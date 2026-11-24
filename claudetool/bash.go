@@ -48,9 +48,8 @@ type BashTool struct {
 	// WorkingDir is the shared mutable working directory.
 	WorkingDir *MutableWorkingDir
 	// GitTracker, if set, is told about the directories commands run git in.
-	GitTracker     *gitstate.Tracker
-	OnCheckoutEdit func(context.Context, VM, string)
-	OnJobCommit    func(context.Context, VM, *gitstate.GitState)
+	GitTracker  *gitstate.Tracker
+	OnJobCommit func(context.Context, VM, *gitstate.GitState)
 	// LLMProvider provides access to LLM services for tool validation
 	LLMProvider LLMServiceProvider
 	// ModelID is the conversation's model, used to pick a workhorse model
@@ -415,12 +414,7 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, wd strin
 	if err != nil {
 		return bashResult{}, fmt.Errorf("create job log: %w", err)
 	}
-	observeEnv, finishObservation, err := b.observeJob(ctx, req.vm, wd)
-	if err != nil {
-		log.Close()
-		os.Remove(job.LogPath)
-		return bashResult{}, err
-	}
+	observeEnv, finishObservation := b.observeJob(ctx, req.vm)
 	extraEnv = append(extraEnv, observeEnv...)
 	cmd := b.makeBashCommand(req.vm, req.Command, wd, extraEnv, log, job.ExitPath)
 	// The git tracker watches where the command runs git until it exits,

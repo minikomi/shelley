@@ -11,24 +11,23 @@ import (
 
 const recentCheckouts = `-- name: RecentCheckouts :many
 WITH RECURSIVE chats(id) AS (
-    SELECT CAST(?3 AS TEXT)
+    SELECT CAST(?2 AS TEXT)
     UNION ALL
     SELECT c.conversation_id FROM conversations c JOIN chats ON c.parent_conversation_id = chats.id
 )
 SELECT a.worktree FROM checkout_activity a JOIN chats ON chats.id = a.conversation_id
-WHERE a.machine = ?1 AND (a.edited OR (a.worktree = ?2 AND a.conversation_id = ?3))
+WHERE a.machine = ?1 AND a.edited
 GROUP BY a.worktree
 ORDER BY max(a.touched_at) DESC, a.worktree
 `
 
 type RecentCheckoutsParams struct {
-	Machine   string `json:"machine"`
-	Workspace string `json:"workspace"`
-	Chat      string `json:"chat"`
+	Machine string `json:"machine"`
+	Chat    string `json:"chat"`
 }
 
 func (q *Queries) RecentCheckouts(ctx context.Context, arg RecentCheckoutsParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, recentCheckouts, arg.Machine, arg.Workspace, arg.Chat)
+	rows, err := q.db.QueryContext(ctx, recentCheckouts, arg.Machine, arg.Chat)
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +51,10 @@ func (q *Queries) RecentCheckouts(ctx context.Context, arg RecentCheckoutsParams
 
 const recordCheckoutActivity = `-- name: RecordCheckoutActivity :exec
 INSERT INTO checkout_activity (conversation_id, machine, worktree, touched_at, edited)
-VALUES (?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, TRUE)
 ON CONFLICT (conversation_id, machine, worktree) DO UPDATE SET
-    touched_at = max(touched_at, excluded.touched_at),
-    edited = edited OR excluded.edited
+    touched_at = CASE WHEN edited THEN max(touched_at, excluded.touched_at) ELSE excluded.touched_at END,
+    edited = TRUE
 `
 
 type RecordCheckoutActivityParams struct {
@@ -63,7 +62,6 @@ type RecordCheckoutActivityParams struct {
 	Machine        string `json:"machine"`
 	Worktree       string `json:"worktree"`
 	TouchedAt      int64  `json:"touched_at"`
-	Edited         bool   `json:"edited"`
 }
 
 func (q *Queries) RecordCheckoutActivity(ctx context.Context, arg RecordCheckoutActivityParams) error {
@@ -72,7 +70,6 @@ func (q *Queries) RecordCheckoutActivity(ctx context.Context, arg RecordCheckout
 		arg.Machine,
 		arg.Worktree,
 		arg.TouchedAt,
-		arg.Edited,
 	)
 	return err
 }

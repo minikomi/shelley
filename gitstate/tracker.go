@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 )
 
@@ -81,8 +80,7 @@ func (t *Tracker) Changes() []*GitState {
 	defer t.mu.Unlock()
 	var changes []*GitState
 	report := func(state *GitState) {
-		if last, ok := t.states[state.Worktree]; state.IsRepo && (!ok || !last.Equal(state)) {
-			state.HeadChanged = ok && last.Commit != state.Commit && last.Branch == state.Branch
+		if last := t.states[state.Worktree]; state.IsRepo && !last.Equal(state) {
 			t.states[state.Worktree] = state
 			changes = append(changes, state)
 		}
@@ -106,7 +104,7 @@ func (t *Tracker) AcknowledgeCommit(root, oid string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	state := stateOf(root)
-	if state.IsRepo && state.Commit != "" && strings.HasPrefix(oid, state.Commit) {
+	if state.IsRepo && state.FullCommit == oid {
 		t.states[state.Worktree] = state
 	}
 }

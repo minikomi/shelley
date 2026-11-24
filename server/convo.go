@@ -2598,20 +2598,16 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		if vm != nil {
 			machine = vm.Name()
 		}
-		cm.recordCheckout(ctx, machine, state.Worktree, true)
-		if (vm == nil) == (toolSetConfig.VM == nil) {
-			cm.recordGitStateChange(ctx, state)
-		}
+		cm.recordCheckout(ctx, machine, state.Worktree)
+		cm.recordGitStateChange(ctx, machine, state)
 	}
-	toolSetConfig.OnCheckoutEdit = func(ctx context.Context, vm claudetool.VM, dir string) { cm.noteCheckout(ctx, vm, dir, true) }
+	toolSetConfig.OnCheckoutEdit = cm.noteCheckoutEdit
 	toolSetConfig.OnWorkingDirChange = func(newDir string) {
 		// Persist working directory change to database
 		if err := database.UpdateConversationCwd(context.Background(), conversationID, newDir); err != nil {
 			logger.Error("failed to persist working directory change", "error", err, "newDir", newDir)
 			return
 		}
-
-		cm.noteCheckout(context.Background(), toolSetConfig.VM, newDir, false)
 
 		// Update local cwd
 		cm.mu.Lock()
@@ -2738,7 +2734,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		System:               system,
 		GitTracker:           toolSet.GitTracker(),
 		OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
-			cm.recordGitStateChange(ctx, state)
+			cm.recordGitStateChange(ctx, "", state)
 		},
 		OnToolProgress: func(progress llm.ToolProgress) {
 			if !cm.isCurrentLoopGeneration(generation) {
@@ -3086,6 +3082,7 @@ func (cm *ConversationManager) cancelConversation(ctx context.Context, clearQueu
 
 // GitInfoUserData is the structured data stored in user_data for gitinfo messages.
 type GitInfoUserData struct {
+	Machine  string `json:"machine"`
 	Worktree string `json:"worktree"`
 	Branch   string `json:"branch"`
 	Commit   string `json:"commit"`
@@ -3095,13 +3092,9 @@ type GitInfoUserData struct {
 
 // recordGitStateChange creates a gitinfo message when git state changes.
 // This message is visible to users in the UI but is not sent to the LLM.
-func (cm *ConversationManager) recordGitStateChange(ctx context.Context, state *gitstate.GitState) {
+func (cm *ConversationManager) recordGitStateChange(ctx context.Context, machine string, state *gitstate.GitState) {
 	if state == nil || !state.IsRepo {
 		return
-	}
-
-	if state.HeadChanged {
-		cm.recordCheckout(ctx, "", state.Worktree, true)
 	}
 
 	// Create a gitinfo message with the state description
@@ -3111,9 +3104,10 @@ func (cm *ConversationManager) recordGitStateChange(ctx context.Context, state *
 	}
 
 	userData := GitInfoUserData{
+		Machine:  machine,
 		Worktree: state.Worktree,
 		Branch:   state.Branch,
-		Commit:   state.Commit,
+		Commit:   state.FullCommit,
 		Subject:  state.Subject,
 		Text:     state.String(),
 	}
@@ -3259,8 +3253,6 @@ func (cm *ConversationManager) SetCwd(ctx context.Context, dir string) error {
 	if toolSet != nil {
 		toolSet.WorkingDir().Set(dir)
 	}
-
-	cm.noteCheckout(ctx, cm.toolSetConfig.VM, dir, false)
 
 	// The move has happened by this point: the row and the tools are both in the
 	// new directory, and neither can be taken back (the tools may already have

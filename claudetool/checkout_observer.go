@@ -1,22 +1,17 @@
 package claudetool
 
 import (
-	"bytes"
 	"context"
-	_ "embed"
-	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"shelley.exe.dev/gitstate"
 )
 
-//go:embed checkout_snapshot.sh
-var checkoutSnapshot string
-
-// Register an additive hook in this job's process environment. Older Git
-// ignores these settings. Existing config pairs and repository hooks coexist.
+// Existing config pairs and repository hooks coexist with the job hook.
 const configureCommitHook = `
 if [[ -n ${SHELLEY_COMMIT_LOG:-} ]]; then
   n=${GIT_CONFIG_COUNT:-0}
@@ -27,90 +22,80 @@ if [[ -n ${SHELLEY_COMMIT_LOG:-} ]]; then
 fi
 `
 
-const commitObserver = `root=$(git rev-parse --show-toplevel) &&
+const commitObserver = `(
+[ -f "$SHELLEY_COMMIT_LOG" ] &&
+root=$(git rev-parse --show-toplevel) &&
 branch=$(git symbolic-ref --short -q HEAD || :) &&
 oid=$(git rev-parse HEAD) && subject=$(git show -s --format=%s HEAD) &&
-printf '%s\0%s\0%s\0%s\0' "$root" "$branch" "$oid" "$subject" >>"$SHELLEY_COMMIT_LOG"`
+printf '%s\0%s\0%s\0%s\0' "$root" "$branch" "$oid" "$subject" >>"$SHELLEY_COMMIT_LOG"
+) 2>/dev/null || :`
 
-type jobCheckout struct {
-	root, fingerprint, branch, commit, subject string
-}
+// Git 2.54 added config-based hooks.
+const createCommitLog = `
+[[ $(git version) =~ ^git\ version\ ([0-9]+)\.([0-9]+) ]] &&
+  (( BASH_REMATCH[1] > 2 || (BASH_REMATCH[1] == 2 && BASH_REMATCH[2] >= 54) )) || exit 0
+exec mktemp "${TMPDIR:-/tmp}/shelley-commits.XXXXXXXXXX"
+`
+
+const readCommitLog = `
+if [[ -f $1 ]]; then head -c 1048576 -- "$1"; fi
+s=$?
+rm -f -- "$1"
+exit "$s"
+`
+
+const commitObservationTimeout = 2 * time.Second
 
 func runObservation(ctx context.Context, vm VM, script string, args ...string) ([]byte, error) {
 	argv := append([]string{"bash", "-c", script, "shelley"}, args...)
 	if vm != nil {
 		argv = vm.Command(script, args...)
 	}
-	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
-	if err != nil {
-		return nil, fmt.Errorf("observe checkout: %w", err)
-	}
-	return out, nil
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = 100 * time.Millisecond
+	return cmd.Output()
 }
 
-func readCheckout(ctx context.Context, vm VM, wd string) (jobCheckout, error) {
-	out, err := runObservation(ctx, vm, checkoutSnapshot, wd)
-	if err != nil || len(out) == 0 {
-		return jobCheckout{}, err
+// observeJob captures the execution machine before launch. The hook records
+// whichever checkout git commits in, even if the job changes directories.
+func (b *BashTool) observeJob(ctx context.Context, vm VM) ([]string, func()) {
+	if b.OnJobCommit == nil {
+		return nil, func() {}
 	}
-	fields := strings.Split(string(out), "\x00")
-	if len(fields) != 6 {
-		return jobCheckout{}, fmt.Errorf("invalid checkout snapshot for %s", wd)
-	}
-	return jobCheckout{fields[0], fields[1], fields[2], fields[3], fields[4]}, nil
-}
-
-// observeJob captures the execution machine and directory before launch.
-// finish runs before the foreground result or background completion notice.
-func (b *BashTool) observeJob(ctx context.Context, vm VM, wd string) ([]string, func(), error) {
-	if b.OnCheckoutEdit == nil {
-		return nil, func() {}, nil
-	}
-	before, err := readCheckout(ctx, vm, wd)
+	setupCtx, cancel := context.WithTimeout(ctx, commitObservationTimeout)
+	path, err := runObservation(setupCtx, vm, createCommitLog)
+	cancel()
 	if err != nil {
-		return nil, nil, err
-	}
-	path, err := runObservation(ctx, vm, `mktemp "${TMPDIR:-/tmp}/shelley-commits.XXXXXXXXXX"`)
-	if err != nil {
-		return nil, nil, err
+		slog.DebugContext(ctx, "create job commit log", "error", err)
+		return nil, func() {}
 	}
 	logPath := strings.TrimSuffix(string(path), "\n")
+	if !filepath.IsAbs(logPath) {
+		return nil, func() {}
+	}
 	finish := func() {
-		ctx := context.WithoutCancel(ctx)
-		out, err := runObservation(ctx, vm, `cat -- "$1" && rm -- "$1"`, logPath)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitObservationTimeout)
+		defer cancel()
+		out, err := runObservation(ctx, vm, readCommitLog, logPath)
 		if err != nil {
-			slog.ErrorContext(ctx, "read job commit events", "error", err)
+			slog.DebugContext(ctx, "read job commit events", "error", err)
+			return
 		}
-		parts := bytes.Split(bytes.TrimSuffix(out, []byte{0}), []byte{0})
-		observed := make(map[string]string)
-		for len(parts) >= 4 {
-			root, branch, oid, subject := string(parts[0]), string(parts[1]), string(parts[2]), string(parts[3])
+		parts := strings.Split(string(out), "\x00")
+		for len(parts) > 4 && ctx.Err() == nil {
+			root, branch, oid, subject := parts[0], parts[1], parts[2], parts[3]
 			parts = parts[4:]
-			observed[root] = oid
-			b.reportJobCommit(ctx, vm, root, branch, oid, subject)
-		}
-		after, err := readCheckout(ctx, vm, wd)
-		if err != nil {
-			slog.ErrorContext(ctx, "inspect finished job checkout", "error", err)
-			return
-		}
-		if after.root == "" {
-			return
-		}
-		if after.commit != "" && before.commit != after.commit && (before.root == "" || before.branch == after.branch) && observed[after.root] != after.commit {
-			b.reportJobCommit(ctx, vm, after.root, after.branch, after.commit, after.subject)
-		} else if after.fingerprint != before.fingerprint && (before.root != "" || after.fingerprint != "") {
-			b.OnCheckoutEdit(ctx, vm, after.root)
+			if root != "" && oid != "" {
+				b.reportJobCommit(ctx, vm, root, branch, oid, subject)
+			}
 		}
 	}
-	return []string{"SHELLEY_COMMIT_LOG=" + logPath, "SHELLEY_COMMIT_OBSERVER=" + commitObserver}, finish, nil
+	return []string{"SHELLEY_COMMIT_LOG=" + logPath, "SHELLEY_COMMIT_OBSERVER=" + commitObserver}, finish
 }
 
 func (b *BashTool) reportJobCommit(ctx context.Context, vm VM, root, branch, oid, subject string) {
 	if vm == nil && b.GitTracker != nil {
 		b.GitTracker.AcknowledgeCommit(root, oid)
 	}
-	if b.OnJobCommit != nil {
-		b.OnJobCommit(ctx, vm, &gitstate.GitState{IsRepo: true, Worktree: root, Branch: branch, Commit: oid, Subject: subject})
-	}
+	b.OnJobCommit(ctx, vm, &gitstate.GitState{IsRepo: true, Worktree: root, Branch: branch, Commit: oid, FullCommit: oid, Subject: subject})
 }

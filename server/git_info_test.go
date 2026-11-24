@@ -3,14 +3,18 @@ package server
 import (
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
-	"shelley.exe.dev/db/generated"
 	"slices"
+	"strings"
 	"testing"
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
+	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm/predictable"
 )
 
@@ -60,7 +64,7 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 	if err := json.Unmarshal([]byte(*messages[0].UserData), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.Worktree != other || info.Branch != "main" || info.Subject != "elsewhere" {
+	if info.Worktree != other || info.Branch != "main" || info.Subject != "elsewhere" || info.Commit != strings.TrimSpace(testGitOutput(t, other, "rev-parse", "HEAD")) {
 		t.Errorf("gitinfo = %+v, want the commit in %s", info, other)
 	}
 	conversation, err = database.GetConversationByID(t.Context(), id)
@@ -73,10 +77,18 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 }
 
 func TestRecentCheckoutsIncludeHelperEdits(t *testing.T) {
-	database, cleanup := setupTestDB(t)
-	defer cleanup()
+	server, database, _ := newTestServer(t)
 	ctx := t.Context()
-	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, workspace := filepath.Join(root, "a"), filepath.Join(root, "b"), filepath.Join(root, "workspace")
+	for _, dir := range []string{a, b, workspace} {
+		runGit(t, root, "init", "-q", "-b", "main", dir)
+		runGit(t, dir, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-qm", "initial", "--allow-empty")
+	}
+	parent, err := database.CreateConversation(ctx, nil, true, &workspace, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,20 +96,45 @@ func TestRecentCheckoutsIncludeHelperEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := ConversationManager{db: database, conversationID: parent.ConversationID, logger: slog.Default()}
-	cm.recordCheckout(ctx, "", "/old-workspace", false)
-	cm.recordCheckout(ctx, "", "/A", false)
-	cm.conversationID = child.ConversationID
-	cm.recordCheckout(ctx, "", "/B", true)
-	cm.recordCheckout(ctx, "box", "/remote", true)
-	err = database.Queries(ctx, func(q *generated.Queries) error {
-		got, err := q.RecentCheckouts(ctx, generated.RecentCheckoutsParams{Chat: parent.ConversationID, Workspace: "/A"})
-		if !slices.Equal(got, []string{"/B", "/A"}) {
-			t.Errorf("tabs = %q", got)
-		}
-		return err
-	})
+	manager, err := server.getOrCreateConversationManager(ctx, parent.ConversationID, "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	helper := ConversationManager{db: database, conversationID: child.ConversationID, logger: slog.Default()}
+	helper.recordCheckout(ctx, "box", filepath.Join(root, "remote"))
+	for _, dir := range []string{a, b} {
+		patch := &claudetool.PatchTool{WorkingDir: claudetool.NewMutableWorkingDir(dir), OnCheckoutEdit: helper.noteCheckoutEdit}
+		out := patch.Tool().Run(ctx, json.RawMessage(`{"path":"file","patches":[{"operation":"overwrite","newText":"edited"}]}`))
+		if out.Error != nil {
+			t.Fatal(out.Error)
+		}
+	}
+
+	// A visit and an ordinary same-branch HEAD update cannot advance A.
+	for _, dir := range []string{a, workspace} {
+		if err := manager.SetCwd(ctx, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tracker := gitstate.NewTracker(func() string { return a })
+	runGit(t, a, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-qm", "external", "--allow-empty")
+	states := tracker.Changes()
+	if len(states) != 1 {
+		t.Fatalf("expected an ordinary Git observation, got %v", states)
+	}
+	manager.recordGitStateChange(ctx, "", states[0])
+
+	query := url.Values{"conversation_id": {parent.ConversationID}, "cwd": {workspace}}
+	rec := httptest.NewRecorder()
+	server.handleRecentCheckouts(rec, httptest.NewRequest(http.MethodGet, "/?"+query.Encode(), nil))
+	var got struct {
+		Workspace string   `json:"workspace"`
+		Paths     []string `json:"paths"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil {
+		t.Fatalf("recent checkouts: %d %s", rec.Code, rec.Body.String())
+	}
+	if got.Workspace != workspace || !slices.Equal(got.Paths, []string{b, a, workspace}) {
+		t.Errorf("recent checkouts = %+v, want %q", got, []string{b, a, workspace})
 	}
 }

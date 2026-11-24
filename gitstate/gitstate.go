@@ -11,8 +11,6 @@ import (
 
 // GitState represents the current state of a git repository.
 type GitState struct {
-	// HeadChanged distinguishes an observed change from first seeing a checkout.
-	HeadChanged bool
 	// Worktree is the absolute path to the worktree root.
 	// For regular repos, this is the same as the git root.
 	// For worktrees, this is the worktree directory.
@@ -23,6 +21,9 @@ type GitState struct {
 
 	// Commit is the current commit hash (short form).
 	Commit string
+
+	// FullCommit is the unabbreviated commit hash.
+	FullCommit string
 
 	// Subject is the commit message subject line.
 	Subject string
@@ -74,6 +75,7 @@ func getGitStateFromFiles(dir string) (*GitState, bool) {
 	state := &GitState{IsRepo: true, Worktree: worktree, Branch: branch}
 	if commit != "" {
 		state.Commit = shortHash(commit)
+		state.FullCommit = commit
 		if subject, err := readCommitSubject(commonDir, commit); err == nil {
 			state.Subject = subject
 		} else {
@@ -234,8 +236,12 @@ func getGitStateFromGit(dir string) *GitState {
 	state := &GitState{IsRepo: true, Worktree: worktree}
 	// Each of these fails on an unborn branch or detached HEAD (branch);
 	// the field then stays empty.
-	state.Commit, _ = git("rev-parse", "--short", "HEAD")
-	state.Subject, _ = git("log", "-1", "--format=%s")
+	if head, err := git("show", "-s", "--format=%H%x00%h%x00%s", "HEAD"); err == nil {
+		fields := strings.SplitN(head, "\x00", 3)
+		if len(fields) == 3 {
+			state.FullCommit, state.Commit, state.Subject = fields[0], fields[1], fields[2]
+		}
+	}
 	state.Branch, _ = git("symbolic-ref", "--short", "HEAD")
 	return state
 }
@@ -251,6 +257,7 @@ func (g *GitState) Equal(other *GitState) bool {
 	return g.Worktree == other.Worktree &&
 		g.Branch == other.Branch &&
 		g.Commit == other.Commit &&
+		g.FullCommit == other.FullCommit &&
 		g.Subject == other.Subject &&
 		g.IsRepo == other.IsRepo
 }

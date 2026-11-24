@@ -261,9 +261,9 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	env.ConversationID = cfg.ConversationID
 
 	bashTool := &BashTool{
-		WorkingDir:     wd,
-		GitTracker:     gitTracker,
-		OnCheckoutEdit: cfg.OnCheckoutEdit, OnJobCommit: cfg.OnJobCommit,
+		WorkingDir:                 wd,
+		GitTracker:                 gitTracker,
+		OnJobCommit:                cfg.OnJobCommit,
 		LLMProvider:                cfg.LLMProvider,
 		ModelID:                    cfg.ModelID,
 		EnableJITInstall:           cfg.EnableJITInstall,

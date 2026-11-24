@@ -10,28 +10,28 @@ import (
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/gitstate"
 )
 
-func (cm *ConversationManager) noteCheckout(ctx context.Context, vm claudetool.VM, dir string, edited bool) {
-	ctx = context.WithoutCancel(ctx)
-	if vm == nil {
-		state := gitstate.GetGitState(dir)
-		if state.IsRepo {
-			cm.recordCheckout(ctx, "", state.Worktree, edited)
-		}
-		return
+func (cm *ConversationManager) noteCheckoutEdit(ctx context.Context, vm claudetool.VM, dir string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	machine := ""
+	argv := []string{"git", "-C", dir, "rev-parse", "--show-toplevel"}
+	if vm != nil {
+		machine = vm.Name()
+		argv = vm.Command(`exec git -C "$1" rev-parse --show-toplevel`, dir)
 	}
-	argv := vm.Command(`exec git -C "$1" rev-parse --show-toplevel`, dir)
-	if root, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output(); err == nil {
-		cm.recordCheckout(ctx, vm.Name(), strings.TrimSpace(string(root)), edited)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = 100 * time.Millisecond
+	if root, err := cmd.Output(); err == nil {
+		cm.recordCheckout(ctx, machine, strings.TrimSuffix(string(root), "\n"))
 	}
 }
 
-func (cm *ConversationManager) recordCheckout(ctx context.Context, machine, root string, edited bool) {
+func (cm *ConversationManager) recordCheckout(ctx context.Context, machine, root string) {
 	err := cm.db.QueriesTx(ctx, func(q *generated.Queries) error {
 		return q.RecordCheckoutActivity(ctx, generated.RecordCheckoutActivityParams{
-			ConversationID: cm.conversationID, Machine: machine, Worktree: root, Edited: edited, TouchedAt: time.Now().UnixNano(),
+			ConversationID: cm.conversationID, Machine: machine, Worktree: root, TouchedAt: time.Now().UnixNano(),
 		})
 	})
 	if err != nil {
@@ -49,8 +49,9 @@ func (s *Server) handleRecentCheckouts(w http.ResponseWriter, r *http.Request) {
 	if m.vm != nil {
 		params.Machine = m.vm.Name()
 	}
+	var workspace string
 	if dir := m.dir(r.URL.Query().Get("cwd")); dir != "" {
-		params.Workspace, _ = m.gitRoot(dir)
+		workspace, _ = m.gitRoot(dir)
 	}
 	var paths []string
 	err = s.db.Queries(r.Context(), func(q *generated.Queries) error {
@@ -62,8 +63,8 @@ func (s *Server) handleRecentCheckouts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if params.Workspace != "" && !slices.Contains(paths, params.Workspace) {
-		paths = append(paths, params.Workspace)
+	if workspace != "" && !slices.Contains(paths, workspace) {
+		paths = append(paths, workspace)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workspace": params.Workspace, "paths": paths})
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": workspace, "paths": paths})
 }
