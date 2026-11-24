@@ -135,15 +135,8 @@ func isNoTrailerSet() bool {
 
 const (
 	bashName        = "bash"
-	bashDescription = "Executes shell commands via bash --login -c, returning combined stdout/stderr.\n" +
-		"For commands like `cd app && make`, call change_dir with path `app`, then bash `make` without cd. " +
-		"These calls can share a response. " +
-		"Apply this before initial inspections and tests too, including README recipes. " +
-		"Skip change_dir if already there.\n\n" +
-		`Shell state (cwd, variables, aliases) does not persist.
-Commands already start in the working directory; omit redundant cd.
-For 'cd dir && ...' or 'cd dir; ...', call change_dir first,
-then run the remaining command directly.
+	bashDescription = `Executes a command in a fresh shell. Use cwd to run one command elsewhere.
+The next call starts in the chat's working directory. Use change_dir to move the chat.
 
 After 60s, commands move to the background, and the response's later calls
 are skipped. To run independent work at the same time, start it with
@@ -172,6 +165,10 @@ write a file and run it; both can share one call.
       "type": "string",
       "description": "Shell to execute"
     },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for this command only, absolute or relative to the chat’s working directory"
+    },
     "background": {
       "type": "boolean",
       "description": "Start in the background immediately instead of after 60s"
@@ -182,6 +179,7 @@ write a file and run it; both can share one call.
 )
 
 type bashInput struct {
+	CWD        string `json:"cwd,omitempty"`
 	Command    string `json:"command"`
 	Background bool   `json:"background,omitempty"`
 	// SSHTarget is required when the conversation has a VM: its name, or
@@ -212,7 +210,11 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 		return llm.ErrorToolOut(err)
 	}
 	req.vm = vm
-	wd := b.dirFor(vm)
+	base := b.dirFor(vm)
+	wd := base
+	if req.CWD != "" {
+		wd = resolvePath(base, req.CWD)
+	}
 	if vm != nil {
 		// A missing directory there fails there.
 		if err := vm.Prepare(ctx); err != nil {
@@ -275,7 +277,7 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 	exitCode := 0
 	display.ExitCode = &exitCode
 	if chainedCdLeavesDir(bashkit.ChainedCdPaths(req.Command), wd) && b.cdHinted.CompareAndSwap(false, true) {
-		out = chainedCdHint(wd) + "\n\n" + out
+		out = chainedCdHint(base) + "\n\n" + out
 	}
 	return llm.ToolOut{LLMContent: llm.TextContent(out), Display: display}
 }

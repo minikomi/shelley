@@ -34,8 +34,7 @@ const (
 	changeDirDescription = `Change the working directory for subsequent tool calls.
 The directory must exist; relative paths resolve against the current directory.
 If it fails, later calls in the response are skipped until an absolute change_dir succeeds.
-Call this before inspecting, testing, or editing in another directory.
-Omit redundant cd when already in the target directory.
+Use this when subsequent tools should start in the new directory. Use bash cwd for a single command.
 `
 	changeDirInputSchema = `{
   "type": "object",
