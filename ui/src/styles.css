@@ -16152,10 +16152,13 @@ kbd {
   padding-left: 0.5rem;
 }
 
-@media (max-width: 600px) {
+@media (width < 768px) {
   .git-graph-header {
-    grid-template: "actions" auto "checkouts" auto / minmax(0, 1fr);
+    grid-template: "checkouts" auto "actions" auto / minmax(0, 1fr);
   }
+}
+
+@media (max-width: 600px) {
   .git-graph-toolbar-mobile {
     height: 44px;
     width: 100%;
