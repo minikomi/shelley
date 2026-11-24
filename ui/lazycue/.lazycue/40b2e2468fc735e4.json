@@ -1,0 +1,113 @@
+{
+  "_README": "This file is managed by LazyCue (see shelley/lazycue). Do NOT edit by hand — it is the cached, machine-generated DSL for a self-healing browser test. To change behavior, edit the test description and re-run LazyCue.",
+  "description": "On a phone, continue reviewing the worktree from an inline commit, then start a fresh review in the chat workspace.\nNavigate to /c/{{SLUG}}. Click the Open Diff link in the gitinfo message containing \"Commit from B\".\nClick the commit picker (.commit-picker-trigger). In the Git Graph checkout group the selected button has title {{B}}.\nClick the graph row \"Working changes\". The diff file picker or file heading shows only-in-B.txt.\nClose the diff, then close the graph if visible, returning to the chat.\nUse More options and the Diffs menu button to start a fresh review. Click its commit picker.\nThe selected checkout button now has title {{C}}. Click \"Working changes\" and verify the file is only-in-C.txt.",
+  "version": 1,
+  "steps": [
+    {
+      "action": "navigate",
+      "url": "/c/{{SLUG}}"
+    },
+    {
+      "action": "wait_text",
+      "text": "Open Diff"
+    },
+    {
+      "action": "click",
+      "selector": "a.msg-diff-link"
+    },
+    {
+      "action": "wait_visible",
+      "selector": ".commit-picker-trigger"
+    },
+    {
+      "action": "click",
+      "selector": ".commit-picker-trigger"
+    },
+    {
+      "action": "wait_text",
+      "text": "Working changes"
+    },
+    {
+      "action": "assert_attribute",
+      "selector": ".git-graph-checkout[aria-pressed='true']",
+      "attribute": "title",
+      "value": "{{B}}"
+    },
+    {
+      "action": "click",
+      "selector": ".git-graph-row",
+      "has_text": "Working changes"
+    },
+    {
+      "action": "wait_text",
+      "text": "only-in-B.txt"
+    },
+    {
+      "action": "press_key",
+      "key": "Escape"
+    },
+    {
+      "action": "wait_text_gone",
+      "text": "only-in-B.txt"
+    },
+    {
+      "action": "press_key",
+      "key": "Escape"
+    },
+    {
+      "action": "wait_text_gone",
+      "text": "Working changes"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "More options"
+    },
+    {
+      "action": "wait_visible",
+      "role": "button",
+      "name": "Diffs"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Diffs"
+    },
+    {
+      "action": "wait_visible",
+      "selector": ".commit-picker-trigger"
+    },
+    {
+      "action": "click",
+      "selector": ".commit-picker-trigger"
+    },
+    {
+      "action": "wait_text",
+      "text": "Working changes"
+    },
+    {
+      "action": "assert_attribute",
+      "selector": ".git-graph-checkout[aria-pressed='true']",
+      "attribute": "title",
+      "value": "{{C}}"
+    },
+    {
+      "action": "click",
+      "selector": ".git-graph-row",
+      "has_text": "Working changes"
+    },
+    {
+      "action": "wait_text",
+      "text": "only-in-C.txt"
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-11-24T11:49:02.759590587Z",
+    "hostname": "exedevwork",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 372512,
+    "output_tokens": 6705,
+    "estimated_cost_usd": 0.29124855,
+    "mode": "generated"
+  }
+}

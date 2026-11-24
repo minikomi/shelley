@@ -89,8 +89,8 @@
           :message-user="messageUserEnabled"
           @open-command-palette="props.onOpenCommandPalette?.()"
           @open-directory-picker="showDirectoryPicker = true"
-          @open-diffs="showDiffViewer = true"
-          @open-git-graph="showGitGraph = true"
+          @open-diffs="openWorkspaceReview('diff')"
+          @open-git-graph="openWorkspaceReview('graph')"
           @open-terminal="openInAppTerminal"
           @open-external-link="openExternalLink"
           @archive="archiveFromMenu"
@@ -817,18 +817,21 @@
 
     <!-- Git Graph Viewer -->
     <GitGraphViewer
-      :cwd="(currentConversation?.cwd || selectedCwd) as string"
+      :cwd="reviewWorkspaceCwd"
+      :checkout="reviewCheckout"
       :activity-version="messages.length"
-      :conversation-id="conversationId ?? undefined"
+      :machine="reviewMachine"
       :on-vm="onVm"
       :is-open="showGitGraph"
       :covered="showDiffViewer || diffDraftReviewOpen"
       :can-open-diff="true"
       :mobile-diff="isMobile"
-      :selection-from="diffViewerTransfer?.diff ?? diffViewerInitialCommit"
-      :selection-to="diffViewerTransfer?.to ?? diffViewerInitialTo"
+      :selection-from="reviewSelection?.diff ?? undefined"
+      :selection-to="reviewSelection?.to"
       @close="onGitGraphClose"
-      @clear-selection="clearDiffViewerSelection"
+      @clear-selection="reviewSelection = null"
+      @select-commit="(diff) => (reviewSelection = { diff, to: 'self', file: null })"
+      @cwd-change="(cwd, machine) => selectReviewCheckout(cwd, machine, true)"
       @open-diff="onGitGraphOpenDiff"
     >
       <template #review>
@@ -858,13 +861,13 @@
     <component
       ref="diffViewerRef"
       :is="isMobile ? MobileDiffViewer : DiffViewer"
-      :cwd="(diffViewerCwd || currentConversation?.cwd || selectedCwd) as string"
-      :conversation-id="conversationId ?? undefined"
+      :cwd="reviewCheckout ?? reviewWorkspaceCwd"
+      :machine="reviewMachine"
       :on-vm="onVm"
       :is-open="showDiffViewer"
-      :initial-commit="diffViewerTransfer?.diff ?? diffViewerInitialCommit"
-      :initial-file="diffViewerTransfer?.file ?? diffViewerInitialFile"
-      :initial-to="diffViewerTransfer?.to ?? diffViewerInitialTo"
+      :initial-commit="reviewSelection?.diff ?? undefined"
+      :initial-file="reviewSelection?.file ?? undefined"
+      :initial-to="reviewSelection?.to"
       :recording-conversation-id="
         currentConversation && !currentConversation.archived && !currentConversation.is_draft
           ? (conversationId ?? undefined)
@@ -879,7 +882,7 @@
       :review-open="diffDraftReviewOpen"
       @save-review-comment="saveDiffDraftNote"
       @open-review="openDiffDraftReview"
-      @cwd-change="(cwd: string) => (diffViewerCwd = cwd)"
+      @cwd-change="selectReviewCheckout"
     />
 
     <dialog ref="diffDraftDialog" class="diff-draft-review" aria-labelledby="diff-draft-heading" @close="onDiffDraftClose" @click.self="dismissDiffDraftBackdrop">
@@ -974,6 +977,7 @@ import {
   type ConversationSettings,
   isDistillStatusMessage,
   parseQueuedMessages,
+  type GitCheckout,
   queuedMessageText,
   queuedMessageRestoreText,
   queuedTranscriptionPath,
@@ -984,7 +988,7 @@ import {
   COMPACT_IN_PLACE_TOOL,
   DEFAULT_COMPACT_NUDGE_TOKENS,
 } from "./autoCompaction";
-import { api, ApiError, apiJSON, modelProvidersApi, profilesApi } from "../../services/api";
+import { api, ApiError, apiJSON, checkoutTarget, modelProvidersApi, profilesApi } from "../../services/api";
 import { btwStore } from "../../services/btwStore";
 import { messageStore } from "../../services/messageStore";
 import { cacheDiag } from "../../services/cacheDiag";
@@ -1151,7 +1155,7 @@ import { useStatusBar } from "../composables/statusBar";
 import TranscriptionTask from "./TranscriptionTask.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
 import StatusHookRow from "./StatusHookRow.vue";
-import type { StatusBarItem } from "../../services/api";
+import type { MachineTarget, StatusBarItem } from "../../services/api";
 import MarkdownContent from "./MarkdownContent.vue";
 import InlineText from "./InlineText.vue";
 import ThinkingContent from "./tools/ThinkingContent.vue";
@@ -1452,13 +1456,13 @@ function handleStatusHookAction(item: StatusBarItem) {
       break;
     case "open_diff":
       if (item.args?.commit) handleOpenDiffViewer(item.args.commit);
-      else showDiffViewer.value = true;
+      else openWorkspaceReview("diff");
       break;
     case "open_terminal":
       focusOrOpenTerminal();
       break;
     case "open_git":
-      showGitGraph.value = true;
+      openWorkspaceReview("graph");
       break;
     case "open_directory":
       showDirectoryPicker.value = true;
@@ -1886,15 +1890,14 @@ async function applyPickedCwd(path: string) {
 const isMobile = ref(window.innerWidth < 768);
 const showDiffViewer = ref(false);
 type DiffViewerSelection = { diff: string | null; to: string; file: string | null };
-const diffViewerRef = ref<{ getSelection: () => DiffViewerSelection } | null>(null);
-const diffViewerTransfer = ref<DiffViewerSelection | null>(null);
+const diffViewerRef = ref<{ getSelection: () => DiffViewerSelection & { checkout: GitCheckout | null } } | null>(null);
+const reviewSelection = ref<DiffViewerSelection | null>(null);
 const showGitGraph = ref(false);
 const returnToDiffFromGraph = ref(false);
 const showAgentsMdEditor = ref(false);
-const diffViewerInitialCommit = ref<string | undefined>(undefined);
-const diffViewerInitialTo = ref<string | undefined>(undefined);
-const diffViewerCwd = ref<string | undefined>(undefined);
-const diffViewerInitialFile = ref<string | undefined>(undefined);
+const reviewCheckout = ref<string | undefined>(undefined);
+const reviewWorkspaceCwd = ref("");
+const reviewMachine = ref<MachineTarget>({});
 const diffCommentText = ref("");
 const diffDraftNotes = ref<DraftDiffComment[]>([]);
 const diffDraftDialog = ref<HTMLDialogElement | null>(null);
@@ -4699,7 +4702,7 @@ async function sendMessage(
     return;
   }
   if (trimmedMessage === SLASH_COMMANDS.DIFF.command) {
-    showDiffViewer.value = true;
+    openWorkspaceReview("diff");
     return;
   }
   if (trimmedMessage === SLASH_COMMANDS.ARCHIVE.command) {
@@ -4994,9 +4997,14 @@ async function handleUnarchive() {
   }
 }
 
-function handleOpenDiffViewer(commit: string, cwd?: string) {
-  diffViewerInitialCommit.value = commit;
-  diffViewerCwd.value = cwd;
+function handleOpenDiffViewer(commit: string, cwd?: string, machine?: string, file?: string, root: string | null = cwd ?? null) {
+  beginReview(machine, root ?? undefined);
+  reviewCheckout.value = cwd;
+  reviewSelection.value = {
+    diff: commit,
+    to: commit === "working" ? "working" : "self",
+    file: file ?? null,
+  };
   showDiffViewer.value = true;
 }
 
@@ -5090,11 +5098,11 @@ function handleMenuShortcut(e: KeyboardEvent) {
   switch (action) {
     case "diffs":
       if (!gitActions.value) return;
-      showDiffViewer.value = true;
+      openWorkspaceReview("diff");
       break;
     case "gitGraph":
       if (!gitActions.value) return;
-      showGitGraph.value = true;
+      openWorkspaceReview("graph");
       break;
     case "terminal":
       if (!e.repeat) focusOrOpenTerminal();
@@ -5471,23 +5479,75 @@ function onTerminalCloseHandler(id: string) {
   }
 }
 
-function clearDiffViewerSelection() {
-  diffViewerTransfer.value = null;
-  diffViewerInitialCommit.value = undefined;
-  diffViewerInitialTo.value = undefined;
-  diffViewerInitialFile.value = undefined;
+function selectReviewCheckout(cwd: string, machine?: string, canonical = false) {
+  reviewCheckout.value = cwd;
+  reviewMachine.value = {
+    ...reviewMachine.value,
+    expectedMachine: machine ?? reviewMachine.value.expectedMachine,
+    expectedCheckout: canonical ? cwd : undefined,
+  };
+  reviewSelection.value = null;
 }
 
-function onDiffViewerClose() {
-  showDiffViewer.value = false;
-  if (isMobile.value && showGitGraph.value) {
-    const selection = diffViewerRef.value?.getSelection();
-    if (selection?.diff) diffViewerTransfer.value = selection;
-    return;
+function rememberDiffSelection() {
+  const selection = diffViewerRef.value?.getSelection();
+  if (!selection) return;
+  if (selection.checkout) pinReviewCheckout(selection.checkout);
+  if (selection.diff) reviewSelection.value = selection;
+}
+
+function pinReviewCheckout(checkout: GitCheckout) {
+  reviewCheckout.value = checkout.gitRoot;
+  if (reviewMachine.value.expectedCheckout !== checkout.gitRoot || reviewMachine.value.expectedMachine !== checkout.machine) {
+    reviewMachine.value = checkoutTarget(reviewMachine.value, checkout);
   }
-  clearDiffViewerSelection();
-  diffViewerCwd.value = undefined;
-  if (!showGitGraph.value) focusMessageInputIfUnfocused();
+}
+
+function beginReview(machine?: string, root?: string) {
+  const conversationId = props.conversationId ?? undefined;
+  const knownHost = !conversationId || (workspace.data.value && props.currentConversation && !props.currentConversation.parent_conversation_id);
+  reviewWorkspaceCwd.value = props.currentConversation?.cwd || selectedCwd.value;
+  reviewMachine.value = {
+    conversationId,
+    expectedMachine: machine ?? workspace.vmFor(conversationId)?.vm_name ?? (knownHost ? "" : undefined),
+    expectedCheckout: root,
+  };
+}
+
+function openWorkspaceReview(view: "diff" | "graph") {
+  reviewSelection.value = null;
+  reviewCheckout.value = undefined;
+  beginReview();
+  returnToDiffFromGraph.value = false;
+  showDiffViewer.value = view === "diff";
+  showGitGraph.value = view === "graph";
+}
+
+function clearReviewTarget() {
+  reviewSelection.value = null;
+  reviewCheckout.value = undefined;
+  reviewWorkspaceCwd.value = "";
+  reviewMachine.value = {};
+}
+
+watch(() => props.conversationId, () => {
+  showDiffViewer.value = false;
+  showGitGraph.value = false;
+  returnToDiffFromGraph.value = false;
+  clearReviewTarget();
+});
+
+watch(() => props.currentConversation?.cwd || selectedCwd.value, (cwd) => {
+  if (!reviewWorkspaceCwd.value && (showDiffViewer.value || showGitGraph.value)) reviewWorkspaceCwd.value = cwd;
+});
+
+function onDiffViewerClose() {
+  if (showGitGraph.value) rememberDiffSelection();
+  showDiffViewer.value = false;
+  if (!showGitGraph.value) {
+    clearReviewTarget();
+    focusMessageInputIfUnfocused();
+  }
 }
 
 function saveDiffDraftNote(note: NewDraftDiffComment) {
@@ -5560,19 +5620,18 @@ async function onDiffReviewToChat() {
 }
 
 function onOpenGitGraphFromDiff() {
+  rememberDiffSelection();
+  showDiffViewer.value = false;
   showGitGraph.value = true;
   returnToDiffFromGraph.value = true;
-  if (isMobile.value) onDiffViewerClose();
-  else showDiffViewer.value = false;
 }
 
-function onGitGraphOpenDiff(commit: string, cwd: string, file?: string, to?: string) {
+function onGitGraphOpenDiff(commit: string, checkout: GitCheckout, file?: string, to = commit === "working" ? "working" : "self") {
+  pinReviewCheckout(checkout);
   returnToDiffFromGraph.value = false;
-  clearDiffViewerSelection();
-  diffViewerInitialCommit.value = commit;
-  diffViewerInitialTo.value = to ?? (commit === "working" ? "working" : "self");
-  diffViewerInitialFile.value = file;
-  diffViewerCwd.value = cwd;
+  const previous = reviewSelection.value;
+  const sameRange = previous?.diff === commit && previous.to === to;
+  reviewSelection.value = { diff: commit, to, file: file ?? (sameRange ? previous.file : null) };
   showDiffViewer.value = true;
 }
 
@@ -5582,10 +5641,7 @@ function onGitGraphClose() {
     returnToDiffFromGraph.value = false;
     showDiffViewer.value = true;
   } else {
-    if (isMobile.value) {
-      clearDiffViewerSelection();
-      diffViewerCwd.value = undefined;
-    }
+    clearReviewTarget();
     focusMessageInputIfUnfocused();
   }
 }
@@ -5865,10 +5921,7 @@ watch(
 // Mobile media query.
 const mobileMq = window.matchMedia("(max-width: 767px)");
 const onMobileChange = (e: MediaQueryListEvent) => {
-  if (showDiffViewer.value && diffViewerRef.value) {
-    const selection = diffViewerRef.value.getSelection();
-    if (selection.diff) diffViewerTransfer.value = selection;
-  }
+  if (showDiffViewer.value) rememberDiffSelection();
   isMobile.value = e.matches;
 };
 mobileMq.addEventListener("change", onMobileChange);
@@ -6274,14 +6327,14 @@ watch(
 watch(
   () => props.openDiffViewerTrigger,
   (trigger) => {
-    if (trigger && trigger > 0) showDiffViewer.value = true;
+    if (trigger && trigger > 0) openWorkspaceReview("diff");
   },
 );
 // Trigger: open git graph.
 watch(
   () => props.openGitGraphTrigger,
   (trigger) => {
-    if (trigger && trigger > 0) showGitGraph.value = true;
+    if (trigger && trigger > 0) openWorkspaceReview("graph");
   },
 );
 // Trigger: open terminal.
@@ -6976,10 +7029,17 @@ onMounted(() => {
   const commit = params.get("diff");
   if (commit) {
     const cwdParam = params.get("cwd") || undefined;
-    diffViewerInitialCommit.value = commit;
-    diffViewerInitialFile.value = params.get("file") || undefined;
-    diffViewerCwd.value = cwdParam;
-    showDiffViewer.value = true;
+    const machine = params.get("expected_machine") ?? undefined;
+    const file = params.get("file") ?? undefined;
+    const root = params.get("expected_checkout");
+    const open = () => handleOpenDiffViewer(commit, cwdParam, machine, file, root);
+    if (window.location.pathname.startsWith("/c/") && !props.currentConversation) {
+      watch(() => props.currentConversation, open, { once: true });
+    } else {
+      open();
+    }
+    params.delete("expected_checkout");
+    params.delete("expected_machine");
     params.delete("diff");
     params.delete("cwd");
     params.delete("file");

@@ -7,7 +7,7 @@
 
      React callback props -> emits:
        onClose   -> emit("close")
-       onOpenDiff-> emit("open-diff", commit, cwd, file?) (presence gated by
+       onOpenDiff-> openDiff(commit, file?) (presence gated by
                     `canOpenDiff` prop, mirroring the optional React callback) -->
 <template>
   <div v-if="isOpen" class="diff-viewer-overlay" @click="emit('close')">
@@ -26,7 +26,7 @@
             class="git-graph-checkout"
             :aria-pressed="path === selectedCheckout"
             :title="path"
-            @click="cwdOverride = path"
+            @click="pickCheckout(path)"
           >
             <span class="git-graph-checkout-name">{{ label }}</span>
             <span v-if="path === checkouts.workspace" class="git-graph-workspace-label"
@@ -74,7 +74,7 @@
             {{ comparing ? "Cancel" : "Select range" }}
           </button>
           <button
-            v-if="!onVm"
+            v-if="!(data?.machine || onVm)"
             v-tooltip.top="`Pick repository (current: ${cwd})`"
             class="git-graph-tool"
             aria-label="Pick repository"
@@ -110,13 +110,15 @@
       <div class="git-graph-body" ref="bodyRef">
         <div class="git-graph-list">
           <div v-if="loading && !data" class="git-graph-status">Loading…</div>
-          <div v-if="error" class="git-graph-status git-graph-error">{{ error }}</div>
+          <div v-if="error || missingSelection" class="git-graph-status git-graph-error">
+            {{ error || `Selected commit ${missingSelection} is outside this graph.` }}
+          </div>
           <div v-if="!loading && !error && commits.length === 0" class="git-graph-status">
             No commits.
           </div>
           <template v-if="commits.length > 0">
             <div
-              v-if="mobileDiff && canOpenDiff"
+              v-if="canOpenDiff && (mobileDiff || selectionFrom === 'working' || selectionTo === 'working')"
               :class="['git-graph-row', {
                 'git-graph-row-range-to': selectionFrom === 'working' || selectionTo === 'working',
                 'git-graph-row-compare-disabled': workingDisabled,
@@ -139,14 +141,14 @@
                 'git-graph-row-compare-from': mobileDiff && c.hash === compareFrom,
                 'git-graph-row-compare-disabled': comparableHashes && !comparableHashes.has(c.hash),
                 'git-graph-row-range': selectedRangeHashes.has(c.hash) && c.hash !== selectionFrom && c.hash !== selectionTo,
-                'git-graph-row-range-from': mobileDiff && c.hash === selectionFrom,
-                'git-graph-row-range-to': mobileDiff && c.hash === selectionTo && selectionTo !== selectionFrom,
+                'git-graph-row-range-from': c.hash === selectionFrom,
+                'git-graph-row-range-to': c.hash === selectionTo && selectionTo !== selectionFrom,
               }]"
               :aria-disabled="comparableHashes && !comparableHashes.has(c.hash) ? true : undefined"
               :title="comparableHashes && !comparableHashes.has(c.hash) ? 'Not in the same history as the selected commit' : undefined"
               :style="{ height: `${ROW_H}px` }"
               @click="selectCommit(c.hash)"
-              @dblclick="canOpenDiff && !(mobileDiff && comparing) && emit('open-diff', c.hash, cwd)"
+              @dblclick="canOpenDiff && !(mobileDiff && comparing) && openDiff(c.hash)"
             >
               <span class="git-graph-hash">{{ c.shortHash }}</span>
               <svg
@@ -197,7 +199,7 @@
               </span>
               <span class="git-graph-author">{{ c.author }}</span>
               <span class="git-graph-time">{{ formatRelative(c.timestamp) }}</span>
-              <span v-if="mobileDiff && (c.hash === selectionFrom || c.hash === selectionTo)" class="git-graph-range-tag">{{ c.hash === selectionFrom ? selectionTo && selectionTo !== 'self' ? 'From' : 'Selected' : 'To' }}</span>
+              <span v-if="c.hash === selectionFrom || c.hash === selectionTo" class="git-graph-range-tag">{{ c.hash === selectionFrom ? selectionTo && selectionTo !== 'self' ? 'From' : 'Selected' : 'To' }}</span>
             </div>
             <LoadMoreRow
               :limit="limit"
@@ -353,7 +355,7 @@
               <DiffstatList
                 :files="detail.files"
                 :file-href="(path) => diffHref(selectedCommit!.hash, path)"
-                @open="(path) => canOpenDiff && emit('open-diff', selectedCommit!.hash, cwd, path)"
+                @open="(path) => canOpenDiff && openDiff(selectedCommit!.hash, path)"
               />
             </div>
             <div v-if="detailLoading && !detail" class="git-graph-detail-loading">Loading…</div>
@@ -366,8 +368,9 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import { api } from "../../services/api";
-import type { GitGraphResponse, GitCommitDetail } from "../../types";
+import { api, checkoutTarget } from "../../services/api";
+import type { MachineTarget } from "../../services/api";
+import type { GitCheckout, GitGraphResponse, GitCommitDetail } from "../../types";
 import GitRepoPicker from "./GitRepoPicker.vue";
 import RefBadge from "./gitGraph/RefBadge.vue";
 import CopyButton from "./gitGraph/CopyButton.vue";
@@ -399,8 +402,9 @@ import {
 const props = withDefaults(
   defineProps<{
     cwd: string;
+    checkout?: string;
     // The conversation whose machine (this host, or its VM) cwd is on.
-    conversationId?: string;
+    machine: MachineTarget;
     activityVersion?: number;
     // cwd is on that conversation's VM, where the repository picker, which
     // lists this host's repositories, can't pick.
@@ -422,19 +426,18 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "clear-selection"): void;
-  (e: "open-diff", commit: string, cwd: string, file?: string, to?: string): void;
+  (e: "select-commit", hash: string): void;
+  (e: "cwd-change", cwd: string, machine?: string): void;
+  (e: "open-diff", commit: string, checkout: GitCheckout, file?: string, to?: string): void;
 }>();
 
-// Internal override so the user can switch directories without re-opening.
-const cwdOverride = ref<string | null>(null);
-const cwd = computed(() => cwdOverride.value ?? props.cwd);
+const cwd = computed(() => props.checkout ?? props.cwd);
 const checkouts = ref<{ workspace: string; paths: string[] }>({ workspace: "", paths: [] });
 const checkoutError = ref("");
-const pickedCheckout = ref("");
-const selectedCheckout = computed(() => cwdOverride.value ?? checkouts.value.workspace);
+const selectedCheckout = computed(() => props.checkout ?? checkouts.value.workspace);
 const checkoutTabs = computed(() => {
   const { workspace, paths: recent } = checkouts.value;
-  const paths = [...new Set([workspace, ...recent, pickedCheckout.value].filter(Boolean))];
+  const paths = [...new Set([workspace, ...recent, props.checkout ?? ""].filter(Boolean))];
   return paths.map((path) => {
     const parts = path.split("/");
     let start = parts.length - 1;
@@ -447,24 +450,23 @@ const checkoutTabs = computed(() => {
 });
 
 function pickCheckout(path: string) {
-  if (!checkoutTabs.value.some((tab) => tab.path === path)) pickedCheckout.value = path;
-  cwdOverride.value = path;
+  if (path !== selectedCheckout.value) emit("cwd-change", path, data.value?.machine);
 }
 
 watch(
-  [() => props.isOpen, () => props.conversationId, () => props.cwd, () => props.activityVersion],
+  [() => props.isOpen, () => props.machine, () => props.cwd, () => props.activityVersion],
   async (_, __, onCleanup) => {
     let current = true;
     onCleanup(() => {
       current = false;
     });
-    if (!props.isOpen || !props.conversationId) {
+    if (!props.isOpen || !props.machine.conversationId) {
       checkouts.value = { workspace: "", paths: [] };
       return;
     }
     checkoutError.value = "";
     try {
-      const result = await api.getRecentCheckouts(props.cwd, props.conversationId);
+      const result = await api.getRecentCheckouts(props.cwd, props.machine);
       if (current) checkouts.value = result;
     } catch (e) {
       if (current) checkoutError.value = String(e);
@@ -507,13 +509,17 @@ function toggleCompare() {
   compareFrom.value = null;
 }
 
+function openDiff(commit: string, file?: string, to?: string) {
+  if (data.value) emit("open-diff", commit, data.value, file, to);
+}
+
 function selectWorking() {
   if (comparing.value) {
     if (!compareFrom.value || !workingComparable.value) return;
-    emit("open-diff", compareFrom.value, cwd.value, undefined, "working");
+    openDiff(compareFrom.value, undefined, "working");
     toggleCompare();
   } else {
-    emit("open-diff", "working", cwd.value);
+    openDiff("working");
   }
 }
 
@@ -581,14 +587,14 @@ function onDividerDoubleClick() {
 
 // Load the graph (React effect on [isOpen, cwd, limit, scope]).
 watch(
-  [() => props.isOpen, cwd, limit, scope],
+  [() => props.isOpen, cwd, () => props.machine, limit, scope],
   () => {
     if (!props.isOpen || !cwd.value) return;
     let cancelled = false;
     loading.value = true;
     error.value = null;
     api
-      .getGitGraph(cwd.value, props.conversationId, limit.value, scope.value)
+      .getGitGraph(cwd.value, props.machine, limit.value, scope.value)
       .then((d) => {
         if (cancelled) return;
         d.commits = normalizeCommits(d.commits || []);
@@ -597,7 +603,7 @@ watch(
           const prev = selected.value;
           if (prev && d.commits.some((c) => c.hash === prev)) {
             // keep
-          } else {
+          } else if (!props.selectionFrom) {
             const head = d.commits.find((c) => c.isHead);
             selected.value = (head ?? d.commits[0]).hash;
           }
@@ -609,7 +615,7 @@ watch(
       .finally(() => {
         if (!cancelled) loading.value = false;
       });
-    const stop = watch([() => props.isOpen, cwd, limit, scope], () => {
+    const stop = watch([() => props.isOpen, cwd, () => props.machine, limit, scope], () => {
       cancelled = true;
       stop();
     });
@@ -623,14 +629,12 @@ watch(
   (open) => {
     if (!open) {
       selected.value = null;
-      if (props.mobileDiff) data.value = null;
+      data.value = null;
       comparing.value = false;
       compareFrom.value = null;
       limit.value = INITIAL_LIMIT;
       detail.value = null;
       sheetOpen.value = false;
-      cwdOverride.value = null;
-      pickedCheckout.value = "";
       showCwdPicker.value = false;
       detailCache.clear();
     }
@@ -639,13 +643,10 @@ watch(
 
 // Reset transient state when cwd changes so we don't show stale
 // selection/detail (React effect on [cwd]).
-watch(cwd, () => {
+watch([cwd, () => props.machine], () => {
   selected.value = null;
   compareFrom.value = null;
-  if (props.mobileDiff && props.isOpen) {
-    comparing.value = false;
-    emit("clear-selection");
-  }
+  comparing.value = false;
   data.value = null;
   detail.value = null;
   limit.value = INITIAL_LIMIT;
@@ -655,9 +656,9 @@ watch(cwd, () => {
 // Load commit body + numstat on selection (React effect on
 // [isOpen, cwd, selected]).
 watch(
-  [() => props.isOpen, cwd, selected],
+  [() => props.isOpen, cwd, () => props.machine, selected],
   () => {
-    if (!props.isOpen || !cwd.value || !selected.value) {
+    if (!props.isOpen || !data.value || !selected.value) {
       detail.value = null;
       return;
     }
@@ -672,7 +673,7 @@ watch(
     detail.value = null;
     detailLoading.value = true;
     api
-      .getGitCommitDetail(cwd.value, props.conversationId, sel)
+      .getGitCommitDetail(data.value.gitRoot, checkoutTarget(props.machine, data.value), sel)
       .then((d) => {
         if (cancelled) return;
         detailCache.set(sel, d);
@@ -684,7 +685,7 @@ watch(
       .finally(() => {
         if (!cancelled) detailLoading.value = false;
       });
-    const stop = watch([() => props.isOpen, cwd, selected], () => {
+    const stop = watch([() => props.isOpen, cwd, () => props.machine, selected], () => {
       cancelled = true;
       stop();
     });
@@ -693,6 +694,12 @@ watch(
 );
 
 const commits = computed(() => data.value?.commits ?? []);
+const missingSelection = computed(() => {
+  if (!data.value || loading.value || (commits.value.length >= limit.value && limit.value < ALL_LIMIT)) return;
+  return [props.selectionFrom, props.selectionTo].find(
+    (hash) => hash && hash !== "working" && hash !== "self" && !commits.value.some((c) => c.hash === hash),
+  );
+});
 function ancestors(start: string[]): Set<string> {
   const byHash = new Map(commits.value.map((commit) => [commit.hash, commit]));
   const seen = new Set<string>();
@@ -736,7 +743,7 @@ const workingDisabled = computed(() => comparing.value && (!compareFrom.value ||
 const selectedRangeHashes = computed(() => {
   const from = props.selectionFrom;
   const to = props.selectionTo;
-  if (!props.mobileDiff || !from || !to || to === "self") return new Set<string>();
+  if (!from || !to || to === "self") return new Set<string>();
   const byHash = new Map(commits.value.map((commit) => [commit.hash, commit]));
   const end = to === "working" ? commits.value.find((commit) => commit.isHead)?.hash : to;
   if (!byHash.has(from) || !end || !byHash.has(end)) return new Set<string>();
@@ -768,15 +775,16 @@ function selectCommit(hash: string) {
       const first = compareFrom.value;
       const firstIsAncestor = ancestors([hash]).has(first);
       const [from, to] = firstIsAncestor ? [first, hash] : [hash, first];
-      emit("open-diff", from, cwd.value, undefined, to);
+      openDiff(from, undefined, to);
       toggleCompare();
     }
     return;
   }
+  if (!props.mobileDiff && props.selectionFrom && hash !== selected.value) emit("select-commit", hash);
   selected.value = hash;
   if (props.mobileDiff && props.canOpenDiff) {
     sheetOpen.value = false;
-    emit("open-diff", hash, cwd.value);
+    openDiff(hash);
     return;
   }
   sheetOpen.value = true;
@@ -823,7 +831,7 @@ function onNavKey(e: KeyboardEvent) {
     if (prev) selectCommit(prev.hash);
   } else if (e.key === "Enter" && selected.value && props.canOpenDiff && !(props.mobileDiff && comparing.value)) {
     e.preventDefault();
-    emit("open-diff", selected.value, cwd.value);
+    openDiff(selected.value);
   }
 }
 watch(
@@ -859,12 +867,16 @@ watch(
   async () => {
     const from = props.selectionFrom;
     const to = props.selectionTo;
-    if (!props.mobileDiff || !props.isOpen || props.covered || loading.value || !data.value ||
-        !from || from === "working" || !to || to === "self") return;
+    if (!props.isOpen || props.covered || loading.value || !data.value || !from) return;
+    if (from === "working") {
+      selected.value = null;
+      return;
+    }
     const hashes = new Set(commits.value.map((commit) => commit.hash));
-    const target = to === "working" ? from : to;
-    const end = to === "working" ? commits.value.find((commit) => commit.isHead)?.hash : to;
+    const target = !to || to === "self" || to === "working" ? from : to;
+    const end = to === "working" ? commits.value.find((commit) => commit.isHead)?.hash : target;
     if (!hashes.has(from) || !end || !hashes.has(end)) {
+      selected.value = null;
       if (commits.value.length >= limit.value && limit.value < ALL_LIMIT)
         limit.value = Math.min(limit.value * 2, ALL_LIMIT);
       return;
@@ -878,7 +890,11 @@ watch(
 function diffHref(hash: string, file?: string): string {
   const params = new URLSearchParams();
   params.set("diff", hash);
-  if (cwd.value) params.set("cwd", cwd.value);
+  if (data.value) {
+    params.set("cwd", data.value.gitRoot);
+    params.set("expected_checkout", data.value.gitRoot);
+    params.set("expected_machine", data.value.machine);
+  }
   if (file) params.set("file", file);
   return `${window.location.pathname}?${params.toString()}`;
 }
@@ -898,7 +914,7 @@ function onOpenCommitClick(e: MouseEvent, hash: string) {
   // Keep the graph selection in sync without opening the mobile detail sheet
   // behind the diff viewer.
   selected.value = hash;
-  emit("open-diff", hash, cwd.value);
+  openDiff(hash);
 }
 
 function onGravatarError(e: Event) {

@@ -52,7 +52,7 @@
           v-tooltip.top="dirTooltip"
           class="diff-viewer-dir-btn"
           :aria-label="`Git directory: ${cwd}. Click to change`"
-          :aria-disabled="recordingLocked || onVm"
+          :aria-disabled="recordingLocked || !!checkout?.machine || onVm"
           @click="openDirPicker"
         >
           <span v-html="DIR_ICON" />
@@ -316,7 +316,8 @@
 import "./mobileDiffViewer.css";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type * as Monaco from "monaco-editor";
-import { api } from "../../services/api";
+import { api, checkoutTarget } from "../../services/api";
+import type { MachineTarget } from "../../services/api";
 import { loadMonaco } from "../../services/monaco";
 import { isDarkModeActive } from "../../services/theme";
 
@@ -356,6 +357,7 @@ import { highlightsByFile, orderByHighlights, showHighlights } from "./commitHig
 import { defaultDiffSelection } from "./diffViewerModel";
 import type {
   CommitHighlights,
+  GitCheckout,
   GitDiffInfo,
   GitFileInfo,
   GitFileDiff,
@@ -365,7 +367,7 @@ import type {
 const props = defineProps<{
   cwd: string;
   // The conversation whose machine (this host, or its VM) cwd is on.
-  conversationId?: string;
+  machine: MachineTarget;
   // cwd is on that conversation's VM, where the repository picker, which
   // lists this host's repositories, can't pick.
   onVm?: boolean;
@@ -393,7 +395,7 @@ const emit = defineEmits<{
   (e: "open-git-graph"): void;
   (e: "save-review-comment", note: NewDraftDiffComment): void;
   (e: "open-review", event: MouseEvent): void;
-  (e: "cwd-change", cwd: string): void;
+  (e: "cwd-change", cwd: string, machine?: string): void;
 }>();
 
 const COMMIT_MSG_PREFIX = "commit-message:";
@@ -426,6 +428,9 @@ const DIR_ICON =
 // --- Reactive state (mirrors React useState) ---
 const diffs = ref<GitDiffInfo[]>([]);
 const showDirPicker = ref(false);
+const checkout = ref<GitCheckout | null>(null);
+const gitCwd = computed(() => checkout.value?.gitRoot ?? props.cwd);
+const gitMachine = computed(() => checkout.value ? checkoutTarget(props.machine, checkout.value) : props.machine);
 const selectedDiff = ref<string | null>(null);
 const selectedTo = ref("working");
 const gitRoot = ref("");
@@ -434,6 +439,7 @@ const files = ref<GitFileInfo[]>([]);
 const selectedFile = ref<string | null>(null);
 defineExpose({
   getSelection: () => ({
+    checkout: checkout.value,
     diff: selectedDiff.value,
     to: selectedTo.value,
     file: selectedFile.value,
@@ -463,7 +469,7 @@ function showBinaryText() {
 }
 function binaryDownloadURL(side: "before" | "after" | "patch"): string {
   if (!selectedDiff.value || !selectedFile.value) return "";
-  return api.gitFileDiffURL(selectedDiff.value, selectedFile.value, props.cwd, props.conversationId,
+  return api.gitFileDiffURL(selectedDiff.value, selectedFile.value, gitCwd.value, gitMachine.value,
     selectedDiff.value === "working" ? undefined : selectedTo.value) + `&download=${side}`;
 }
 function binaryMediaURL(side: "before" | "after"): string {
@@ -902,7 +908,7 @@ function requestClose() {
 }
 
 function openDirPicker() {
-  if (!recordingLocked.value && !props.onVm) showDirPicker.value = true;
+  if (!recordingLocked.value && !checkout.value?.machine && !props.onVm) showDirPicker.value = true;
 }
 
 function reviewMachine() {
@@ -999,33 +1005,32 @@ watch(
 
 // Load diffs when viewer opens; reset state when it closes.
 watch(
-  [() => props.isOpen, () => props.cwd, () => props.initialCommit],
+  [() => props.isOpen, () => props.cwd, () => props.machine, () => props.initialCommit],
   () => {
+    checkout.value = null;
+    loadDiffsRequestId++;
+    loadFilesRequestId++;
+    loadFileDiffRequestId++;
+    fileDiff.value = null;
+    revealPending.value = false;
+    selectedFile.value = null;
+    files.value = [];
+    highlights.value = null;
+    highlightsError.value = null;
+    selectedDiff.value = null;
+    selectedTo.value = "working";
+    diffs.value = [];
+    error.value = null;
+    resetComments();
+    previewComment.value = null;
+    previewCommentText.value = "";
+    commitMessages.value = [];
     if (props.isOpen && props.cwd) {
       mobileOverview.value = isMobile.value && !props.initialFile;
       mobileFileListOpen.value = false;
       rawMessage.value = false;
       pendingInitialFile = props.initialFile;
       loadDiffs();
-    } else if (!props.isOpen) {
-      loadDiffsRequestId++;
-      loadFilesRequestId++;
-      loadFileDiffRequestId++;
-      fileDiff.value = null;
-      revealPending.value = false;
-      selectedFile.value = null;
-      files.value = [];
-      highlights.value = null;
-      highlightsError.value = null;
-      selectedDiff.value = null;
-      selectedTo.value = "working";
-      diffs.value = [];
-      error.value = null;
-      resetComments();
-      previewComment.value = null;
-      previewCommentText.value = "";
-      commitMessages.value = [];
-
     }
   },
   { immediate: true },
@@ -1455,8 +1460,9 @@ async function loadDiffs() {
   try {
     loading.value = true;
     error.value = null;
-    const response = await api.getGitDiffs(cwd, props.conversationId, initialCommit === "working" ? undefined : initialCommit, false);
+    const response = await api.getGitDiffs(cwd, props.machine, initialCommit === "working" ? undefined : initialCommit, false);
     if (requestId !== loadDiffsRequestId) return;
+    checkout.value = { gitRoot: response.gitRoot, machine: response.machine };
     diffs.value = response.diffs;
     gitRoot.value = response.gitRoot;
 
@@ -1483,20 +1489,20 @@ async function loadDiffs() {
 
 async function loadFiles(diffId: string) {
   const requestId = ++loadFilesRequestId;
-  const cwd = props.cwd;
+  const cwd = gitCwd.value;
   const toArg = diffId === "working" ? undefined : selectedTo.value;
   const initial = pendingInitialFile;
   pendingInitialFile = undefined;
-  const filesPromise = api.getGitDiffFiles(diffId, cwd, props.conversationId, toArg);
+  const filesPromise = api.getGitDiffFiles(diffId, cwd, gitMachine.value, toArg);
   const messagesPromise =
     diffId === "working"
       ? Promise.resolve<GitCommitMessage[]>([])
-      : api.getGitCommitMessages(cwd, props.conversationId, diffId, toArg).catch(() => []);
+      : api.getGitCommitMessages(cwd, gitMachine.value, diffId, toArg).catch(() => []);
   // Highlights describe one commit, so they apply only to its own diff.
   const hasHighlights =
     toArg === "self" && !!diffs.value.find((diff) => diff.id === diffId)?.hasHighlights;
   const highlightsPromise = hasHighlights
-    ? api.getGitHighlights(cwd, props.conversationId, diffId).catch((err) => {
+    ? api.getGitHighlights(cwd, gitMachine.value, diffId).catch((err) => {
         if (requestId === loadFilesRequestId) highlightsError.value = String(err);
         return null;
       })
@@ -1551,7 +1557,7 @@ async function loadFiles(diffId: string) {
 
 async function loadFileDiff(diffId: string, filePath: string, asText = false) {
   const requestId = ++loadFileDiffRequestId;
-  const cwd = props.cwd;
+  const cwd = gitCwd.value;
   const toArg = diffId === "working" ? undefined : selectedTo.value;
   revealPending.value = isMobile.value && !isCommitMessageFile(filePath);
   try {
@@ -1570,7 +1576,7 @@ async function loadFileDiff(diffId: string, filePath: string, asText = false) {
       }
       return;
     }
-    const diffData = await api.getGitFileDiff(diffId, filePath, cwd, props.conversationId, toArg, asText);
+    const diffData = await api.getGitFileDiff(diffId, filePath, cwd, gitMachine.value, toArg, asText);
     if (requestId !== loadFileDiffRequestId) return;
     showBinaryAsText.value = asText;
     if (diffData.tooLarge || (diffData.binary && !asText)) revealPending.value = false;
@@ -2094,7 +2100,7 @@ function selectSidebarFile(path: string) {
   rawMessage.value = false;
 }
 function onDirSelect(path: string) {
-  emit("cwd-change", path);
+  emit("cwd-change", path, checkout.value?.machine);
   showDirPicker.value = false;
 }
 

@@ -221,3 +221,26 @@ func TestE2EMobileDiffEOFDeletionRuler(t *testing.T) {
 		mobileDiffConversation(s, dir)
 	})
 }
+
+func TestE2EMobileReviewKeepsCheckout(t *testing.T) {
+	e2e(t, useful(0), `On a phone, continue reviewing the worktree from an inline commit, then start a fresh review in the chat workspace.
+Navigate to /c/{{SLUG}}. Click the Open Diff link in the gitinfo message containing "Commit from B".
+Click the commit picker (.commit-picker-trigger). In the Git Graph checkout group the selected button has title {{B}}.
+Click the graph row "Working changes". The diff file picker or file heading shows only-in-B.txt.
+Close the diff, then close the graph if visible, returning to the chat.
+Use More options and the Diffs menu button to start a fresh review. Click its commit picker.
+The selected checkout button now has title {{C}}. Click "Working changes" and verify the file is only-in-C.txt.`, func(s *shelley) {
+		b := mobileDiffRepo(s)
+		s.write(filepath.Join(b, "base.txt"), "initial\n")
+		mobileDiffCommit(s, b, "initial")
+		chat := s.conversationIn(b, "bash: echo commit >>base.txt && git add base.txt && git commit -m 'Commit from B'")
+		c := filepath.Join(s.dir, "worktree-c")
+		s.gitIn(b, "worktree", "add", "--detach", c, "HEAD")
+		s.write(filepath.Join(b, "only-in-B.txt"), "B\n")
+		s.write(filepath.Join(c, "only-in-C.txt"), "C\n")
+		s.shelleyAPI("POST", "/api/conversation/"+chat.ID+"/cwd", map[string]string{"cwd": c}, nil)
+		s.v("B", b)
+		s.v("C", c)
+		s.v("SLUG", chat.Slug)
+	})
+}

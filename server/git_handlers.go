@@ -397,6 +397,7 @@ func (s *Server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"diffs":   diffs,
 		"gitRoot": gitRoot,
+		"machine": m.name(),
 	})
 }
 
@@ -1356,6 +1357,7 @@ func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"commits":       commits,
 		"gitRoot":       gitRoot,
+		"machine":       m.name(),
 		"currentBranch": currentBranch,
 		"githubBase":    githubBase,
 	})
