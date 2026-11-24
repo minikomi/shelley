@@ -2270,9 +2270,14 @@ func (cm *ConversationManager) partitionMessages(messages []generated.Message) (
 	if err != nil {
 		return nil, nil, err
 	}
-	history := make([]llm.Message, len(items))
+	workspace := "Workspace: not supplied. Use explicit paths."
+	if cwd := cm.Cwd(); cwd != "" {
+		workspace = fmt.Sprintf("Workspace: %s\nDefault for relative paths and newly created helpers.", cwd)
+	}
+	history := make([]llm.Message, len(items)+1)
+	history[0] = llm.UserStringMessage("<workspace>\n" + workspace + "\n</workspace>")
 	for i, it := range items {
-		history[i] = it.message
+		history[i+1] = it.message
 	}
 	return history, system, nil
 }

@@ -275,7 +275,7 @@ func TestBashChainedCdHint(t *testing.T) {
 		t.Errorf("cd to the current directory produced a hint: %q", got)
 	}
 	got := run(t, "cd / && printf done")
-	for _, want := range []string{"change_dir", wd} {
+	for _, want := range []string{"workspace", "No return switch is needed", wd} {
 		if !strings.Contains(got, want) {
 			t.Errorf("first chained cd output %q does not contain %q", got, want)
 		}

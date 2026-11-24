@@ -182,8 +182,10 @@ func TestStartNewGenerationDuringTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := held.waitCall(t, "queued")
-	if n := len(call.request.Messages); n != 1 {
-		t.Errorf("queued message went out with %d messages of context, want just itself", n)
+	if n := len(call.request.Messages); n != 2 {
+		t.Errorf("queued message went out with %d messages of context, want workspace and itself", n)
+	} else if !strings.HasPrefix(messageText(call.request.Messages[0]), "<workspace>\n") {
+		t.Error("new generation is missing workspace context")
 	}
 	releaseAndWaitIdle(t, server, conv.ConversationID, call)
 	requireTurnsEndOnce(t, database, conv.ConversationID, 2)

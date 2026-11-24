@@ -136,14 +136,19 @@ func isNoTrailerSet() bool {
 const (
 	bashName        = "bash"
 	bashDescription = "Executes shell commands via bash --login -c, returning combined stdout/stderr.\n" +
-		"For commands like `cd app && make`, call change_dir with path `app`, then bash `make` without cd. " +
-		"These calls can share a response. " +
-		"Apply this before initial inspections and tests too, including README recipes. " +
-		"Skip change_dir if already there.\n\n" +
+		"Your working directory is this conversation's stable workspace, not the shell's cursor.\n\n" +
+		"| Intent | Mechanism |\n" +
+		"| --- | --- |\n" +
+		"| Work in this conversation's workspace | Ordinary relative commands and patches |\n" +
+		"| Run something elsewhere | `cd /known/path && command` |\n" +
+		"| Establish a new default for future relative paths and newly created helpers | `change_dir` |\n\n" +
+		"Use cd for commands elsewhere. Change the workspace only to establish a better default for subsequent work, " +
+		"not as a prerequisite for inspecting, testing, building, or editing elsewhere. " +
+		"Do not switch back after a shell-local excursion. " +
+		"Skip change_dir if already in the intended workspace.\n\n" +
 		`Shell state (cwd, variables, aliases) does not persist.
-Commands already start in the working directory; omit redundant cd.
-For 'cd dir && ...' or 'cd dir; ...', call change_dir first,
-then run the remaining command directly.
+Commands already start in the workspace; omit redundant cd.
+Guard commands after cd with && so they do not run if the directory change fails.
 
 After 60s, commands move to the background, and the response's later calls
 are skipped. To run independent work at the same time, start it with
@@ -311,10 +316,9 @@ func chainedCdLeavesDir(paths []string, workingDir string) bool {
 	return false
 }
 
-// chainedCdHint tells the model the one fact it can act on: the cwd it
-// will see on the next call, and how to change it.
+// chainedCdHint reminds the model where the next call starts.
 func chainedCdHint(workingDir string) string {
-	return "[shelley: `cd` inside a bash call does not persist; the working directory is still " + workingDir + ". Use change_dir to move.]"
+	return "[shelley: Shell-local `cd` did not change the conversation's workspace: " + workingDir + ". No return switch is needed.]"
 }
 
 func cdPathIsCurrentDir(path, workingDir string) bool {
