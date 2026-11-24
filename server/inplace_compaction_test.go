@@ -208,9 +208,9 @@ func TestCompactDebugEndToEnd(t *testing.T) {
 		dump.WriteString("\n")
 	}
 	got := dump.String()
-	summary := req.Messages[1]
-	if summary.Role != llm.MessageRoleUser || summary.Content[0].Text != compactionNoteText(id, helloSeq, hiSeq, "The user  said hello.") {
-		t.Fatalf("message after workspace is not the summary:\n%s", got)
+	if len(req.Messages) == 0 || req.Messages[0].Role != llm.MessageRoleUser ||
+		messageText(req.Messages[0]) != compactionNoteText(id, helloSeq, hiSeq, "The user  said hello.") {
+		t.Fatalf("expected the summary at the start of history:\n%s", got)
 	}
 	if strings.Contains(got, "Well, hi there!") || strings.Contains(got, "compact-me-please\\n") {
 		t.Fatalf("compacted content leaked into request:\n%s", got)

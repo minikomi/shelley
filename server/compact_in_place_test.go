@@ -290,8 +290,9 @@ func TestCompactInPlaceEndToEnd(t *testing.T) {
 	check := func(req *llm.Request) {
 		t.Helper()
 		got := requestDump(req)
-		if note := req.Messages[2].Content[0].Text; note != compactionNoteText(c.id, hiSeq, hiSeq, "GREETED") {
-			t.Fatalf("message after workspace and greeting is not the note:\n%s", got)
+		if len(req.Messages) < 2 || messageText(req.Messages[0]) != "hello" ||
+			messageText(req.Messages[1]) != compactionNoteText(c.id, hiSeq, hiSeq, "GREETED") {
+			t.Fatalf("expected the greeting followed by the note:\n%s", got)
 		}
 		for _, m := range req.Messages {
 			for _, ct := range m.Content {

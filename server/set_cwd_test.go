@@ -570,13 +570,8 @@ func TestSetConversationCwdBeforeFirstSend(t *testing.T) {
 	if !rec.turnMentioning(t, "hello", dest) {
 		t.Errorf("request never mentioned the new directory %q", dest)
 	}
-	// The workspace belongs in conversation context, not the cached system prompt.
 	system := rec.turnSystemPrompt(t, "hello")
-	if strings.Contains(system, "Initial pwd:") {
-		t.Error("system prompt still carries the initial workspace")
-	}
-	if strings.Contains(system, dest) {
-		t.Errorf("system prompt unexpectedly names the new directory %q; if system prompts now track "+
-			"the live cwd, the notice may be redundant here", dest)
+	if !strings.Contains(system, "Initial pwd: "+start+"\n") || strings.Contains(system, dest) {
+		t.Errorf("system prompt should name the original directory %q: %s", start, system)
 	}
 }

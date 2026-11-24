@@ -78,8 +78,8 @@ func TestSystemPromptEmptyCwdFallsBackToCurrentDir(t *testing.T) {
 	if prompt != explicit {
 		t.Error("empty cwd should load the same guidance as the current directory")
 	}
-	if strings.Contains(prompt, "Initial pwd:") {
-		t.Error("workspace belongs in conversation context, not the system prompt")
+	if !strings.Contains(prompt, "Initial pwd: "+currentDir+"\n") {
+		t.Errorf("system prompt should name the initial directory %q", currentDir)
 	}
 }
 
@@ -905,7 +905,7 @@ func TestSubagentSystemPromptIncludesGuidancePaths(t *testing.T) {
 	}
 
 	for _, delegated := range []bool{true, false} {
-		prompt, _, err := generateSubagentSystemPromptWithIntegrationSkills(cwd, delegated, nil, nil, nil)
+		prompt, _, err := generateSubagentSystemPromptWithIntegrationSkills(cwd, delegated, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -985,10 +985,11 @@ func TestSubagentSystemPromptKeepsStableSkillsFirst(t *testing.T) {
 	DBPath = "/tmp/shelley-test.db"
 	t.Cleanup(func() { DBPath = oldDBPath })
 
-	prompt, _, err := generateSubagentSystemPromptWithIntegrationSkills(t.TempDir(), true, []skills.Skill{{
+	dir := t.TempDir()
+	prompt, _, err := generateSubagentSystemPromptWithIntegrationSkills(dir, true, []skills.Skill{{
 		Name:        "stable-prefix",
 		Description: "Keep reusable guidance first.",
-	}}, nil, nil)
+	}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -997,8 +998,9 @@ func TestSubagentSystemPromptKeepsStableSkillsFirst(t *testing.T) {
 	if skillsAt < 0 || parentAt < 0 || skillsAt > parentAt {
 		t.Fatalf("skills are not before dynamic context:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "Working directory:") {
-		t.Fatalf("workspace belongs in conversation context, not the system prompt:\n%s", prompt)
+	pwdAt := strings.Index(prompt, "Initial pwd: "+dir+"\n")
+	if pwdAt < skillsAt || pwdAt > parentAt {
+		t.Fatalf("initial directory is absent or out of order:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "conversation_id='$SHELLEY_CONVERSATION_ID'") {
 		t.Fatalf("parent lookup does not use the child environment:\n%s", prompt)
@@ -1345,7 +1347,7 @@ func TestIntegrationSkillSnapshotIncludedInTopLevelAndSubagentPrompts(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	subagent, subSkills, err := generateSubagentSystemPromptWithIntegrationSkills(workingDir, true, integrationSkills, nil, nil)
+	subagent, subSkills, err := generateSubagentSystemPromptWithIntegrationSkills(workingDir, true, integrationSkills, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

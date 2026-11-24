@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -135,6 +136,7 @@ type ConversationManager struct {
 	hydrated              bool
 	hasConversationEvents bool
 	cwd                   string // working directory for tools
+	initialWorkingDir     string
 	userEmail             string // exe.dev auth email, from X-ExeDev-Email header
 	serverPort            int    // TCP port the shelley server listens on, for SHELLEY_PORT/SHELLEY_URL
 	serverSocket          string // Unix socket the shelley server listens on, for SHELLEY_SOCKET
@@ -570,7 +572,16 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 		return fmt.Errorf("failed to get conversation history: %w", err)
 	}
 
-	if !hasSystemMessage(messages) {
+	hasPrompt := hasSystemMessage(messages)
+	initialDir := cwd
+	if hasPrompt {
+		initialDir = storedInitialWorkingDir(messages, cm.role == roleTopLevel && cm.toolSetConfig.VM == nil)
+	}
+	cm.mu.Lock()
+	cm.initialWorkingDir = initialDir
+	cm.mu.Unlock()
+
+	if !hasPrompt {
 		var systemMsg *generated.Message
 		var err error
 		if cm.role == roleBtwReader {
@@ -2092,26 +2103,62 @@ func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generat
 	return cm.storeSystemPrompt(ctx, prompt)
 }
 
-// renderedSystemPrompt is a system prompt ready to store: its text and the
-// tools and skills shown with it.
+// storedInitialWorkingDir reads the first system prompt in the generation.
+func storedInitialWorkingDir(messages []generated.Message, localTopLevel bool) string {
+	for _, row := range messages {
+		if row.Type != string(db.MessageTypeSystem) {
+			continue
+		}
+		var data struct {
+			InitialDir *string `json:"initial_dir"`
+		}
+		if row.UserData != nil && json.Unmarshal([]byte(*row.UserData), &data) == nil && data.InitialDir != nil {
+			return *data.InitialDir
+		}
+		if localTopLevel {
+			// Older built-in prompts named the path in their opening lines.
+			msg, err := convertToLLMMessage(row)
+			if err == nil {
+				const header = "You are Shelley, a coding agent. Communicate with brevity. Be persistent and creative.\n\nInitial pwd: "
+				if text, ok := strings.CutPrefix(messageText(msg), header); ok {
+					dir, _, _ := strings.Cut(text, "\n")
+					if filepath.IsAbs(dir) {
+						return dir
+					}
+				}
+			}
+		}
+		break
+	}
+	return ""
+}
+
+// renderedSystemPrompt is a system prompt ready to store.
 type renderedSystemPrompt struct {
-	text    string
-	display map[string]any
+	text       string
+	display    map[string]any
+	initialDir string
 }
 
 // renderSystemPrompt renders the system prompt the conversation would have
 // with opts, without storing it.
 func (cm *ConversationManager) renderSystemPrompt(ctx context.Context, opts db.ConversationOptions) (renderedSystemPrompt, error) {
+	cm.mu.Lock()
+	initialDir := cm.initialWorkingDir
+	cm.mu.Unlock()
+	discoveryDir := cm.HostDir()
 	if cm.role != roleTopLevel {
-		return cm.renderSubagentSystemPrompt(ctx, opts)
+		return cm.renderSubagentSystemPrompt(ctx, opts, discoveryDir, initialDir)
 	}
-	var promptOpts []SystemPromptOption
+	promptOpts := []SystemPromptOption{func(d *SystemPromptData) {
+		d.InitialWorkingDirectory = initialDir
+	}}
 	if cm.userEmail != "" {
 		promptOpts = append(promptOpts, WithUserEmail(cm.userEmail))
 	}
 	servers, exeDev := cm.promptIntegrations(ctx)
 	promptOpts = append(promptOpts, WithMCPServers(servers), WithExeDevIntegrations(exeDev), WithTemplate(opts.SystemPrompt))
-	text, promptSkills, err := generateSystemPromptWithIntegrationSkills(cm.promptDir(), cm.integrationSkills.Skills(ctx), promptOpts...)
+	text, promptSkills, err := generateSystemPromptWithIntegrationSkills(discoveryDir, cm.integrationSkills.Skills(ctx), promptOpts...)
 	if err != nil {
 		return renderedSystemPrompt{}, fmt.Errorf("failed to generate system prompt: %w", err)
 	}
@@ -2119,7 +2166,7 @@ func (cm *ConversationManager) renderSystemPrompt(ctx context.Context, opts db.C
 	if err != nil {
 		return renderedSystemPrompt{}, err
 	}
-	return renderedSystemPrompt{text, display}, nil
+	return renderedSystemPrompt{text: text, display: display, initialDir: initialDir}, nil
 }
 
 // storeSystemPrompt stores prompt as the conversation's system message. It
@@ -2151,6 +2198,7 @@ func (cm *ConversationManager) systemPromptParams(prompt renderedSystemPrompt) d
 			Role:    llm.MessageRoleUser,
 			Content: []llm.Content{{Type: llm.ContentTypeText, Text: prompt.text}},
 		},
+		UserData:    map[string]string{"initial_dir": prompt.initialDir},
 		UsageData:   llm.Usage{},
 		DisplayData: prompt.display,
 	}
@@ -2236,7 +2284,7 @@ func (cm *ConversationManager) systemPromptDisplayData(ctx context.Context, opts
 
 // renderSubagentSystemPrompt is renderSystemPrompt for subagents and
 // internal workers.
-func (cm *ConversationManager) renderSubagentSystemPrompt(ctx context.Context, opts db.ConversationOptions) (renderedSystemPrompt, error) {
+func (cm *ConversationManager) renderSubagentSystemPrompt(ctx context.Context, opts db.ConversationOptions, discoveryDir, initialDir string) (renderedSystemPrompt, error) {
 	// Only subagents use MCP tools and exe-dev integrations; internal
 	// workers (transcriptions) don't, and notifyMCPServersChanged skips them
 	// too.
@@ -2245,7 +2293,7 @@ func (cm *ConversationManager) renderSubagentSystemPrompt(ctx context.Context, o
 	if cm.role == roleSubagent {
 		mcpServers, exeDev = cm.promptIntegrations(ctx)
 	}
-	text, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(cm.promptDir(), cm.role == roleSubagent, cm.integrationSkills.Skills(ctx), mcpServers, exeDev)
+	text, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(discoveryDir, cm.role == roleSubagent, cm.integrationSkills.Skills(ctx), mcpServers, exeDev, &initialDir)
 	if err != nil {
 		return renderedSystemPrompt{}, fmt.Errorf("failed to generate subagent system prompt: %w", err)
 	}
@@ -2253,7 +2301,7 @@ func (cm *ConversationManager) renderSubagentSystemPrompt(ctx context.Context, o
 	if err != nil {
 		return renderedSystemPrompt{}, err
 	}
-	return renderedSystemPrompt{text, display}, nil
+	return renderedSystemPrompt{text: text, display: display, initialDir: initialDir}, nil
 }
 
 func subagentPromptCacheKey(system []llm.SystemContent, modelID string) string {
@@ -2270,14 +2318,9 @@ func (cm *ConversationManager) partitionMessages(messages []generated.Message) (
 	if err != nil {
 		return nil, nil, err
 	}
-	workspace := "Workspace: not supplied. Use explicit paths."
-	if cwd := cm.Cwd(); cwd != "" {
-		workspace = fmt.Sprintf("Workspace: %s\nDefault for relative paths and newly created helpers.", cwd)
-	}
-	history := make([]llm.Message, len(items)+1)
-	history[0] = llm.UserStringMessage("<workspace>\n" + workspace + "\n</workspace>")
+	history := make([]llm.Message, len(items))
 	for i, it := range items {
-		history[i+1] = it.message
+		history[i] = it.message
 	}
 	return history, system, nil
 }
@@ -3156,15 +3199,6 @@ func (cm *ConversationManager) HostDir() string {
 		return cm.toolSetConfig.HostDir
 	}
 	return cm.Cwd()
-}
-
-// promptDir is HostDir for the system prompt, which reads cm.cwd as it
-// always has: without cm.mu, which its callers may hold.
-func (cm *ConversationManager) promptDir() string {
-	if cm.toolSetConfig.VM != nil {
-		return cm.toolSetConfig.HostDir
-	}
-	return cm.cwd
 }
 
 // errAgentWorking is returned by SetCwd when a turn is in flight. Moving the
