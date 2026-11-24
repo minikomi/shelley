@@ -15,12 +15,12 @@ WITH RECURSIVE chats(id) AS (
     UNION ALL
     SELECT c.conversation_id FROM conversations c JOIN chats ON c.parent_conversation_id = chats.id
 ), activity(worktree, touched_at) AS (
-    SELECT a.worktree, a.touched_at FROM checkout_activity a JOIN chats ON chats.id = a.conversation_id
+    SELECT a.worktree, a.touched_at FROM chats CROSS JOIN checkout_activity a ON a.conversation_id = chats.id
     WHERE a.machine = ?2 AND a.edited
     UNION ALL
     SELECT CAST(json_extract(m.user_data, '$.worktree') AS TEXT),
            CAST(unixepoch(m.created_at, 'subsec') * 1000000000 AS INTEGER)
-    FROM messages m JOIN chats ON chats.id = m.conversation_id
+    FROM chats CROSS JOIN messages m ON m.conversation_id = chats.id
     WHERE m.type = 'gitinfo'
       AND json_extract(m.user_data, '$.commit') != ''
       AND json_extract(m.user_data, '$.worktree') != ''
