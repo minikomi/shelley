@@ -49,7 +49,7 @@ type BackgroundJobs interface {
 // `kill -- -PGID` stops the command but not the wrapper, which then records
 // the status; children still get default signal dispositions.
 const bashJobWrapper = `trap : HUP INT TERM
-` + configureCommitHook + `bash --login -c "$1"
+bash --login -c "$1"
 s=$?
 printf '%d\n' "$s" >"$2.tmp" && mv -f -- "$2.tmp" "$2"
 exit "$s"`

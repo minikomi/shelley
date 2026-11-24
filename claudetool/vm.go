@@ -90,7 +90,7 @@ func targetSchema(schema string, vm VM) string {
 // open while it runs.
 const VMJobScript = `wd=$1 cmd=$2; shift 2
 export "$@"
-` + configureCommitHook + `cd -- "$wd" || exit 1
+cd -- "$wd" || exit 1
 pg=$(mktemp) || exit 1
 exec 3<&0 </dev/null
 ( cat <&3 >/dev/null

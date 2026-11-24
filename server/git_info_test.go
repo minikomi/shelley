@@ -27,8 +27,8 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, other := filepath.Join(root, "home"), filepath.Join(root, "other")
-	for _, dir := range []string{home, other} {
+	home, other, readOnly := filepath.Join(root, "home"), filepath.Join(root, "other"), filepath.Join(root, "read-only")
+	for _, dir := range []string{home, other, readOnly} {
 		if err := os.Mkdir(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -50,7 +50,7 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 	postChatMessage(t, server, id, "bash: cd "+other+" && git commit -q --allow-empty -m elsewhere")
 	waitForIdle(t, server, id)
 	// A read-only git command elsewhere announces nothing.
-	postChatMessage(t, server, id, "bash: cd "+other+" && git log -1")
+	postChatMessage(t, server, id, "bash: cd "+readOnly+" && git log -1")
 	waitForIdle(t, server, id)
 
 	messages, err := database.ListMessagesByType(t.Context(), id, db.MessageTypeGitInfo)
@@ -67,6 +67,7 @@ func TestGitInfoForCommitInOtherRepo(t *testing.T) {
 	if info.Worktree != other || info.Branch != "main" || info.Subject != "elsewhere" || info.Commit != strings.TrimSpace(testGitOutput(t, other, "rev-parse", "HEAD")) {
 		t.Errorf("gitinfo = %+v, want the commit in %s", info, other)
 	}
+	wantCheckoutPaths(t, server, id, home, []string{other, home})
 	conversation, err = database.GetConversationByID(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +111,7 @@ func TestRecentCheckoutsIncludeHelperEdits(t *testing.T) {
 		}
 	}
 
-	// A visit and an ordinary same-branch HEAD update cannot advance A.
+	// Visiting A leaves B most recent. A later inline notice for A advances it.
 	for _, dir := range []string{a, workspace} {
 		if err := manager.SetCwd(ctx, dir); err != nil {
 			t.Fatal(err)
@@ -122,9 +123,14 @@ func TestRecentCheckoutsIncludeHelperEdits(t *testing.T) {
 	if len(states) != 1 {
 		t.Fatalf("expected an ordinary Git observation, got %v", states)
 	}
-	manager.recordGitStateChange(ctx, "", states[0])
+	manager.recordGitStateChange(ctx, states[0])
 
-	query := url.Values{"conversation_id": {parent.ConversationID}, "cwd": {workspace}}
+	wantCheckoutPaths(t, server, parent.ConversationID, workspace, []string{a, b, workspace})
+}
+
+func wantCheckoutPaths(t *testing.T, server *Server, id, workspace string, paths []string) {
+	t.Helper()
+	query := url.Values{"conversation_id": {id}, "cwd": {workspace}}
 	rec := httptest.NewRecorder()
 	server.handleRecentCheckouts(rec, httptest.NewRequest(http.MethodGet, "/?"+query.Encode(), nil))
 	var got struct {
@@ -134,7 +140,7 @@ func TestRecentCheckoutsIncludeHelperEdits(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil {
 		t.Fatalf("recent checkouts: %d %s", rec.Code, rec.Body.String())
 	}
-	if got.Workspace != workspace || !slices.Equal(got.Paths, []string{b, a, workspace}) {
-		t.Errorf("recent checkouts = %+v, want %q", got, []string{b, a, workspace})
+	if got.Workspace != workspace || !slices.Equal(got.Paths, paths) {
+		t.Errorf("recent checkouts = %+v, want %q", got, paths)
 	}
 }

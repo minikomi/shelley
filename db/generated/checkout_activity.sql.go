@@ -11,23 +11,33 @@ import (
 
 const recentCheckouts = `-- name: RecentCheckouts :many
 WITH RECURSIVE chats(id) AS (
-    SELECT CAST(?2 AS TEXT)
+    SELECT CAST(?1 AS TEXT)
     UNION ALL
     SELECT c.conversation_id FROM conversations c JOIN chats ON c.parent_conversation_id = chats.id
+), activity(worktree, touched_at) AS (
+    SELECT a.worktree, a.touched_at FROM checkout_activity a JOIN chats ON chats.id = a.conversation_id
+    WHERE a.machine = ?2 AND a.edited
+    UNION ALL
+    SELECT CAST(json_extract(m.user_data, '$.worktree') AS TEXT),
+           CAST(unixepoch(m.created_at, 'subsec') * 1000000000 AS INTEGER)
+    FROM messages m JOIN chats ON chats.id = m.conversation_id
+    WHERE m.type = 'gitinfo'
+      AND json_extract(m.user_data, '$.commit') != ''
+      AND json_extract(m.user_data, '$.worktree') != ''
+      AND coalesce(json_extract(m.user_data, '$.machine'), '') = ?2
+      AND NOT coalesce(json_extract(m.user_data, '$.tour_request'), FALSE)
 )
-SELECT a.worktree FROM checkout_activity a JOIN chats ON chats.id = a.conversation_id
-WHERE a.machine = ?1 AND a.edited
-GROUP BY a.worktree
-ORDER BY max(a.touched_at) DESC, a.worktree
+SELECT CAST(worktree AS TEXT) AS worktree FROM activity
+GROUP BY worktree ORDER BY max(touched_at) DESC, worktree
 `
 
 type RecentCheckoutsParams struct {
-	Machine string `json:"machine"`
 	Chat    string `json:"chat"`
+	Machine string `json:"machine"`
 }
 
 func (q *Queries) RecentCheckouts(ctx context.Context, arg RecentCheckoutsParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, recentCheckouts, arg.Machine, arg.Chat)
+	rows, err := q.db.QueryContext(ctx, recentCheckouts, arg.Chat, arg.Machine)
 	if err != nil {
 		return nil, err
 	}

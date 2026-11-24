@@ -2593,14 +2593,6 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	toolSetConfig.ConversationID = conversationID
 	toolSetConfig.ParentConversationID = conversationID // For subagent tool
 	toolSetConfig.UserWaiting = cm.userMessageWaiting
-	toolSetConfig.OnJobCommit = func(ctx context.Context, vm claudetool.VM, state *gitstate.GitState) {
-		machine := ""
-		if vm != nil {
-			machine = vm.Name()
-		}
-		cm.recordCheckout(ctx, machine, state.Worktree)
-		cm.recordGitStateChange(ctx, machine, state)
-	}
 	toolSetConfig.OnCheckoutEdit = cm.noteCheckoutEdit
 	toolSetConfig.OnWorkingDirChange = func(newDir string) {
 		// Persist working directory change to database
@@ -2734,7 +2726,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		System:               system,
 		GitTracker:           toolSet.GitTracker(),
 		OnGitStateChange: func(ctx context.Context, state *gitstate.GitState) {
-			cm.recordGitStateChange(ctx, "", state)
+			cm.recordGitStateChange(ctx, state)
 		},
 		OnToolProgress: func(progress llm.ToolProgress) {
 			if !cm.isCurrentLoopGeneration(generation) {
@@ -3092,7 +3084,7 @@ type GitInfoUserData struct {
 
 // recordGitStateChange creates a gitinfo message when git state changes.
 // This message is visible to users in the UI but is not sent to the LLM.
-func (cm *ConversationManager) recordGitStateChange(ctx context.Context, machine string, state *gitstate.GitState) {
+func (cm *ConversationManager) recordGitStateChange(ctx context.Context, state *gitstate.GitState) {
 	if state == nil || !state.IsRepo {
 		return
 	}
@@ -3104,7 +3096,6 @@ func (cm *ConversationManager) recordGitStateChange(ctx context.Context, machine
 	}
 
 	userData := GitInfoUserData{
-		Machine:  machine,
 		Worktree: state.Worktree,
 		Branch:   state.Branch,
 		Commit:   state.FullCommit,
@@ -3112,9 +3103,11 @@ func (cm *ConversationManager) recordGitStateChange(ctx context.Context, machine
 		Text:     state.String(),
 	}
 
+	now := time.Now()
 	createdMsg, err := cm.db.CreateMessage(ctx, db.CreateMessageParams{
 		ConversationID: cm.conversationID,
 		Type:           db.MessageTypeGitInfo,
+		CreatedAt:      &now,
 		LLMData:        message,
 		UserData:       userData,
 		UsageData:      llm.Usage{},

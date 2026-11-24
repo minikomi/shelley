@@ -97,14 +97,3 @@ func (t *Tracker) Changes() []*GitState {
 	}
 	return changes
 }
-
-// AcknowledgeCommit suppresses the ordinary HEAD notification when the job
-// already reported that exact commit. A concurrent newer HEAD remains visible.
-func (t *Tracker) AcknowledgeCommit(root, oid string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	state := stateOf(root)
-	if state.IsRepo && state.FullCommit == oid {
-		t.states[state.Worktree] = state
-	}
-}
