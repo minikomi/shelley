@@ -837,6 +837,14 @@ class ApiService {
     return (await response.json()).highlights;
   }
 
+  async getRecentCheckouts(
+    cwd: string,
+    conversationId: string,
+  ): Promise<{ workspace: string; paths: string[] }> {
+    const params = machineParams(conversationId, { cwd });
+    return apiJSON(`/api/git/checkouts?${params}`, "Failed to get recent checkouts");
+  }
+
   async getGitGraph(
     cwd: string,
     conversationId: string | undefined,

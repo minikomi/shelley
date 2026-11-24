@@ -12,74 +12,101 @@
 <template>
   <div v-if="isOpen" class="diff-viewer-overlay" @click="emit('close')">
     <div class="diff-viewer-container git-graph-container" @click.stop>
-      <div class="git-graph-toolbar" :class="{ 'git-graph-toolbar-mobile': mobileDiff && canOpenDiff }">
+      <header class="git-graph-header">
         <div
-          class="git-graph-scope"
+          v-if="checkoutTabs.length"
+          class="git-graph-checkouts"
           role="group"
-          aria-label="Branch scope"
-          title="Which refs to walk"
+          aria-label="Checkouts"
         >
           <button
-            v-tooltip.top="'Show commits from all branches'"
+            v-for="{ path, label } in checkoutTabs"
+            :key="path"
             type="button"
-            :class="`git-graph-scope-btn${scope === 'all' ? ' git-graph-scope-btn-active' : ''}`"
-            :aria-pressed="scope === 'all'"
-            aria-label="All branches"
-            @click="setScope('all')"
+            class="git-graph-checkout"
+            :aria-pressed="path === selectedCheckout"
+            :title="path"
+            @click="cwdOverride = path"
           >
-            All branches
-          </button>
-          <button
-            v-tooltip.top="'Show commits reachable from HEAD only'"
-            type="button"
-            :class="`git-graph-scope-btn${scope === 'current' ? ' git-graph-scope-btn-active' : ''}`"
-            :aria-pressed="scope === 'current'"
-            aria-label="Current branch"
-            @click="setScope('current')"
-          >
-            Current branch
+            <span class="git-graph-checkout-name">{{ label }}</span>
+            <span v-if="path === checkouts.workspace" class="git-graph-workspace-label"
+              >Workspace</span
+            >
           </button>
         </div>
-        <button
-          v-if="mobileDiff && canOpenDiff"
-          type="button"
-          class="git-graph-compare-tool"
-          :aria-label="comparing ? 'Cancel compare' : 'Select range'"
-          :aria-pressed="comparing"
-          @click="toggleCompare"
+        <div
+          class="git-graph-toolbar"
+          :class="{ 'git-graph-toolbar-mobile': mobileDiff && canOpenDiff }"
         >
-          {{ comparing ? "Cancel" : "Select range" }}
-        </button>
-        <button
-          v-if="!onVm"
-          v-tooltip.top="`Pick repository (current: ${cwd})`"
-          class="git-graph-tool"
-          aria-label="Pick repository"
-          @click="showCwdPicker = true"
-        >
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :stroke-width="2"
-              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-            />
-          </svg>
-        </button>
-        <button
-          v-tooltip.top="'Close (Esc)'"
-          class="git-graph-tool"
-          aria-label="Close"
-          @click="emit('close')"
-        >
-          ×
-        </button>
-      </div>
+          <div
+            class="git-graph-scope"
+            role="group"
+            aria-label="Branch scope"
+            title="Which refs to walk"
+          >
+            <button
+              v-tooltip.top="'Show commits from all branches'"
+              type="button"
+              :class="`git-graph-scope-btn${scope === 'all' ? ' git-graph-scope-btn-active' : ''}`"
+              :aria-pressed="scope === 'all'"
+              aria-label="All branches"
+              @click="setScope('all')"
+            >
+              All branches
+            </button>
+            <button
+              v-tooltip.top="'Show commits reachable from HEAD only'"
+              type="button"
+              :class="`git-graph-scope-btn${scope === 'current' ? ' git-graph-scope-btn-active' : ''}`"
+              :aria-pressed="scope === 'current'"
+              aria-label="Current branch"
+              @click="setScope('current')"
+            >
+              Current branch
+            </button>
+          </div>
+          <button
+            v-if="mobileDiff && canOpenDiff"
+            type="button"
+            class="git-graph-compare-tool"
+            :aria-label="comparing ? 'Cancel compare' : 'Select range'"
+            :aria-pressed="comparing"
+            @click="toggleCompare"
+          >
+            {{ comparing ? "Cancel" : "Select range" }}
+          </button>
+          <button
+            v-if="!onVm"
+            v-tooltip.top="`Pick repository (current: ${cwd})`"
+            class="git-graph-tool"
+            aria-label="Pick repository"
+            @click="showCwdPicker = true"
+          >
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke-width="2"
+                d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+              />
+            </svg>
+          </button>
+          <button
+            v-tooltip.top="'Close (Esc)'"
+            class="git-graph-tool"
+            aria-label="Close"
+            @click="emit('close')"
+          >
+            ×
+          </button>
+        </div>
+      </header>
+      <div v-if="checkoutError" class="git-graph-status">{{ checkoutError }}</div>
       <GitRepoPicker
         :is-open="showCwdPicker"
         :current-path="cwd"
         @close="showCwdPicker = false"
-        @select="(p) => (cwdOverride = p)"
+        @select="pickCheckout"
       />
 
       <div class="git-graph-body" ref="bodyRef">
@@ -376,6 +403,7 @@ const props = withDefaults(
     cwd: string;
     // The conversation whose machine (this host, or its VM) cwd is on.
     conversationId?: string;
+    activityVersion?: number;
     // cwd is on that conversation's VM, where the repository picker, which
     // lists this host's repositories, can't pick.
     onVm?: boolean;
@@ -402,6 +430,50 @@ const emit = defineEmits<{
 // Internal override so the user can switch directories without re-opening.
 const cwdOverride = ref<string | null>(null);
 const cwd = computed(() => cwdOverride.value ?? props.cwd);
+const checkouts = ref<{ workspace: string; paths: string[] }>({ workspace: "", paths: [] });
+const checkoutError = ref("");
+const pickedCheckout = ref("");
+const selectedCheckout = computed(() => cwdOverride.value ?? checkouts.value.workspace);
+const checkoutTabs = computed(() => {
+  const { workspace, paths: recent } = checkouts.value;
+  const paths = [...new Set([workspace, ...recent, pickedCheckout.value].filter(Boolean))];
+  return paths.map((path) => {
+    const parts = path.split("/");
+    let start = parts.length - 1;
+    let label = parts[start] || "/";
+    while (start > 0 && paths.some((other) => other !== path && other.endsWith("/" + label))) {
+      label = parts.slice(--start).join("/");
+    }
+    return { path, label };
+  });
+});
+
+function pickCheckout(path: string) {
+  if (!checkoutTabs.value.some((tab) => tab.path === path)) pickedCheckout.value = path;
+  cwdOverride.value = path;
+}
+
+watch(
+  [() => props.isOpen, () => props.conversationId, () => props.cwd, () => props.activityVersion],
+  async (_, __, onCleanup) => {
+    let current = true;
+    onCleanup(() => {
+      current = false;
+    });
+    if (!props.isOpen || !props.conversationId) {
+      checkouts.value = { workspace: "", paths: [] };
+      return;
+    }
+    checkoutError.value = "";
+    try {
+      const result = await api.getRecentCheckouts(props.cwd, props.conversationId);
+      if (current) checkouts.value = result;
+    } catch (e) {
+      if (current) checkoutError.value = String(e);
+    }
+  },
+  { immediate: true },
+);
 const showCwdPicker = ref(false);
 const data = ref<GitGraphResponse | null>(null);
 const loading = ref(false);
@@ -560,6 +632,7 @@ watch(
       detail.value = null;
       sheetOpen.value = false;
       cwdOverride.value = null;
+      pickedCheckout.value = "";
       showCwdPicker.value = false;
       detailCache.clear();
     }

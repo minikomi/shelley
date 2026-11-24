@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -81,6 +82,7 @@ func (t *Tracker) Changes() []*GitState {
 	var changes []*GitState
 	report := func(state *GitState) {
 		if last, ok := t.states[state.Worktree]; state.IsRepo && (!ok || !last.Equal(state)) {
+			state.HeadChanged = ok && last.Commit != state.Commit && last.Branch == state.Branch
 			t.states[state.Worktree] = state
 			changes = append(changes, state)
 		}
@@ -96,4 +98,15 @@ func (t *Tracker) Changes() []*GitState {
 		}
 	}
 	return changes
+}
+
+// AcknowledgeCommit suppresses the ordinary HEAD notification when the job
+// already reported that exact commit. A concurrent newer HEAD remains visible.
+func (t *Tracker) AcknowledgeCommit(root, oid string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	state := stateOf(root)
+	if state.IsRepo && state.Commit != "" && strings.HasPrefix(oid, state.Commit) {
+		t.states[state.Worktree] = state
+	}
 }

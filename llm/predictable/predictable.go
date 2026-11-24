@@ -335,13 +335,14 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		}
 
 		if prefix, cmd, ok := strings.Cut(inputText, ": "); ok && strings.HasPrefix(prefix, "bash") {
+			prefix, wd, _ := strings.Cut(prefix, " in ")
 			name, target, hasTarget := strings.Cut(prefix, "@")
 			if name == "bash" || name == "bash-bg" {
 				var sshTarget *string
 				if hasTarget {
 					sshTarget = &target
 				}
-				return s.makeBashToolResponse(cmd, name == "bash-bg", sshTarget, inputTokens), nil
+				return s.makeBashToolResponse(cmd, name == "bash-bg", sshTarget, wd, inputTokens), nil
 			}
 		}
 
@@ -415,7 +416,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 				"printf %%s %q | base64 -d > %s && echo %s",
 				inlineImagePNGBase64, inlineImagePath, inlineImageSentinel,
 			)
-			return s.makeBashToolResponse(cmd, false, nil, inputTokens), nil
+			return s.makeBashToolResponse(cmd, false, nil, "", inputTokens), nil
 		}
 
 		if inputText == "screenshot image" {
@@ -426,7 +427,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 				"mkdir -p %s && printf %%s %q | base64 -d > %s && echo %s",
 				screenshotImageDir, inlineImagePNGBase64, screenshotImagePath, screenshotImageSentinel,
 			)
-			return s.makeBashToolResponse(cmd, false, nil, inputTokens), nil
+			return s.makeBashToolResponse(cmd, false, nil, "", inputTokens), nil
 		}
 
 		if text, ok := strings.CutPrefix(inputText, "message_parent_final: "); ok {
@@ -595,9 +596,12 @@ func (s *Service) makeResponse(text string, inputTokens uint64) *llm.Response {
 }
 
 // makeBashToolResponse creates a response that calls the bash tool
-func (s *Service) makeBashToolResponse(command string, background bool, sshTarget *string, inputTokens uint64) *llm.Response {
+func (s *Service) makeBashToolResponse(command string, background bool, sshTarget *string, wd string, inputTokens uint64) *llm.Response {
 	// Properly marshal the command to avoid JSON escaping issues
 	toolInputData := map[string]any{"command": command}
+	if wd != "" {
+		toolInputData["wd"] = wd
+	}
 	if background {
 		toolInputData["background"] = true
 	}
@@ -1182,7 +1186,7 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 	}
 
 	// bash tool
-	bashInput, _ := json.Marshal(map[string]string{"command": "echo 'hello from bash'"})
+	bashInput, _ := json.Marshal(map[string]string{"command": "echo 'hello from bash'", "wd": "."})
 	content = append(content, llm.Content{
 		ID:        fmt.Sprintf("tool_bash_%d", baseNano%1000),
 		Type:      llm.ContentTypeToolUse,
