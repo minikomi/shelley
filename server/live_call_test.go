@@ -697,6 +697,7 @@ func TestLiveCallDeliversFollowupAfterPauseAndDelayedAcknowledgement(t *testing.
 		t.Run(fmt.Sprintf("late captions: %v", late), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				h := newLiveHarness(t)
+				h.call.progressEnabled = true
 				h.liveSays("Static review only; I haven't run tests or changed code.", 73000, 75000)
 				captions := func() {
 					h.say("So this only affects models where they don't have an off?", 87200, 92600)
@@ -863,6 +864,26 @@ func TestLiveCancellationBeforeSpokenCorrection(t *testing.T) {
 				h.call.observe([]liveRow{{seq: 14, text: operationCancelledText, endOfTurn: true}})
 				got := h.context()
 				expectEqual(t, "standalone cancellation", got[len(got)-1], "commentary [-]: "+heading+"[Operation cancelled]")
+			})
+		})
+	}
+}
+
+func TestLiveCallProgressOffPreservesSpeechWindow(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("progress=%v", enabled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := newLiveHarness(t)
+				h.call.progressEnabled = enabled
+				h.say("Hello", 0, 500)
+				h.liveSays("What can I do?", 4000, 8000)
+				h.delegate("d1", 8100)
+				h.advance(liveDeadline)
+				var want []string
+				if enabled {
+					want = []string{"Hello"}
+				}
+				expectEqual(t, "only progress mode extends the response window", h.transcripts(), want)
 			})
 		})
 	}

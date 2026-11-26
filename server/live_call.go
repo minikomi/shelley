@@ -298,7 +298,7 @@ func (c *liveCall) delegation(e liveEvent) {
 	user := liveRecentUser(c.unclaimedUser())
 	if len(user) > 0 {
 		last := user[len(user)-1]
-		replyEnd := liveTurnEnd(user, c.fragments)
+		replyEnd := liveTurnEnd(user, c.fragments, c.progressEnabled)
 		if replyEnd+liveUserLeadMs >= offset {
 			p.output = replyEnd > last.endMs
 			c.settle(id)
@@ -359,7 +359,7 @@ func (c *liveCall) commit(id string) {
 	}()
 
 	since := c.claimed
-	speech, start, ok := liveUtterance(c.unclaimedUser(), p.offsetMs, c.fragments)
+	speech, start, ok := liveUtterance(c.unclaimedUser(), p.offsetMs, c.fragments, c.progressEnabled)
 	c.claimed = len(c.fragments)
 	echo := ok && liveEcho(speech, start, liveLatestReply(c.fragments))
 	if !ok || echo {
