@@ -1077,7 +1077,7 @@ function emitComment() {
   const target = showCommentDialog.value;
   const fd = fileDiff.value;
   const diff = selectedDiff.value;
-  const root = gitRoot.value;
+  const root = checkout.value?.gitRoot;
   if (!target || !fd || !diff || !root || fd.path !== selectedFile.value) return;
   const snapshot = target.side === "left" ? fd.oldContent : fd.newContent;
   const line = target.startLine ?? target.line;
@@ -1497,7 +1497,7 @@ watch(
     const fd = fileDiff.value;
     if (!props.isOpen || !fd || !diffEditor || !props.reviewNotes?.length) return;
     const notes = props.reviewNotes.filter((note) =>
-      note.root === gitRoot.value && note.machine === (props.reviewMachine ?? "local") &&
+      note.root === checkout.value?.gitRoot && note.machine === (props.reviewMachine ?? "local") &&
       note.diff === selectedDiff.value && note.to === selectedTo.value && note.path === fd.path,
     );
     const cleanups = [

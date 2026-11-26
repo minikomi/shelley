@@ -1911,11 +1911,6 @@ const diffDraftMachine = computed(() => {
   return vm ? `VM ${vm.vm_name}` : "local";
 });
 let nextDiffDraftId = 0;
-watch(() => props.conversationId, (id, previousId) => {
-  if (!previousId && id === lazyDraftId.value) return;
-  diffDraftNotes.value = [];
-  diffDraftDialog.value?.close();
-});
 // The image being annotated, if any (module state so any image in the message
 // tree can open the view without prop drilling).
 const imageCommentTarget = useImageCommentTarget();
@@ -4208,7 +4203,7 @@ function startReviewConversation(): ReviewConversationStart {
     conversation_options: buildConversationOptions(),
   });
   return {
-    settings: settings(),
+    settings: { ...settings(), cwd: props.currentConversation?.cwd || selectedCwd.value || undefined },
     draft: () => (onPage() ? (draftConvId ?? undefined) : undefined),
     async resolve(cwd) {
       if (!onPage()) return undefined;
@@ -4218,7 +4213,7 @@ function startReviewConversation(): ReviewConversationStart {
         model: now.model,
         cwd,
       });
-      return { conversationId, settings: now };
+      return { conversationId, settings: { ...now, cwd } };
     },
   };
 }
@@ -4237,7 +4232,10 @@ function followReviewConversation() {
     api
       .getConversationBySlug(id)
       .then((started) => {
-        if (started && wanted(id)) props.onSelectConversation?.(started);
+        if (started && wanted(id)) {
+          if (showDiffViewer.value) reviewMachine.value = { ...reviewMachine.value, conversationId: id };
+          props.onSelectConversation?.(started);
+        }
       })
       .catch((err) => console.error("Failed to open the review's conversation:", err));
   };
@@ -5530,7 +5528,16 @@ function clearReviewTarget() {
   reviewMachine.value = {};
 }
 
-watch(() => props.conversationId, () => {
+watch(() => props.conversationId, (id, previousId) => {
+  if (id && !previousId && id === lazyDraftId.value) {
+    if (showDiffViewer.value || showGitGraph.value) {
+      reviewMachine.value = { ...reviewMachine.value, conversationId: id };
+    }
+    return;
+  }
+  diffDraftNotes.value = [];
+  diffDraftDialog.value?.close();
+  if (id && id === reviewMachine.value.conversationId) return;
   showDiffViewer.value = false;
   showGitGraph.value = false;
   returnToDiffFromGraph.value = false;
@@ -5595,7 +5602,8 @@ function resetDiffDraftComments() {
 
 function openDiffDraftFile(note: DraftDiffComment) {
   diffDraftDialog.value?.close();
-  onGitGraphOpenDiff(note.diff, note.cwd, note.path, note.to);
+  const machine = workspace.vmFor(props.conversationId)?.vm_name ?? "";
+  onGitGraphOpenDiff(note.diff, { gitRoot: note.root, machine }, note.path, note.to);
 }
 
 async function onDiffReviewToChat() {
