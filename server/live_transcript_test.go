@@ -82,8 +82,8 @@ func TestLiveUtterance(t *testing.T) {
 		},
 		{
 			"a reply that starts late doesn't bridge to an old greeting",
-			[]liveFragment{userSaid("Hi.", 0, 500), liveSaid("Hello! What can I do?", 4000, 8000)},
-			8100, "",
+			[]liveFragment{userSaid("Hi.", 0, 500), liveSaid("Hello! What can I do?", 6000, 10000)},
+			10100, "",
 		},
 		{
 			"a clarification survives a delayed acknowledgement",
@@ -120,9 +120,9 @@ func TestLiveUtterance(t *testing.T) {
 			[]liveFragment{
 				liveSaid("Hello!", 0, 1000),
 				userSaid("Hi.", 30000, 30500),
-				liveSaid("What can I do?", 34000, 35000),
+				liveSaid("What can I do?", 36000, 37000),
 			},
-			35100, "",
+			37100, "",
 		},
 		{
 			"earlier user speech prevents treating a greeting as a reply to Live",
@@ -130,9 +130,9 @@ func TestLiveUtterance(t *testing.T) {
 				liveSaid("Hello!", 0, 1000),
 				userSaid("One moment.", 1500, 2000),
 				userSaid("Hi.", 7100, 7500),
-				liveSaid("What can I do?", 11000, 12000),
+				liveSaid("What can I do?", 13000, 14000),
 			},
-			12100, "",
+			14100, "",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
