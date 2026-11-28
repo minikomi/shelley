@@ -282,13 +282,6 @@
               @cancel="review.cancel"
             />
             <button
-              type="button"
-              class="btn-text"
-              aria-label="Show in graph"
-              :disabled="recordingLocked"
-              @click="emit('open-git-graph')"
-            >Graph</button>
-            <button
               v-tooltip.top="dirTooltip"
               class="diff-viewer-dir-btn"
               :aria-label="`Git directory: ${cwd}. Click to change`"
