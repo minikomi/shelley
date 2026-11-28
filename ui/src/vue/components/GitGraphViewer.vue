@@ -14,25 +14,31 @@
     <div class="diff-viewer-container git-graph-container" @click.stop>
       <header class="git-graph-header">
         <Select
-          v-if="mobileDiff && checkoutTabs.length"
+          v-if="mobileDiff && checkoutOptions.length"
           class="git-graph-checkout-picker"
           :model-value="selectedCheckout"
-          :options="checkoutTabs"
+          :options="checkoutOptions"
           option-label="label"
           option-value="path"
           aria-label="Checkout"
           :title="selectedCheckout"
           :pt="{ overlay: { class: 'git-graph-checkout-options' } }"
           checkmark
-          @update:model-value="pickCheckout"
+          @update:model-value="pickCheckoutOption"
         >
+          <template #dropdownicon>
+            <span class="commit-picker-trigger-chevron" aria-hidden="true">▾</span>
+          </template>
           <template #value>
-            <span class="git-graph-checkout-name">{{ selectedCheckoutLabel }}</span>
-            <span v-if="selectedCheckout === checkouts.workspace" class="git-graph-workspace-label">Workspace</span>
+            <span class="git-graph-checkout-name">{{ selectedCheckoutLabel || 'Choose checkout' }}</span>
+            <span v-if="selectedCheckout && selectedCheckout === checkouts.workspace" class="git-graph-workspace-label">Workspace</span>
           </template>
           <template #option="{ option }">
-            <span class="git-graph-checkout-name" :title="option.path">{{ option.label }}</span>
-            <span v-if="option.path === checkouts.workspace" class="git-graph-workspace-label">Workspace</span>
+            <span v-if="option.path === null" class="git-graph-browse-repos">{{ option.label }}</span>
+            <template v-else>
+              <span class="git-graph-checkout-name" :title="option.path">{{ option.label }}</span>
+              <span v-if="option.path === checkouts.workspace" class="git-graph-workspace-label">Workspace</span>
+            </template>
           </template>
         </Select>
         <div
@@ -96,7 +102,7 @@
             {{ comparing ? "Cancel" : "Select range" }}
           </button>
           <button
-            v-if="!(data?.machine || onVm)"
+            v-if="!mobileDiff && canBrowseRepos"
             v-tooltip.top="`Pick repository (current: ${cwd})`"
             class="git-graph-tool"
             aria-label="Pick repository"
@@ -113,7 +119,7 @@
           </button>
           <button
             v-tooltip.top="'Close (Esc)'"
-            class="git-graph-tool"
+            class="git-graph-tool git-graph-tool-close"
             aria-label="Close"
             @click="emit('close')"
           >
@@ -500,6 +506,16 @@ watch(
 );
 const showCwdPicker = ref(false);
 const data = ref<GitGraphResponse | null>(null);
+const canBrowseRepos = computed(() => !(props.machine.expectedMachine || data.value?.machine || props.onVm));
+const checkoutOptions = computed(() => canBrowseRepos.value
+  ? [...checkoutTabs.value, { path: null, label: "Browse repositories…" }]
+  : checkoutTabs.value);
+
+function pickCheckoutOption(path: string | null) {
+  if (path === null) showCwdPicker.value = true;
+  else pickCheckout(path);
+}
+
 const loading = ref(false);
 const error = ref<string | null>(null);
 const selected = ref<string | null>(null);
@@ -816,7 +832,7 @@ function selectCommit(hash: string) {
 
 // Esc handling (React effect on [isOpen, covered, onClose, sheetOpen]).
 function onEscKey(e: KeyboardEvent) {
-  if (e.key === "Escape") {
+  if (e.key === "Escape" && !showCwdPicker.value) {
     // If the mobile bottom sheet is open, close it first instead of tearing
     // down the whole viewer.
     if (sheetOpen.value && window.matchMedia("(max-width: 768px)").matches) {
@@ -838,6 +854,7 @@ watch(
 // Arrow/j/k/Enter navigation (React effect on
 // [isOpen, commits, selected, selectCommit, onOpenDiff, cwd]).
 function onNavKey(e: KeyboardEvent) {
+  if (showCwdPicker.value) return;
   const target = e.target;
   if (target instanceof Element) {
     if (target.closest("input, textarea, select, .git-graph-checkout-picker, .git-graph-checkout-options")) return;

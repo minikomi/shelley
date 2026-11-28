@@ -8279,6 +8279,13 @@ svg {
   font-size: var(--font-size-14);
 }
 
+.commit-picker-trigger-graph {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+}
+
 /* Desktop popover */
 .commit-picker-popover {
   position: absolute;
@@ -16146,7 +16153,15 @@ kbd {
 .git-graph-checkout-picker {
   grid-area: checkouts;
   min-width: 0;
-  margin-top: 6px;
+  min-height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 0.25rem;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+
+.git-graph-checkout-picker.p-select:hover {
+  background: var(--bg-tertiary);
 }
 
 .git-graph-checkout-picker .p-select-label,
@@ -16158,8 +16173,23 @@ kbd {
   font-size: var(--font-size-12);
 }
 
+.git-graph-checkout-picker .p-select-label {
+  padding: 0.25rem 0.5rem;
+  font: var(--font-size-14)/1.2 var(--font-sans);
+}
+
+.git-graph-checkout-picker .p-select-dropdown {
+  width: 1.55rem;
+}
+
 .git-graph-checkout-options.p-select-overlay {
   z-index: 1002 !important; /* Above the graph modal. */
+}
+
+.git-graph-checkout-options .p-select-option:has(.git-graph-browse-repos) {
+  border-top: 1px solid var(--border-color);
+  border-radius: 0;
+  font-family: var(--font-sans);
 }
 
 .git-graph-toolbar {
@@ -16241,6 +16271,48 @@ kbd {
     width: 74px;
   }
 }
+
+@media (width < 768px) {
+  .git-graph-header:has(.git-graph-checkout-picker) {
+    grid-template: "checkouts checkouts close" auto "scope range review" auto / minmax(
+        0,
+        1fr
+      ) auto 32px;
+    align-items: center;
+    column-gap: 4px;
+    padding-top: 5px;
+  }
+
+  .git-graph-header:has(.git-graph-checkout-picker) .git-graph-toolbar {
+    display: contents;
+  }
+
+  .git-graph-header:has(.git-graph-checkout-picker) .git-graph-tool-close {
+    grid-area: close;
+    width: 32px;
+    height: 32px;
+  }
+
+  .git-graph-header:has(.git-graph-checkout-picker) .git-graph-scope {
+    grid-area: scope;
+    min-height: 38px;
+    align-items: center;
+    justify-self: start;
+  }
+
+  .git-graph-header:has(.git-graph-checkout-picker) .git-graph-compare-tool {
+    grid-area: range;
+  }
+
+  .git-graph-header:has(.git-graph-checkout-picker) .diff-draft-review-toggle {
+    grid-area: review;
+  }
+
+  .git-graph-header:has(.git-graph-checkout-picker) .diff-draft-review-caption {
+    display: none;
+  }
+}
+
 .git-graph-tool {
   width: 1.5rem;
   height: 1.5rem;
