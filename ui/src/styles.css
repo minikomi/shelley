@@ -15191,6 +15191,8 @@ kbd {
 .git-graph-container {
   font-size: 0.82rem;
   position: relative;
+  /* Scroll selected commits within the list, not past the header. */
+  overflow: clip;
 }
 
 .git-graph-close {
@@ -15229,7 +15231,7 @@ kbd {
   flex: 1;
   display: flex;
   min-height: 0;
-  overflow: hidden;
+  overflow: clip;
 }
 
 .git-graph-list {
@@ -16139,6 +16141,25 @@ kbd {
 .git-graph-checkout:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: -3px;
+}
+
+.git-graph-checkout-picker {
+  grid-area: checkouts;
+  min-width: 0;
+  margin-top: 6px;
+}
+
+.git-graph-checkout-picker .p-select-label,
+.git-graph-checkout-options .p-select-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+}
+
+.git-graph-checkout-options.p-select-overlay {
+  z-index: 1002 !important; /* Above the graph modal. */
 }
 
 .git-graph-toolbar {

@@ -13,8 +13,30 @@
   <div v-if="isOpen" class="diff-viewer-overlay" @click="emit('close')">
     <div class="diff-viewer-container git-graph-container" @click.stop>
       <header class="git-graph-header">
+        <Select
+          v-if="mobileDiff && checkoutTabs.length"
+          class="git-graph-checkout-picker"
+          :model-value="selectedCheckout"
+          :options="checkoutTabs"
+          option-label="label"
+          option-value="path"
+          aria-label="Checkout"
+          :title="selectedCheckout"
+          :pt="{ overlay: { class: 'git-graph-checkout-options' } }"
+          checkmark
+          @update:model-value="pickCheckout"
+        >
+          <template #value>
+            <span class="git-graph-checkout-name">{{ selectedCheckoutLabel }}</span>
+            <span v-if="selectedCheckout === checkouts.workspace" class="git-graph-workspace-label">Workspace</span>
+          </template>
+          <template #option="{ option }">
+            <span class="git-graph-checkout-name" :title="option.path">{{ option.label }}</span>
+            <span v-if="option.path === checkouts.workspace" class="git-graph-workspace-label">Workspace</span>
+          </template>
+        </Select>
         <div
-          v-if="checkoutTabs.length"
+          v-else-if="checkoutTabs.length"
           class="git-graph-checkouts"
           role="group"
           aria-label="Checkouts"
@@ -367,6 +389,7 @@
 </template>
 
 <script setup lang="ts">
+import Select from "primevue/select";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { api, checkoutTarget } from "../../services/api";
 import type { MachineTarget } from "../../services/api";
@@ -448,6 +471,7 @@ const checkoutTabs = computed(() => {
     return { path, label };
   });
 });
+const selectedCheckoutLabel = computed(() => checkoutTabs.value.find(({ path }) => path === selectedCheckout.value)?.label);
 
 function pickCheckout(path: string) {
   if (path !== selectedCheckout.value) emit("cwd-change", path, data.value?.machine);
@@ -816,7 +840,7 @@ watch(
 function onNavKey(e: KeyboardEvent) {
   const target = e.target;
   if (target instanceof Element) {
-    if (target.closest("input, textarea, select")) return;
+    if (target.closest("input, textarea, select, .git-graph-checkout-picker, .git-graph-checkout-options")) return;
     if (e.key === "Enter" && target.closest("a, button")) return;
   }
   if (!commits.value.length) return;

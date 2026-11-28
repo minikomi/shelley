@@ -225,11 +225,13 @@ func TestE2EMobileDiffEOFDeletionRuler(t *testing.T) {
 func TestE2EMobileReviewKeepsCheckout(t *testing.T) {
 	e2e(t, useful(0), `On a phone, continue reviewing the worktree from an inline commit, then start a fresh review in the chat workspace.
 Navigate to /c/{{SLUG}}. Click the Open Diff link in the gitinfo message containing "Commit from B".
-Click the commit picker (.commit-picker-trigger). In the Git Graph checkout group the selected button has title {{B}}.
+Click the commit picker (.commit-picker-trigger). The Checkout combobox (.git-graph-checkout-picker) has title {{B}}.
 Click the graph row "Working changes". The diff file picker or file heading shows only-in-B.txt.
-Close the diff, then close the graph if visible, returning to the chat.
+Close the diff. The Checkout combobox (.git-graph-checkout-picker) still has title {{B}} and its bounding rectangle is fully within the viewport, above ".git-graph-toolbar-mobile".
+Open the combobox and choose the option containing "worktree-c". The combobox now has title {{C}} and contains "Workspace". Click "Working changes" and verify the file is only-in-C.txt.
+Close the diff, then close the graph, returning to the chat.
 Use More options and the Diffs menu button to start a fresh review. Click its commit picker.
-The selected checkout button now has title {{C}}. Click "Working changes" and verify the file is only-in-C.txt.`, func(s *shelley) {
+The Checkout combobox has title {{C}}. Click "Working changes" and verify the file is only-in-C.txt.`, func(s *shelley) {
 		b := mobileDiffRepo(s)
 		s.write(filepath.Join(b, "base.txt"), "initial\n")
 		mobileDiffCommit(s, b, "initial")
